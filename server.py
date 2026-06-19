@@ -4,6 +4,10 @@ GET  /           -> index.html
 GET  /state      -> current guest state
 GET  /transcript -> replayable current guest event log
 GET  /export     -> current guest JSON export
+GET  /chats      -> current guest chat list
+GET  /stories    -> selectable story catalog
+POST /chats      -> create a chat
+POST /chats/{id}/activate -> switch active chat
 POST /turn       -> SSE turn stream
 POST /cmd        -> reset / new <brief> / constraint <txt> / event <txt>
 
@@ -20,14 +24,15 @@ import re
 import secrets
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import config
 import agents
 import codex_oauth
 import runtime_settings
+import stories
 import world as world_mod
-from dialog_store import DialogRuntime, DialogStore
+from dialog_store import DEFAULT_CHAT_TITLE, DialogRuntime, DialogStore
 from llm_client import make_client
 from orchestrator import Session, context_usage, run_turn
 
@@ -71,6 +76,8 @@ def state(dialog: DialogRuntime) -> dict:
         "settings_options": runtime_settings.options(),
         "run_usage": session.run_usage,
         "context_usage": context_usage(session),
+        "story_id": getattr(w, "story_id", ""),
+        "story_title": getattr(w, "story_title", ""),
         "public": w.public,
         "scene": w.scene_export(),
         "entities": w.entity_refs(),
@@ -108,8 +115,12 @@ def export_data(dialog: DialogRuntime) -> dict:
             "backend": config.BACKEND,
             "turns": dialog.turn_count,
             "run_usage": session.run_usage,
+            "story_id": getattr(w, "story_id", ""),
+            "story_title": getattr(w, "story_title", ""),
         },
         "world": {
+            "story_id": getattr(w, "story_id", ""),
+            "story_title": getattr(w, "story_title", ""),
             "public": w.public,
             "constraints": w.constraints,
             "scene": w.scene_export(),
@@ -220,6 +231,8 @@ def debug_data(dialog: DialogRuntime) -> dict:
             "context_usage": context_usage(session),
         },
         "story": {
+            "id": getattr(w, "story_id", ""),
+            "title": getattr(w, "story_title", ""),
             "objective": (
                 "Вести игрока к раскрытию скрытой правды истории через действия, улики, "
                 "свидетелей и последствия, не выдавая секреты без игрового основания."
@@ -283,6 +296,58 @@ def ensure_client(dialog: DialogRuntime):
     return dialog.session.client
 
 
+def _model_hint_for_new_chat(dialog: DialogRuntime | None) -> str:
+    if dialog is None or not _session_matches_backend(dialog.session):
+        return ""
+    return str(
+        getattr(dialog.session, "client_model", "")
+        or getattr(getattr(dialog.session, "client", None), "model", "")
+        or ""
+    )
+
+
+def _seeded_session(brief: str, model_hint: str = "") -> Session:
+    client = make_client()
+    if model_hint and hasattr(client, "set_model"):
+        client.set_model(model_hint)
+    seed = agents.build_world_seed(client, brief)
+    session = Session(client, world_mod.World.from_seed(seed))
+    session.client_backend = config.BACKEND
+    session.client_model = str(getattr(client, "model", "") or model_hint or "")
+    session.client_session_id = str(getattr(client, "session_id", "") or "")
+    session.client_thread_id = str(getattr(client, "thread_id", "") or "")
+    return session
+
+
+def _story_session(story_id: str, model_hint: str = "") -> Session:
+    session = Session(None, world_mod.World.from_story(story_id))
+    session.client_backend = config.BACKEND
+    session.client_model = model_hint
+    return session
+
+
+def _chat_response(dialog: DialogRuntime, active: bool) -> dict:
+    return {
+        "id": dialog.chat_id,
+        "title": dialog.title or DEFAULT_CHAT_TITLE,
+        "preview": dialog.preview or "",
+        "turn_count": int(dialog.turn_count or 0),
+        "created_at": dialog.created_at or "",
+        "updated_at": dialog.updated_at or "",
+        "active": bool(active),
+    }
+
+
+def _bool_from_body(value, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
 def _list_models(client) -> list[dict]:
     if hasattr(client, "list_models"):
         return client.list_models()
@@ -329,13 +394,20 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _guest_id_value(self) -> str:
+        guest_id = getattr(self, "_guest_id", "")
+        if guest_id:
+            return guest_id
+        guest_id = _guest_id_from_cookie(self.headers.get("Cookie")) or _new_guest_id()
+        self._guest_id = guest_id
+        return guest_id
+
     def _dialog(self) -> DialogRuntime:
         dialog = getattr(self, "_dialog_runtime", None)
         if dialog is not None:
             return dialog
-        guest_id = _guest_id_from_cookie(self.headers.get("Cookie")) or _new_guest_id()
-        self._guest_id = guest_id
-        self._dialog_runtime = dialog_store.get(guest_id)
+        guest_id = self._guest_id_value()
+        self._dialog_runtime = dialog_store.get_active(guest_id)
         return self._dialog_runtime
 
     def _set_guest_cookie(self) -> None:
@@ -367,6 +439,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _activate_chat_response(self, guest_id: str, chat_id: str) -> None:
+        dialog = dialog_store.activate_chat(guest_id, chat_id)
+        if dialog is None:
+            self._json({"ok": False, "error": "chat not found"}, 404)
+            return
+        self._dialog_runtime = dialog
+        with dialog.lock:
+            self._json({
+                "ok": True,
+                "chat": _chat_response(dialog, active=True),
+                "state": state(dialog),
+                "transcript": {"events": replay_events(dialog)},
+            })
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/" or path.startswith("/index"):
@@ -382,6 +468,26 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store, must-revalidate")
             self.end_headers()
             self._write_body(body)
+            return
+
+        if path == "/chats":
+            guest_id = self._guest_id_value()
+            dialog_store.get_active(guest_id)
+            chats = dialog_store.list_chats(guest_id)
+            self._json({
+                "ok": True,
+                "active_chat_id": dialog_store.active_chat_id(guest_id),
+                "chats": chats,
+            })
+            return
+
+        if path == "/stories":
+            self._guest_id_value()
+            self._json({
+                "ok": True,
+                "default_story_id": stories.DEFAULT_STORY_ID,
+                "stories": stories.list_stories(),
+            })
             return
 
         if path == "/state":
@@ -458,6 +564,77 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+
+        if path == "/chats":
+            guest_id = self._guest_id_value()
+            data = self._body()
+            brief = str(data.get("brief") or "").strip()
+            story_id = str(data.get("story_id") or "").strip()
+            title = str(data.get("title") or "").strip()
+            activate = _bool_from_body(data.get("activate"), default=True)
+            session = None
+            if story_id and story_id not in stories.story_ids():
+                self._json({"ok": False, "error": f"unknown story_id: {story_id}"}, 400)
+                return
+            if not brief and not story_id:
+                self._json({"ok": False, "error": "story_id is required"}, 400)
+                return
+            if brief:
+                active_dialog = None
+                active_chat_id = dialog_store.active_chat_id(guest_id)
+                if active_chat_id:
+                    try:
+                        active_dialog = dialog_store.get(guest_id, active_chat_id)
+                    except KeyError:
+                        active_dialog = None
+                try:
+                    session = _seeded_session(
+                        brief,
+                        _model_hint_for_new_chat(active_dialog),
+                    )
+                except Exception as ex:
+                    self._json({"ok": False, "error": str(ex)}, 400)
+                    return
+            else:
+                active_dialog = None
+                active_chat_id = dialog_store.active_chat_id(guest_id)
+                if active_chat_id:
+                    try:
+                        active_dialog = dialog_store.get(guest_id, active_chat_id)
+                    except KeyError:
+                        active_dialog = None
+                session = _story_session(
+                    story_id,
+                    _model_hint_for_new_chat(active_dialog),
+                )
+            dialog = dialog_store.create_chat(
+                guest_id,
+                session=session,
+                title=title or brief or getattr(session.world, "story_title", ""),
+                activate=activate,
+            )
+            active_chat_id = dialog_store.active_chat_id(guest_id)
+            if dialog.chat_id == active_chat_id:
+                self._dialog_runtime = dialog
+            response = {
+                "ok": True,
+                "active_chat_id": active_chat_id,
+                "chat": _chat_response(dialog, active=dialog.chat_id == active_chat_id),
+            }
+            if dialog.chat_id == active_chat_id:
+                with dialog.lock:
+                    response["state"] = state(dialog)
+                    response["transcript"] = {"events": replay_events(dialog)}
+            self._json(response)
+            return
+
+        if path.startswith("/chats/") and path.endswith("/activate"):
+            guest_id = self._guest_id_value()
+            parts = path.strip("/").split("/")
+            chat_id = unquote(parts[1]) if len(parts) == 3 else ""
+            self._activate_chat_response(guest_id, chat_id)
+            return
+
         dialog = self._dialog()
 
         if path == "/codex/login":
@@ -527,6 +704,30 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/cmd":
             data = self._body()
             cmd, arg = data.get("cmd", ""), (data.get("arg") or "").strip()
+            if cmd == "new" and arg:
+                with dialog.lock:
+                    model_hint = _model_hint_for_new_chat(dialog)
+                try:
+                    session = _seeded_session(arg, model_hint)
+                except Exception as ex:
+                    self._json({"ok": False, "error": str(ex)}, 400)
+                    return
+                new_dialog = dialog_store.create_chat(
+                    dialog.guest_id,
+                    session=session,
+                    title=arg,
+                    activate=True,
+                )
+                self._dialog_runtime = new_dialog
+                with new_dialog.lock:
+                    response = {
+                        "ok": True,
+                        "chat": _chat_response(new_dialog, active=True),
+                        "state": state(new_dialog),
+                    }
+                self._json(response)
+                return
+
             with dialog.lock:
                 if cmd == "reset":
                     same_backend = _session_matches_backend(dialog.session)
@@ -546,17 +747,18 @@ class Handler(BaseHTTPRequestHandler):
                             getattr(dialog.session, "client_thread_id", "")
                             or getattr(getattr(dialog.session, "client", None), "thread_id", "")
                         )
-                    dialog.session = Session(None)
+                    story_id = getattr(dialog.session.world, "story_id", "")
+                    if story_id not in stories.story_ids():
+                        self._json(
+                            {"ok": False, "error": f"cannot reset non-catalog story: {story_id or 'unknown'}"},
+                            400,
+                        )
+                        return
+                    dialog.session = Session(None, world_mod.World.from_story(story_id))
                     dialog.session.client_backend = config.BACKEND
                     dialog.session.client_model = model
                     dialog.session.client_session_id = session_id
                     dialog.session.client_thread_id = thread_id
-                    dialog.transcript.clear()
-                    dialog.turn_count = 0
-                elif cmd == "new" and arg:
-                    client = ensure_client(dialog)
-                    seed = agents.build_world_seed(client, arg)
-                    dialog.session = Session(client, world_mod.World.from_seed(seed))
                     dialog.transcript.clear()
                     dialog.turn_count = 0
                 elif cmd == "constraint" and arg:

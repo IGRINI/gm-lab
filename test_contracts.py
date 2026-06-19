@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("GM_BACKEND", "mock")
 
 import agents
+import stories
 import world as world_mod
 from llm_client import make_client
 from llm_client import _proper_nouns_line
@@ -24,6 +25,13 @@ def tool_by_name(tools, name):
 
 
 w = world_mod.World()
+story_list = stories.list_stories()
+assert stories.DEFAULT_STORY_ID == "turnvale-murder"
+assert len(story_list) == 3
+assert {story["id"] for story in story_list} == {"turnvale-murder", "frozen-harbor", "glass-garden"}
+assert all({"id", "title", "description"} <= set(story) for story in story_list)
+assert w.story_id == stories.DEFAULT_STORY_ID
+assert w.story_title == "Убийство в Тёрнвейле"
 assert "Борин" in w.proper_nouns()
 assert "«Серый грифон»" in w.proper_nouns()
 assert "borin" in w.scene.present_npcs
@@ -52,10 +60,22 @@ assert w_rev.update_npc("borin", {"persona": "полностью новая ли
 assert w_rev.npc("borin").card_revision == 1
 assert w_rev.update_npc("borin", {"goals": "новая цель"})
 assert w_rev.npc("borin").card_revision == 2
-legacy_npc = dialog_store._npc_from_payload({"npc_id": "x", "name": "X", "persona": "p"})
-assert legacy_npc.card_revision == 0
+minimal_npc = dialog_store._npc_from_payload({"npc_id": "x", "name": "X", "persona": "p"})
+assert minimal_npc.card_revision == 0
 assert world_mod.NPC(npc_id="y", name="Y", persona="", voice="", goals="", knowledge="", secret="").card_revision == 0
 assert dialog_store._npc_to_payload(w_rev.npc("borin"))["card_revision"] == 2
+
+frozen_world = world_mod.World.from_story("frozen-harbor")
+glass_world = world_mod.World.from_story("glass-garden")
+assert frozen_world.story_id == "frozen-harbor"
+assert glass_world.story_id == "glass-garden"
+assert "iva" in frozen_world.npcs and "ella" in glass_world.npcs
+assert "borin" not in frozen_world.npcs and "borin" not in glass_world.npcs
+try:
+    world_mod.World.from_story("missing-story")
+    raise AssertionError("unknown story id must fail")
+except KeyError:
+    pass
 
 gm_system = agents._gm_system(w, "")
 assert "Do not require action ids" in gm_system

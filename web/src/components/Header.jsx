@@ -235,6 +235,7 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
 }
 
 export default function Header({
+  onToggleChats,
   srv,
   models,
   settings,
@@ -268,6 +269,18 @@ export default function Header({
 
   return (
     <header>
+      {onToggleChats && (
+        <button
+          type="button"
+          className="btn btn-icon chat-toggle"
+          onClick={onToggleChats}
+          title="Список чатов"
+          aria-label="Открыть список чатов"
+        >
+          <span className="bi" aria-hidden="true">☰</span>
+          <span className="btn-label">Чаты</span>
+        </button>
+      )}
       <h1>
         GM-<b>Lab</b>
       </h1>

@@ -25,6 +25,14 @@ export const api = {
 
   transcript: () => getJSON("/transcript"),
 
+  stories: () => getJSON("/stories"),
+
+  chats: () => getJSON("/chats"),
+
+  createChat: (body) => _post("/chats", body),
+
+  activateChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/activate`),
+
   setModel: (model) =>
     getJSON("/model", {
       method: "POST",

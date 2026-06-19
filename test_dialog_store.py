@@ -1,15 +1,21 @@
 """SQLite dialog persistence smoke tests."""
 import os
+import sqlite3
 import tempfile
 
 os.environ.setdefault("GM_BACKEND", "mock")
 
-from dialog_store import DialogStore
-from llm_client import make_client
+from dialog_store import (  # noqa: E402
+    DEFAULT_CHAT_TITLE,
+    DialogStore,
+)
+from llm_client import make_client  # noqa: E402
+from orchestrator import Session  # noqa: E402
+import world as world_mod  # noqa: E402
 
 
-with tempfile.TemporaryDirectory() as tmp:
-    db_path = os.path.join(tmp, "dialogs.sqlite3")
+def test_runtime_round_trip(tmp: str) -> None:
+    db_path = os.path.join(tmp, "round_trip.sqlite3")
     guest_id = "guest_0123456789abcdef0123456789"
 
     store = DialogStore(db_path, make_client)
@@ -70,6 +76,7 @@ with tempfile.TemporaryDirectory() as tmp:
     reloaded = reloaded_store.get(guest_id)
 
     assert first_roll[1].startswith("1d20 ->")
+    assert reloaded.chat_id == dialog.chat_id
     assert reloaded.turn_count == 1
     assert reloaded.transcript[0]["event"]["data"] == "hello"
     assert reloaded.session.gm_messages == [{"role": "user", "content": "hello"}]
@@ -99,5 +106,160 @@ with tempfile.TemporaryDirectory() as tmp:
         {"role": "user", "content": "lysa situation"},
         {"role": "assistant", "content": "{\"speech\":\"тихо\"}"},
     ]
+
+
+def test_multiple_chats_for_one_guest(tmp: str) -> None:
+    db_path = os.path.join(tmp, "multi_chat.sqlite3")
+    guest_id = "guest_multi_0123456789abcdef012345"
+    store = DialogStore(db_path, make_client)
+
+    first = store.create_chat(guest_id, title="First thread", activate=True)
+    first.transcript.append({
+        "turn": 1,
+        "event": {"kind": "player", "agent": "Player", "data": "first transcript"},
+    })
+    first.session.world.constraints.append("first-only constraint")
+    first.turn_count = 1
+    store.save(first)
+
+    second = store.create_chat(guest_id, title="Second thread", activate=True)
+    second.transcript.append({
+        "turn": 1,
+        "event": {"kind": "player", "agent": "Player", "data": "second transcript"},
+    })
+    second.session.world.constraints.append("second-only constraint")
+    second.turn_count = 1
+    store.save(second)
+
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE dialog_chats SET updated_at = ? WHERE guest_id = ? AND chat_id = ?",
+            ("2026-06-18T00:00:00Z", guest_id, first.chat_id),
+        )
+        con.execute(
+            "UPDATE dialog_chats SET updated_at = ? WHERE guest_id = ? AND chat_id = ?",
+            ("2026-06-18T00:01:00Z", guest_id, second.chat_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    assert first.chat_id != second.chat_id
+    assert store.get_active(guest_id).chat_id == second.chat_id
+
+    activated_first = store.activate_chat(guest_id, first.chat_id)
+    assert activated_first is not None
+    assert store.get_active(guest_id).chat_id == first.chat_id
+
+    chats = store.list_chats(guest_id)
+    assert [chat["id"] for chat in chats] == [second.chat_id, first.chat_id]
+    assert {chat["id"]: chat["active"] for chat in chats} == {
+        first.chat_id: True,
+        second.chat_id: False,
+    }
+    assert {chat["id"]: chat["turn_count"] for chat in chats} == {
+        first.chat_id: 1,
+        second.chat_id: 1,
+    }
+    assert {chat["id"]: chat["title"] for chat in chats} == {
+        first.chat_id: "First thread",
+        second.chat_id: "Second thread",
+    }
+
+    activated_first.session.world.scene.title = "Updated scene title"
+    activated_first.transcript.append({
+        "turn": 2,
+        "event": {"kind": "player", "agent": "Player", "data": "first follow-up"},
+    })
+    activated_first.turn_count = 2
+    store.save(activated_first)
+
+    reloaded_store = DialogStore(db_path, make_client)
+    first_reloaded = reloaded_store.get(guest_id, first.chat_id)
+    second_reloaded = reloaded_store.get(guest_id, second.chat_id)
+
+    assert first_reloaded.turn_count == 2
+    assert first_reloaded.title == "First thread"
+    assert first_reloaded.transcript[-1]["event"]["data"] == "first follow-up"
+    assert first_reloaded.session.world.constraints[-1] == "first-only constraint"
+    assert second_reloaded.turn_count == 1
+    assert second_reloaded.title == "Second thread"
+    assert second_reloaded.transcript[-1]["event"]["data"] == "second transcript"
+    assert second_reloaded.session.world.constraints[-1] == "second-only constraint"
+
+
+def test_selected_story_round_trip(tmp: str) -> None:
+    db_path = os.path.join(tmp, "story.sqlite3")
+    guest_id = "guest_story_0123456789abcdef01234"
+    store = DialogStore(db_path, make_client)
+
+    dialog = store.create_chat(
+        guest_id,
+        session=Session(None, world_mod.World.from_story("frozen-harbor")),
+        activate=True,
+    )
+    dialog.session.world.add_fact("Debug-only fact survives.", "truth")
+    dialog.session.world.set_npc_whereabouts(
+        "sana",
+        location_id="secret_warehouse",
+        location_name="тайный склад",
+        status="known",
+        details="перенесена через debug menu",
+        source="debug",
+    )
+    store.save(dialog)
+
+    reloaded = DialogStore(db_path, make_client).get_active(guest_id)
+
+    assert reloaded.session.world.story_id == "frozen-harbor"
+    assert reloaded.session.world.story_title == "Ледяной порт Нордхольм"
+    assert "iva" in reloaded.session.world.npcs
+    assert "borin" not in reloaded.session.world.npcs
+    assert any(record.text == "Debug-only fact survives." for record in reloaded.session.world.fact_records)
+    assert (
+        reloaded.session.world.npc_whereabouts_export("sana")["location_name"]
+        == "тайный склад"
+    )
+
+
+def test_new_schema_and_default_title(tmp: str) -> None:
+    db_path = os.path.join(tmp, "schema.sqlite3")
+    guest_id = "guest_schema_0123456789abcdef0123"
+    store = DialogStore(db_path, make_client)
+
+    dialog = store.get_active(guest_id)
+    dialog.session.world.scene.title = "Scene title should not replace default"
+    dialog.transcript.append({
+        "turn": 1,
+        "event": {"kind": "player", "agent": "Player", "data": "player text"},
+    })
+    dialog.turn_count = 1
+    store.save(dialog)
+
+    reloaded_store = DialogStore(db_path, make_client)
+    reloaded = reloaded_store.get_active(guest_id)
+    assert reloaded.title == DEFAULT_CHAT_TITLE
+    assert reloaded.preview == "player text"
+
+    tables = set()
+    con = sqlite3.connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+        tables = {row[0] for row in rows}
+    finally:
+        con.close()
+
+    assert "dialog_chats" in tables
+    assert "guest_dialog_state" in tables
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    test_runtime_round_trip(tmp)
+    test_multiple_chats_for_one_guest(tmp)
+    test_selected_story_round_trip(tmp)
+    test_new_schema_and_default_title(tmp)
 
 print("DIALOG STORE TEST PASSED")

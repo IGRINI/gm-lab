@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import stories
+
 
 @dataclass
 class Event:
@@ -135,58 +137,6 @@ class WorldFact:
         return payload
 
 
-# --- The world's hidden truth (known only to the GM-as-author and critic, NOT the player) --
-# In English (internal/model-facing); proper nouns stay in their original Russian form.
-WORLD_CANON = (
-    "Прошлой ночью в городе Тёрнвейл убили купца Алдрика. На самом деле его убила "
-    "Гильдия воров, заметая следы контрабанды специй. Трактирщик Борин — осведомитель "
-    "гильдии и знает, чья это работа. Городская стража подозревает гильдию, но "
-    "доказательств у неё нет."
-)
-
-# The public scene — this the GM is allowed to show. Kept in RUSSIAN: it is the
-# player-facing scene banner.
-WORLD_PUBLIC = (
-    "Городок Тёрнвейл, утро. Трактир «Серый грифон». По городу слух: вчера ночью "
-    "нашли мёртвым купца Алдрика. Народ напуган и шепчется."
-)
-
-# Publicly known lore for get_world_fact. Only what the GM may tell TRUTHFULLY. Secrets
-# (who killed, who is an informant) do NOT go here — they live in canon / NPC cards.
-# Values are Russian because tool results are visible in the lab/debug UI. Keys: the
-# original Russian proper-noun substrings ARE kept (queries may include Russian names), AND
-# English common-noun keys are added so older English queries still match (lookup is a
-# lowercase substring test against the query).
-WORLD_LORE = {
-    # Russian proper-noun keys (matched when the query carries the Russian name).
-    "алдрик": "Алдрик был небогатым купцом: торговал специями и сушёными травами, время от "
-              "времени возил товары через Тёрнвейл. Его считали скрытным и нелюдимым. "
-              "Прошлой ночью его нашли мёртвым.",
-    "тёрнвейл": "Тёрнвейл — небольшой торговый городок на большой дороге; он живёт за счёт "
-                "проезжих купцов и сезонной ярмарки.",
-    "грифон": "«Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин.",
-    "трактир": "«Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин.",
-    "гильди": "Говорят, на большой дороге действует гильдия воров, но это только слух: "
-              "доказательств нет.",
-    "стража": "Городская стража небольшая; расследованием убийства занимается Капитан Марет.",
-    # English common-noun keys (matched when the GM queries in English). Same values.
-    "aldrik": "Алдрик был небогатым купцом: торговал специями и сушёными травами, время от "
-              "времени возил товары через Тёрнвейл. Его считали скрытным и нелюдимым. "
-              "Прошлой ночью его нашли мёртвым.",
-    "turnvale": "Тёрнвейл — небольшой торговый городок на большой дороге; он живёт за счёт "
-                "проезжих купцов и сезонной ярмарки.",
-    "town": "Тёрнвейл — небольшой торговый городок на большой дороге; он живёт за счёт "
-            "проезжих купцов и сезонной ярмарки.",
-    "griffon": "«Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин.",
-    "tavern": "«Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин.",
-    "inn": "«Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин.",
-    "guild": "Говорят, на большой дороге действует гильдия воров, но это только слух: "
-             "доказательств нет.",
-    "guard": "Городская стража небольшая; расследованием убийства занимается Капитан Марет.",
-    "mareth": "Городская стража небольшая; расследованием убийства занимается Капитан Марет.",
-}
-
-
 def _safe_id(raw: str, fallback: str) -> str:
     value = re.sub(r"[^a-zA-Z0-9_]+", "_", (raw or "").strip().lower()).strip("_")
     return value or fallback
@@ -281,103 +231,6 @@ def _public_gender(value: str) -> str:
 def _public_source(source: str) -> str:
     raw = _as_str(source)
     return SOURCE_RU.get(raw.lower(), raw)
-
-
-def _default_facts() -> list[FactRecord]:
-    return [
-        FactRecord(
-            fact_id="aldrik_public",
-            kind="public",
-            text=WORLD_LORE["алдрик"],
-            keywords=["алдрик", "aldrik"],
-        ),
-        FactRecord(
-            fact_id="turnvale_public",
-            kind="public",
-            text=WORLD_LORE["тёрнвейл"],
-            keywords=["тёрнвейл", "turnvale"],
-        ),
-        FactRecord(
-            fact_id="griffon_public",
-            kind="public",
-            text=WORLD_LORE["грифон"],
-            keywords=["серый грифон", "грифон", "grey griffon", "griffon"],
-        ),
-        FactRecord(
-            fact_id="guild_rumor",
-            kind="public",
-            text=WORLD_LORE["гильди"],
-            keywords=["гильди", "guild", "thieves"],
-        ),
-        FactRecord(
-            fact_id="guard_public",
-            kind="public",
-            text=WORLD_LORE["стража"],
-            keywords=["капитан марет", "марет", "mareth", "town guard", "guard captain"],
-        ),
-        FactRecord(
-            fact_id="murder_truth",
-            kind="truth",
-            text=WORLD_CANON,
-            keywords=["killer", "murder truth", "who killed"],
-            source="скрытый канон",
-        ),
-    ]
-
-
-def _default_scene() -> SceneState:
-    constraints = [
-        "Единственный выход из «Серого грифона» — через главную дверь; её видно из всего "
-        "общего зала.",
-        "В общем зале полно посетителей: пересечь зал, выйти, драться или незаметно "
-        "возиться с предметами почти невозможно. Тихие слова, сказанные вплотную, по "
-        "умолчанию остаются приватными; другие могут заметить жесты, позу или близость, "
-        "но не содержание разговора, если явно не подслушивают.",
-    ]
-    return SceneState(
-        scene_id="griffon_common_room",
-        location_id="grey_griffon",
-        title="Трактир «Серый грифон»",
-        description=(
-            "Утро в общем зале трактира. Гости говорят вполголоса об убийстве Алдрика; "
-            "стойка, столы и главный вход хорошо видны игроку."
-        ),
-        present_npcs={"borin", "lysa"},
-        presence={
-            "borin": Presence(
-                npc_id="borin",
-                location="за стойкой",
-                visible=True,
-                can_hear=True,
-                activity="разливает эль и следит за залом",
-                attitude="насторожен, если спрашивают про Алдрика или гильдию",
-            ),
-            "lysa": Presence(
-                npc_id="lysa",
-                location="между столами",
-                visible=True,
-                can_hear=True,
-                activity="разносит кружки между столами",
-                attitude="любопытна, но боится привлечь внимание",
-            ),
-        },
-        items=[
-            SceneItem("counter", "стойка", "общий зал", visible=True, portable=False),
-            SceneItem("mugs", "кружки", "на стойке", visible=True, portable=True,
-                      owner="borin"),
-            SceneItem("ale_barrels", "бочки с элем", "за стойкой", visible=True,
-                      portable=False, owner="borin"),
-        ],
-        exits=[
-            SceneExit("main_door", "главная дверь", "улица Тёрнвейла", visible=True),
-        ],
-        constraints=constraints,
-        tension="В зале тесно и нервно.",
-        player_seen=[
-            "Игрок видит общий зал, стойку, Борина за стойкой, Лизу между столами и "
-            "главную дверь."
-        ],
-    )
 
 
 def _normalize_seed(seed: dict) -> dict:
@@ -514,65 +367,6 @@ def _normalize_seed(seed: dict) -> dict:
     }
 
 
-def _npcs() -> dict[str, NPC]:
-    return {
-        "borin": NPC(
-            npc_id="borin",
-            name="Борин",
-            role="трактирщик",
-            pronouns="M",
-            color="#e6c08a",
-            persona="Крупный трактирщик «Серого грифона», за пятьдесят; осторожный, хитрый "
-                    "и себе на уме. На людях грубоват, но умеет выглядеть гостеприимным.",
-            voice="Коротко, хрипловато, с прибаутками. Часто называет гостей «дружище».",
-            goals="Держать трактир на плаву и не давать людям слишком глубоко копать тему гильдии.",
-            knowledge="Местные слухи, кто заходил в трактир, кто выходил, сколько стоит эль. "
-                      "Официально про убийство знаешь только слух: Алдрика нашли мёртвым.",
-            secret="Ты осведомитель Гильдии воров и точно знаешь, что гильдия убила Алдрика, "
-                   "прикрывая контрабанду. Если это всплывёт, тебя убьют.",
-        ),
-        "lysa": NPC(
-            npc_id="lysa",
-            name="Лиза",
-            role="служанка",
-            pronouns="F",
-            color="#c4a7e7",
-            persona="Молодая служанка в трактире: быстрая, разговорчивая, любопытная, но "
-                    "робеет, когда дело становится серьёзным.",
-            voice="Живо, эмоционально, быстро тараторит; когда страшно, сбивается на шёпот.",
-            goals="Делиться слухами, но не нажить себе беды.",
-            knowledge="Прошлой ночью ты видела, как из лавки Алдрика вышла фигура в капюшоне. "
-                      "Боишься говорить об этом вслух. Знаешь обычные трактирные слухи.",
-            secret="Своей большой тайны у тебя нет, но ты боишься: если слишком громко говорить "
-                   "о фигуре в капюшоне, тебе навредят.",
-        ),
-        "mareth": NPC(
-            npc_id="mareth",
-            name="Капитан Марет",
-            role="капитан стражи",
-            pronouns="F",
-            color="#9ccfd8",
-            default_whereabouts={
-                "location_id": "town_guard_duty",
-                "location_name": "служба городской стражи",
-                "status": "likely",
-                "details": (
-                    "расследует убийство Алдрика; если точное место не установлено, её логично "
-                    "искать в караульной, у городских ворот или у места находки тела"
-                ),
-                "source": "default public lore",
-            },
-            persona="Капитан городской стражи: собранная, подозрительная, строго держится "
-                    "закона. Ведёт расследование убийства.",
-            voice="Сухо, по делу, с лёгким нажимом. Не любит, когда посторонние лезут в дела стражи.",
-            goals="Раскрыть убийство Алдрика и не допустить паники.",
-            knowledge="Тело Алдрика, место преступления, показания нескольких горожан. "
-                      "Подозреваешь гильдию, но доказательств нет.",
-            secret="У тебя есть собственный информатор в городе, чьё имя ты никому не раскрываешь.",
-        ),
-    }
-
-
 def _new_dice_seed() -> int:
     # Real OS entropy (not a seeded PRNG) so each new campaign gets a genuinely
     # random dice seed. Within a campaign rolls then follow this seed
@@ -598,21 +392,17 @@ class World:
     def from_seed(cls, seed: dict) -> "World":
         return cls(seed=seed)
 
+    @classmethod
+    def from_story(cls, story_id: str) -> "World":
+        return cls(seed=stories.story_seed(story_id))
+
     def _load_default(self) -> None:
-        self.npcs = _npcs()
-        self.public = WORLD_PUBLIC
-        self.canon = WORLD_CANON
-        # Story data owns proper nouns. The engine must not hardcode them.
-        self.extra_proper_nouns: list[str] = ["Алдрик", "Тёрнвейл", "«Серый грифон»"]
-        self.scene = _default_scene()
-        # Backward-compatible alias: старый код добавляет ограничения сюда.
-        self.constraints = self.scene.constraints
-        self.fact_records = _default_facts()
-        self.npc_whereabouts: dict[str, NPCWhereabouts] = {}
-        self._ensure_npc_whereabouts()
+        self._load_seed(stories.default_story_seed())
 
     def _load_seed(self, seed: dict) -> None:
         seed = _normalize_seed(seed)
+        self.story_id = _as_str(seed.get("id")) or "custom"
+        self.story_title = _as_str(seed.get("title")) or "Пользовательская история"
         self.public = _as_str(seed.get("public_intro")) or _as_str(seed.get("public")) or (
             "Новая сцена готова. Игрок видит место, людей рядом и ближайший источник конфликта."
         )
@@ -649,6 +439,8 @@ class World:
                 goals=_as_str(raw.get("goals")) or "Реагировать правдоподобно и защищать свои интересы.",
                 knowledge=_as_str(raw.get("knowledge")) or "Только то, что очевидно в текущей сцене.",
                 secret=_as_str(raw.get("secret")) or "Личная тайна не задана.",
+                default_whereabouts=raw.get("default_whereabouts")
+                if isinstance(raw.get("default_whereabouts"), dict) else None,
             )
             if name not in self.extra_proper_nouns:
                 self.extra_proper_nouns.append(name)
@@ -747,13 +539,31 @@ class World:
 
     def _seed_facts(self, seed: dict) -> list[FactRecord]:
         records: list[FactRecord] = []
-        for idx, text in enumerate(_as_list(seed.get("public_facts")), start=1):
-            text = _as_str(text)
+        for idx, raw in enumerate(_as_list(seed.get("public_facts")), start=1):
+            if isinstance(raw, dict):
+                text = _as_str(raw.get("text"))
+                fact_id = _safe_id(_as_str(raw.get("id")), f"public_{idx}")
+                kind = _as_str(raw.get("kind")).lower() or "public"
+                if kind not in ("public", "truth", "rumor"):
+                    kind = "public"
+                keywords = [_as_str(item) for item in _as_list(raw.get("keywords")) if _as_str(item)]
+                source = _as_str(raw.get("source"))
+                confirmed = bool(raw.get("confirmed", True))
+            else:
+                text = _as_str(raw)
+                fact_id = f"public_{idx}"
+                kind = "public"
+                keywords = []
+                source = ""
+                confirmed = True
             if text:
                 records.append(FactRecord(
-                    fact_id=f"public_{idx}",
-                    kind="public",
+                    fact_id=fact_id,
+                    kind=kind,
                     text=text,
+                    keywords=keywords,
+                    source=source,
+                    confirmed=confirmed,
                 ))
         if self.canon:
             records.append(FactRecord(

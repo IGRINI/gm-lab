@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import secrets
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -14,14 +15,20 @@ from orchestrator import Session
 import world as world_mod
 
 SCHEMA_VERSION = 1
+DEFAULT_CHAT_TITLE = "Новый чат"
 
 
 @dataclass
 class DialogRuntime:
     guest_id: str
+    chat_id: str
     session: Session
     transcript: list[dict] = field(default_factory=list)
     turn_count: int = 0
+    title: str = ""
+    preview: str = ""
+    created_at: str = ""
+    updated_at: str = ""
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
@@ -29,32 +36,144 @@ class DialogStore:
     def __init__(self, db_path: str, client_factory: Callable[[], object]):
         self.db_path = os.path.abspath(db_path)
         self._client_factory = client_factory
-        self._cache: dict[str, DialogRuntime] = {}
+        self._cache: dict[tuple[str, str], DialogRuntime] = {}
         self._cache_lock = threading.RLock()
         self._init_db()
 
-    def get(self, guest_id: str) -> DialogRuntime:
+    def get(self, guest_id: str, chat_id: str | None = None) -> DialogRuntime:
+        if chat_id is None:
+            return self.get_active(guest_id)
+        runtime = self._get_chat(guest_id, chat_id)
+        if runtime is None:
+            raise KeyError(f"chat not found: {chat_id}")
+        return runtime
+
+    def get_active(self, guest_id: str) -> DialogRuntime:
         with self._cache_lock:
-            cached = self._cache.get(guest_id)
-            if cached is not None:
-                return cached
+            active_chat_id = self._active_chat_id(guest_id)
+            if active_chat_id:
+                runtime = self._get_chat_locked(guest_id, active_chat_id)
+                if runtime is not None:
+                    return runtime
 
-            payload = self._load_payload(guest_id)
-            if payload:
-                try:
-                    runtime = self._runtime_from_payload(guest_id, payload)
-                except Exception as exc:
-                    print(f"Dialog store: failed to load {guest_id}, starting fresh: {exc}")
-                    runtime = self._fresh_runtime(guest_id)
-                    self.save(runtime)
-            else:
-                runtime = self._fresh_runtime(guest_id)
-                self.save(runtime)
+            latest_chat_id = self._latest_chat_id(guest_id)
+            if latest_chat_id:
+                self._set_active_chat(guest_id, latest_chat_id)
+                runtime = self._get_chat_locked(guest_id, latest_chat_id)
+                if runtime is not None:
+                    return runtime
 
-            self._cache[guest_id] = runtime
+            return self.create_chat(guest_id, activate=True)
+
+    def list_chats(self, guest_id: str) -> list[dict]:
+        with self._cache_lock:
+            with self._connection() as con:
+                rows = con.execute(
+                    """
+                    SELECT chat_id, title, preview, turn_count, created_at, updated_at
+                    FROM dialog_chats
+                    WHERE guest_id = ?
+                    ORDER BY updated_at DESC, created_at DESC, chat_id DESC
+                    """,
+                    (guest_id,),
+                ).fetchall()
+                active_chat_id = self._active_chat_id_with_connection(con, guest_id)
+                chat_ids = {row[0] for row in rows}
+                if rows and active_chat_id not in chat_ids:
+                    active_chat_id = rows[0][0]
+                    self._set_active_chat_with_connection(con, guest_id, active_chat_id)
+            return [
+                {
+                    "id": row[0],
+                    "title": row[1] or DEFAULT_CHAT_TITLE,
+                    "preview": row[2] or "",
+                    "turn_count": int(row[3] or 0),
+                    "created_at": row[4] or "",
+                    "updated_at": row[5] or "",
+                    "active": row[0] == active_chat_id,
+                }
+                for row in rows
+            ]
+
+    def active_chat_id(self, guest_id: str) -> str | None:
+        with self._cache_lock:
+            active_chat_id = self._active_chat_id(guest_id)
+            if active_chat_id and self._chat_exists(guest_id, active_chat_id):
+                return active_chat_id
+            latest_chat_id = self._latest_chat_id(guest_id)
+            if latest_chat_id:
+                self._set_active_chat(guest_id, latest_chat_id)
+            return latest_chat_id
+
+    def create_chat(
+        self,
+        guest_id: str,
+        *,
+        session: Session | None = None,
+        transcript: list[dict] | None = None,
+        turn_count: int = 0,
+        title: str | None = None,
+        preview: str | None = None,
+        activate: bool = True,
+    ) -> DialogRuntime:
+        with self._cache_lock:
+            chat_id = self._new_chat_id(guest_id)
+            runtime = DialogRuntime(
+                guest_id=guest_id,
+                chat_id=chat_id,
+                session=session or Session(None),
+                transcript=list(transcript or []),
+                turn_count=int(turn_count or 0),
+                title=_clean_metadata_text(title, 80) or DEFAULT_CHAT_TITLE,
+                preview=_clean_metadata_text(preview, 180),
+            )
+            self.save(runtime)
+            if activate:
+                self._set_active_chat(guest_id, chat_id)
             return runtime
 
+    def activate_chat(self, guest_id: str, chat_id: str) -> DialogRuntime | None:
+        chat_id = str(chat_id or "").strip()
+        if not chat_id:
+            return None
+        with self._cache_lock:
+            runtime = self._get_chat_locked(guest_id, chat_id)
+            if runtime is None:
+                return None
+            self._set_active_chat(guest_id, chat_id)
+            return runtime
+
+    def _get_chat(self, guest_id: str, chat_id: str) -> DialogRuntime | None:
+        with self._cache_lock:
+            return self._get_chat_locked(guest_id, chat_id)
+
+    def _get_chat_locked(self, guest_id: str, chat_id: str) -> DialogRuntime | None:
+        cache_key = (guest_id, chat_id)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        row = self._load_chat_row(guest_id, chat_id)
+        if row is None:
+            return None
+        payload, title, preview, turn_count, created_at, updated_at = row
+        runtime = self._runtime_from_payload(
+            guest_id,
+            chat_id,
+            payload,
+            title=title,
+            preview=preview,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+        self._cache[cache_key] = runtime
+        return runtime
+
     def save(self, runtime: DialogRuntime) -> None:
+        runtime.title = _title_for_save(runtime)
+        runtime.preview = _derive_preview(runtime)
+        runtime.turn_count = int(runtime.turn_count or 0)
         payload = json.dumps(
             _runtime_to_payload(runtime),
             ensure_ascii=False,
@@ -63,19 +182,52 @@ class DialogStore:
         with self._connection() as con:
             con.execute(
                 """
-                INSERT INTO guest_dialogs (guest_id, payload, created_at, updated_at)
-                VALUES (?, ?, datetime('now'), datetime('now'))
-                ON CONFLICT(guest_id) DO UPDATE SET
+                INSERT INTO dialog_chats (
+                    guest_id, chat_id, title, preview, turn_count,
+                    payload, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ON CONFLICT(guest_id, chat_id) DO UPDATE SET
+                    title = excluded.title,
+                    preview = excluded.preview,
+                    turn_count = excluded.turn_count,
                     payload = excluded.payload,
                     updated_at = datetime('now')
                 """,
-                (runtime.guest_id, payload),
+                (
+                    runtime.guest_id,
+                    runtime.chat_id,
+                    runtime.title,
+                    runtime.preview,
+                    runtime.turn_count,
+                    payload,
+                ),
             )
+            saved = con.execute(
+                """
+                SELECT created_at, updated_at
+                FROM dialog_chats
+                WHERE guest_id = ? AND chat_id = ?
+                """,
+                (runtime.guest_id, runtime.chat_id),
+            ).fetchone()
+            if saved:
+                runtime.created_at = saved[0] or runtime.created_at
+                runtime.updated_at = saved[1] or runtime.updated_at
+        with self._cache_lock:
+            self._cache[(runtime.guest_id, runtime.chat_id)] = runtime
 
-    def _fresh_runtime(self, guest_id: str) -> DialogRuntime:
-        return DialogRuntime(guest_id=guest_id, session=Session(None))
-
-    def _runtime_from_payload(self, guest_id: str, payload: str) -> DialogRuntime:
+    def _runtime_from_payload(
+        self,
+        guest_id: str,
+        chat_id: str,
+        payload: str,
+        *,
+        title: str = "",
+        preview: str = "",
+        created_at: str = "",
+        updated_at: str = "",
+    ) -> DialogRuntime:
         data = json.loads(payload)
         if int(data.get("schema_version", 0)) != SCHEMA_VERSION:
             raise ValueError(f"unsupported schema version: {data.get('schema_version')}")
@@ -84,18 +236,106 @@ class DialogStore:
         turn_count = int(data.get("turn_count") or 0)
         return DialogRuntime(
             guest_id=guest_id,
+            chat_id=chat_id,
             session=session,
             transcript=transcript,
             turn_count=turn_count,
+            title=title or "",
+            preview=preview or "",
+            created_at=created_at or "",
+            updated_at=updated_at or "",
         )
 
-    def _load_payload(self, guest_id: str) -> str | None:
+    def _load_chat_row(self, guest_id: str, chat_id: str) -> tuple | None:
+        with self._connection() as con:
+            return con.execute(
+                """
+                SELECT payload, title, preview, turn_count, created_at, updated_at
+                FROM dialog_chats
+                WHERE guest_id = ? AND chat_id = ?
+                """,
+                (guest_id, chat_id),
+            ).fetchone()
+
+    def _new_chat_id(self, guest_id: str) -> str:
+        for _ in range(32):
+            chat_id = secrets.token_urlsafe(12)
+            if not self._chat_exists(guest_id, chat_id):
+                return chat_id
+        raise RuntimeError("could not allocate unique chat id")
+
+    def _chat_exists(self, guest_id: str, chat_id: str) -> bool:
+        with self._connection() as con:
+            return self._chat_exists_with_connection(con, guest_id, chat_id)
+
+    def _chat_exists_with_connection(
+        self,
+        con: sqlite3.Connection,
+        guest_id: str,
+        chat_id: str,
+    ) -> bool:
+        row = con.execute(
+            """
+            SELECT 1
+            FROM dialog_chats
+            WHERE guest_id = ? AND chat_id = ?
+            LIMIT 1
+            """,
+            (guest_id, chat_id),
+        ).fetchone()
+        return row is not None
+
+    def _active_chat_id(self, guest_id: str) -> str | None:
+        with self._connection() as con:
+            return self._active_chat_id_with_connection(con, guest_id)
+
+    def _active_chat_id_with_connection(
+        self,
+        con: sqlite3.Connection,
+        guest_id: str,
+    ) -> str | None:
+        row = con.execute(
+            "SELECT active_chat_id FROM guest_dialog_state WHERE guest_id = ?",
+            (guest_id,),
+        ).fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    def _latest_chat_id(self, guest_id: str) -> str | None:
         with self._connection() as con:
             row = con.execute(
-                "SELECT payload FROM guest_dialogs WHERE guest_id = ?",
+                """
+                SELECT chat_id
+                FROM dialog_chats
+                WHERE guest_id = ?
+                ORDER BY updated_at DESC, created_at DESC, chat_id DESC
+                LIMIT 1
+                """,
                 (guest_id,),
             ).fetchone()
-        return row[0] if row else None
+        return str(row[0]) if row and row[0] else None
+
+    def _set_active_chat(self, guest_id: str, chat_id: str) -> None:
+        with self._connection() as con:
+            self._set_active_chat_with_connection(con, guest_id, chat_id)
+
+    def _set_active_chat_with_connection(
+        self,
+        con: sqlite3.Connection,
+        guest_id: str,
+        chat_id: str,
+    ) -> None:
+        con.execute(
+            """
+            INSERT INTO guest_dialog_state (
+                guest_id, active_chat_id, created_at, updated_at
+            )
+            VALUES (?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(guest_id) DO UPDATE SET
+                active_chat_id = excluded.active_chat_id,
+                updated_at = datetime('now')
+            """,
+            (guest_id, chat_id),
+        )
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=10.0)
@@ -120,20 +360,114 @@ class DialogStore:
         with self._connection() as con:
             con.execute(
                 """
-                CREATE TABLE IF NOT EXISTS guest_dialogs (
-                    guest_id TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS dialog_chats (
+                    guest_id TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    preview TEXT NOT NULL,
+                    turn_count INTEGER NOT NULL DEFAULT 0,
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (guest_id, chat_id)
                 )
                 """
             )
             con.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_guest_dialogs_updated_at
-                ON guest_dialogs(updated_at)
+                CREATE INDEX IF NOT EXISTS idx_dialog_chats_guest_updated
+                ON dialog_chats(guest_id, updated_at)
                 """
             )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS guest_dialog_state (
+                    guest_id TEXT PRIMARY KEY,
+                    active_chat_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+
+
+def _title_for_save(runtime: DialogRuntime) -> str:
+    title = _clean_metadata_text(runtime.title, 80)
+    if title:
+        return title
+    return _derive_missing_title(runtime) or DEFAULT_CHAT_TITLE
+
+
+def _derive_missing_title(runtime: DialogRuntime) -> str:
+    scene_title = _clean_metadata_text(
+        getattr(getattr(runtime.session, "world", None), "scene", None)
+        and getattr(runtime.session.world.scene, "title", ""),
+        80,
+    )
+    if scene_title:
+        return scene_title
+    first_player = _first_player_event_text(runtime.transcript)
+    if first_player:
+        return _clean_metadata_text(first_player, 80)
+    return ""
+
+
+def _derive_preview(runtime: DialogRuntime) -> str:
+    last_event = _last_transcript_text(runtime.transcript)
+    if last_event:
+        return _clean_metadata_text(last_event, 180)
+    last_action = _clean_metadata_text(getattr(runtime.session, "last_player_action", ""), 180)
+    if last_action:
+        return last_action
+    scene = getattr(getattr(runtime.session, "world", None), "scene", None)
+    scene_description = _clean_metadata_text(getattr(scene, "description", ""), 180)
+    if scene_description:
+        return scene_description
+    return _clean_metadata_text(runtime.title, 180)
+
+
+def _first_player_event_text(transcript: list[dict]) -> str:
+    for row in transcript:
+        event = row.get("event") if isinstance(row, dict) else None
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("kind") or "").lower()
+        agent = str(event.get("agent") or "").lower()
+        if kind == "player" or agent in {"player", "игрок"}:
+            text = _event_text(event)
+            if text:
+                return text
+    return ""
+
+
+def _last_transcript_text(transcript: list[dict]) -> str:
+    for row in reversed(transcript):
+        event = row.get("event") if isinstance(row, dict) else None
+        if not isinstance(event, dict):
+            continue
+        text = _event_text(event)
+        if text:
+            return text
+    return ""
+
+
+def _event_text(event: dict) -> str:
+    for key in ("data", "text", "speech", "action"):
+        value = event.get(key)
+        if isinstance(value, str):
+            text = _clean_metadata_text(value)
+            if text:
+                return text
+    return ""
+
+
+def _clean_metadata_text(value: object, limit: int = 160) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _runtime_to_payload(runtime: DialogRuntime) -> dict:
@@ -203,8 +537,6 @@ def _session_from_payload(data: dict, client_factory: Callable[[], object]) -> S
     session = Session(None, _world_from_payload(data.get("world") or {}))
     session.client_model = str(data.get("client_model") or "")
     stored_backend = str(data.get("client_backend") or "")
-    if not stored_backend:
-        stored_backend = "codex" if session.client_model.startswith("gpt-") else "legacy"
     session.client_backend = stored_backend
     session.client_session_id = str(data.get("client_session_id") or "")
     session.client_thread_id = str(data.get("client_thread_id") or "")
@@ -248,6 +580,8 @@ def _session_from_payload(data: dict, client_factory: Callable[[], object]) -> S
 
 def _world_to_payload(world: world_mod.World) -> dict:
     return {
+        "story_id": str(getattr(world, "story_id", "") or ""),
+        "story_title": str(getattr(world, "story_title", "") or ""),
         "dice_seed": int(getattr(world, "dice_seed", 0)),
         "forced_die_next": getattr(world, "forced_die_next", None),
         "forced_die_all": getattr(world, "forced_die_all", None),
@@ -269,29 +603,37 @@ def _world_to_payload(world: world_mod.World) -> dict:
 
 
 def _world_from_payload(data: dict) -> world_mod.World:
-    world = world_mod.World()
+    if not isinstance(data, dict):
+        raise ValueError("invalid world payload")
+    required = ("story_id", "story_title", "npcs", "public", "canon", "scene", "fact_records")
+    missing = [key for key in required if key not in data]
+    if missing:
+        raise ValueError("unsupported world payload: missing " + ", ".join(missing))
+
+    world = world_mod.World.__new__(world_mod.World)
+    world.story_id = str(data.get("story_id") or "")
+    world.story_title = str(data.get("story_title") or "")
     world.hidden_events = [str(item) for item in _json_list(data.get("hidden_events"))]
     world.rumors = [_rumor_from_payload(row) for row in _json_list(data.get("rumors"))]
     world._rumor_seq = int(data.get("rumor_seq") or 0)
 
     npcs = _json_dict(data.get("npcs"))
-    if npcs:
-        # Restore the FULL saved card — debug-panel edits to persona/goals/secret/etc.
-        # must persist. Card-derived visuals (color/default_whereabouts) are backfilled
-        # from the card definition inside _npc_from_payload only when the save lacks them.
-        world.npcs = {
-            str(npc_id): _npc_from_payload(npc)
-            for npc_id, npc in npcs.items()
-            if isinstance(npc, dict)
-        }
-    world.public = str(data.get("public") or world.public)
-    world.canon = str(data.get("canon") or world.canon)
+    if not npcs:
+        raise ValueError("unsupported world payload: npcs is required")
+    world.npcs = {
+        str(npc_id): _npc_from_payload(npc)
+        for npc_id, npc in npcs.items()
+        if isinstance(npc, dict)
+    }
+    world.public = str(data.get("public") or "")
+    world.canon = str(data.get("canon") or "")
     world.extra_proper_nouns = [
         str(name) for name in _json_list(data.get("extra_proper_nouns"))
     ]
-    if isinstance(data.get("scene"), dict):
-        world.scene = _scene_from_payload(data["scene"])
-        world.constraints = world.scene.constraints
+    if not isinstance(data.get("scene"), dict):
+        raise ValueError("unsupported world payload: scene is required")
+    world.scene = _scene_from_payload(data["scene"])
+    world.constraints = world.scene.constraints
     whereabouts = _json_dict(data.get("npc_whereabouts"))
     if whereabouts:
         world.npc_whereabouts = {
@@ -300,20 +642,23 @@ def _world_from_payload(data: dict) -> world_mod.World:
             if isinstance(row, dict)
         }
     facts = _json_list(data.get("fact_records"))
-    if facts:
-        world.fact_records = [_fact_from_payload(row) for row in facts]
+    if not facts:
+        raise ValueError("unsupported world payload: fact_records is required")
+    world.fact_records = [_fact_from_payload(row) for row in facts]
     world._ensure_npc_whereabouts()
 
-    if data.get("dice_seed") is not None:
-        world.dice_seed = int(data.get("dice_seed") or 0)
+    if data.get("dice_seed") is None:
+        raise ValueError("unsupported world payload: dice_seed is required")
+    world.dice_seed = int(data.get("dice_seed") or 0)
     _fn = data.get("forced_die_next")
     world.forced_die_next = int(_fn) if _fn is not None else None
     _fa = data.get("forced_die_all")
     world.forced_die_all = int(_fa) if _fa is not None else None
     rng_state = _rng_state_from_payload(data.get("rng_state"))
-    if rng_state is not None:
-        world._rng = random.Random()
-        world._rng.setstate(rng_state)
+    if rng_state is None:
+        raise ValueError("unsupported world payload: rng_state is required")
+    world._rng = random.Random()
+    world._rng.setstate(rng_state)
     return world
 
 
@@ -364,19 +709,9 @@ def _npc_from_payload(data: dict) -> world_mod.NPC:
     except (TypeError, ValueError):
         card_revision = 0
     npc_id = str(data.get("npc_id") or "")
-    # Saved card values win (debug edits persist). Card-derived visuals are backfilled
-    # from the card DEFINITION only when the save predates them, so old sessions show
-    # color/default whereabouts without a migration and without overriding any edit.
     color = str(data.get("color") or "")
     dw = data.get("default_whereabouts")
     dw = dw if isinstance(dw, dict) else None
-    if not color or dw is None:
-        definition = world_mod._npcs().get(npc_id)
-        if definition:
-            if not color:
-                color = definition.color
-            if dw is None and definition.default_whereabouts:
-                dw = definition.default_whereabouts
     return world_mod.NPC(
         npc_id=npc_id,
         name=str(data.get("name") or ""),

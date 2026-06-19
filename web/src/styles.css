@@ -20,8 +20,10 @@ body{margin:0;background:var(--bg);color:var(--tx);
   font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
 a{color:var(--acc)}
 
-/* ---- app shell: header / chat(flex) / composer ---- */
+/* ---- app shell: header / body(sidebar + chat-pane) ---- */
 .app{display:flex;flex-direction:column;height:100%}
+.app-body{position:relative;flex:1;min-height:0;display:flex;overflow:hidden}
+.chat-pane{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
 
 header{flex:none;z-index:5;background:var(--bg2);
   border-bottom:1px solid var(--line);padding:10px 16px;
@@ -48,6 +50,59 @@ header h1 b{color:var(--acc)}
 .btn-icon{display:inline-flex;align-items:center;gap:6px}
 .btn .bi{font-size:14px;line-height:1}
 .btn-short{display:none}            /* compact label, shown only on narrow screens */
+.chat-toggle{display:none}
+
+/* ---- left chat history ---- */
+.chat-sidebar-backdrop{display:none}
+.chat-sidebar{flex:none;width:292px;min-width:260px;max-width:320px;z-index:4;
+  display:flex;flex-direction:column;min-height:0;background:linear-gradient(180deg,var(--bg2),#151520);
+  border-right:1px solid var(--line)}
+.chat-sidebar-head{flex:none;display:flex;align-items:center;gap:10px;padding:14px 14px 10px;
+  border-bottom:1px solid rgba(255,255,255,.06)}
+.chat-sidebar-head div{flex:1;min-width:0}
+.chat-sidebar-head span{display:block;color:var(--acc);font-size:10px;text-transform:uppercase;
+  letter-spacing:.9px}
+.chat-sidebar-head h2{margin:2px 0 0;color:var(--tx);font-size:18px;line-height:1.2}
+.chat-sidebar-close{display:none}
+.chat-sidebar-actions{flex:none;display:flex;flex-direction:column;align-items:stretch;gap:9px;padding:10px 12px;
+  border-bottom:1px solid rgba(255,255,255,.055)}
+.chat-new{width:100%;display:flex;align-items:center;justify-content:center;min-height:36px}
+.chat-sidebar-status{flex:none;color:var(--mut);font-size:12px;white-space:nowrap}
+.chat-sidebar-error{margin:10px 12px 0;padding:8px 10px;border:1px solid rgba(224,134,152,.32);
+  background:rgba(224,134,152,.08);border-radius:8px;color:var(--redo);font-size:12px;line-height:1.35}
+.chat-sidebar-error.inline{display:block;margin:0;padding:6px 8px}
+.story-picker{display:flex;flex-direction:column;gap:6px;min-width:0}
+.story-picker label{color:var(--acc);font-size:10px;text-transform:uppercase;letter-spacing:.8px}
+.story-picker select{width:100%;min-width:0;background:var(--bg);color:var(--tx);
+  border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;outline:none}
+.story-picker select:focus{border-color:var(--acc)}
+.story-picker select:disabled{opacity:.58;cursor:default}
+.story-picker p{margin:0;color:var(--mut);font-size:12px;line-height:1.35;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.story-picker .chat-sidebar-status{white-space:normal}
+.story-picker .chat-sidebar-empty.inline{margin:0;padding:7px 9px;font-size:12px}
+.chat-list{flex:1;min-height:0;overflow:auto;padding:10px 8px 12px;display:flex;flex-direction:column;gap:6px;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.chat-list::-webkit-scrollbar{width:8px}
+.chat-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
+.chat-history-row{width:100%;min-width:0;text-align:left;cursor:pointer;color:var(--tx);
+  background:transparent;border:1px solid transparent;border-left:3px solid transparent;
+  border-radius:8px;padding:9px 10px;display:grid;gap:5px}
+.chat-history-row:hover{background:rgba(255,255,255,.035);border-color:rgba(156,207,216,.25);
+  border-left-color:rgba(156,207,216,.55)}
+.chat-history-row:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.chat-history-row.active{background:rgba(156,207,216,.08);border-color:rgba(156,207,216,.34);
+  border-left-color:var(--acc)}
+.chat-history-row:disabled{cursor:default}
+.chat-history-row:disabled:not(.active){opacity:.55}
+.chat-row-head{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:8px}
+.chat-row-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:760;font-size:13.5px}
+.chat-row-date{color:var(--mut);font-size:11px;white-space:nowrap}
+.chat-row-preview{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mut);font-size:12.5px}
+.chat-row-meta{display:flex;align-items:center;gap:7px;color:var(--mut);font-size:11px}
+.chat-row-meta span+span{color:var(--acc)}
+.chat-sidebar-empty{margin:4px;padding:10px 11px;color:var(--mut);font-size:13px;
+  border:1px dashed rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.02)}
 
 .modal-backdrop{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.58);
   display:flex;align-items:center;justify-content:center;padding:18px}
@@ -496,7 +551,7 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
 .btn.primary.danger{background:var(--redo);border-color:var(--redo);color:#11111b}
 @media(max-width:560px){.dbg-edit-grid{grid-template-columns:1fr}}
 
-@media(max-width:1320px){
+@media(max-width:1540px){
   .footer-main{display:flex;flex-direction:column;align-items:stretch;max-width:820px;margin:0 auto}
   .composer{width:100%}
   .context-usage,.run-usage{width:100%;min-height:0;display:grid;grid-template-columns:auto 1fr auto auto;
@@ -534,8 +589,19 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
 @media (max-width:700px){
   body{font-size:14.5px}
 
+  .chat-sidebar-backdrop{display:block;position:fixed;inset:0;z-index:47;background:rgba(0,0,0,.46);
+    opacity:0;pointer-events:none;transition:opacity .18s ease}
+  .chat-sidebar-backdrop.is-open{opacity:1;pointer-events:auto}
+  .chat-sidebar{position:fixed;left:0;top:0;bottom:0;width:min(340px,calc(100vw - 42px));
+    min-width:0;max-width:none;z-index:48;box-shadow:18px 0 44px rgba(0,0,0,.55);
+    transform:translateX(calc(-100% - 2px));transition:transform .2s ease}
+  .chat-sidebar.is-open{transform:translateX(0)}
+  .chat-sidebar-close{display:inline-flex;flex:none}
+  .chat-sidebar-head{padding-top:calc(13px + env(safe-area-inset-top))}
+
   /* --- header: title row + compact action cluster; model select on its own row --- */
   header{padding:8px 10px;gap:8px}
+  .chat-toggle{display:inline-flex;order:0;flex:none;padding:7px 10px;min-height:36px}
   header h1{order:1;font-size:15px}
   .chip{display:none}                     /* backend chip is non-essential on phones */
   .spacer{display:none}

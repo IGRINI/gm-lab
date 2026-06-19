@@ -5,6 +5,7 @@ import Header from "./components/Header.jsx";
 import Chat from "./components/Chat.jsx";
 import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
+import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
 import { normalizeEntities } from "./entityContext.js";
 
 const EMPTY_SRV = {
@@ -48,6 +49,69 @@ const EMPTY_CONTEXT_USAGE = {
   npcs: [],
 };
 
+function sameChatId(a, b) {
+  return a != null && b != null && String(a) === String(b);
+}
+
+function textValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function storyIdFrom(story) {
+  const id = story?.story_id ?? story?.id;
+  return id == null ? "" : String(id).trim();
+}
+
+function normalizeStory(story) {
+  const id = storyIdFrom(story);
+  if (!id) return null;
+  const title = textValue(story?.title) || textValue(story?.name) || id;
+  const description =
+    textValue(story?.description) ||
+    textValue(story?.summary) ||
+    textValue(story?.public_intro) ||
+    "";
+  return { ...story, id, story_id: id, title, description };
+}
+
+function normalizeStories(data) {
+  if (!Array.isArray(data?.stories)) return [];
+  return data.stories.map(normalizeStory).filter(Boolean);
+}
+
+function activeChatIdFrom(data) {
+  return data?.active_chat_id || data?.chats?.find((chat) => chat.active)?.id || "";
+}
+
+function mergeChatList(prevChats, chat, activeChatId) {
+  const list = Array.isArray(prevChats) ? prevChats : [];
+  if (!chat) {
+    return list.map((item) => ({ ...item, active: sameChatId(item.id, activeChatId) }));
+  }
+
+  let found = false;
+  const merged = list.map((item) => {
+    if (sameChatId(item.id, chat.id)) {
+      found = true;
+      return { ...item, ...chat, active: true };
+    }
+    return { ...item, active: sameChatId(item.id, activeChatId) };
+  });
+
+  return found ? merged : [{ ...chat, active: true }, ...merged];
+}
+
+function requireChatSessionPayload(payload) {
+  const missing = [];
+  if (payload?.chat?.id == null) missing.push("chat.id");
+  if (payload?.state == null) missing.push("state");
+  if (payload?.transcript == null) missing.push("transcript");
+  if (missing.length > 0) {
+    throw new Error(`Сервер вернул неполный payload чата: нет ${missing.join(" и ")}`);
+  }
+  return { chatId: payload.chat.id, state: payload.state, transcript: payload.transcript };
+}
+
 export default function App() {
   const store = useMemo(createTimeline, []);
   const messages = useSyncExternalStore(store.subscribe, store.getSnapshot);
@@ -60,6 +124,16 @@ export default function App() {
   const [models, setModels] = useState([]);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState("");
+  const [chatsOpen, setChatsOpen] = useState(false);
+  const [chatsLoading, setChatsLoading] = useState(false);
+  const [chatsError, setChatsError] = useState("");
+  const [chatActionBusy, setChatActionBusy] = useState(false);
+  const [stories, setStories] = useState([]);
+  const [selectedStoryId, setSelectedStoryId] = useState("");
+  const [storiesLoading, setStoriesLoading] = useState(false);
+  const [storiesError, setStoriesError] = useState("");
 
   const setStateFromServer = useCallback((s) => {
     setSrv({
@@ -80,6 +154,73 @@ export default function App() {
     setContextUsage(s.context_usage || EMPTY_CONTEXT_USAGE);
   }, []);
 
+  const setChatsFromServer = useCallback((data) => {
+    const list = Array.isArray(data?.chats) ? data.chats : [];
+    const nextActiveChatId = activeChatIdFrom(data);
+    setChats(list);
+    setActiveChatId(nextActiveChatId || "");
+    return nextActiveChatId;
+  }, []);
+
+  const refreshChats = useCallback(async () => {
+    setChatsLoading(true);
+    setChatsError("");
+    try {
+      const data = await api.chats();
+      if (!data.ok) throw new Error(data.error || "список чатов не загружен");
+      setChatsFromServer(data);
+      return data;
+    } catch (e) {
+      setChatsError(e.message || "список чатов не загружен");
+      return null;
+    } finally {
+      setChatsLoading(false);
+    }
+  }, [setChatsFromServer]);
+
+  const loadStories = useCallback(async () => {
+    setStoriesLoading(true);
+    setStoriesError("");
+    try {
+      const data = await api.stories();
+      if (!data.ok) throw new Error(data.error || "истории не загружены");
+      const nextStories = normalizeStories(data);
+      const defaultStoryId = data?.default_story_id == null ? "" : String(data.default_story_id).trim();
+      setStories(nextStories);
+      setSelectedStoryId((current) => {
+        if (current && nextStories.some((story) => story.id === current)) return current;
+        if (defaultStoryId && nextStories.some((story) => story.id === defaultStoryId)) {
+          return defaultStoryId;
+        }
+        return nextStories[0]?.id || "";
+      });
+      return nextStories;
+    } catch (e) {
+      setStories([]);
+      setSelectedStoryId("");
+      setStoriesError(e.message || "истории не загружены");
+      return [];
+    } finally {
+      setStoriesLoading(false);
+    }
+  }, []);
+
+  const restoreChatSession = useCallback(
+    (payload) => {
+      const { chatId: nextChatId, state: nextState, transcript: nextTranscript } =
+        requireChatSessionPayload(payload);
+
+      store.clear();
+      setStateFromServer(nextState);
+      store.dispatchMany(nextTranscript?.events || []);
+      setActiveChatId(nextChatId || "");
+      if (payload?.chat || nextChatId) {
+        setChats((prev) => mergeChatList(prev, payload?.chat, nextChatId));
+      }
+    },
+    [store, setStateFromServer]
+  );
+
   const loadModels = useCallback(async () => {
     try {
       const data = await api.models();
@@ -98,6 +239,7 @@ export default function App() {
   // initial load
   useEffect(() => {
     (async () => {
+      await Promise.all([refreshChats(), loadStories()]);
       try {
         const s = await api.state();
         setStateFromServer(s);
@@ -134,6 +276,7 @@ export default function App() {
           else if (ev.kind === "npc_speech") setStatus("");
         });
         setStateFromServer(await api.state());
+        await refreshChats();
       } catch (e) {
         store.dispatch({ kind: "error", agent: "сеть", data: e.message });
       } finally {
@@ -141,7 +284,7 @@ export default function App() {
         setStatus("");
       }
     },
-    [store, setStateFromServer]
+    [store, setStateFromServer, refreshChats]
   );
 
   const sendCommand = useCallback(
@@ -174,13 +317,79 @@ export default function App() {
         } else if (cmd === "event") {
           store.pushLocal({ type: "command", text: "Событие добавлено в мир" });
         }
+        await refreshChats();
       } catch (e) {
         store.dispatch({ kind: "error", agent: "команда", data: e.message });
       } finally {
         setBusy(false);
       }
     },
-    [store, setStateFromServer]
+    [store, setStateFromServer, refreshChats]
+  );
+
+  const closeChats = useCallback(() => setChatsOpen(false), []);
+  const openChats = useCallback(() => setChatsOpen(true), []);
+
+  const onCreateChat = useCallback(async () => {
+    if (busy || chatActionBusy) return;
+    if (storiesLoading) {
+      store.dispatch({ kind: "error", agent: "чаты", data: "Истории еще загружаются" });
+      return;
+    }
+    if (storiesError) {
+      store.dispatch({ kind: "error", agent: "чаты", data: storiesError });
+      return;
+    }
+    const storyId = selectedStoryId && stories.some((story) => story.id === selectedStoryId) ? selectedStoryId : "";
+    if (!storyId) {
+      store.dispatch({ kind: "error", agent: "чаты", data: "Выберите историю для нового чата" });
+      return;
+    }
+    setChatActionBusy(true);
+    setStatus("Создаю чат...");
+    try {
+      const data = await api.createChat({ activate: true, story_id: storyId });
+      if (!data.ok) throw new Error(data.error || "чат не создан");
+      restoreChatSession(data);
+      await refreshChats();
+      setChatsOpen(false);
+    } catch (e) {
+      store.dispatch({ kind: "error", agent: "чаты", data: e.message });
+    } finally {
+      setChatActionBusy(false);
+      setStatus("");
+    }
+  }, [
+    busy,
+    chatActionBusy,
+    storiesLoading,
+    storiesError,
+    selectedStoryId,
+    stories,
+    store,
+    restoreChatSession,
+    refreshChats,
+  ]);
+
+  const onActivateChat = useCallback(
+    async (chatId) => {
+      if (!chatId || sameChatId(chatId, activeChatId) || busy || chatActionBusy) return;
+      setChatActionBusy(true);
+      setStatus("Открываю чат...");
+      try {
+        const data = await api.activateChat(chatId);
+        if (!data.ok) throw new Error(data.error || "чат не открыт");
+        restoreChatSession(data);
+        await refreshChats();
+        setChatsOpen(false);
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "чаты", data: e.message });
+      } finally {
+        setChatActionBusy(false);
+        setStatus("");
+      }
+    },
+    [activeChatId, busy, chatActionBusy, store, restoreChatSession, refreshChats]
   );
 
   const send = useCallback(
@@ -253,19 +462,22 @@ export default function App() {
       const data = await api.command("reset");
       store.clear();
       if (data.ok) setStateFromServer(data.state);
+      await refreshChats();
     } catch (e) {
       store.dispatch({ kind: "error", agent: "команда", data: e.message });
     }
-  }, [store, setStateFromServer]);
+  }, [store, setStateFromServer, refreshChats]);
 
   const currentModel = useMemo(
     () => (models || []).find((m) => m.id === srv.model || m.slug === srv.model) || null,
     [models, srv.model]
   );
+  const interactionBusy = busy || chatActionBusy;
 
   return (
     <div className="app">
       <Header
+        onToggleChats={openChats}
         srv={srv}
         models={models}
         settings={settings}
@@ -277,16 +489,43 @@ export default function App() {
         onExport={() => api.export()}
         onReset={onReset}
       />
-      <Chat messages={messages} scene={srv.scene} npcs={srv.npcs} entities={srv.entities} statusLabels={srv.statusLabels} />
-      <Composer
-        onSend={send}
-        busy={busy}
-        status={status}
-        runUsage={runUsage}
-        contextUsage={contextUsage}
-        modelWindow={currentModel?.context_window || currentModel?.max_context_window || 0}
-      />
-      <DebugPanel refreshKey={`${runUsage.turns}:${srv.model}:${srv.scene?.scene_id || ""}`} />
+      <div className="app-body">
+        <ChatHistorySidebar
+          chats={chats}
+          activeChatId={activeChatId}
+          open={chatsOpen}
+          busy={interactionBusy}
+          loading={chatsLoading}
+          error={chatsError}
+          stories={stories}
+          selectedStoryId={selectedStoryId}
+          storiesLoading={storiesLoading}
+          storiesError={storiesError}
+          onSelectStory={setSelectedStoryId}
+          onClose={closeChats}
+          onCreate={onCreateChat}
+          onActivate={onActivateChat}
+        />
+        <main className="chat-pane">
+          <Chat
+            key={activeChatId || "active-chat"}
+            messages={messages}
+            scene={srv.scene}
+            npcs={srv.npcs}
+            entities={srv.entities}
+            statusLabels={srv.statusLabels}
+          />
+          <Composer
+            onSend={send}
+            busy={interactionBusy}
+            status={status}
+            runUsage={runUsage}
+            contextUsage={contextUsage}
+            modelWindow={currentModel?.context_window || currentModel?.max_context_window || 0}
+          />
+        </main>
+      </div>
+      <DebugPanel refreshKey={`${activeChatId}:${runUsage.turns}:${srv.model}:${srv.scene?.scene_id || ""}`} />
     </div>
   );
 }
