@@ -1,0 +1,57 @@
+# Local secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+gm_lab_settings.json
+
+# Python bytecode, caches, and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Runtime SQLite state
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+
+# Runtime logs and generated local outputs
+*.log
+logs/
+scene_trial_last.json
+
+# Node/Vite frontend artifacts
+node_modules/
+.vite/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local editor, OS, and agent workspace files
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+.codex/
+.agents/
+.claude/settings.local.json

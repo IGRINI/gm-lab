@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "gm-lab-mock",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["mock_server.py"],
+      "autoPort": true,
+      "port": 8000
+    }
+  ]
+}

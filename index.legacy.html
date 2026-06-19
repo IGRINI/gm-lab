@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>GM-Lab</title>
+<style>
+  :root{
+    --bg:#14161c; --bg2:#1b1e27; --bg3:#222633; --line:#2e3342;
+    --tx:#e7e9ef; --mut:#9aa0b0; --acc:#caa24a;
+    --gm:#5fbf7f; --player:#6aa9ff; --redo:#e0585a; --ok:#5fbf7f;
+  }
+  *{box-sizing:border-box}
+  html{touch-action:manipulation;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--tx);
+    font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  a{color:var(--acc)}
+
+  header{position:sticky;top:0;z-index:5;background:var(--bg2);
+    border-bottom:1px solid var(--line);padding:10px 16px;
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;letter-spacing:.3px}
+  header h1 b{color:var(--acc)}
+  .chip{font-size:12px;color:var(--mut);background:var(--bg3);
+    border:1px solid var(--line);border-radius:20px;padding:3px 10px}
+  .model-select{max-width:240px;background:var(--bg3);color:var(--tx);
+    border:1px solid var(--line);border-radius:8px;padding:5px 10px;
+    font-size:16px;outline:none}
+  .model-select:focus{border-color:var(--acc)}
+  .auth-ok{border-color:#2f5a40;color:var(--ok)}
+  .spacer{flex:1}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{background:var(--bg3);color:var(--mut);border:0;padding:5px 12px;
+    cursor:pointer;font-size:13px}
+  .seg button.on{background:var(--acc);color:#1a1a1a;font-weight:600}
+  .btn{background:var(--bg3);color:var(--tx);border:1px solid var(--line);
+    border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px}
+  .btn:hover{border-color:var(--acc)}
+
+  main{max-width:820px;margin:0 auto;padding:18px 16px 130px}
+  .scene{background:linear-gradient(180deg,var(--bg2),var(--bg));
+    border:1px solid var(--line);border-left:3px solid var(--acc);
+    border-radius:10px;padding:12px 16px;color:var(--mut);margin-bottom:18px}
+  .scene .lead{color:var(--acc);font-size:12px;text-transform:uppercase;
+    letter-spacing:1px;margin-bottom:4px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px}
+  .legend span{display:flex;align-items:center;gap:6px;color:var(--mut)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--c,#888);flex:none}
+
+  #timeline{display:flex;flex-direction:column;gap:12px}
+  .item{animation:fade .25s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1}}
+
+  .player{align-self:flex-end;max-width:85%;background:#22324a;
+    border:1px solid #2f476a;border-radius:14px 14px 4px 14px;
+    padding:9px 14px;color:#dceaff}
+  .player .who{font-size:11px;color:var(--player);margin-bottom:2px}
+
+  .narration{background:var(--bg2);border:1px solid var(--line);
+    border-left:3px solid var(--gm);border-radius:10px;padding:12px 16px;
+    white-space:pre-wrap}
+  .narration .who{font-size:11px;color:var(--gm);text-transform:uppercase;
+    letter-spacing:1px;margin-bottom:5px}
+
+  .card{background:var(--bg2);border:1px solid var(--line);
+    border-left:3px solid var(--c,#888);border-radius:10px;padding:11px 14px}
+  .card .hd{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .card .hd b{color:var(--c)}
+  .card .tag{font-size:11px;color:var(--mut);background:var(--bg3);
+    border-radius:20px;padding:2px 9px}
+  .speech{font-size:15.5px}
+  .speech .q{color:var(--c);opacity:.7}
+  .speech .typing{color:var(--mut);font-style:italic;font-size:13px}
+  .action{color:var(--mut);font-style:italic;margin-top:5px}
+
+  .step{font-size:13px;color:var(--mut);display:flex;flex-direction:column;gap:4px}
+  .step.tool{color:#d9b25e}
+  .step.dice{color:var(--tx);font-weight:600}
+  .pill{display:inline-flex;align-items:center;gap:8px;border-radius:8px;
+    padding:7px 12px;font-size:13.5px;width:fit-content}
+  .pill.ok{background:rgba(95,191,127,.12);border:1px solid #2f5a40;color:var(--ok)}
+  .pill.redo{background:rgba(224,88,90,.12);border:1px solid #6a2f2f;color:var(--redo)}
+  .reason{color:var(--tx);opacity:.9;font-size:13.5px;margin-top:6px;
+    border-left:2px solid var(--redo);padding-left:10px}
+
+  .divider{display:flex;align-items:center;gap:10px;color:var(--redo);
+    font-size:13px;font-weight:600;margin:2px 0}
+  .divider::before,.divider::after{content:"";height:1px;flex:1;background:#42263099}
+
+  details{margin-top:8px;background:var(--bg3);border:1px solid var(--line);
+    border-radius:8px;padding:0 10px}
+  details[open]{padding-bottom:8px}
+  summary{cursor:pointer;list-style:none;padding:7px 0;font-size:12.5px;
+    color:var(--mut);user-select:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"▸ ";color:var(--acc)}
+  details[open] summary::before{content:"▾ "}
+  details .body{font-size:13px;color:#c7cbd6;white-space:pre-wrap;
+    border-top:1px solid var(--line);padding-top:7px}
+  details ul{margin:7px 0 0;padding-left:18px;color:#c7cbd6;font-size:13px}
+
+  .err{background:rgba(224,88,90,.12);border:1px solid #6a2f2f;color:var(--redo);
+    border-radius:8px;padding:9px 12px}
+  .meta{font-size:11px;color:var(--mut);opacity:.7;margin:-6px 4px 2px;cursor:help}
+  .meta-total{background:var(--bg3);border:1px solid var(--line);border-radius:8px;
+    padding:9px 13px;font-size:13px;color:var(--tx);cursor:help;margin-top:4px}
+  .meta-total .tok{color:var(--acc);border-bottom:1px dashed var(--mut)}
+
+  footer{position:fixed;bottom:0;left:0;right:0;background:var(--bg2);
+    border-top:1px solid var(--line);padding:12px 16px}
+  .composer{max-width:820px;margin:0 auto;display:flex;gap:10px;align-items:center}
+  #inp{flex:1;background:var(--bg);color:var(--tx);border:1px solid var(--line);
+    border-radius:10px;padding:11px 14px;font-size:16px;outline:none}
+  #inp:focus{border-color:var(--acc)}
+  #send{background:var(--acc);color:#1a1a1a;border:0;border-radius:10px;
+    padding:11px 18px;font-size:16px;font-weight:600;cursor:pointer}
+  #send:disabled{opacity:.5;cursor:default}
+  #status{max-width:820px;margin:6px auto 0;font-size:12px;color:var(--mut);height:16px}
+  .pulse{display:inline-block;width:7px;height:7px;border-radius:50%;
+    background:var(--acc);margin-right:7px;animation:p 1s infinite}
+  @keyframes p{0%,100%{opacity:.3}50%{opacity:1}}
+</style>
+</head>
+<body>
+<header>
+  <h1>GM-<b>Lab</b></h1>
+  <span class="chip" id="backend">…</span>
+  <select class="model-select" id="modelSelect" title="Модель"></select>
+  <div class="spacer"></div>
+  <button class="btn" id="codexAuth" hidden>Codex</button>
+  <button class="btn" id="codexLogout" hidden>Выйти</button>
+  <button class="btn" id="export">⬇ JSON</button>
+  <button class="btn" id="reset">⟲ Сброс</button>
+</header>
+
+<main>
+  <div class="scene">
+    <div class="lead">Сцена</div>
+    <div id="scene">…</div>
+    <div class="legend" id="legend"></div>
+  </div>
+  <div id="timeline"></div>
+</main>
+
+<footer>
+  <div class="composer">
+    <input id="inp" placeholder="Действие игрока…  или /new ледяной порт, пропал корабль, рядом Ива и Рун"
+           autocomplete="off">
+    <button id="send">Отправить</button>
+  </div>
+  <div id="status"></div>
+</footer>
+
+<script>
+const COLORS = {"Борин":"#e0a94e","Лиза":"#b98cff","Капитан Марет":"#4fc4c4","ГМ":"#5fbf7f"};
+const color = n => COLORS[n] || "#8a90a0";
+const $ = s => document.querySelector(s);
+const TL = $("#timeline");
+let live = {};      // sid -> ссылки на живые (стримящиеся) элементы
+let currentState = null;
+const L = sid => (live[sid] = live[sid] || {});
+
+function el(tag, cls, text){const e=document.createElement(tag);
+  if(cls)e.className=cls; if(text!=null)e.textContent=text; return e;}
+function spoiler(label, text, isList){
+  const d=el("details"); d.append(el("summary",null,label));
+  if(isList){const ul=el("ul"); (text||[]).forEach(t=>ul.append(el("li",null,t)));
+    if(!(text||[]).length) ul.append(el("li",null,"—")); d.append(ul);}
+  else d.append(el("div","body", text||"—"));
+  return d;
+}
+function add(node){node.classList.add("item"); TL.append(node);
+  while(TL.children.length > 400) TL.removeChild(TL.firstChild);   // кап DOM
+  scrollDown(); return node;}
+function scrollDown(){window.scrollTo(0, document.body.scrollHeight);}
+function nearBottom(){return innerHeight+scrollY >= document.body.scrollHeight-140;}
+function autoscroll(){ if(nearBottom()) scrollDown(); }
+function status(t){ $("#status").innerHTML = t ? '<span class="pulse"></span>'+t : ""; }
+function renderState(s){
+  currentState = s;
+  $("#backend").textContent = s.backend+(s.stream_gm_content ? " · GM stream" : "");
+  ensureModelOption(s.model);
+  $("#modelSelect").value = s.model;
+  renderCodexAuth(s);
+  $("#scene").textContent = s.public;
+  const lg=$("#legend"); lg.innerHTML="";
+  (s.npcs||[]).forEach(n=>{const sp=el("span"); const d=el("span","dot");
+    d.style.setProperty("--c",color(n.name)); sp.append(d, document.createTextNode(n.name));
+    lg.append(sp);});
+}
+function ensureModelOption(model){
+  const sel=$("#modelSelect");
+  if(!model) return;
+  if(![...sel.options].some(o=>o.value===model)){
+    sel.append(new Option(model, model));
+  }
+}
+function renderCodexAuth(s){
+  const isCodex = s.backend === "codex";
+  const auth=$("#codexAuth"), logout=$("#codexLogout");
+  auth.hidden = logout.hidden = !isCodex;
+  if(!isCodex) return;
+  const ok = !!(s.codex_auth && s.codex_auth.authenticated);
+  auth.textContent = ok ? "Codex подключён" : "Подключить Codex";
+  auth.classList.toggle("auth-ok", ok);
+  logout.hidden = !ok;
+}
+async function loadModels(){
+  const sel=$("#modelSelect");
+  const current = currentState?.model || "";
+  try{
+    const data = await (await fetch("/models")).json();
+    if(!data.ok) throw new Error(data.error || "модели не загружены");
+    sel.innerHTML="";
+    (data.models||[]).forEach(m=>{
+      const baseLabel = m.name && m.name !== m.id ? `${m.name} · ${m.id}` : m.id;
+      const label = m.supported === false ? `${baseLabel} · experimental` : baseLabel;
+      const opt = new Option(label, m.id);
+      if(m.supported === false){
+        opt.title = "Codex catalog says unsupported for API; selectable for live OAuth test.";
+      }
+      sel.append(opt);
+    });
+    ensureModelOption(data.model || current);
+    sel.value = data.model || current;
+  }catch(e){
+    sel.innerHTML="";
+    ensureModelOption(current || "default");
+    sel.value = current || "default";
+    sel.title = e.message;
+  }
+}
+async function restoreTranscript(){
+  try{
+    const data = await (await fetch("/transcript")).json();
+    TL.innerHTML=""; live={};
+    (data.events||[]).forEach(handle);
+    live={}; status(""); scrollDown();
+  }catch(e){ add(errorCard("история", e.message)); }
+}
+
+// --- статичные карточки ---
+function playerCard(t){const c=el("div","player"); c.append(el("div","who","Вы"),
+  el("div",null,t)); return c;}
+function toolCard(d){const c=el("div","step tool");
+  const redo = d.arguments && d.arguments.correction;
+  c.append(el("div",null,(redo?"♻ ГМ переспрашивает: ":"🔧 ГМ вызвал инструмент: ")+d.name));
+  c.append(spoiler("аргументы вызова", JSON.stringify(d.arguments,null,2))); return c;}
+function factCard(d){const c=el("div","step");
+  c.append(spoiler("📖 факт мира (ГМ запросил)", d)); return c;}
+function diceCard(d){return el("div","step dice","🎲 "+d);}
+function sceneUpdateCard(d){const c=el("div","step");
+  const state = d.present ? "в сцене" : "вне сцены";
+  c.append(el("div","pill ok",`Сцена: ${d.name} теперь ${state}`));
+  c.append(el("div","body","Сейчас в сцене: "+(d.present_npcs||[]).join(", ")));
+  return c;}
+function commandCard(d){const c=el("div","step");
+  c.append(el("div","pill ok",d)); return c;}
+function rejectCard(name,d){const wrap=el("div","item");
+  wrap.append(el("div","pill redo","✗ ГМ вернул действие "+name+" на переделку"));
+  wrap.append(el("div","reason","Замечание ГМ: "+d)); return wrap;}
+function errorCard(a,d){return el("div","err","⚠ "+a+": "+d);}
+const fmtK = n => n>=1000 ? (n/1000).toFixed(1).replace(/\.0$/,"")+"k" : ""+n;
+function metaLine(d){const c=el("div","meta");
+  const cached = d.cached ? ` · ${fmtK(d.cached)}↻ кэш` : "";
+  c.textContent = `⏱ ${d.secs}s · ${d.tps} tok/s · ${fmtK(d.in)}↑ ${fmtK(d.out)}↓ ток${cached}`;
+  c.title = `${d.label}\nввод: ${d.in} ток / ${d.prompt_secs}s`
+          + (d.cached?`\nиз кэша: ${d.cached} ток`:"")
+          + `\nвывод: ${d.out} ток / ${d.eval_secs}s`
+          + (d.load_secs>0?`\nзагрузка модели: ${d.load_secs}s`:""); return c;}
+function metaTotal(d){const c=el("div","meta-total");
+  const tok=el("span","tok", fmtK(d.tokens)+" токенов");
+  const cached = d.cached ? ` · ${fmtK(d.cached)}↻ кэш` : "";
+  c.append(el("b",null,"Σ за ход: "), document.createTextNode(`⏱ ${d.secs}s · `), tok,
+    document.createTextNode(` (${fmtK(d.in)}↑ ввод / ${fmtK(d.out)}↓ вывод)${cached} · ${d.calls.length} вызовов`));
+  c.title = d.calls.map(m=>`${m.label}: ${m.in}↑ ${m.out}↓  ${m.tps} tok/s  ${m.secs}s`).join("\n")
+    + `\n— — —\n≈ системный промпт ГМ: ~${d.sys_estimate} ток (оценка, входит в «ввод»)`;
+  return c;}
+
+// --- живые оболочки (создаются один раз на sid) ---
+function gmThinkBody(sid){const o=L(sid); if(o.thinkBody) return o.thinkBody;
+  const c=el("div","step think"); const det=el("details"); const body=el("div","body");
+  det.append(el("summary",null,"🧠 ГМ думает"), body); c.append(det); add(c);
+  return o.thinkBody=body;}
+function narrBody(sid){const o=L(sid); if(o.narrBody) return o.narrBody;
+  const c=el("div","narration"); const body=el("div");
+  c.append(el("div","who","Гейм-мастер"), body); add(c); return o.narrBody=body;}
+function npcStart(sid,name){const o=L(sid);
+  const c=el("div","card"); c.style.setProperty("--c",color(name));
+  const hd=el("div","hd"); const dot=el("span","dot"); dot.style.setProperty("--c",color(name));
+  hd.append(dot, el("b",null,name), el("span","tag","NPC-субагент"));
+  const sp=el("div","speech");
+  const open=el("span","q","«"), txt=el("span","txt"), close=el("span","q","»");
+  const typing=el("span","typing"," печатает…");
+  open.style.display=close.style.display="none";
+  sp.append(open,txt,close,typing); c.append(hd,sp); add(c);
+  Object.assign(o,{card:c,txt,typing,quotes:[open,close]}); return o;}
+function npcReveal(o){ if(o.typing){o.typing.remove(); o.typing=null;}
+  if(o.quotes) o.quotes.forEach(q=>q.style.display=""); }
+
+function handle(ev){
+  const k=ev.kind, a=ev.agent, d=ev.data, sid=ev.sid;
+  if(k==="player") add(playerCard(d));
+  else if(k==="delta"){
+    if(d.channel==="gm_thinking") gmThinkBody(sid).textContent += d.text;
+    else if(d.channel==="gm_narration") narrBody(sid).textContent += d.text;
+    else if(d.channel==="npc_speech"){ const o=L(sid); npcReveal(o);
+      if(o.txt) o.txt.textContent += d.text; }
+    autoscroll();
+  }
+  else if(k==="gm_tool_call"){ add(toolCard(d)); status("ГМ: "+d.name+"…"); }
+  else if(k==="gm_thinking"){ if(d&&d.trim()) gmThinkBody(sid).textContent = d; }
+  else if(k==="world_fact") add(factCard(d));
+  else if(k==="scene_update") add(sceneUpdateCard(d));
+  else if(k==="dice") add(diceCard(d));
+  else if(k==="tool_result"){ /* внутреннее */ }
+  else if(k==="npc_start"){ npcStart(sid,a); status(a+" печатает…"); }
+  else if(k==="npc_thinking"){ const o=L(sid);
+    if(o.card) o.card.append(spoiler("🧠 Скрытые мысли (игрок не видит)", d)); }
+  else if(k==="npc_speech"){ const o=L(sid); npcReveal(o);
+    if(o.txt) o.txt.textContent = d.speech;
+    if(o.card){ if(d.action) o.card.append(el("div","action","— "+d.action));
+      o.card.append(spoiler("📌 claims — на что опирается", d.claims, true)); }
+    status(""); }
+  else if(k==="gm_reject") add(rejectCard(a,d));
+  else if(k==="gm_narration"){ if(d&&d.trim()) narrBody(sid).textContent = d; }
+  else if(k==="meta") add(metaLine(d));
+  else if(k==="meta_total") add(metaTotal(d));
+  else if(k==="error") add(errorCard(a,d));
+}
+
+async function sendTurn(text){
+  live={};
+  $("#inp").value=""; $("#send").disabled=true; $("#inp").disabled=true;
+  status("ГМ думает…");
+  try{
+    const resp = await fetch("/turn",{method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({text})});
+    const reader = resp.body.getReader(); const dec=new TextDecoder(); let buf="";
+    while(true){
+      const {value,done}=await reader.read(); if(done)break;
+      buf += dec.decode(value,{stream:true});
+      let i;
+      while((i=buf.indexOf("\n\n"))>=0){
+        const chunk=buf.slice(0,i); buf=buf.slice(i+2);
+        if(chunk.startsWith("data: ")){
+          const ev=JSON.parse(chunk.slice(6));
+          if(ev.kind==="done") continue;
+          handle(ev);
+        }
+      }
+    }
+  }catch(e){ add(errorCard("сеть", e.message)); }
+  status(""); $("#send").disabled=false; $("#inp").disabled=false; $("#inp").focus();
+}
+
+async function sendCommand(text){
+  const [rawCmd, ...rest] = text.slice(1).split(" ");
+  const cmd = rawCmd.trim().toLowerCase();
+  const arg = rest.join(" ").trim();
+  if(!["reset","new","constraint","event"].includes(cmd)){
+    add(errorCard("команда","неизвестная команда: "+text)); return;
+  }
+  if((cmd==="new" || cmd==="constraint" || cmd==="event") && !arg){
+    add(errorCard("команда","нужен текст после /"+cmd)); return;
+  }
+  $("#inp").value=""; $("#send").disabled=true; $("#inp").disabled=true;
+  try{
+    const r = await fetch("/cmd",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({cmd,arg})});
+    const data = await r.json();
+    if(!data.ok){ add(errorCard("команда", data.error || "команда не выполнена")); return; }
+    if(cmd==="reset"){
+      TL.innerHTML=""; live={}; renderState(data.state);
+      add(commandCard("Новая партия"));
+    }else if(cmd==="new"){
+      TL.innerHTML=""; live={}; renderState(data.state);
+      add(commandCard("Новая история: "+(data.state.scene?.title || "стартовая сцена")));
+    }else if(cmd==="constraint"){
+      add(commandCard("Ограничение сцены добавлено"));
+    }else if(cmd==="event"){
+      add(commandCard("Событие добавлено в мир"));
+    }
+  }catch(e){ add(errorCard("команда", e.message)); }
+  finally{
+    $("#send").disabled=false; $("#inp").disabled=false; $("#inp").focus();
+  }
+}
+
+function send(){const t=$("#inp").value.trim(); if(!t)return;
+  if(t.startsWith("/")) sendCommand(t); else sendTurn(t);}
+$("#send").onclick=send;
+$("#inp").addEventListener("keydown",e=>{if(e.key==="Enter")send();});
+
+$("#modelSelect").onchange=async()=>{
+  const model = $("#modelSelect").value;
+  if(!model) return;
+  try{
+    const r = await fetch("/model",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model})});
+    const data = await r.json();
+    if(!data.ok) throw new Error(data.error || "модель не переключена");
+    renderState(data.state);
+  }catch(e){ add(errorCard("модель", e.message)); }
+};
+
+$("#codexAuth").onclick=async()=>{
+  $("#codexAuth").disabled=true;
+  status("Жду авторизацию Codex в браузере…");
+  try{
+    const r = await fetch("/codex/login",{method:"POST"});
+    const data = await r.json();
+    if(!data.ok) throw new Error(data.error || "Codex OAuth не выполнен");
+    const s = await (await fetch("/state")).json();
+    renderState(s);
+    await loadModels();
+  }catch(e){ add(errorCard("Codex", e.message)); }
+  finally{
+    $("#codexAuth").disabled=false;
+    status("");
+  }
+};
+
+$("#codexLogout").onclick=async()=>{
+  $("#codexLogout").disabled=true;
+  try{
+    const r = await fetch("/codex/logout",{method:"POST"});
+    const data = await r.json();
+    if(!data.ok) throw new Error(data.error || "не вышло отключить Codex");
+    const s = await (await fetch("/state")).json();
+    renderState(s);
+  }catch(e){ add(errorCard("Codex", e.message)); }
+  finally{ $("#codexLogout").disabled=false; }
+};
+
+$("#export").onclick=async()=>{
+  try{
+    const r=await fetch("/export"); const blob=await r.blob();
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download="gm-lab-export.json"; a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ alert("экспорт не удался: "+e.message); }
+};
+$("#reset").onclick=async()=>{
+  const r = await fetch("/cmd",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({cmd:"reset"})});
+  const data = await r.json();
+  TL.innerHTML=""; live={}; status("");
+  if(data.ok) renderState(data.state);
+};
+
+async function init(){
+  const s = await (await fetch("/state")).json();
+  renderState(s);
+  await loadModels();
+  await restoreTranscript();
+  $("#inp").focus();
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как должен работать NPC в свободном RP</title>
+<style>
+  :root {
+    --bg: #f6f3ed;
+    --paper: #fffdf8;
+    --ink: #24211c;
+    --muted: #6f675a;
+    --line: #d8d0c1;
+    --green: #2f7d5c;
+    --gold: #b7832f;
+    --red: #a84d42;
+    --blue: #3c6f8f;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  header {
+    padding: 28px 22px 18px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+  }
+
+  main {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 22px;
+  }
+
+  h1, h2, h3 { margin: 0; line-height: 1.2; }
+  h1 { font-size: clamp(28px, 5vw, 46px); max-width: 980px; }
+  h2 { font-size: 24px; margin-bottom: 12px; }
+  h3 { font-size: 18px; margin-bottom: 8px; }
+
+  p { margin: 8px 0 0; }
+
+  .lead {
+    max-width: 920px;
+    color: var(--muted);
+    font-size: 18px;
+    margin-top: 12px;
+  }
+
+  .band {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px;
+    margin: 18px 0;
+  }
+
+  .rule {
+    border-left: 5px solid var(--green);
+    padding-left: 14px;
+  }
+
+  .warning {
+    border-left-color: var(--red);
+  }
+
+  .grid {
+    display: grid;
+    gap: 14px;
+  }
+
+  .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+  .box {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    min-height: 100%;
+  }
+
+  .box strong {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--green);
+  }
+
+  .flow {
+    display: grid;
+    grid-template-columns: 1fr 34px 1fr 34px 1fr;
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  .arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--gold);
+    font-size: 28px;
+    font-weight: 700;
+  }
+
+  .step {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-top: 5px solid var(--blue);
+    border-radius: 8px;
+    padding: 14px;
+  }
+
+  .step.good { border-top-color: var(--green); }
+  .step.warn { border-top-color: var(--gold); }
+  .step.bad { border-top-color: var(--red); }
+
+  .label {
+    display: inline-block;
+    color: #ffffff;
+    background: var(--green);
+    border-radius: 999px;
+    padding: 2px 9px;
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .plain-list {
+    margin: 8px 0 0;
+    padding-left: 20px;
+  }
+
+  .plain-list li { margin: 5px 0; }
+
+  .quote {
+    background: #f3eee3;
+    border: 1px solid #e0d6c5;
+    border-radius: 8px;
+    padding: 12px;
+    color: #3b352d;
+    margin-top: 10px;
+  }
+
+  .small {
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .table {
+    display: grid;
+    grid-template-columns: minmax(160px, 0.9fr) minmax(220px, 1.2fr) minmax(220px, 1.2fr);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .cell {
+    background: #ffffff;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    padding: 11px;
+  }
+
+  .cell:nth-child(3n) { border-right: 0; }
+  .cell.header { background: #efe7d7; font-weight: 700; }
+  .cell.last-row { border-bottom: 0; }
+
+  @media (max-width: 850px) {
+    .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; }
+    .flow { grid-template-columns: 1fr; }
+    .arrow { transform: rotate(90deg); min-height: 22px; }
+    .table { grid-template-columns: 1fr; }
+    .cell, .cell:nth-child(3n) { border-right: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Как должен работать NPC в свободном RP</h1>
+  <p class="lead">
+    Без жёсткого списка действий. Персонаж может придумать любое действие обычным текстом,
+    но мир не обязан сразу считать это правдой. Система отделяет отыгрыш от изменения мира.
+  </p>
+</header>
+
+<main>
+  <section class="band rule">
+    <h2>Главная идея</h2>
+    <p>
+      NPC не выбирает действие из заранее написанного списка или по номеру. Он свободно пишет,
+      что говорит и что пытается сделать. Но его текст проходит через слой мира: можно ли это
+      сделать здесь, что это меняет, и что надо сохранить.
+    </p>
+    <p>
+      Если Борин “опрокидывает бочку”, это не запрещается из-за отсутствия команды. Система
+      спрашивает: бочка есть рядом? Борин может до неё дотянуться? Это просто жест, попытка
+      отвлечь людей или изменение сцены? После ответа событие сохраняется правильно.
+    </p>
+  </section>
+
+  <section class="band">
+    <h2>Общий поток хода</h2>
+    <div class="flow">
+      <div class="step">
+        <span class="label">1</span>
+        <h3>Игрок делает ход</h3>
+        <p>Например: “Я тихо спрашиваю Лизу, видела ли она кого-то у лавки Алдрика”.</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step good">
+        <span class="label">2</span>
+        <h3>Собирается срез для NPC</h3>
+        <p>Лиза получает только то, что она видит, слышит, знает и помнит. Не весь мир.</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step warn">
+        <span class="label">3</span>
+        <h3>NPC отыгрывает</h3>
+        <p>Нейронка пишет реплику и видимое действие свободным текстом.</p>
+      </div>
+    </div>
+    <div class="flow" style="margin-top: 12px">
+      <div class="step">
+        <span class="label">4</span>
+        <h3>Мир проверяет смысл</h3>
+        <p>Мир не цепляется за отдельные слова, а смотрит на смысл: кто где, что видно, что существует.</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step good">
+        <span class="label">5</span>
+        <h3>Событие сохраняется</h3>
+        <p>Только проверенная реплика, действие и последствия попадают в журнал мира.</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step">
+        <span class="label">6</span>
+        <h3>ГМ показывает сцену</h3>
+        <p>Игрок видит живой текст, но он основан на сохранённых событиях, а не на черновике.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Один ход по времени</h2>
+    <div class="table">
+      <div class="cell header">Момент</div>
+      <div class="cell header">Что происходит</div>
+      <div class="cell header">Что становится правдой</div>
+
+      <div class="cell">До хода</div>
+      <div class="cell">У мира уже есть сцена: кто рядом, где выходы, какие предметы видны.</div>
+      <div class="cell">Это уже сохранено раньше.</div>
+
+      <div class="cell">Игрок сделал ход</div>
+      <div class="cell">Ход игрока записывается как намерение: что он хочет сказать или сделать.</div>
+      <div class="cell">Пока это только попытка игрока.</div>
+
+      <div class="cell">Перед ответом NPC</div>
+      <div class="cell">Для NPC собирается личный срез: что он видит, знает, помнит и чего боится.</div>
+      <div class="cell">Сам срез не меняет мир, он только помогает ответить.</div>
+
+      <div class="cell">Ответ NPC</div>
+      <div class="cell">Нейронка пишет реплику, видимое действие и личную заметку персонажа.</div>
+      <div class="cell">Это ещё черновик, не правда мира.</div>
+
+      <div class="cell">Проверка мира</div>
+      <div class="cell">Мир решает: это возможно, это слух, это ложь, это попытка или это надо переделать.</div>
+      <div class="cell">Правдой становится только принятая часть.</div>
+
+      <div class="cell last-row">После хода</div>
+      <div class="cell last-row">Сохраняются событие, последствия, новая память NPC и слухи, если они прозвучали.</div>
+      <div class="cell last-row">Следующий ход уже опирается на эти сохранённые вещи.</div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Что именно получает NPC</h2>
+    <div class="grid three">
+      <div class="box">
+        <strong>Где он находится</strong>
+        <p>Комната, расстояния, выходы, шум, свет, кто рядом, кто может услышать.</p>
+      </div>
+      <div class="box">
+        <strong>Что он знает</strong>
+        <p>Личные знания, секреты, слухи, факты, которые уже стали ему доступны.</p>
+      </div>
+      <div class="box">
+        <strong>Что он помнит</strong>
+        <p>Что игрок говорил раньше, что NPC обещал, кого боится, кому доверяет.</p>
+      </div>
+      <div class="box">
+        <strong>Что он видит сейчас</strong>
+        <p>Только видимые люди, предметы и события. Не всё, что есть в кампании.</p>
+      </div>
+      <div class="box">
+        <strong>Что физически возможно</strong>
+        <p>Например: выход один, зал полон, за стойкой тесно, через толпу не скрыться.</p>
+      </div>
+      <div class="box">
+        <strong>Какой у него настрой</strong>
+        <p>Цель, страх, отношение к игроку, текущая эмоция. Это влияет на тон речи.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Что возвращает нейронка за NPC</h2>
+    <div class="grid two">
+      <div class="box">
+        <strong>Реплика</strong>
+        <p>Что NPC произносит вслух. Это может быть ложь, уклонение, угроза, вопрос, молчание.</p>
+        <div class="quote">“Да что ты пристал, дружище? Я тут пиво наливаю, а не убийства раскрываю.”</div>
+      </div>
+      <div class="box">
+        <strong>Видимое действие</strong>
+        <p>Что остальные могут увидеть. Свободным текстом, без списка команд.</p>
+        <div class="quote">“Борин с силой ставит кружку на стойку и оглядывает зал.”</div>
+      </div>
+      <div class="box">
+        <strong>Что NPC хочет запомнить</strong>
+        <p>Короткая личная заметка после сцены. Это не факт мира, а память персонажа.</p>
+        <div class="quote">“Игрок опасно близко подошёл к теме гильдии.”</div>
+      </div>
+      <div class="box">
+        <strong>На что он опирался</strong>
+        <p>Не пачка новых фактов, а коротко: какие уже известные вещи персонаж использовал.</p>
+        <div class="quote">“Использовал: слух об Алдрике, собственный страх перед гильдией.”</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Как проверяется свободное действие</h2>
+    <div class="table">
+      <div class="cell header">Что написал NPC</div>
+      <div class="cell header">Что спрашивает система</div>
+      <div class="cell header">Что сохраняется</div>
+
+      <div class="cell">“Борин бьёт кружкой по стойке.”</div>
+      <div class="cell">Кружка рядом? Стойка рядом? Это видимое действие?</div>
+      <div class="cell">Событие: Борин ударил кружкой. Зал услышал.</div>
+
+      <div class="cell">“Борин достаёт арбалет из-под стойки.”</div>
+      <div class="cell">Арбалет уже есть? Борин мог его держать? Это допустимо для сцены?</div>
+      <div class="cell">Если нет подтверждения, ГМ просит переделать или помечает как попытку найти предмет.</div>
+
+      <div class="cell">“Лиза говорит, что видела кузнеца у реки.”</div>
+      <div class="cell">Лиза могла это видеть? Кузнец существует? Река установлена?</div>
+      <div class="cell">Если нет, это не факт мира. Максимум: “Лиза сказала слух”, либо редрафт.</div>
+
+      <div class="cell last-row">“Марет вошла и арестовала всех.”</div>
+      <div class="cell last-row">Марет сейчас рядом? Её вызывали? Она могла войти?</div>
+      <div class="cell last-row">Если нет, NPC не может так менять сцену.</div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Где что хранится</h2>
+    <div class="grid four">
+      <div class="box">
+        <strong>Правда мира</strong>
+        <p>Локации, персонажи, предметы, реальные тайны, факты расследования.</p>
+        <p class="small">Меняется только после проверки.</p>
+      </div>
+      <div class="box">
+        <strong>Журнал событий</strong>
+        <p>Что реально произошло и кто это видел или слышал.</p>
+        <p class="small">Главный источник для истории.</p>
+      </div>
+      <div class="box">
+        <strong>Память NPC</strong>
+        <p>Личные впечатления, страхи, подозрения, обещания, отношение к игроку.</p>
+        <p class="small">У каждого NPC своя.</p>
+      </div>
+      <div class="box">
+        <strong>Слухи и заявления</strong>
+        <p>То, что кто-то сказал, но мир ещё не подтвердил.</p>
+        <p class="small">Не превращается в правду автоматически.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <h2>Когда сохраняется</h2>
+    <div class="grid two">
+      <div class="box">
+        <strong>Сразу</strong>
+        <ul class="plain-list">
+          <li>ход игрока;</li>
+          <li>бросок кубов;</li>
+          <li>проверенный результат действия;</li>
+          <li>реплика NPC после принятия.</li>
+        </ul>
+      </div>
+      <div class="box">
+        <strong>Не сохраняется</strong>
+        <ul class="plain-list">
+          <li>черновик NPC, который не прошёл проверку;</li>
+          <li>внутренние мысли модели;</li>
+          <li>неподтверждённая выдумка про мир;</li>
+          <li>ошибка модели, которую попросили переделать.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="band warning rule">
+    <h2>Почему это не сушит RP</h2>
+    <p>
+      NPC всё ещё может сделать что угодно словами: опрокинуть бочку, шепнуть ложь,
+      броситься к двери, упасть на колени, попытаться подкупить игрока. Разница только в том,
+      что мир спрашивает: “это возможно здесь и сейчас?” и “это новое утверждение или уже
+      известный факт?”.
+    </p>
+    <p>
+      Свобода остаётся в отыгрыше. Ограничение появляется только там, где текст NPC пытается
+      изменить реальность.
+    </p>
+  </section>
+
+  <section class="band">
+    <h2>Что надо поменять в текущем каркасе</h2>
+    <div class="grid two">
+      <div class="box">
+        <strong>Сейчас</strong>
+        <ul class="plain-list">
+          <li>NPC уже пишет реплику и действие свободно.</li>
+          <li>Мир почти не знает локации и присутствие.</li>
+          <li>Слухи и факты легко смешиваются.</li>
+          <li>Краткая память может запомнить ошибку как факт.</li>
+        </ul>
+      </div>
+      <div class="box">
+        <strong>Должно быть</strong>
+        <ul class="plain-list">
+          <li>NPC возвращает реплику, видимое действие и личные заметки.</li>
+          <li>Мир хранит локации, предметы, присутствие, факты, слухи.</li>
+          <li>Каждое новое утверждение получает статус: факт, слух, ложь, неизвестно.</li>
+          <li>В память попадают только проверенные события и личные заметки NPC.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>
