@@ -85,6 +85,7 @@ export function resultView(name, p) {
     case "get_world_fact": {
       const st = FACT_STATUS[payload.status] || { label: payload.status || "—", tone: "muted" };
       const sources = Array.isArray(payload.sources) ? payload.sources : [];
+      const delivered = Number(payload.already_delivered || 0);
       return {
         icon: "📖",
         accent: "var(--md-link)",
@@ -92,7 +93,10 @@ export function resultView(name, p) {
         body: (
           <>
             <div className="tc-chips">
-              <Badge tone={st.tone}>{st.label}</Badge>
+              <Badge tone={payload.status === "already_delivered" ? "muted" : st.tone}>
+                {payload.status === "already_delivered" ? "нового нет" : st.label}
+              </Badge>
+              {delivered > 0 && <Badge tone="muted">{`уже было: ${delivered}`}</Badge>}
             </div>
             {nonEmpty(payload.text) && <TextBlock>{payload.text}</TextBlock>}
             {sources.length > 0 && (
@@ -127,6 +131,12 @@ export function resultView(name, p) {
 
     case "query_world_state": {
       const results = Array.isArray(payload.results) ? payload.results : [];
+      const delivered = Number(payload.already_delivered || 0);
+      const foundLabel = results.length
+        ? `найдено: ${results.length}`
+        : delivered > 0
+          ? "нового нет"
+          : "ничего не найдено";
       return {
         icon: "🔍",
         accent: "var(--md-link)",
@@ -134,7 +144,8 @@ export function resultView(name, p) {
         body: (
           <>
             <div className="tc-chips">
-              <Badge tone={results.length ? "ok" : "muted"}>{results.length ? `найдено: ${results.length}` : "ничего не найдено"}</Badge>
+              <Badge tone={results.length ? "ok" : "muted"}>{foundLabel}</Badge>
+              {delivered > 0 && <Badge tone="muted">{`уже было: ${delivered}`}</Badge>}
               {nonEmpty(payload.scope) && <Badge tone="muted">{WS_SCOPE[payload.scope] || payload.scope}</Badge>}
             </div>
             {nonEmpty(payload.text) && <TextBlock>{payload.text}</TextBlock>}

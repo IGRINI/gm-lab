@@ -5,6 +5,7 @@ run_turn — генератор событий для веб-интерфейс�
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 import time
@@ -74,6 +75,9 @@ _TOOL_REMINDERS = {
     "query_world_state": (
         "Use returned id/hash for update/delete. For the same relationship, goal, or "
         "memory thread, update the existing record instead of adding a duplicate. "
+        "Use get_world_fact, not query_world_state(scope=player), for ordinary "
+        "player-safe public/lore answer lookup. Player scope here is for stored "
+        "state records, ids/hashes, or write preparation. "
         "Scope-limited memory is internal unless the fiction makes it available to the "
         "player; do not reveal gm/npc-scope secrets, private thoughts, ids/hashes, or "
         "meta-information in narration."
@@ -273,6 +277,8 @@ def _compact_world_fact_payload(payload: dict) -> dict:
     sources = _compact_sources(payload.get("sources") or [])
     if sources:
         out["sources"] = sources
+    if payload.get("already_delivered"):
+        out["already_delivered"] = payload.get("already_delivered")
     return out
 
 
@@ -550,6 +556,7 @@ def _compact_world_query_payload(payload: dict) -> dict:
         "text": _clip_text(payload.get("text"), 500),
         "results": rows,
         "sources": _compact_sources(payload.get("sources") or []),
+        "already_delivered": payload.get("already_delivered"),
         "error": payload.get("error"),
     }
     return _drop_empty(out)
@@ -653,6 +660,7 @@ def _model_world_fact_text(payload: dict) -> str:
     lines = [
         _kv("status", compact.get("status")),
         _kv("text", _clip_text(compact.get("text"), 700)),
+        _kv("already_delivered", compact.get("already_delivered")),
     ]
     sources = []
     for source in compact.get("sources") or []:
@@ -698,6 +706,7 @@ def _model_world_query_text(payload: dict) -> str:
     lines = [
         _kv("status", compact.get("status")),
         _kv("text", _clip_text(compact.get("text"), 500)),
+        _kv("already_delivered", compact.get("already_delivered")),
     ]
     results = compact.get("results") or []
     lines.append(_kv("found", len(results)))
@@ -944,6 +953,13 @@ def _state_record_hash(record) -> str:
     if callable(hasher):
         return hasher(record)
     return ""
+
+
+def _short_hash(value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _record_text_key(text: str) -> str:
@@ -1611,6 +1627,176 @@ def _query_row(kind: str, text: str, **extra) -> dict:
     return _drop_empty(row)
 
 
+def _query_scope_key(scope: str, npc_id: str = "") -> str:
+    scope = _clean_text(scope).lower() or "player"
+    npc_id = _clean_text(npc_id).lower()
+    return f"npc:{npc_id}" if scope == "npc" and npc_id else scope
+
+
+def _query_seen_set(session: "Session", scope_key: str) -> set[str]:
+    cache = getattr(session, "world_query_seen", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        session.world_query_seen = cache
+    raw = cache.setdefault(scope_key, set())
+    if isinstance(raw, set):
+        return raw
+    normalized = {str(item) for item in raw if str(item)}
+    cache[scope_key] = normalized
+    return normalized
+
+
+def _query_row_key(row: dict) -> str:
+    kind = _clean_text(row.get("kind")).lower()
+    row_id = _clean_text(row.get("id")).lower()
+    stable = _clean_text(row.get("hash")) or _clean_text(row.get("text"))
+    digest = _short_hash(stable)
+    if row_id:
+        return f"row:{kind}:{row_id}:{digest}"
+    return f"row:{kind}:text:{digest}"
+
+
+def _select_new_query_rows(
+    session: "Session",
+    scope_key: str,
+    rows: list[dict],
+    limit: int,
+) -> tuple[list[dict], int]:
+    seen = _query_seen_set(session, scope_key)
+    selected_keys: set[str] = set()
+    fresh: list[dict] = []
+    skipped = 0
+    for row in rows:
+        key = _query_row_key(row)
+        if key and (key in seen or key in selected_keys):
+            skipped += 1
+            continue
+        if len(fresh) >= limit:
+            continue
+        fresh.append(row)
+        if key:
+            selected_keys.add(key)
+    seen.update(selected_keys)
+    return fresh, skipped
+
+
+def _fact_source_identity(source: dict) -> str:
+    for key in ("doc_id", "source"):
+        value = _clean_text(source.get(key))
+        if value:
+            return value.lower()
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    for key in ("record_id", "fact_id", "npc_id", "scene_id", "item_id", "seq"):
+        value = _clean_text(metadata.get(key))
+        if value:
+            return f"{key}:{value.lower()}"
+    kind = _clean_text(source.get("kind")).lower()
+    return kind or "unknown_source"
+
+
+def _fact_text_segments(text: str) -> dict[int, str]:
+    segments: dict[int, str] = {}
+    pattern = re.compile(r"(\[(\d+)\]\s+(?:known|unconfirmed):\s.*?)(?=\s+\[\d+\]\s+(?:known|unconfirmed):|$)")
+    for match in pattern.finditer(_clean_text(text)):
+        try:
+            index = int(match.group(2))
+        except (TypeError, ValueError):
+            continue
+        segments[index] = match.group(1).strip()
+    return segments
+
+
+def _already_delivered_fact_text() -> str:
+    return (
+        "No new matching world-fact sources. Previous matching sources were already "
+        "delivered in the active conversation context; after GM history compaction "
+        "this delivery cache resets."
+    )
+
+
+def _filter_new_fact_payload(
+    session: "Session",
+    scope_key: str,
+    payload: dict,
+    *,
+    query: str = "",
+) -> tuple[dict, int]:
+    text = _clean_text(payload.get("text"))
+    sources = [source for source in (payload.get("sources") or []) if isinstance(source, dict)]
+    if not text and not sources:
+        return payload, 0
+    seen = _query_seen_set(session, scope_key)
+
+    if sources:
+        segments = _fact_text_segments(text)
+        fresh_sources: list[dict] = []
+        fresh_segments: list[str] = []
+        selected_keys: set[str] = set()
+        delivered = 0
+        for source in sources:
+            try:
+                number = int(source.get("n") or 0)
+            except (TypeError, ValueError):
+                number = 0
+            segment = segments.get(number, "")
+            key_text = segment or text
+            key = f"fact_source:{_fact_source_identity(source)}:{_short_hash(key_text)}"
+            if key in seen or key in selected_keys:
+                delivered += 1
+                continue
+            fresh_sources.append(source)
+            if segment:
+                fresh_segments.append(segment)
+            selected_keys.add(key)
+        seen.update(selected_keys)
+        if fresh_sources:
+            out = dict(payload)
+            out["sources"] = fresh_sources
+            if fresh_segments:
+                out["text"] = " ".join(fresh_segments)
+            if delivered:
+                out["already_delivered"] = delivered
+            return out, delivered
+        out = dict(payload)
+        out["status"] = "already_delivered"
+        out["text"] = _already_delivered_fact_text()
+        out["sources"] = []
+        out["already_delivered"] = delivered or len(sources)
+        return out, delivered or len(sources)
+
+    query_key = _short_hash(query) if payload.get("status") == "unknown" else ""
+    key = f"fact_payload:{payload.get('status') or 'unknown'}:{query_key}:{_short_hash(text)}"
+    if key in seen:
+        out = dict(payload)
+        out["status"] = "already_delivered"
+        out["text"] = _already_delivered_fact_text()
+        out["sources"] = []
+        out["already_delivered"] = 1
+        return out, 1
+    seen.add(key)
+    return payload, 0
+
+
+def _already_delivered_text(scope: str) -> str:
+    label = "NPC" if scope == "npc" else ("GM" if scope == "gm" else "player")
+    return (
+        f"No new matching world-state rows in {label} scope. "
+        "Previous matches were already delivered in the active conversation context; "
+        "after GM history compaction this delivery cache resets."
+    )
+
+
+def _query_payload_with_delivery_status(payload: dict, delivered: int, scope: str) -> dict:
+    if delivered <= 0:
+        return payload
+    out = dict(payload)
+    out["already_delivered"] = delivered
+    if not out.get("results") and not _clean_text(out.get("text")):
+        out["status"] = "already_delivered"
+        out["text"] = _already_delivered_text(scope)
+    return out
+
+
 def _scored_rows(query: str, rows: list[dict], limit: int) -> list[dict]:
     terms = _query_terms(query)
     scored = []
@@ -1632,10 +1818,15 @@ def _scored_rows(query: str, rows: list[dict], limit: int) -> list[dict]:
     return [row for _score, row in scored[:limit]]
 
 
-def _player_query_payload(world: world_mod.World, query: str, limit: int = 5) -> dict:
+def _player_query_payload(session: "Session", query: str, limit: int = 5) -> dict:
+    world = session.world
+    scope_key = _query_scope_key("player")
     fact = world.fact(query, actor_id="player")
     payload = fact.as_tool_payload()
-    rows = _scored_rows(query, _state_record_rows(world, "player"), limit)
+    payload, fact_delivered = _filter_new_fact_payload(session, scope_key, payload, query=query)
+    candidate_rows = _state_record_rows(world, "player")
+    rows = _scored_rows(query, candidate_rows, max(limit, len(candidate_rows)))
+    rows, row_delivered = _select_new_query_rows(session, scope_key, rows, limit)
     status = payload.get("status", "unknown")
     if rows and status == "unknown":
         status = "known"
@@ -1646,7 +1837,7 @@ def _player_query_payload(world: world_mod.World, query: str, limit: int = 5) ->
         "results": rows,
         "sources": _compact_sources(payload.get("sources") or []),
     }
-    return _drop_empty(out)
+    return _drop_empty(_query_payload_with_delivery_status(out, fact_delivered + row_delivered, "player"))
 
 
 def _state_record_rows(world: world_mod.World, actor_id: str) -> list[dict]:
@@ -1759,13 +1950,15 @@ def _query_world_state(session: "Session", args: dict) -> dict:
         limit = 5
 
     if scope == "player":
-        return _player_query_payload(session.world, query, limit)
+        return _player_query_payload(session, query, limit)
 
     if scope == "npc":
         npc_id, error = _resolve_npc_id(session.world, args.get("npc_id", ""))
         if error:
             return {"scope": scope, "status": "error", "error": error}
-        rows = _scored_rows(query, _npc_query_rows(session, npc_id), limit)
+        scope_key = _query_scope_key("npc", npc_id)
+        candidate_rows = _npc_query_rows(session, npc_id)
+        rows = _scored_rows(query, candidate_rows, max(limit, len(candidate_rows)))
         public_payload = session.world.fact(query, actor_id="public").as_tool_payload()
         public_text = _clean_text(public_payload.get("text"))
         if public_payload.get("status") != "unknown" and public_text:
@@ -1775,19 +1968,29 @@ def _query_world_state(session: "Session", args: dict) -> dict:
                 visibility="player",
                 status=public_payload.get("status", ""),
             ))
+        rows, delivered = _select_new_query_rows(session, scope_key, rows, limit)
         return _drop_empty({
             "scope": scope,
-            "status": "known" if rows else "unknown",
-            "results": rows[:limit],
-            "text": "" if rows else "Nothing in this NPC scope matched the query.",
+            "status": "known" if rows else ("already_delivered" if delivered else "unknown"),
+            "results": rows,
+            "text": "" if rows else (
+                _already_delivered_text(scope) if delivered else "Nothing in this NPC scope matched the query."
+            ),
+            "already_delivered": delivered,
         })
 
-    rows = _scored_rows(query, _gm_query_rows(session), limit)
+    scope_key = _query_scope_key("gm")
+    candidate_rows = _gm_query_rows(session)
+    rows = _scored_rows(query, candidate_rows, max(limit, len(candidate_rows)))
+    rows, delivered = _select_new_query_rows(session, scope_key, rows, limit)
     return _drop_empty({
         "scope": "gm",
-        "status": "known" if rows else "unknown",
+        "status": "known" if rows else ("already_delivered" if delivered else "unknown"),
         "results": rows,
-        "text": "" if rows else "Nothing in GM scope matched the query.",
+        "text": "" if rows else (
+            _already_delivered_text(scope) if delivered else "Nothing in GM scope matched the query."
+        ),
+        "already_delivered": delivered,
     })
 
 
@@ -2113,6 +2316,7 @@ def _maybe_compact(session):
     base = (session.gm_summary + "\n" + old_text).strip()
     session.gm_summary = session.client.summarize(base, proper_nouns=session.world.proper_nouns())
     session.gm_messages = recent
+    session.reset_world_query_cache()
 
 
 def _summarize_npc_history(client, npc: world_mod.NPC, world: world_mod.World,
@@ -2210,6 +2414,7 @@ class Session:
         self.npc_messages: dict[str, list] = {}      # npc_id -> личная история LLM-сессии NPC
         self.npc_summaries: dict[str, str] = {}      # npc_id -> компакт старой личной истории
         self.loaded_gm_tools: set[str] = agents.initial_gm_tool_names()
+        self.world_query_seen: dict[str, set[str]] = {}  # scope -> result keys already delivered to the active GM tail
         self.run_usage = _empty_usage()              # накопительная статистика за текущий ран
         self.last_player_action = ""                # дословное действие игрока этого хода
         self._sid = 0                               # счётчик id для стрим-элементов
@@ -2223,6 +2428,9 @@ class Session:
         self.pending: dict[str, dict] = {}          # npc_id -> {seq, speech, action, claims}: провизорная реплика хода
         self.commitments: dict[str, list[str]] = {} # npc_id -> блоки его собственной памяти
         self._turn_player_event: world_mod.Event | None = None
+
+    def reset_world_query_cache(self) -> None:
+        self.world_query_seen = {}
 
     def ensure_npc_client(self, npc_id: str):
         """Вернуть отдельный клиент/тред NPC для cache key и личной истории."""
@@ -2794,11 +3002,18 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             reminder=_TOOL_REMINDERS["roll_dice"],
         )
     if name == "get_world_fact":
-        fact = world.fact(args.get("query", ""))
+        query = args.get("query", "")
+        fact = world.fact(query)
         payload = fact.as_tool_payload()
+        payload, _delivered = _filter_new_fact_payload(
+            session,
+            _query_scope_key("fact"),
+            payload,
+            query=query,
+        )
         # Stream the structured fact (status, text, sources) plus the query so the UI
         # can render a proper lookup-result card instead of a flat debug string.
-        yield ev("world_fact", "ГМ", {**payload, "query": args.get("query", "")})
+        yield ev("world_fact", "ГМ", {**payload, "query": query})
         return _tool_result(
             _json_compact(payload),
             _model_world_fact_text(payload),

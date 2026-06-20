@@ -133,15 +133,20 @@ _ROLL_DICE_TOOL = {"type": "function", "function": {
 _GET_FACT_TOOL = {"type": "function", "function": {
     "name": "get_world_fact",
     "description": (
-        "Retrieve actor-safe world memory when you need a fact, lead, testimony, known NPC "
-        "whereabouts, public lore, or prior statement that is not already in CURRENT SCENE "
-        "STATE, the public intro, or the conversation. Use before asserting or summarizing "
+        "Player-safe answer lookup for world memory: facts, leads, testimony, known NPC "
+        "whereabouts, public lore, rumors, or prior statements that are not already in "
+        "CURRENT SCENE STATE, the public intro, or the conversation. Use this, not "
+        "query_world_state, for ordinary player-facing public/lore answers. Use before asserting or summarizing "
         "non-visible suspects, leads, clue meanings, timelines, ownership, relationships, "
         "factions, prior testimony, or offscreen NPC locations. The result is compact "
         "structured text with status, text, and compact source lines; it may contain "
         "unconfirmed testimony. Do not call for facts "
         "that are visible right now. If the result status is unknown or a source is "
-        "unconfirmed, preserve uncertainty instead of inventing an answer."
+        "unconfirmed, preserve uncertainty instead of inventing an answer. Do not use this "
+        "when you need state-record id/hash for update/delete; use query_world_state then. Within the "
+        "active, not-yet-compacted GM context, repeated lookups return only new matching "
+        "sources; sources already delivered to the model are suppressed and reported as "
+        "already_delivered. After GM history compaction, this delivery memory resets."
     ),
     "parameters": {"type": "object", "properties": {
         "query": {"type": "string",
@@ -203,7 +208,7 @@ _TOOL_SEARCH_HINTS = {
     ),
     "get_world_fact": (
         "факт память мир lore зацепка улика слух показание где кто что известно "
-        "fact memory rag testimony rumor lead source provenance"
+        "fact memory rag testimony rumor lead source provenance player-safe answer public"
     ),
     "update_world_state": (
         "batch пакет обновить записать удалить состояние мир факт слух память npc relationship "
@@ -219,8 +224,8 @@ _TOOL_SEARCH_HINTS = {
         "suggest choices задать вопрос что делать дальше"
     ),
     "query_world_state": (
-        "query scoped scope область player gm npc спросить проверить состояние память "
-        "факт секрет цели отношения relationship goal npc_memory id target private public leak безопасный поиск"
+        "query scoped state record id hash expected_hash update delete область gm npc player "
+        "состояние память секрет цели отношения relationship goal npc_memory target private"
     ),
 }
 
@@ -686,23 +691,29 @@ def build_gm_tools(world: world_mod.World) -> list:
     query_world_state = {"type": "function", "function": {
         "name": "query_world_state",
         "description": (
-            "Scoped world-state lookup. Use before update_world_state update/delete, and "
-            "before adding a relationship, goal, or npc_memory that may already exist. The "
+            "Scoped state-record lookup for durable memory, ids, and hashes. Use before "
+            "update_world_state update/delete, and before adding a relationship, goal, or "
+            "npc_memory that may already exist. Do not use this for ordinary player-safe "
+            "public/lore answer lookup; use get_world_fact for that. The "
             "result is compact structured text with matching rows and record "
-            "ids/hashes for update/delete expected_hash. Use player scope for player-known safe memory "
-            "(public plus private notes shared with player); "
+            "ids/hashes for update/delete expected_hash. Use player scope only when you need "
+            "stored player-known state records, ids, hashes, or expected_hash for a write; "
             "player scope must never reveal GM truth, hidden events, NPC secrets, private NPC "
             "memory, or private goals. Use npc scope with npc_id for what that NPC may know: "
             "public memory plus that NPC's own private card/memory only. Use gm scope for "
             "author-only truth, hidden events, all NPC private notes, and public memory. "
             "The result includes only matching scoped state. Search can match "
-            "record text plus location, region, scene, and aliases when those anchors were stored."
+            "record text plus location, region, scene, and aliases when those anchors were stored. "
+            "Within the active, not-yet-compacted GM context, repeated queries return only "
+            "new matching rows; rows already delivered to the model are suppressed and "
+            "reported as already_delivered. After GM history compaction, this delivery "
+            "memory resets."
         ),
         "parameters": {"type": "object", "properties": {
             "scope": {"type": "string", "enum": ["player", "gm", "npc"],
                       "description": "Visibility namespace to query."},
             "query": {"type": "string",
-                      "description": "What to look up, in Russian or English. Include kind, parties, place, region, scene, or alias when useful, e.g. 'relationship borin player', 'goal lysa', or 'что было в Тёрнвейле'. Keep proper nouns exact."},
+                      "description": "State-record lookup text, in Russian or English. Include kind, parties, place, region, scene, or alias when useful, e.g. 'relationship borin player', 'goal lysa', 'known_name Лиза', or 'state_fact Тёрнвейле тайник'. For ordinary player-safe public/lore answers, use get_world_fact instead. Keep proper nouns exact."},
             "npc_id": {"type": "string",
                        "description": "Required for npc scope. Omit for player or gm scope."},
             "max_results": {"type": "integer",

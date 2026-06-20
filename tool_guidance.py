@@ -5,8 +5,8 @@ from __future__ import annotations
 VISIBLE_TOOL_CAPABILITIES: tuple[tuple[str, str], ...] = (
     ("ask_npc", "NPC speech/reactions"),
     ("roll_dice", "dice and D&D-style uncertain outcomes"),
-    ("get_world_fact", "public/player-safe world fact lookup"),
-    ("query_world_state", "scoped world/NPC memory lookup before memory writes"),
+    ("get_world_fact", "player-safe answer lookup for facts, lore, leads, and testimony"),
+    ("query_world_state", "state-record/id-hash lookup for updates or private npc/gm scopes"),
     ("update_world_state", "durable world/NPC memory writes"),
     ("update_player_character", "player character sheet updates"),
     ("advance_time", "world clock advancement"),
@@ -30,7 +30,9 @@ HIDDEN_TOOL_CAPABILITY_TEXT = _capability_list(HIDDEN_TOOL_CAPABILITIES)
 MODEL_TOOL_RESULT_GUIDE = (
     "GM tool results are compact structured text. They usually omit arguments "
     "you already sent and include only new information: totals, found text, changed state, "
-    "ids/hashes, status/error lines, and optional <system-reminder> blocks."
+    "ids/hashes, status/error lines, and optional <system-reminder> blocks. "
+    "For get_world_fact/query_world_state, already_delivered means matching sources/rows "
+    "were already returned inside the active, not-yet-compacted GM context."
 )
 
 GM_TOOL_CAPABILITY_OVERVIEW = (
@@ -50,8 +52,8 @@ WORLD_STATE_TYPE_GUIDE = (
 
 WORLD_STATE_SCOPE_GUIDE = (
     "Choose scope by who may know it: public = anyone can know; shared = only npc_id "
-    "and target know; npc = only npc_id knows/thinks/remembers; gm = hidden author truth "
-    "not known by characters unless discovered."
+    "plus target and/or participants know; npc = only npc_id knows/thinks/remembers; "
+    "gm = hidden author truth not known by characters unless discovered."
 )
 
 WORLD_STATE_SPLIT_GUIDE = (

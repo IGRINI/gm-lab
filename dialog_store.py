@@ -673,6 +673,10 @@ def _session_to_payload(session: Session) -> dict:
             for npc_id, state in getattr(session, "npc_client_state", {}).items()
             if isinstance(state, dict)
         },
+        "world_query_seen": {
+            str(scope): sorted(str(item) for item in keys if str(item))
+            for scope, keys in getattr(session, "world_query_seen", {}).items()
+        },
         "last_player_action": session.last_player_action,
         "sid": int(getattr(session, "_sid", 0)),
         "events": [_event_to_payload(event) for event in session.events],
@@ -713,6 +717,14 @@ def _session_from_payload(data: dict, client_factory: Callable[[], object]) -> S
             "thread_id": str(_json_dict(v).get("thread_id") or ""),
         }
         for k, v in _json_dict(data.get("npc_client_state")).items()
+    }
+    session.world_query_seen = {
+        str(scope): {
+            str(item)
+            for item in _json_list(keys)
+            if str(item)
+        }
+        for scope, keys in _json_dict(data.get("world_query_seen")).items()
     }
     session.last_player_action = str(data.get("last_player_action") or "")
     session._sid = int(data.get("sid") or 0)

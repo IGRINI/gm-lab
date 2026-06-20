@@ -15,6 +15,7 @@ from llm_client import _proper_nouns_line
 from orchestrator import (
     Session,
     _finalize_turn_time,
+    _maybe_compact,
     _normalize_tool_calls,
     _run_tool,
     _tool_full_text,
@@ -151,6 +152,7 @@ except KeyError:
     pass
 
 gm_system = agents._gm_system(w, "")
+gm_system_flat = " ".join(gm_system.split())
 assert "STATIC PROMPT CACHE CONTRACT" in gm_system
 assert "Mutable data arrives later in CURRENT TURN CONTEXT" in gm_system
 assert "TOOL RESULT REMINDERS" in gm_system
@@ -199,7 +201,7 @@ assert "Player character sheet:" in gm_system
 assert "Do not leave a wound, spent item" in gm_system
 assert "Facts and memory:" in gm_system
 assert "Unknown/rumor/testimony stays\n  uncertain" in gm_system
-assert "Do not leak gm/npc-scope secrets" in gm_system
+assert "Do not leak gm/npc-scope secrets" in gm_system_flat
 assert "Durable writes:" in gm_system
 assert "pass expected_hash" in gm_system
 assert "update the\n  existing thread instead of adding a duplicate" in gm_system
@@ -240,13 +242,18 @@ assert tool_guidance.MODEL_TOOL_RESULT_GUIDE in gm_system
 assert "Use visible tools directly" in gm_system
 assert "hidden scene/NPC/profile tool" in gm_system
 assert "durable world/NPC memory writes (`update_world_state`)" in gm_system
-assert "scoped world/NPC memory lookup before memory writes (`query_world_state`)" in gm_system
+assert "state-record/id-hash lookup for updates or private npc/gm scopes (`query_world_state`)" in gm_system
 assert "world clock advancement (`advance_time`)" in gm_system
 assert "player character sheet updates (`update_player_character`)" in gm_system
 assert "update_player_character: player character sheet only" in gm_system
 assert "`known_name` is only for NPC ids from the roster" in gm_system
 assert "Mandatory update_world_state triggers" in gm_system
-gm_system_flat = " ".join(gm_system.split())
+assert "already_delivered means you already have those matches in the current tail" in gm_system_flat
+assert "get_world_fact suppresses sources already delivered" in gm_system_flat
+assert "Do not use query_world_state(scope=player) as the normal public/lore answer path" in gm_system_flat
+assert "get_world_fact for player-safe public/lore answer lookup" in gm_system_flat
+assert "Repeated lookups in the active GM tail return only new matching sources" in gm_system_flat
+assert "Repeated searches in the active GM tail return only new matching rows" in gm_system_flat
 assert "Strong rules: shared scope requires npc_id plus target or participants" in gm_system
 assert "NPC-to-player testimony is usually shared rumor plus npc_memory" in gm_system_flat
 assert "one relationship thread should usually be updated" in gm_system_flat
@@ -629,6 +636,11 @@ assert get_world_fact["parameters"]["additionalProperties"] is False
 assert "compact source lines" in get_world_fact["description"]
 assert "before asserting or summarizing" in get_world_fact["description"]
 assert "compact structured text" in get_world_fact["description"]
+assert "Player-safe answer lookup" in get_world_fact["description"]
+assert "Use this, not query_world_state" in get_world_fact["description"]
+assert "Do not use this when you need state-record id/hash" in get_world_fact["description"]
+assert "already_delivered" in get_world_fact["description"]
+assert "not-yet-compacted GM context" in get_world_fact["description"]
 assert "in Russian" in get_world_fact["parameters"]["properties"]["query"]["description"]
 
 update_world_state = tool_by_name(tools, "update_world_state")
@@ -699,9 +711,14 @@ assert query_world_state["parameters"]["additionalProperties"] is False
 assert query_world_state["parameters"]["properties"]["scope"]["enum"] == ["player", "gm", "npc"]
 assert "player scope must never reveal" in query_world_state["description"]
 assert "ids/hashes" in query_world_state["description"]
+assert "Do not use this for ordinary player-safe" in query_world_state["description"]
+assert "Use player scope only when you need stored player-known state records" in query_world_state["description"]
 assert "compact structured text" in query_world_state["description"]
+assert "already_delivered" in query_world_state["description"]
+assert "not-yet-compacted GM context" in query_world_state["description"]
 assert "relationship borin player" in query_world_state["parameters"]["properties"]["query"]["description"]
 assert "Тёрнвейле" in query_world_state["parameters"]["properties"]["query"]["description"]
+assert "use get_world_fact instead" in query_world_state["parameters"]["properties"]["query"]["description"]
 
 tool_search = tool_by_name(tools, "tool_search")
 assert tool_search["parameters"]["additionalProperties"] is False
@@ -1298,6 +1315,109 @@ assert sum(
     if str(row.get("text") or "").startswith("Прошлой ночью в городе Тёрнвейл")
 ) == 1
 
+query_cache_s = Session(None)
+query_cache_first_add_ret = _drive(_run_tool(query_cache_s, "update_world_state", {"items": [{
+    "type": "fact",
+    "text": "QUERY_CACHE_SENTINEL первая улика для проверки выдачи.",
+    "scope": "gm",
+}]}, []))
+query_cache_first_add = _tool_full_json(query_cache_first_add_ret)
+assert query_cache_first_add["applied"][0]["status"] == "stored"
+query_cache_first_ret = _drive(_run_tool(query_cache_s, "query_world_state", {
+    "scope": "gm",
+    "query": "QUERY_CACHE_SENTINEL",
+}, []))
+query_cache_first = _tool_full_json(query_cache_first_ret)
+assert query_cache_first["status"] == "known"
+assert "QUERY_CACHE_SENTINEL первая" in json.dumps(query_cache_first, ensure_ascii=False)
+query_cache_repeat_ret = _drive(_run_tool(query_cache_s, "query_world_state", {
+    "scope": "gm",
+    "query": "QUERY_CACHE_SENTINEL первая улика",
+}, []))
+query_cache_repeat = _tool_full_json(query_cache_repeat_ret)
+assert query_cache_repeat["status"] == "already_delivered"
+assert query_cache_repeat["already_delivered"] >= 1
+assert not query_cache_repeat.get("results")
+assert "already delivered" in query_cache_repeat["text"]
+query_cache_second_add_ret = _drive(_run_tool(query_cache_s, "update_world_state", {"items": [{
+    "type": "fact",
+    "text": "QUERY_CACHE_SENTINEL вторая новая улика после первого поиска.",
+    "scope": "gm",
+}]}, []))
+query_cache_second_add = _tool_full_json(query_cache_second_add_ret)
+assert query_cache_second_add["applied"][0]["status"] == "stored"
+query_cache_new_ret = _drive(_run_tool(query_cache_s, "query_world_state", {
+    "scope": "gm",
+    "query": "QUERY_CACHE_SENTINEL",
+}, []))
+query_cache_new = _tool_full_json(query_cache_new_ret)
+assert query_cache_new["status"] == "known"
+assert "QUERY_CACHE_SENTINEL вторая" in json.dumps(query_cache_new, ensure_ascii=False)
+assert "QUERY_CACHE_SENTINEL первая" not in json.dumps(query_cache_new.get("results", []), ensure_ascii=False)
+
+class QueryCacheCompactClient:
+    def summarize(self, text, proper_nouns=None):
+        return "compact summary"
+
+old_gm_history_tokens = config.GM_HISTORY_TOKENS
+old_gm_keep_turns = config.GM_KEEP_TURNS
+try:
+    config.GM_HISTORY_TOKENS = 1
+    config.GM_KEEP_TURNS = 1
+    query_cache_s.client = QueryCacheCompactClient()
+    query_cache_s.gm_messages = [
+        {"role": "user", "content": "старый ход " * 20},
+        {"role": "assistant", "content": "старый ответ " * 20},
+        {"role": "user", "content": "новый ход " * 20},
+    ]
+    assert query_cache_s.world_query_seen
+    _maybe_compact(query_cache_s)
+    assert query_cache_s.world_query_seen == {}
+finally:
+    config.GM_HISTORY_TOKENS = old_gm_history_tokens
+    config.GM_KEEP_TURNS = old_gm_keep_turns
+query_cache_after_compact_ret = _drive(_run_tool(query_cache_s, "query_world_state", {
+    "scope": "gm",
+    "query": "QUERY_CACHE_SENTINEL",
+}, []))
+query_cache_after_compact = _tool_full_json(query_cache_after_compact_ret)
+assert query_cache_after_compact["status"] == "known"
+assert "QUERY_CACHE_SENTINEL первая" in json.dumps(query_cache_after_compact, ensure_ascii=False)
+
+query_limit_s = Session(None)
+query_limit_add_ret = _drive(_run_tool(query_limit_s, "update_world_state", {"items": [
+    {
+        "type": "fact",
+        "text": "QUERY_LIMIT_SENTINEL первая строка при лимите.",
+        "scope": "gm",
+    },
+    {
+        "type": "fact",
+        "text": "QUERY_LIMIT_SENTINEL вторая строка за пределом первого лимита.",
+        "scope": "gm",
+    },
+]}, []))
+query_limit_add = _tool_full_json(query_limit_add_ret)
+assert len(query_limit_add["applied"]) == 2
+query_limit_first_ret = _drive(_run_tool(query_limit_s, "query_world_state", {
+    "scope": "gm",
+    "query": "QUERY_LIMIT_SENTINEL",
+    "max_results": 1,
+}, []))
+query_limit_first = _tool_full_json(query_limit_first_ret)
+assert len(query_limit_first["results"]) == 1
+query_limit_first_text = query_limit_first["results"][0]["text"]
+query_limit_second_ret = _drive(_run_tool(query_limit_s, "query_world_state", {
+    "scope": "gm",
+    "query": "QUERY_LIMIT_SENTINEL",
+    "max_results": 2,
+}, []))
+query_limit_second = _tool_full_json(query_limit_second_ret)
+assert query_limit_second["status"] == "known"
+assert len(query_limit_second["results"]) == 1
+assert query_limit_second["results"][0]["text"] != query_limit_first_text
+assert "QUERY_LIMIT_SENTINEL" in query_limit_second["results"][0]["text"]
+
 npc_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "scope": "npc",
     "npc_id": "borin",
@@ -1612,6 +1732,18 @@ assert "<system-reminder>" in _tool_model_text(result)
 assert "only lore the player can know right now" in _tool_model_text(result)
 assert "do not reveal hidden sources" in _tool_model_text(result)
 assert "<system-reminder>" not in _tool_full_text(result)
+gen = _run_tool(s, "get_world_fact", {"query": "Где искать Капитана Марет?"}, [])
+try:
+    while True:
+        next(gen)
+except StopIteration as stop:
+    repeated_fact = stop.value
+    _assert_model_result_is_structured_text(repeated_fact)
+    repeated_fact_model = _tool_full_json(repeated_fact)
+assert repeated_fact_model["status"] == "already_delivered"
+assert repeated_fact_model["already_delivered"] >= 1
+assert not repeated_fact_model.get("sources")
+assert "already delivered" in repeated_fact_model["text"]
 
 s.world.forced_die_next = 17
 gen = _run_tool(s, "roll_dice", {

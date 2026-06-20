@@ -81,6 +81,10 @@ def test_runtime_round_trip(tmp: str) -> None:
         "session_id": "npc-session",
         "thread_id": "npc-thread",
     }
+    dialog.session.world_query_seen = {
+        "gm": {"row:state_fact:state_1:abcd"},
+        "npc:borin": {"row:npc_memory:borin:efgh"},
+    }
     dialog.session.add_turn_usage({
         "calls": [{"label": "Борин", "in": 10, "out": 5, "cached": 7}],
         "in": 10,
@@ -122,6 +126,8 @@ def test_runtime_round_trip(tmp: str) -> None:
     assert reloaded.session.npc_messages["borin"][0]["content"] == "npc situation"
     assert reloaded.session.npc_summaries["borin"] == "Борин уже отвечал уклончиво."
     assert reloaded.session.npc_client_state["borin"]["thread_id"] == "npc-thread"
+    assert reloaded.session.world_query_seen["gm"] == {"row:state_fact:state_1:abcd"}
+    assert reloaded.session.world_query_seen["npc:borin"] == {"row:npc_memory:borin:efgh"}
     assert reloaded.session.run_usage["tokens"] == 15
     assert reloaded.session.run_usage["cached"] == 7
     assert reloaded.session.run_usage["npc_tokens"] == 15
