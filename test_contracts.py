@@ -176,6 +176,11 @@ assert "cannot declare new equipment" in gm_system
 assert "unsupported claims as attempted actions or boasts" in gm_system
 assert "coercion/intimidation with real leverage" in gm_system
 assert "roll_dice before\n  ask_npc" in gm_system
+assert "NPC-perception brief" in gm_system
+assert "lacks a spell/item/weapon" in gm_system
+assert "not secret truth" in gm_system
+assert "roll/check\n  result must still be passed and respected" in gm_system
+assert "follow the check grade/margin" in gm_system
 assert "Time and pressure:" in gm_system
 assert "Material limits:" in gm_system
 assert "missing or unsupported premise" in gm_system
@@ -343,6 +348,11 @@ assert "`reasoning` and `claims` are also in RUSSIAN" in npc_system
 assert "Do not become a GM" in npc_system
 assert "do not call it shouting" in npc_system
 assert "assume the spoken content is between you and the\n  player" in npc_system
+assert "Treat CURRENT SITUATION as an NPC-perspective brief" in npc_system
+assert "there is no real fire" in npc_system
+assert "not treat that as in-character certainty" in npc_system
+assert "If CURRENT SITUATION gives a roll/check result, follow it" in npc_system
+assert "does not grant you\n  hidden author knowledge" in npc_system
 assert "does NOT make you unbreakable" in npc_system
 assert "believable ladder" in npc_system
 assert "`speech` is only the exact words" in npc_system
@@ -361,6 +371,10 @@ assert w.npc("borin").secret not in npc_system
 assert "Russian grammatical gender marker: M" not in npc_system
 # Spec #2/#3: card is in the LAST (user) turn, after history.
 assert npc_msgs[-1]["role"] == "user"
+assert "NPC PERCEPTION BRIEF RULES" in npc_card_turn
+assert "not\n  a GM truth dump" in npc_card_turn
+assert "Roll/check outcomes sent by the GM are authoritative" in npc_card_turn
+assert "A strong intimidation/deception result" in npc_card_turn
 assert "CURRENT NPC CARD" in npc_card_turn
 assert "Gender: M" in npc_card_turn
 assert "Physical type:" in npc_card_turn
@@ -447,9 +461,13 @@ assert searched_select["loaded_tools"] == ["move_npc", "set_npc_whereabouts"]
 ask_npc = tool_by_name(tools, "ask_npc")
 assert ask_npc["parameters"]["required"] == ["npc_id", "situation"]
 assert ask_npc["parameters"]["additionalProperties"] is False
-assert "Russian neutral third-person brief" in ask_npc["parameters"]["properties"]["situation"]["description"]
+assert "Russian neutral third-person NPC-perception brief" in ask_npc["parameters"]["properties"]["situation"]["description"]
 assert "intended listener/audience" in ask_npc["parameters"]["properties"]["situation"]["description"]
 assert "immediate leverage and danger" in ask_npc["parameters"]["properties"]["situation"]["description"]
+assert "Roll/check outcomes sent in" in ask_npc["parameters"]["properties"]["situation"]["description"]
+assert "authoritative for how strongly" in ask_npc["parameters"]["properties"]["situation"]["description"]
+assert "roll/check result is not secret truth" in ask_npc["parameters"]["properties"]["situation"]["description"]
+assert "lacks a spell/item/weapon" in ask_npc["parameters"]["properties"]["situation"]["description"]
 assert "in Russian" in ask_npc["parameters"]["properties"]["correction"]["description"]
 assert "compact structured text" in ask_npc["description"]
 assert "reality correction" in ask_npc["description"]

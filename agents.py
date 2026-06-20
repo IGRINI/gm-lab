@@ -17,20 +17,44 @@ import world as world_mod
 # in Russian so the lab/debug UI stays readable. roll_dice is the exception: it uses
 # concise English mechanical notes because the code returns English outcome grades.
 _SITUATION_DESC = (
-    "Russian neutral third-person brief of what is happening RIGHT NOW and what this NPC "
-    "perceives. Include the player's action and exact addressed words; quote player phrases "
+    "Russian neutral third-person NPC-perception brief of what is happening RIGHT NOW: "
+    "only what this NPC can see, hear, already know, or plausibly infer from visible "
+    "pressure. Include the player's action and exact addressed words; quote player phrases "
     "unchanged when precision matters. Preserve declared delivery exactly: whisper, quiet "
     "voice, clenched-teeth mutter, silent gesture, or public speech. Do not upgrade a "
     "whisper/threat to shouting. If secrecy is risky because the room is crowded, describe "
     "that as risk of body language/proximity being noticed, not as other people hearing the "
     "content. State the intended listener/audience. If the player speaks quietly to this NPC, "
-    "say that the content is meant for this NPC only unless someone explicitly overheard. Do "
-    "include immediate leverage and danger that the NPC can perceive: weapons, distance, "
+    "say that the content is meant for this NPC only unless someone explicitly overheard. "
+    "Include immediate leverage and danger that the NPC can perceive: weapons, distance, "
     "escape routes, witnesses, whether guards are nearby, whether the NPC is cornered, and "
-    "any intimidation/check result already rolled by the GM. "
-    "not write 'you'. Do not describe the NPC's feelings, motives, choices, or hidden "
-    "thoughts. Keep proper nouns exactly as they are written in the current world."
+    "any intimidation/check result already rolled by the GM. Roll/check outcomes sent in "
+    "the situation are authoritative for how strongly the visible attempt lands on this "
+    "NPC: follow the grade, margin, and stakes as pressure, credibility, confidence, "
+    "hesitation, or apparent danger. A roll/check result is not secret truth about hidden "
+    "facts. Do not include GM-only certainty, player-sheet validation, hidden facts, or "
+    "conclusions about whether the player is bluffing/lying, lacks proof, lacks a spell/"
+    "item/weapon, or whether a threatened effect is truly impossible unless this NPC can "
+    "directly observe that fact or already knows it. For unsupported declared effects after "
+    "a player-facing correction, describe only the visible gesture/threat and how convincing "
+    "or dangerous it appears. Do not write 'you'. Do not describe the NPC's "
+    "feelings, motives, choices, or hidden thoughts. Keep proper nouns exactly as they are "
+    "written in the current world."
 )
+
+_NPC_PERCEPTION_BRIEF_RULES = """\
+NPC PERCEPTION BRIEF RULES:
+- CURRENT SITUATION is what this NPC can see/hear/know or plausibly infer right now, not
+  a GM truth dump.
+- If CURRENT SITUATION contains author certainty about hidden truth, player sheet
+  validation, whether the player is bluffing/lying, lacks proof, lacks a spell/item/weapon,
+  or whether a threat is truly impossible, treat that certainty as unknown unless it is
+  directly observable in YOUR CURRENT SCENE SLICE or already in your memory/card.
+- Roll/check outcomes sent by the GM are authoritative for how strongly the attempt lands
+  on you. Follow the grade, margin, and stakes as your social pressure, fear, doubt,
+  credibility, confidence, or apparent danger. A strong intimidation/deception result can
+  make a threat or claim feel credible even when you cannot verify the truth.
+"""
 
 
 def _constraints_text(constraints) -> str:
@@ -1273,7 +1297,10 @@ def npc_user_message(npc: world_mod.NPC, situation: str, observations: str,
                      commitments: str, feedback: str | None, constraints=None,
                      scene_slice: str = "") -> dict:
     # CURRENT SITUATION (GM brief — what's now) -> own memory -> what was seen earlier.
-    parts = [f"CURRENT SITUATION (what's happening now, what you react to): {situation}"]
+    parts = [
+        _NPC_PERCEPTION_BRIEF_RULES,
+        f"CURRENT SITUATION (what's happening now, what you react to): {situation}",
+    ]
     if scene_slice:
         parts.append("YOUR CURRENT SCENE SLICE (what is actually around you):\n"
                      + scene_slice)
