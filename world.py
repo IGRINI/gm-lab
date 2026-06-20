@@ -2481,6 +2481,125 @@ class World:
         self.fact_records = [record for record in self.fact_records if record.fact_id != fid]
         return len(self.fact_records) < before
 
+    # --- Debug/author mutators: edit story/canon/scene/rumors/hidden events ---
+    # Cache discipline: everything below changes data that reaches the model through
+    # the appended per-turn tail or query_world_state (GM scope), NOT the cached
+    # system prefix. The single exception is public_intro (set_public_intro): it lives
+    # in the cacheable prefix (_gm_world_setup), so editing it re-caches the prefix once.
+    def set_public_intro(self, text: str) -> bool:
+        text = _as_str(text)
+        if not text:
+            return False
+        self.public = text
+        return True
+
+    def set_story_title(self, text: str) -> bool:
+        text = _as_str(text)
+        if not text:
+            return False
+        self.story_title = text
+        return True
+
+    def set_hidden_truth(self, text: str) -> None:
+        # Canon reaches the GM twice via query_world_state: as gm_canon (read live from
+        # self.canon) and as the 'hidden_truth' truth FactRecord. Keep both in sync so a
+        # query never returns a stale duplicate.
+        text = _as_str(text)
+        self.canon = text
+        self.fact_records = [r for r in self.fact_records if r.fact_id != "hidden_truth"]
+        if text:
+            self.fact_records.append(FactRecord(
+                fact_id="hidden_truth", kind="truth", text=text,
+                keywords=["hidden truth", "truth", "secret"], source="debug",
+            ))
+
+    def set_hidden_events(self, events) -> list[str]:
+        self.hidden_events = [_as_str(item) for item in _as_list(events) if _as_str(item)]
+        return list(self.hidden_events)
+
+    def add_hidden_event(self, text: str) -> bool:
+        text = _as_str(text)
+        if not text:
+            return False
+        self.hidden_events.append(text)
+        return True
+
+    def remove_hidden_event(self, index) -> bool:
+        idx = _as_int_or_none(index)
+        if idx is None or not (0 <= idx < len(self.hidden_events)):
+            return False
+        self.hidden_events.pop(idx)
+        return True
+
+    def add_debug_rumor(self, speaker: str, text: str) -> "Rumor | None":
+        import config
+        text = _as_str(text)
+        if not text:
+            return None
+        self._rumor_seq += 1
+        rumor = Rumor(
+            seq=self._rumor_seq, turn=0,
+            speaker=_as_str(speaker) or "слух", text=text,
+            witnesses=frozenset(), confirmed=False,
+        )
+        self.rumors.append(rumor)
+        self.rumors = self.rumors[-config.RUMORS_CAP:]
+        return rumor
+
+    def remove_rumor(self, seq) -> bool:
+        target = _as_int_or_none(seq)
+        if target is None:
+            return False
+        before = len(self.rumors)
+        self.rumors = [r for r in self.rumors if r.seq != target]
+        return len(self.rumors) < before
+
+    def set_rumor_confirmed(self, seq, confirmed: bool) -> bool:
+        target = _as_int_or_none(seq)
+        if target is None:
+            return False
+        for rumor in self.rumors:
+            if rumor.seq == target:
+                rumor.confirmed = bool(confirmed)
+                return True
+        return False
+
+    def patch_scene(self, patch: dict) -> dict:
+        """Edit only the supplied scene fields; everything else round-trips unchanged.
+
+        Rebuilds via set_scene from the live SceneItem/SceneExit objects so untouched
+        items/exits/present_npcs survive verbatim, then re-points self.constraints (the
+        alias the GM turn context reads) at the freshly built scene's constraints.
+        """
+        patch = patch if isinstance(patch, dict) else {}
+        scene = self.scene
+        items = [{
+            "id": item.item_id, "name": item.name, "location": item.location,
+            "visible": item.visible, "portable": item.portable,
+            "owner": item.owner, "details": item.details,
+        } for item in scene.items]
+        exits = [{
+            "id": ex.exit_id, "name": ex.name, "destination": ex.destination,
+            "visible": ex.visible, "blocked_by": ex.blocked_by,
+        } for ex in scene.exits]
+        present = sorted(scene.present_npcs)
+
+        def pick(key, default):
+            return patch[key] if key in patch else default
+
+        result = self.set_scene(
+            title=pick("title", scene.title),
+            description=pick("description", scene.description),
+            location_id=pick("location_id", scene.location_id),
+            present_npcs=pick("present_npcs", present),
+            items=pick("items", items),
+            exits=pick("exits", exits),
+            constraints=pick("constraints", list(scene.constraints)),
+            tension=pick("tension", scene.tension),
+        )
+        self.constraints = self.scene.constraints
+        return result
+
     # --- World-fact tool (pull pattern) -----------------------------------
     def fact(self, query: str, actor_id: str = "player") -> WorldFact:
         """Honest actor-safe lookup. Hidden truth is stored, but not returned to player lookup."""

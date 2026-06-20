@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import MarkdownText from "./MarkdownText.jsx";
 import Modal from "./Modal.jsx";
+import Tooltip from "./Tooltip.jsx";
 import { nameColor } from "../nameColor.js";
 
 const actorColor = (actor, npcs) => {
@@ -18,6 +19,19 @@ const FACT_KINDS = [
 ];
 const factKindLabel = (kind) =>
   (FACT_KINDS.find((k) => k.value === kind) || {}).label || kind || "факт";
+
+// state-record vocab mirrors world.py STATE_RECORD_KINDS / STATE_RECORD_SCOPES
+const SR_KINDS = ["fact", "rumor", "npc_memory", "relationship", "goal"];
+const SR_SCOPES = ["public", "gm", "owner", "subject", "participants"];
+
+// --- tiny inline help bubble (ⓘ) -------------------------------------------
+function Info({ children }) {
+  return (
+    <Tooltip content={children} className="dbg-info" tipClassName="dbg-tip">
+      ⓘ
+    </Tooltip>
+  );
+}
 
 // --- Управление бросками: следующий (одноразовый) + все (постоянный) ---
 function RollsControls({ override, onRun }) {
@@ -85,7 +99,79 @@ function FactsManager({ facts, onAdd, onDelete }) {
   );
 }
 
-// --- Список персонажей: клик -> правка (слой 2) ---
+// --- Записи состояния (durable state records) ---
+function StateRecordsManager({ records, npcs, onApply }) {
+  const [text, setText] = useState("");
+  const [kind, setKind] = useState("fact");
+  const [scope, setScope] = useState("public");
+  const [entity, setEntity] = useState("");
+  const add = () => {
+    const record = { text: text.trim(), kind, scope };
+    if (entity.trim()) record.entity_id = entity.trim();
+    onApply({ add: [record] });
+    setText(""); setEntity("");
+  };
+  return (
+    <div className="dbg-form">
+      <div className="dbg-block">
+        <div className="dbg-block-head"><b>Новая запись</b><span className="dbg-badge">GM</span></div>
+        <p className="dbg-hint">Долговременная память мира. Доходит до модели через query_world_state по выбранной видимости (scope). Кеш-префикс не трогает.</p>
+        <textarea className="dbg-textarea" rows={2} placeholder="Текст записи состояния…" value={text} onChange={(e) => setText(e.target.value)} />
+        <div className="dbg-row">
+          <select value={kind} onChange={(e) => setKind(e.target.value)} title="kind">
+            {SR_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+          </select>
+          <select value={scope} onChange={(e) => setScope(e.target.value)} title="видимость (scope)">
+            {SR_SCOPES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <input placeholder="entity_id (npc)" value={entity} list="dbg-npc-ids" onChange={(e) => setEntity(e.target.value)} />
+          <button type="button" className="btn primary" disabled={!text.trim()} onClick={add}>Добавить</button>
+        </div>
+        <datalist id="dbg-npc-ids">{npcs.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}</datalist>
+      </div>
+      <div className="dbg-fact-list">
+        {records.length ? records.map((r) => (
+          <div className="dbg-fact" key={r.record_id || r.id}>
+            <span className="dbg-fact-kind">{r.kind}/{r.scope}</span>
+            <span className="dbg-fact-text">{r.text}{r.entity_id ? ` · ${r.entity_id}` : ""}</span>
+            <button type="button" className="icon-btn danger" title="Удалить запись" onClick={() => onApply({ delete: [r.record_id || r.id] })}>🗑</button>
+          </div>
+        )) : <Empty>записей нет</Empty>}
+      </div>
+    </div>
+  );
+}
+
+// --- Слухи: добавить / подтвердить / удалить ---
+function RumorsManager({ rumors, onAction }) {
+  const [speaker, setSpeaker] = useState("");
+  const [text, setText] = useState("");
+  return (
+    <div className="dbg-form">
+      <div className="dbg-block">
+        <div className="dbg-block-head"><b>Новый слух</b></div>
+        <p className="dbg-hint">Доходит до ГМ через query_world_state (статус «неподтверждённое»). Кеш-префикс не трогает.</p>
+        <textarea className="dbg-textarea" rows={2} placeholder="Текст слуха…" value={text} onChange={(e) => setText(e.target.value)} />
+        <div className="dbg-row">
+          <input placeholder="кто говорит (speaker)" value={speaker} onChange={(e) => setSpeaker(e.target.value)} />
+          <button type="button" className="btn primary" disabled={!text.trim()} onClick={() => { onAction({ action: "add", speaker: speaker.trim(), text: text.trim() }); setText(""); setSpeaker(""); }}>Добавить</button>
+        </div>
+      </div>
+      <div className="dbg-fact-list">
+        {rumors.length ? rumors.map((r) => (
+          <div className="dbg-fact" key={r.seq}>
+            <span className={["dbg-fact-kind", r.confirmed ? "truth" : "rumor"].join(" ")}>{r.confirmed ? "подтв." : "слух"}</span>
+            <span className="dbg-fact-text">{r.speaker ? `${r.speaker}: ` : ""}{r.text}</span>
+            <button type="button" className="btn small" onClick={() => onAction({ action: "confirm", seq: r.seq, confirmed: !r.confirmed })}>{r.confirmed ? "снять" : "подтв."}</button>
+            <button type="button" className="icon-btn danger" title="Удалить слух" onClick={() => onAction({ action: "delete", seq: r.seq })}>🗑</button>
+          </div>
+        )) : <Empty>слухов нет</Empty>}
+      </div>
+    </div>
+  );
+}
+
+// --- Список персонажей: клик -> правка ---
 function NpcPicker({ npcs, onPick }) {
   if (!npcs.length) return <Empty>персонажей нет</Empty>;
   return (
@@ -108,6 +194,137 @@ function EditField({ label, children }) {
       <span>{label}</span>
       {children}
     </label>
+  );
+}
+
+// --- Правка сюжета и канона ---
+function StoryEditor({ story, onSave }) {
+  const [d, setD] = useState(() => ({
+    title: story.title || "",
+    public_intro: story.public_intro || "",
+    hidden_truth: story.hidden_truth || "",
+    hidden_events: listText(story.hidden_events),
+  }));
+  const set = (patch) => setD((p) => ({ ...p, ...patch }));
+  const introChanged = d.public_intro !== (story.public_intro || "");
+  const save = () => {
+    // hidden_truth/title/hidden_events never touch the cached prefix; public_intro does,
+    // so only send it when it actually changed (avoids needless prefix re-caching).
+    const body = {
+      title: d.title,
+      hidden_truth: d.hidden_truth,
+      hidden_events: parseListField(d.hidden_events),
+    };
+    if (introChanged) body.public_intro = d.public_intro;
+    onSave(body);
+  };
+  return (
+    <div className="dbg-form">
+      <EditField label="Название истории"><input value={d.title} onChange={(e) => set({ title: e.target.value })} /></EditField>
+      <EditField label={<>Публичное интро <span className="dbg-warn">кеш-префикс</span></>}>
+        <textarea rows={4} value={d.public_intro} onChange={(e) => set({ public_intro: e.target.value })} />
+      </EditField>
+      {introChanged && (
+        <div className="dbg-danger-hint" role="alert">
+          ⚠️ Интро лежит в кешируемом префиксе промпта. Сохранение пересоберёт префикс ОДИН раз
+          (следующий ход дороже, дальше кеш снова тёплый). Остальные поля кеш не трогают.
+        </div>
+      )}
+      <EditField label="Скрытая правда (секрет; в префикс не входит)"><textarea rows={4} className="dbg-secret" value={d.hidden_truth} onChange={(e) => set({ hidden_truth: e.target.value })} /></EditField>
+      <EditField label="Скрытые события ГМ (по одному на строку)"><textarea rows={4} value={d.hidden_events} onChange={(e) => set({ hidden_events: e.target.value })} /></EditField>
+      <div className="dbg-modal-actions">
+        <button type="button" className="btn primary" onClick={save}>Сохранить</button>
+      </div>
+    </div>
+  );
+}
+
+// scene_export uses item_id/exit_id; set_scene reads `id` — normalize so ids survive a round-trip.
+function sceneItemsForEdit(items) {
+  return asList(items).map((it) => ({
+    id: it.item_id ?? it.id, name: it.name, location: it.location,
+    visible: it.visible, portable: it.portable, owner: it.owner, details: it.details,
+  }));
+}
+function sceneExitsForEdit(exits) {
+  return asList(exits).map((ex) => ({
+    id: ex.exit_id ?? ex.id, name: ex.name, destination: ex.destination,
+    visible: ex.visible, blocked_by: ex.blocked_by,
+  }));
+}
+
+// --- Правка сцены ---
+function SceneEditor({ scene, npcs, onSave }) {
+  const [d, setD] = useState(() => ({
+    title: scene.title || "",
+    location_id: scene.location_id || "",
+    description: scene.description || "",
+    tension: scene.tension || "",
+    constraints: listText(scene.constraints),
+    present: new Set(asList(scene.present_npcs)),
+    items: prettyJson(sceneItemsForEdit(scene.items)),
+    exits: prettyJson(sceneExitsForEdit(scene.exits)),
+  }));
+  const [editError, setEditError] = useState("");
+  const set = (patch) => setD((p) => ({ ...p, ...patch }));
+  const togglePresent = (id) => setD((p) => {
+    const present = new Set(p.present);
+    if (present.has(id)) present.delete(id); else present.add(id);
+    return { ...p, present };
+  });
+  const save = () => {
+    let patch;
+    try {
+      patch = {
+        title: d.title,
+        location_id: d.location_id,
+        description: d.description,
+        tension: d.tension,
+        constraints: parseListField(d.constraints),
+        present_npcs: Array.from(d.present),
+        items: parseArrayField("Предметы", d.items),
+        exits: parseArrayField("Выходы", d.exits),
+      };
+      setEditError("");
+    } catch (e) {
+      setEditError(e.message || String(e));
+      return;
+    }
+    onSave(patch);
+  };
+  return (
+    <div className="dbg-form">
+      <div className="dbg-edit-grid">
+        <EditField label="Название сцены"><input value={d.title} onChange={(e) => set({ title: e.target.value })} /></EditField>
+        <EditField label="location_id"><input value={d.location_id} onChange={(e) => set({ location_id: e.target.value })} /></EditField>
+      </div>
+      <EditField label="Описание"><textarea rows={3} value={d.description} onChange={(e) => set({ description: e.target.value })} /></EditField>
+      <EditField label="Напряжение"><textarea rows={2} value={d.tension} onChange={(e) => set({ tension: e.target.value })} /></EditField>
+      <EditField label="Ограничения (по одному на строку)"><textarea rows={4} value={d.constraints} onChange={(e) => set({ constraints: e.target.value })} /></EditField>
+      <div className="dbg-block">
+        <div className="dbg-block-head"><b>Кто в сцене</b></div>
+        <div className="dbg-check-grid">
+          {npcs.length ? npcs.map((n) => (
+            <label className="dbg-check" key={n.id}>
+              <input type="checkbox" checked={d.present.has(n.id)} onChange={() => togglePresent(n.id)} />
+              <span style={{ color: n.color || "var(--entity-unknown)" }}>{n.name}</span>
+            </label>
+          )) : <Empty>персонажей нет</Empty>}
+        </div>
+      </div>
+      <div className="dbg-edit-grid">
+        <EditField label={<>Предметы (JSON) <Info>Массив объектов: id, name, location, visible, portable, owner, details.</Info></>}>
+          <textarea rows={6} value={d.items} onChange={(e) => set({ items: e.target.value })} />
+        </EditField>
+        <EditField label={<>Выходы (JSON) <Info>Массив объектов: id, name, destination, visible, blocked_by.</Info></>}>
+          <textarea rows={6} value={d.exits} onChange={(e) => set({ exits: e.target.value })} />
+        </EditField>
+      </div>
+      {editError && <div className="err">{editError}</div>}
+      <div className="dbg-modal-actions">
+        <button type="button" className="btn primary" onClick={save}>Сохранить</button>
+      </div>
+    </div>
   );
 }
 
@@ -402,8 +619,17 @@ function parseListField(value) {
     .filter(Boolean);
 }
 
+function parseArrayField(label, value) {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error(`${label}: нужен JSON-массив`);
+  return parsed;
+}
+
 function prettyJson(value) {
   if (!value || (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length)) return "";
+  if (Array.isArray(value) && !value.length) return "";
   return JSON.stringify(value, null, 2);
 }
 
@@ -464,6 +690,19 @@ function DebugList({ items, secret = false }) {
   );
 }
 
+// generic scalar key/value grid (used for usage/cache blocks of unknown shape)
+function KVGrid({ obj }) {
+  const rows = Object.entries(obj || {}).filter(([, v]) => v != null && typeof v !== "object");
+  if (!rows.length) return <Empty />;
+  return (
+    <div className="debug-grid">
+      {rows.map(([k, v]) => (
+        <div key={k}><span>{k}</span><b>{String(v)}</b></div>
+      ))}
+    </div>
+  );
+}
+
 function SceneSummary({ scene }) {
   if (!scene) return <Empty />;
   return (
@@ -509,7 +748,7 @@ function Facts({ facts, rumors }) {
   );
 }
 
-function NpcCard({ npc, statusLabels = {} }) {
+function NpcCard({ npc, statusLabels = {}, onEdit }) {
   const status = npc.whereabouts?.status || (npc.present ? "present" : "unknown");
   const mechanics = npc.mechanics || {};
   return (
@@ -519,7 +758,14 @@ function NpcCard({ npc, statusLabels = {} }) {
           <b style={{ color: npc.color || "var(--entity-unknown)" }}>{npc.name}</b>
           <em>{npc.role || "персонаж"}{npc.player_label && npc.player_label !== npc.name ? ` · игрок видит: ${npc.player_label}` : ""}{npc.present ? " · в сцене" : ""}</em>
         </span>
-        <small>{npc.messages || 0} сообщ.</small>
+        <span className="debug-npc-head-right">
+          <button
+            type="button"
+            className="btn small"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onEdit?.(); }}
+          >✎ править</button>
+          <small>{npc.messages || 0} сообщ.</small>
+        </span>
       </summary>
       <div className="debug-grid">
         <div><span>id</span><b>{npc.id}</b></div>
@@ -581,7 +827,7 @@ function NpcCard({ npc, statusLabels = {} }) {
   );
 }
 
-function PlayerCard({ player }) {
+function PlayerCard({ player, onEdit }) {
   if (!player) return <Empty>карточка игрока не загружена</Empty>;
   return (
     <details className="debug-npc debug-player" open>
@@ -590,7 +836,14 @@ function PlayerCard({ player }) {
           <b>{player.name || "Персонаж игрока"}</b>
           <em>{[player.class_role, player.level != null ? `ур. ${player.level}` : ""].filter(Boolean).join(" · ") || "лист персонажа"}</em>
         </span>
-        <small>rev {player.card_revision || 0}</small>
+        <span className="debug-npc-head-right">
+          <button
+            type="button"
+            className="btn small"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onEdit?.(); }}
+          >✎ править</button>
+          <small>rev {player.card_revision || 0}</small>
+        </span>
       </summary>
       <div className="debug-grid">
         <div><span>род</span><b>{player.pronouns || "—"}</b></div>
@@ -655,6 +908,55 @@ function Events({ events, npcs }) {
   );
 }
 
+// --- Рантайм/кеш: только просмотр; настройки модели меняются в шапке «Настройки» ---
+function RuntimeView({ meta, runtime }) {
+  const cache = runtime?.cache || {};
+  const s = runtime?.settings || {};
+  return (
+    <div className="debug-stack">
+      <h4>Кеш токенов <Info>Кешируемый префикс промпта = системные правила + публичное интро (по prompt_cache_key). Правки сцены/NPC/фактов/записей/слухов идут в дописываемый ХВОСТ хода и не ломают префикс. Префикс пересобирается только при правке публичного интро.</Info></h4>
+      <div className="debug-grid">
+        <div><span>prompt_cache_key</span><b className="dbg-mono">{cache.prompt_cache_key || "—"}</b></div>
+        <div><span>thread_id</span><b className="dbg-mono">{cache.thread_id || "—"}</b></div>
+        <div><span>store</span><b>{String(cache.store ?? false)}</b></div>
+        <div><span>ходов</span><b>{meta?.turns ?? "—"}</b></div>
+      </div>
+
+      <h4>Токены последнего прогона <Info>cached_tokens &gt; 0 означает, что префикс переиспользован из кеша.</Info></h4>
+      <KVGrid obj={meta?.run_usage} />
+
+      <h4>Контекст</h4>
+      <KVGrid obj={meta?.context_usage} />
+
+      <h4>Настройки модели <Info>Только просмотр. Меняются в шапке → кнопка «Настройки». Применяются со следующего хода (читаются заново на каждый запрос).</Info></h4>
+      <div className="debug-grid">
+        <div><span>модель</span><b>{meta?.model || "—"}</b></div>
+        <div><span>бэкенд</span><b>{meta?.backend || "—"}</b></div>
+        <div><span>GM reasoning</span><b>{(s.gm_reasoning_effort || "—") + " / " + (s.gm_reasoning_summary || "—")}</b></div>
+        <div><span>NPC reasoning</span><b>{(s.npc_reasoning_effort || "—") + " / " + (s.npc_reasoning_summary || "—")}</b></div>
+        <div><span>Compact reasoning</span><b>{(s.compact_reasoning_effort || "—") + " / " + (s.compact_reasoning_summary || "—")}</b></div>
+        <div><span>verbosity</span><b>{s.text_verbosity || "—"}</b></div>
+        <div><span>tool_choice</span><b>{s.tool_choice || "—"}</b></div>
+        <div><span>parallel tools</span><b>{String(!!s.parallel_tool_calls)}</b></div>
+        <div><span>предлагать варианты</span><b>{String(!!s.gm_suggest_options)}</b></div>
+        <div><span>tool-hop лимит</span><b>{s.max_tool_hops ? s.max_tool_hops : "без ограничения"}</b></div>
+        <div><span>лимит токенов</span><b>{s.max_output_tokens || 0}</b></div>
+      </div>
+    </div>
+  );
+}
+
+const TABS = [
+  { id: "overview", label: "Обзор" },
+  { id: "story", label: "Сюжет" },
+  { id: "scene", label: "Сцена" },
+  { id: "player", label: "Игрок" },
+  { id: "npcs", label: "Персонажи" },
+  { id: "facts", label: "Факты" },
+  { id: "memory", label: "Память" },
+  { id: "runtime", label: "Рантайм" },
+];
+
 export default function DebugPanel({ refreshKey = "", open = false, onOpenChange }) {
   const setOpen = useCallback(
     (next) => onOpenChange?.(typeof next === "function" ? next(open) : next),
@@ -664,6 +966,7 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [stack, setStack] = useState([]);
+  const [tab, setTab] = useState("overview");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -716,6 +1019,10 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
   const runDeleteFact = useCallback((id) => apply(api.deleteFact(id)), [apply]);
   const runUpdatePlayer = useCallback((body) => { apply(api.updatePlayer(body)); closeTop(); }, [apply, closeTop]);
   const runUpdateNpc = useCallback((body) => { apply(api.updateNpc(body)); closeTop(); }, [apply, closeTop]);
+  const runUpdateStory = useCallback((body) => { apply(api.updateStory(body)); closeTop(); }, [apply, closeTop]);
+  const runUpdateScene = useCallback((patch) => { apply(api.updateScene(patch)); closeTop(); }, [apply, closeTop]);
+  const runStateRecord = useCallback((body) => apply(api.stateRecord(body)), [apply]);
+  const runRumor = useCallback((body) => apply(api.rumor(body)), [apply]);
 
   const override = data?.roll_override || {};
   const rollBadge = [
@@ -724,6 +1031,7 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
   ].filter(Boolean).join(" · ");
 
   const title = data?.scene?.title || "История";
+  const npcs = asList(data?.npcs);
 
   return (
     <>
@@ -751,75 +1059,138 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
 
         <div className="debug-actions">
           <button type="button" className="btn" onClick={load} disabled={loading}>
-            {loading ? "Обновляю…" : "Обновить"}
+            {loading ? "Обновляю…" : "↻ Обновить"}
           </button>
           {data?.meta && <span>{data.meta.backend} · {data.meta.model} · ходов: {data.meta.turns}</span>}
         </div>
+
+        {data && (
+          <nav className="dbg-tabs" role="tablist" aria-label="Разделы дебага">
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                className={["dbg-tab-btn", tab === t.id ? "active" : ""].filter(Boolean).join(" ")}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        )}
 
         {error && <div className="err">debug: {error}</div>}
         {!data && !error && <Empty>{loading ? "загружаю…" : "панель ещё не открывалась"}</Empty>}
 
         {data && (
           <div className="debug-body">
-            <details className="debug-section" open>
-              <summary>⚙ Управление</summary>
-              <div className="dbg-controls">
-                <button type="button" className="btn" onClick={() => openModal({ type: "rolls" })}>
-                  🎲 Броски{rollBadge ? ` · ${rollBadge}` : ""}
-                </button>
-                <button type="button" className="btn" onClick={() => openModal({ type: "facts" })}>📖 Факты мира</button>
-                <button type="button" className="btn" onClick={() => openModal({ type: "playerEdit" })}>🧍 Персонаж игрока</button>
-                <button type="button" className="btn" onClick={() => openModal({ type: "npcs" })}>👤 Персонажи</button>
+            {tab === "overview" && (
+              <div className="dbg-tabpanel">
+                <div className="dbg-controls">
+                  <button type="button" className="btn" onClick={() => openModal({ type: "rolls" })}>
+                    🎲 Броски{rollBadge ? ` · ${rollBadge}` : ""}
+                  </button>
+                  <button type="button" className="btn" onClick={() => setTab("story")}>🎯 Сюжет</button>
+                  <button type="button" className="btn" onClick={() => setTab("scene")}>🎬 Сцена</button>
+                  <button type="button" className="btn" onClick={() => setTab("runtime")}>⚙ Рантайм</button>
+                </div>
+                <SceneSummary scene={data.scene} />
+                <div className="debug-grid">
+                  <div><span>бэкенд · модель</span><b>{data.meta?.backend} · {data.meta?.model}</b></div>
+                  <div><span>ходов</span><b>{data.meta?.turns ?? 0}</b></div>
+                  <div><span>персонажей</span><b>{npcs.length}</b></div>
+                  <div><span>время</span><b>{data.time?.current_date_label || "—"}</b></div>
+                </div>
+                <h4>Что игрок знает на старте</h4>
+                <TextBlock>{data.story?.public_intro}</TextBlock>
               </div>
-            </details>
+            )}
 
-            <details className="debug-section" open>
-              <summary>Цель и канон</summary>
-              <h4>Цель ведения</h4>
-              <TextBlock>{data.story?.objective}</TextBlock>
-              <h4>Что игрок знает на старте</h4>
-              <TextBlock>{data.story?.public_intro}</TextBlock>
-              <h4>Что по факту произошло</h4>
-              <TextBlock secret>{data.story?.hidden_truth}</TextBlock>
-            </details>
-
-            <details className="debug-section" open>
-              <summary>Факты и слухи</summary>
-              <Facts facts={data.facts} rumors={data.rumors} />
-            </details>
-
-            <details className="debug-section">
-              <summary>Текущая сцена</summary>
-              <SceneSummary scene={data.scene} />
-              <h4>Описание</h4>
-              <TextBlock>{data.scene?.description}</TextBlock>
-              <h4>Ограничения</h4>
-              <DebugList items={data.scene?.constraints || data.story?.constraints} />
-              <h4>Скрытые события</h4>
-              <DebugList items={data.story?.hidden_events} secret />
-            </details>
-
-            <details className="debug-section" open>
-              <summary>Персонаж игрока</summary>
-              <PlayerCard player={data.player_character} />
-            </details>
-
-            <details className="debug-section" open>
-              <summary>Персонажи и секреты</summary>
-              <div className="debug-npcs">
-                {asList(data.npcs).map((npc) => <NpcCard key={npc.id} npc={npc} statusLabels={data.status_labels || {}} />)}
+            {tab === "story" && (
+              <div className="dbg-tabpanel">
+                <div className="dbg-controls">
+                  <button type="button" className="btn primary" onClick={() => openModal({ type: "story" })}>✎ Править сюжет и канон</button>
+                </div>
+                <h4>Цель ведения <Info>Это пояснение для тебя. Модели оно напрямую не передаётся — поведение ГМ задаёт системный промпт.</Info></h4>
+                <TextBlock>{data.story?.objective}</TextBlock>
+                <h4>Публичное интро <Info>Лежит в кешируемом префиксе. Правка пересоберёт префикс один раз.</Info></h4>
+                <TextBlock>{data.story?.public_intro}</TextBlock>
+                <h4>Скрытая правда <Info>В префикс не входит. Доходит до ГМ через query_world_state (scope=gm).</Info></h4>
+                <TextBlock secret>{data.story?.hidden_truth}</TextBlock>
+                <h4>Скрытые события ГМ</h4>
+                <DebugList items={data.story?.hidden_events} secret />
               </div>
-            </details>
+            )}
 
-            <details className="debug-section">
-              <summary>Память и события</summary>
-              <h4>Сводка ГМ</h4>
-              <TextBlock>{data.memory?.gm_summary}</TextBlock>
-              <h4>Загруженные тулы ГМ</h4>
-              <DebugList items={data.memory?.loaded_gm_tools} />
-              <h4>Последние события</h4>
-              <Events events={data.memory?.events} npcs={asList(data?.npcs)} />
-            </details>
+            {tab === "scene" && (
+              <div className="dbg-tabpanel">
+                <div className="dbg-controls">
+                  <button type="button" className="btn primary" onClick={() => openModal({ type: "scene" })}>✎ Править сцену</button>
+                </div>
+                <SceneSummary scene={data.scene} />
+                <h4>Описание</h4>
+                <TextBlock>{data.scene?.description}</TextBlock>
+                <h4>Ограничения</h4>
+                <DebugList items={data.scene?.constraints} />
+                <h4>Предметы</h4>
+                <DebugList items={asList(data.scene?.items).map((i) => i.name + (i.location ? ` · ${i.location}` : ""))} />
+                <h4>Выходы</h4>
+                <DebugList items={asList(data.scene?.exits).map((e) => `${e.name} → ${e.destination}`)} />
+              </div>
+            )}
+
+            {tab === "player" && (
+              <div className="dbg-tabpanel">
+                <PlayerCard player={data.player_character} onEdit={() => openModal({ type: "playerEdit" })} />
+              </div>
+            )}
+
+            {tab === "npcs" && (
+              <div className="dbg-tabpanel">
+                <div className="debug-npcs">
+                  {npcs.map((npc) => (
+                    <NpcCard
+                      key={npc.id}
+                      npc={npc}
+                      statusLabels={data.status_labels || {}}
+                      onEdit={() => openModal({ type: "npcEdit", id: npc.id })}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {tab === "facts" && (
+              <div className="dbg-tabpanel">
+                <div className="dbg-controls">
+                  <button type="button" className="btn" onClick={() => openModal({ type: "facts" })}>📖 Факты мира</button>
+                  <button type="button" className="btn" onClick={() => openModal({ type: "stateRecords" })}>🧬 Записи состояния</button>
+                  <button type="button" className="btn" onClick={() => openModal({ type: "rumors" })}>🗣 Слухи</button>
+                </div>
+                <Facts facts={data.facts} rumors={data.rumors} />
+                <h4>Записи состояния (state records)</h4>
+                <DebugList items={asList(data.state_records).map((r) => `[${r.kind}/${r.scope}] ${r.text}`)} />
+              </div>
+            )}
+
+            {tab === "memory" && (
+              <div className="dbg-tabpanel">
+                <h4>Сводка ГМ</h4>
+                <TextBlock>{data.memory?.gm_summary}</TextBlock>
+                <h4>Загруженные тулы ГМ</h4>
+                <DebugList items={data.memory?.loaded_gm_tools} />
+                <h4>Последние события</h4>
+                <Events events={data.memory?.events} npcs={npcs} />
+              </div>
+            )}
+
+            {tab === "runtime" && (
+              <div className="dbg-tabpanel">
+                <RuntimeView meta={data.meta} runtime={data.runtime} />
+              </div>
+            )}
           </div>
         )}
       </aside>
@@ -839,10 +1210,31 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
             </Modal>
           );
         }
-        if (m.type === "npcs") {
+        if (m.type === "stateRecords") {
           return (
-            <Modal key="npcs" depth={i} title="Персонажи" subtitle="выбери для правки" onClose={closeTop}>
-              <NpcPicker npcs={asList(data?.npcs)} onPick={(id) => pushModal({ type: "npcEdit", id })} />
+            <Modal key="sr" depth={i} wide title="Записи состояния" subtitle="durable state records" onClose={closeTop}>
+              <StateRecordsManager records={asList(data?.state_records)} npcs={npcs} onApply={runStateRecord} />
+            </Modal>
+          );
+        }
+        if (m.type === "rumors") {
+          return (
+            <Modal key="rumors" depth={i} wide title="Слухи" subtitle="добавить / подтвердить / удалить" onClose={closeTop}>
+              <RumorsManager rumors={asList(data?.rumors)} onAction={runRumor} />
+            </Modal>
+          );
+        }
+        if (m.type === "story") {
+          return (
+            <Modal key="story" depth={i} wide title="Правка сюжета и канона" subtitle="интро · скрытая правда · скрытые события" onClose={closeTop}>
+              <StoryEditor story={data?.story || {}} onSave={runUpdateStory} />
+            </Modal>
+          );
+        }
+        if (m.type === "scene") {
+          return (
+            <Modal key="scene" depth={i} wide title="Правка сцены" subtitle={data?.scene?.title || ""} onClose={closeTop}>
+              <SceneEditor scene={data?.scene || {}} npcs={npcs} onSave={runUpdateScene} />
             </Modal>
           );
         }
@@ -853,8 +1245,15 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
             </Modal>
           );
         }
+        if (m.type === "npcs") {
+          return (
+            <Modal key="npcs" depth={i} title="Персонажи" subtitle="выбери для правки" onClose={closeTop}>
+              <NpcPicker npcs={npcs} onPick={(id) => pushModal({ type: "npcEdit", id })} />
+            </Modal>
+          );
+        }
         if (m.type === "npcEdit") {
-          const npc = asList(data?.npcs).find((n) => n.id === m.id);
+          const npc = npcs.find((n) => n.id === m.id);
           if (!npc) return null;
           return (
             <Modal key={`npcEdit-${m.id}`} depth={i} wide title={<>Правка: <span style={{ color: npc.color || "var(--entity-unknown)" }}>{npc.name}</span></>} subtitle={`ID: ${npc.id}`} onClose={closeTop}>

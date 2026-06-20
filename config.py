@@ -73,11 +73,6 @@ BACKEND = os.environ.get("GM_BACKEND", "codex")
 # chat_template_kwargs/top_k/min_p. Для локального llama.cpp включено по умолчанию.
 USE_LLAMA_TEMPLATE_KWARGS = _env_bool("GM_LLAMA_TEMPLATE_KWARGS", BACKEND == "llamacpp")
 
-# --- Поведение оркестратора ----------------------------------------------
-# ГМ сам ревьюит действия NPC в своём треде (correction-перевызов ask_npc), поэтому
-# за ход бывает несколько вызовов: NPC -> переделка -> кубы -> нарратив.
-MAX_TOOL_HOPS = int(os.environ.get("GM_MAX_HOPS", "6"))
-
 # Сырой стрим видимого текста ГМ. Выключен по умолчанию, потому что некоторые
 # модели сначала пишут pre-tool фразу, а потом всё же вызывают ask_npc/roll_dice.
 # Если нужно видеть текст ГМ сразу и принять этот риск:

@@ -70,10 +70,40 @@ MODELS = {
 }
 
 
+PLAYER_CHARACTER = {
+    "name": "Дарра", "pronouns": "F", "class_role": "странствующая сыщица", "level": 2,
+    "background": "вольная сыщица, ищет правду за плату или из упрямства",
+    "age": "Фактически 34 года", "physical_type": "невысокая жилистая женщина",
+    "distinctive_features": "цепкий взгляд, кольцо-печатка, записная книжка",
+    "life_status": "alive", "life_status_note": "", "condition": "в дороге, собрана",
+    "personality": "остра на язык, наблюдательна, недоверчива к властям",
+    "values": "правда, независимость, расплата за тех, кого заставили молчать",
+    "gm_notes": "Попала в порт проездом; власти стражи нет, только репутация дознавателя.",
+    "abilities": {"STR": 9, "DEX": 13, "CON": 11, "INT": 13, "WIS": 14, "CHA": 15},
+    "skills": {"Insight": 4, "Perception": 4, "Persuasion": 4, "Deception": 4},
+    "saving_throws": {"WIS": 4, "CHA": 4}, "passive_perception": 14, "ac": 13,
+    "hp": {"current": 16, "max": 16}, "speed": "30 ft", "senses": "обычное зрение",
+    "languages": "Общий; воровское арго",
+    "inventory": ["дорожный плащ", "кинжал", "потайной фонарь", "лупа", "набор отмычек"],
+    "equipment": ["проклёпанная кожаная куртка"],
+    "features": ["Глаз дознавателя", "Язык без костей", "Тихие пальцы"],
+    "card_revision": 0,
+}
+
 DEBUG = {
     "ok": True,
-    "meta": {"model": "qwen2.5:14b", "backend": "ollama", "turns": 3},
+    "meta": {"model": "qwen2.5:14b", "backend": "ollama", "turns": 3,
+             "run_usage": {"input": 2100, "output": 580, "cached_tokens": 800},
+             "context_usage": {"current": 12300, "limit": 100000, "remaining": 87700}},
+    "runtime": {
+        "settings": SETTINGS,
+        "cache": {"prompt_cache_key": "gm-lab:mock-thread-abc123",
+                  "thread_id": "mock-thread-abc123", "store": False},
+    },
+    "time": {"current_date_label": "День 1"},
+    "player_character": PLAYER_CHARACTER,
     "story": {
+        "title": "Ледяной порт",
         "objective": "Привести игрока к разгадке пропажи «Морянки».",
         "public_intro": SCENE,
         "hidden_truth": "Корабль увели контрабандисты к Чёрным скалам.",
@@ -87,20 +117,60 @@ DEBUG = {
         {"id": "truth_1", "kind": "truth", "text": "Марет знает маршрут к Чёрным скалам.", "keywords": ["марет", "маршрут"]},
         {"id": "rumor_1", "kind": "rumor", "text": "У скал видели чужие огни.", "keywords": ["скалы", "огни"]},
     ],
-    "rumors": [{"speaker": "Лиза", "text": "Борин в ту ночь не спал."}],
-    "scene": {"title": "Ледяной порт", "location_id": "ice_port", "present_npcs": [],
-              "tension": "ровное", "description": SCENE, "constraints": []},
+    "state_records": [
+        {"record_id": "sr_known_borin", "kind": "fact", "scope": "public",
+         "text": "Игрок знает капитана стражи по имени Борин.", "entity_id": "n_borin", "active": True},
+        {"record_id": "sr_liza_note", "kind": "npc_memory", "scope": "owner",
+         "text": "Лиза помнит, что Борин не спал в ночь пропажи.", "entity_id": "n_liza", "active": True},
+    ],
+    "rumors": [{"seq": 1, "speaker": "Лиза", "text": "Борин в ту ночь не спал.", "confirmed": False}],
+    "scene": {"title": "Ледяной порт", "location_id": "ice_port", "present_npcs": ["n_borin"],
+              "tension": "ровное", "description": SCENE,
+              "constraints": ["Туман ограничивает видимость"],
+              "items": [{"item_id": "boat", "name": "пустая шлюпка с «Морянки»", "location": "у пирса",
+                         "visible": True, "portable": False, "owner": "", "details": "метка на борту"}],
+              "exits": [{"exit_id": "tavern", "name": "переулок к таверне",
+                         "destination": "таверна «Треснувший якорь»", "visible": True, "blocked_by": ""}]},
     "npcs": [
-        {**n, "present": False,
+        {**n, "present": (n["id"] == "n_borin"), "public_label": n["role"],
          "whereabouts": {"location_name": "у причала", "status": "likely", "details": ""},
          "persona": f"{n['name']} — житель порта.", "voice": "Сдержанно, по делу.",
          "goals": "Защищать свои интересы.", "knowledge": "То, что очевидно в сцене.",
-         "secret": "Личная тайна не задана.", "summary": "", "commitments": [],
-         "messages": 0, "history": ""}
+         "secret": "Личная тайна не задана.",
+         "mechanics": {"abilities": {"STR": 12, "DEX": 11, "CON": 13, "INT": 10, "WIS": 12, "CHA": 11},
+                       "skills": {"Perception": 3}, "saving_throws": {}, "passive_perception": 13,
+                       "ac": 14, "hp": {"current": 20, "max": 20}, "speed": "30 ft",
+                       "senses": "обычное зрение", "languages": "Общий"},
+         "summary": "", "commitments": [], "messages": 0, "history": ""}
         for n in NPCS
     ],
     "memory": {"gm_summary": "", "loaded_gm_tools": ["ask_npc", "roll_dice"], "events": []},
 }
+
+
+# --- in-memory chat list (mock only) so the sidebar + delete flow can be previewed ---
+MOCK_CHATS = [
+    {"id": "chat_ice", "title": "Ледяной порт", "preview": "Туман у причала, пропала «Морянка».", "turn_count": 3},
+    {"id": "chat_garden", "title": "Стеклянный сад Элирии", "preview": "Чёрные прожилки на лунных орхидеях.", "turn_count": 1},
+    {"id": "chat_turn", "title": "Убийство в Тёрнвейле", "preview": "Купец мёртв, гильдия молчит.", "turn_count": 5},
+]
+ACTIVE_CHAT_ID = {"value": "chat_ice"}
+
+
+def _chats_payload():
+    return [
+        {**c, "created_at": "2026-06-19 10:00", "updated_at": "2026-06-20 12:30",
+         "active": c["id"] == ACTIVE_CHAT_ID["value"]}
+        for c in MOCK_CHATS
+    ]
+
+
+def _chat_one(chat_id):
+    for c in MOCK_CHATS:
+        if c["id"] == chat_id:
+            return {**c, "created_at": "2026-06-19 10:00", "updated_at": "2026-06-20 12:30", "active": True}
+    return {"id": chat_id, "title": "Новый чат", "preview": "", "turn_count": 0,
+            "created_at": "", "updated_at": "", "active": True}
 
 
 def meta(label, secs=2.0, tps=44, tin=1200, tout=320, cached=0):
@@ -136,7 +206,11 @@ def _seed_block(i):
         {"kind": "gm_tool_call", "data": {"name": "roll_dice",
          "arguments": {"notation": "1d20+3",
                        "reason": "Проверка Внимательности (Восприятие), DC 13 — разглядеть детали сквозь туман."}}},
-        {"kind": "dice", "data": "Восприятие: d20(14)+3 = 17 → успех"},
+        {"kind": "dice", "data": {"ok": True, "notation": "1d20+3", "sides": 20, "count": 1, "keep": "",
+                                   "rolls": [14], "kept": [14], "modifier": 3, "total": 17,
+                                   "grade": "success", "natural": 14, "target_number": 13,
+                                   "target_kind": "DC", "roll_kind": "check",
+                                   "detail": "1d20+3 -> [14] +3 = 17 vs DC 13: grade=success, margin=+4, natural=14"}},
         {"kind": "gm_narration", "sid": g,
          "data": "Туман липнет к лицу. Доски причала стонут под сапогами. У дальнего пирса покачивается пустая шлюпка — с «Морянки», ты узнаёшь метку на борту."},
         {"kind": "gm_tool_call", "data": {"name": "ask_npc",
@@ -244,6 +318,40 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return data if isinstance(data, dict) else {}
 
+    def _handle_chats(self, path):
+        parts = path.strip("/").split("/")
+        if path == "/chats":  # create
+            new_id = "chat_new_%d" % (len(MOCK_CHATS) + 1)
+            MOCK_CHATS.insert(0, {"id": new_id, "title": "Новый чат", "preview": "", "turn_count": 0})
+            ACTIVE_CHAT_ID["value"] = new_id
+            self._json({"ok": True, "active_chat_id": new_id, "chat": _chat_one(new_id),
+                        "state": STATE, "transcript": {"events": seed_transcript()}})
+            return
+        chat_id = parts[1] if len(parts) == 3 else ""
+        if path.endswith("/activate"):
+            ACTIVE_CHAT_ID["value"] = chat_id
+            self._json({"ok": True, "chat": _chat_one(chat_id),
+                        "state": STATE, "transcript": {"events": seed_transcript()}})
+            return
+        if path.endswith("/delete"):
+            before = len(MOCK_CHATS)
+            MOCK_CHATS[:] = [c for c in MOCK_CHATS if c["id"] != chat_id]
+            deleted = len(MOCK_CHATS) < before
+            if not deleted:
+                self._json({"ok": False, "error": "chat not found"}, 404)
+                return
+            if ACTIVE_CHAT_ID["value"] == chat_id:
+                ACTIVE_CHAT_ID["value"] = MOCK_CHATS[0]["id"] if MOCK_CHATS else ""
+            if not MOCK_CHATS:  # mimic server creating a fresh chat when none remain
+                MOCK_CHATS.append({"id": "chat_fresh", "title": "Новый чат", "preview": "", "turn_count": 0})
+                ACTIVE_CHAT_ID["value"] = "chat_fresh"
+            self._json({"ok": True, "deleted": True, "active_chat_id": ACTIVE_CHAT_ID["value"],
+                        "chats": _chats_payload(), "chat": _chat_one(ACTIVE_CHAT_ID["value"]),
+                        "state": STATE, "transcript": {"events": seed_transcript()},
+                        "embeddings_purged": 7})
+            return
+        self._json({"error": "not found"}, 404)
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/" or path.startswith("/index"):
@@ -273,10 +381,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/debug":
             self._json(DEBUG)
             return
+        if path == "/chats":
+            self._json({"ok": True, "active_chat_id": ACTIVE_CHAT_ID["value"], "chats": _chats_payload()})
+            return
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/chats" or path.startswith("/chats/"):
+            self._handle_chats(path)
+            return
         if path == "/settings":
             SETTINGS.update(self._body().get("settings") or {})
             self._json({
@@ -332,6 +446,50 @@ class Handler(BaseHTTPRequestHandler):
                         n["whereabouts"] = body["whereabouts"]
             self._json(DEBUG)
             return
+        if path == "/debug/player":
+            DEBUG["player_character"].update(self._body().get("fields") or {})
+            self._json(DEBUG)
+            return
+        if path == "/debug/story":
+            body = self._body()
+            for key in ("title", "public_intro", "hidden_truth"):
+                if key in body:
+                    DEBUG["story"][key] = body[key]
+            if "hidden_events" in body:
+                DEBUG["story"]["hidden_events"] = list(body.get("hidden_events") or [])
+            self._json(DEBUG)
+            return
+        if path == "/debug/scene":
+            patch = self._body().get("patch") or {}
+            DEBUG["scene"].update(patch)
+            self._json(DEBUG)
+            return
+        if path == "/debug/state_record":
+            body = self._body()
+            for rec in (body.get("add") or []):
+                DEBUG["state_records"].append({
+                    "record_id": f"sr_dbg_{len(DEBUG['state_records']) + 1}",
+                    "kind": rec.get("kind", "fact"), "scope": rec.get("scope", "public"),
+                    "text": rec.get("text", ""), "entity_id": rec.get("entity_id", ""), "active": True})
+            for rid in (body.get("delete") or []):
+                DEBUG["state_records"] = [r for r in DEBUG["state_records"] if r["record_id"] != rid]
+            self._json(DEBUG)
+            return
+        if path == "/debug/rumor":
+            body = self._body()
+            action = body.get("action")
+            if action == "add":
+                DEBUG["rumors"].append({"seq": len(DEBUG["rumors"]) + 1,
+                                        "speaker": body.get("speaker", ""),
+                                        "text": body.get("text", ""), "confirmed": False})
+            elif action == "delete":
+                DEBUG["rumors"] = [r for r in DEBUG["rumors"] if r.get("seq") != body.get("seq")]
+            elif action == "confirm":
+                for r in DEBUG["rumors"]:
+                    if r.get("seq") == body.get("seq"):
+                        r["confirmed"] = bool(body.get("confirmed"))
+            self._json(DEBUG)
+            return
         self._json({"error": "not found"}, 404)
 
     def _push(self, ev):
@@ -353,7 +511,11 @@ class Handler(BaseHTTPRequestHandler):
                         "arguments": {"notation": "1d20+4",
                                       "reason": "Проверка Расследования, DC 12 — найти улики в шлюпке."}}})
             time.sleep(0.05)
-            self._push({"kind": "dice", "data": "Расследование: d20(11)+4 = 15 → успех"})
+            self._push({"kind": "dice", "data": {"ok": True, "notation": "1d20+4", "sides": 20, "count": 1,
+                                                  "keep": "", "rolls": [11], "kept": [11], "modifier": 4,
+                                                  "total": 15, "grade": "success", "natural": 11,
+                                                  "target_number": 12, "target_kind": "DC", "roll_kind": "check",
+                                                  "detail": "1d20+4 -> [11] +4 = 15 vs DC 12: grade=success, margin=+3, natural=11"}})
             self._push({"kind": "world_fact", "data": "На дне шлюпки — мокрый обрывок карты с пометкой у Чёрных скал."})
             time.sleep(0.05)
             self._stream("gm_narration", "live",

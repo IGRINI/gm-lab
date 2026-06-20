@@ -33,6 +33,8 @@ export const api = {
 
   activateChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/activate`),
 
+  deleteChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/delete`),
+
   setModel: (model) =>
     getJSON("/model", {
       method: "POST",
@@ -63,6 +65,10 @@ export const api = {
   deleteFact: (id) => _post("/debug/fact_delete", { id }),
   updatePlayer: (body) => _post("/debug/player", body),
   updateNpc: (body) => _post("/debug/npc", body),
+  updateStory: (body) => _post("/debug/story", body),
+  updateScene: (patch) => _post("/debug/scene", { patch }),
+  stateRecord: (body) => _post("/debug/state_record", body),
+  rumor: (body) => _post("/debug/rumor", body),
 
   async export() {
     const r = await fetch("/export");

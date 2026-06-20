@@ -36,8 +36,7 @@ MODEL_TOOL_RESULT_GUIDE = (
 GM_TOOL_CAPABILITY_OVERVIEW = (
     f"Visible GM tool capabilities: {VISIBLE_TOOL_CAPABILITY_TEXT}. "
     f"Hidden GM capabilities can be loaded with `tool_search`: "
-    f"{HIDDEN_TOOL_CAPABILITY_TEXT}. "
-    f"{MODEL_TOOL_RESULT_GUIDE}"
+    f"{HIDDEN_TOOL_CAPABILITY_TEXT}."
 )
 
 WORLD_STATE_TYPE_GUIDE = (

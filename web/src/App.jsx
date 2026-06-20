@@ -186,7 +186,19 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState("");
-  const [chatsOpen, setChatsOpen] = useState(false);
+  const [chatsOpen, setChatsOpen] = useState(() => {
+    // Desktop: docked sidebar starts expanded; mobile: drawer starts closed.
+    // A saved choice (localStorage) wins so a collapse/expand sticks across reloads.
+    if (typeof window === "undefined") return false;
+    try {
+      const saved = window.localStorage.getItem("gmlab.chatsOpen");
+      if (saved === "0") return false;
+      if (saved === "1") return true;
+    } catch {
+      /* localStorage unavailable — fall through to breakpoint default */
+    }
+    return window.matchMedia("(min-width: 701px)").matches;
+  });
   const [chatsLoading, setChatsLoading] = useState(false);
   const [chatsError, setChatsError] = useState("");
   const [chatActionBusy, setChatActionBusy] = useState(false);
@@ -401,7 +413,23 @@ export default function App() {
   );
 
   const closeChats = useCallback(() => setChatsOpen(false), []);
-  const openChats = useCallback(() => setChatsOpen(true), []);
+  const toggleChats = useCallback(() => setChatsOpen((value) => !value), []);
+  // On desktop the sidebar is a docked, collapsible column, so it must stay open after
+  // picking a chat; only the mobile drawer should auto-close on selection.
+  const closeChatsOnMobile = useCallback(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 700px)").matches) {
+      setChatsOpen(false);
+    }
+  }, []);
+
+  // Remember the collapse/expand choice across reloads.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("gmlab.chatsOpen", chatsOpen ? "1" : "0");
+    } catch {
+      /* localStorage unavailable (private mode) — non-fatal */
+    }
+  }, [chatsOpen]);
 
   const onCreateChat = useCallback(async () => {
     if (busy || chatActionBusy) return;
@@ -425,7 +453,7 @@ export default function App() {
       if (!data.ok) throw new Error(data.error || "чат не создан");
       restoreChatSession(data);
       await refreshChats();
-      setChatsOpen(false);
+      closeChatsOnMobile();
     } catch (e) {
       store.dispatch({ kind: "error", agent: "чаты", data: e.message });
     } finally {
@@ -442,6 +470,7 @@ export default function App() {
     store,
     restoreChatSession,
     refreshChats,
+    closeChatsOnMobile,
   ]);
 
   const onActivateChat = useCallback(
@@ -462,7 +491,27 @@ export default function App() {
         setStatus("");
       }
     },
-    [activeChatId, busy, chatActionBusy, store, restoreChatSession, refreshChats]
+    [activeChatId, busy, chatActionBusy, store, restoreChatSession, refreshChats, closeChatsOnMobile]
+  );
+
+  const onDeleteChat = useCallback(
+    async (chatId) => {
+      if (!chatId) return;
+      const wasActive = sameChatId(chatId, activeChatId);
+      try {
+        const data = await api.deleteChat(chatId);
+        if (!data.ok) throw new Error(data.error || "чат не удалён");
+        // If the open chat was deleted, switch to the active session the server returned
+        // (it creates a fresh chat when none remain). Otherwise keep the current view.
+        if (wasActive && data.chat && data.state && data.transcript) {
+          restoreChatSession(data);
+        }
+        await refreshChats();
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "чаты", data: e.message });
+      }
+    },
+    [activeChatId, restoreChatSession, refreshChats, store]
   );
 
   const send = useCallback(
@@ -551,7 +600,8 @@ export default function App() {
   return (
     <div className="app">
       <Header
-        onToggleChats={openChats}
+        onToggleChats={toggleChats}
+        chatsOpen={chatsOpen}
         srv={srv}
         models={models}
         settings={settings}
@@ -563,7 +613,7 @@ export default function App() {
         onExport={() => api.export()}
         onReset={onReset}
       />
-      <div className={"app-body" + (debugOpen ? " debug-open" : "")}>
+      <div className={"app-body" + (debugOpen ? " debug-open" : "") + (chatsOpen ? "" : " chats-collapsed")}>
         <WorldHud time={srv.time} scene={srv.scene} playerCharacter={srv.playerCharacter} />
         <ChatHistorySidebar
           chats={chats}
@@ -580,6 +630,7 @@ export default function App() {
           onClose={closeChats}
           onCreate={onCreateChat}
           onActivate={onActivateChat}
+          onDelete={onDeleteChat}
         />
         <main className="chat-pane">
           <Chat

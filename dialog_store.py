@@ -1,4 +1,4 @@
-"""SQLite-backed per-guest dialog persistence."""
+"""SQLite-backed dialog persistence keyed by chat scope."""
 from __future__ import annotations
 
 import json
@@ -132,6 +132,134 @@ class DialogStore:
                 self._set_active_chat(guest_id, chat_id)
             return runtime
 
+    def merge_all_chats_into_scope(self, target_guest_id: str) -> int:
+        target_guest_id = str(target_guest_id or "").strip()
+        if not target_guest_id:
+            raise ValueError("target_guest_id is required")
+
+        with self._cache_lock:
+            moved = 0
+            with self._connection() as con:
+                rows = con.execute(
+                    """
+                    SELECT
+                        guest_id, chat_id, title, preview, turn_count,
+                        payload, created_at, updated_at
+                    FROM dialog_chats
+                    WHERE guest_id <> ?
+                    ORDER BY updated_at ASC, created_at ASC, chat_id ASC
+                    """,
+                    (target_guest_id,),
+                ).fetchall()
+                for row in rows:
+                    (
+                        source_guest_id,
+                        chat_id,
+                        title,
+                        preview,
+                        turn_count,
+                        payload,
+                        created_at,
+                        updated_at,
+                    ) = row
+                    target_chat_id = str(chat_id)
+                    if self._chat_exists_with_connection(con, target_guest_id, target_chat_id):
+                        target_chat_id = self._new_chat_id_with_connection(con, target_guest_id)
+
+                    con.execute(
+                        """
+                        INSERT INTO dialog_chats (
+                            guest_id, chat_id, title, preview, turn_count,
+                            payload, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            target_guest_id,
+                            target_chat_id,
+                            title,
+                            preview,
+                            int(turn_count or 0),
+                            payload,
+                            created_at,
+                            updated_at,
+                        ),
+                    )
+                    con.execute(
+                        """
+                        DELETE FROM dialog_chats
+                        WHERE guest_id = ? AND chat_id = ?
+                        """,
+                        (source_guest_id, chat_id),
+                    )
+                    moved += 1
+
+                con.execute(
+                    "DELETE FROM guest_dialog_state WHERE guest_id <> ?",
+                    (target_guest_id,),
+                )
+                active_chat_id = self._latest_chat_id_with_connection(con, target_guest_id)
+                if active_chat_id:
+                    self._set_active_chat_with_connection(con, target_guest_id, active_chat_id)
+
+            self._cache.clear()
+            return moved
+
+    def delete_chat(self, guest_id: str, chat_id: str) -> dict:
+        """Hard-delete a chat from the DB, fix the active pointer, and purge its embeddings.
+
+        Returns {deleted, active_chat_id, embeddings_purged}. The chat row holds ALL of the
+        chat's data in its payload (world, transcript, GM/NPC messages, secrets, sessions),
+        so removing the row removes that data. The global embedding cache is content-addressed
+        (not chat-keyed); we best-effort drop the vectors for this chat's world texts.
+        """
+        chat_id = str(chat_id or "").strip()
+        if not chat_id:
+            return {"deleted": False, "reason": "chat_id is required"}
+        with self._cache_lock:
+            # Collect the chat's embedding texts BEFORE the row is gone (best-effort).
+            embed_texts = self._chat_embedding_texts(guest_id, chat_id)
+
+            with self._connection() as con:
+                cur = con.execute(
+                    "DELETE FROM dialog_chats WHERE guest_id = ? AND chat_id = ?",
+                    (guest_id, chat_id),
+                )
+                if (cur.rowcount or 0) <= 0:
+                    return {"deleted": False, "reason": "chat not found"}
+
+                active_chat_id = self._active_chat_id_with_connection(con, guest_id)
+                new_active = active_chat_id
+                if not active_chat_id or active_chat_id == chat_id:
+                    new_active = self._latest_chat_id_with_connection(con, guest_id)
+                    if new_active:
+                        self._set_active_chat_with_connection(con, guest_id, new_active)
+                    else:
+                        con.execute(
+                            "DELETE FROM guest_dialog_state WHERE guest_id = ?",
+                            (guest_id,),
+                        )
+
+            self._cache.pop((guest_id, chat_id), None)
+            purged = _purge_embeddings_for_texts(embed_texts)
+
+        return {
+            "deleted": True,
+            "active_chat_id": new_active or "",
+            "embeddings_purged": int(purged or 0),
+        }
+
+    def _chat_embedding_texts(self, guest_id: str, chat_id: str) -> list[str]:
+        try:
+            runtime = self._get_chat_locked(guest_id, chat_id)
+            if runtime is None:
+                return []
+            world = runtime.session.world
+            docs = world.retrieval_documents("player")
+            return [doc.contextual_text() for doc in docs if getattr(doc, "text", "").strip()]
+        except Exception:
+            return []
+
     def activate_chat(self, guest_id: str, chat_id: str) -> DialogRuntime | None:
         chat_id = str(chat_id or "").strip()
         if not chat_id:
@@ -258,9 +386,17 @@ class DialogStore:
             ).fetchone()
 
     def _new_chat_id(self, guest_id: str) -> str:
+        with self._connection() as con:
+            return self._new_chat_id_with_connection(con, guest_id)
+
+    def _new_chat_id_with_connection(
+        self,
+        con: sqlite3.Connection,
+        guest_id: str,
+    ) -> str:
         for _ in range(32):
             chat_id = secrets.token_urlsafe(12)
-            if not self._chat_exists(guest_id, chat_id):
+            if not self._chat_exists_with_connection(con, guest_id, chat_id):
                 return chat_id
         raise RuntimeError("could not allocate unique chat id")
 
@@ -302,16 +438,23 @@ class DialogStore:
 
     def _latest_chat_id(self, guest_id: str) -> str | None:
         with self._connection() as con:
-            row = con.execute(
-                """
-                SELECT chat_id
-                FROM dialog_chats
-                WHERE guest_id = ?
-                ORDER BY updated_at DESC, created_at DESC, chat_id DESC
-                LIMIT 1
-                """,
-                (guest_id,),
-            ).fetchone()
+            return self._latest_chat_id_with_connection(con, guest_id)
+
+    def _latest_chat_id_with_connection(
+        self,
+        con: sqlite3.Connection,
+        guest_id: str,
+    ) -> str | None:
+        row = con.execute(
+            """
+            SELECT chat_id
+            FROM dialog_chats
+            WHERE guest_id = ?
+            ORDER BY updated_at DESC, created_at DESC, chat_id DESC
+            LIMIT 1
+            """,
+            (guest_id,),
+        ).fetchone()
         return str(row[0]) if row and row[0] else None
 
     def _set_active_chat(self, guest_id: str, chat_id: str) -> None:
@@ -389,6 +532,18 @@ class DialogStore:
                 )
                 """
             )
+
+
+def _purge_embeddings_for_texts(texts: list[str]) -> int:
+    """Best-effort: drop a deleted chat's world-text embeddings from the global cache."""
+    if not texts:
+        return 0
+    try:
+        import rag
+
+        return rag.purge_embeddings_for_texts(texts)
+    except Exception:
+        return 0
 
 
 def _title_for_save(runtime: DialogRuntime) -> str:

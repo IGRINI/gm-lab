@@ -1,29 +1,34 @@
-import { useEffect, useRef, useState, useId } from "react";
+import { useEffect, useRef, useState } from "react";
 import Spoiler from "./Spoiler.jsx";
 import MarkdownText from "./MarkdownText.jsx";
 import Tooltip from "./Tooltip.jsx";
+import { buildSolid, POLY_SIDES } from "./polyhedra.js";
 
-// Die silhouettes in a 0..100 viewBox. `points` is the outer polygon, `facets`
-// are inner lines/triangles that suggest the polyhedron, `cy` centres the numeral.
-// d6 is a real CSS cube (below); these drive d4/d8/d10/d12/d20 + a hex fallback.
-const DICE = {
-  4: { points: "50,9 91,84 9,84", facets: ["9,84 50,52 91,84", "50,9 50,52"], cy: 64, fs: 30 },
-  8: { points: "50,7 91,50 50,93 9,50", facets: ["9,50 91,50", "50,7 50,93"], cy: 53, fs: 30 },
-  10: { points: "50,5 89,39 50,96 11,39", facets: ["11,39 89,39", "50,5 50,39", "50,39 50,96"], cy: 47, fs: 26 },
-  12: { points: "50,7 90,36 75,86 25,86 10,36", facets: ["28,40 72,40 65,72 35,72 28,40"], cy: 55, fs: 28 },
-  20: { points: "50,5 87,27 87,73 50,95 13,73 13,27", facets: ["33,61 67,61 50,31 33,61", "13,27 33,61", "87,27 67,61", "13,73 33,61", "87,73 67,61", "50,95 50,61"], cy: 50, fs: 27 },
-  hex: { points: "50,6 88,28 88,72 50,94 12,72 12,28", facets: ["32,50 68,50 50,20 32,50"], cy: 54, fs: 26 },
+// Standard d6 pip layout as a 3x3 grid in {-1,0,1} units, laid out on the face's
+// own edge axes so the pips sit square inside the (hull-derived) cube face.
+const PIP_GRID = {
+  1: [[0, 0]],
+  2: [[-1, -1], [1, 1]],
+  3: [[-1, -1], [0, 0], [1, 1]],
+  4: [[-1, -1], [1, -1], [-1, 1], [1, 1]],
+  5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]],
+  6: [[-1, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [1, 1]],
 };
-
-// Standard d6 pip layout (3x3 grid inside the face).
-const PIPS = {
-  1: [[50, 50]],
-  2: [[34, 34], [66, 66]],
-  3: [[34, 34], [50, 50], [66, 66]],
-  4: [[34, 34], [66, 34], [34, 66], [66, 66]],
-  5: [[34, 34], [66, 34], [50, 50], [34, 66], [66, 66]],
-  6: [[34, 34], [66, 34], [34, 50], [66, 50], [34, 66], [66, 66]],
-};
+// Pip positions in the face's local px coords, from its square corner list.
+function cubeFacePips(pts, value) {
+  const e = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]]; // an edge direction
+  const l = Math.hypot(e[0], e[1]) || 1;
+  const u = [e[0] / l, e[1] / l];
+  const v = [-u[1], u[0]];
+  const Rsq = Math.hypot(pts[0][0], pts[0][1]); // corner distance
+  const off = 0.3 * Rsq;
+  const r = 0.155 * Rsq;
+  return (PIP_GRID[value] || []).map(([gx, gy]) => ({
+    cx: gx * off * u[0] + gy * off * v[0],
+    cy: gx * off * u[1] + gy * off * v[1],
+    r,
+  }));
+}
 
 // Full grade ladder from world._grade_from_margin (+ attack crits, ungraded, invalid).
 const GRADE = {
@@ -57,49 +62,60 @@ const mql = (q) =>
 const prefersReduced = mql("(prefers-reduced-motion: reduce)");
 const coarsePointer = mql("(pointer: coarse)");
 
-// d6 as a real cube: each value's face placed on the cube surface (half-edge 28px
-// for the 56px die), plus the rotation that brings that value to the front
-// (DeSandro show-face convention). Opposite faces sum to 7 — a real die.
-const HALF = 28;
-const CUBE_FACE = {
-  1: `translateZ(${HALF}px)`,
-  2: `rotateY(90deg) translateZ(${HALF}px)`,
-  3: `rotateX(90deg) translateZ(${HALF}px)`,
-  4: `rotateX(-90deg) translateZ(${HALF}px)`,
-  5: `rotateY(-90deg) translateZ(${HALF}px)`,
-  6: `rotateY(180deg) translateZ(${HALF}px)`,
-};
-const FACING = {
-  1: [0, 0, 0],
-  2: [0, -90, 0],
-  3: [-90, 0, 0],
-  4: [90, 0, 0],
-  5: [0, 90, 0],
-  6: [0, -180, 0],
-};
+// Circumradius (px) per die. A face-on cube shows only its front face, so d6 gets a
+// slightly larger radius to read at a comparable size to the other solids.
+const polyR = (sides) => (sides === 6 ? 27 : 25);
+const NUM_FS = { 4: 19, 8: 16, 10: 15, 12: 14, 20: 12 };
+
 const rotStr = ([rx, ry, rz]) => `rotateX(${rx}deg) rotateY(${ry}deg) rotateZ(${rz}deg)`;
 const DROPPED_T = " translateZ(-16px) rotateX(14deg) scale(.9)";
+
+// Roll timing: ONE continuous spin that decelerates smoothly onto the face over ~3s.
+// A single ease-out means velocity only ever decreases — no "almost stop then jerk".
+const ROLL_MS = 3000; // total roll duration (ms)
+const ROLL_EASE = "cubic-bezier(.16,.6,.28,1)"; // fast start, smooth monotonic spin-down
+
+// Baked flat-shade (0.12..1) -> a fill from deep shadow to lit parchment-gold.
+function shadeFill(s) {
+  const lerp = (a, b) => Math.round(a + (b - a) * s);
+  return `rgb(${lerp(0x1a, 0xd9)},${lerp(0x19, 0xc0)},${lerp(0x24, 0x86)})`;
+}
 
 // Animate-once guard: a roll tumbles the first time it streams in; on transcript
 // re-mount (Virtuoso recycles rows on scroll) it snaps straight to the result.
 const animatedRolls = new Set();
 
-// One physical die. The 3D rotation lives ONLY on the inner `.die-spin` shell
-// (kept clean of opacity/filter so preserve-3d never flattens); dropped opacity,
-// crit classes, aura and contact shadow live on the outer non-3d nodes.
-function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
-  const spinRef = useRef(null);
-  const seenKey = rollKey != null ? `${rollKey}:${index}` : null;
-  const snap = prefersReduced || !animate || (seenKey != null && animatedRolls.has(seenKey));
-  const [landed, setLanded] = useState(snap);
-  const target = sides === 6 ? FACING[value] || [0, 0, 0] : [0, 0, 0];
-  const landTransform = rotStr(target) + (dropped ? DROPPED_T : "");
-  // Snapped dice get their landed orientation inline so there is no first-frame flash;
-  // animating dice leave transform to the WAAPI roll (React never sets it, so no clobber).
-  const spinStyle = snap ? { transform: landTransform } : undefined;
+const seenKeyOf = (rollKey, index) => (rollKey != null ? `${rollKey}:${index}` : null);
+const isSnap = (rollKey, index, animate) => {
+  const k = seenKeyOf(rollKey, index);
+  return prefersReduced || !animate || (k != null && animatedRolls.has(k));
+};
 
+// Shared wrapper: crit/dropped state classes, a glow aura, the perspective scene, and
+// the contact shadow — all on non-3D nodes so the inner shell's preserve-3d is safe.
+function DieFrame({ index, dropped, crit, landed, tip, children }) {
+  const cls =
+    "die" +
+    (dropped ? " dropped" : "") +
+    (landed ? " landed" : " rolling") +
+    (landed && crit ? " " + crit : "");
+  return (
+    <Tooltip as="div" className={cls} style={{ "--i": index }} tipClassName="tool-tip" content={tip}>
+      <span className="die-aura" aria-hidden="true" />
+      <span className="die-scene">{children}</span>
+      <span className="die-shadow" aria-hidden="true" />
+    </Tooltip>
+  );
+}
+
+// Drives a WAAPI tumble on `ref` from a neutral start to the facing plus whole extra
+// turns, landing exactly on the backend face. `keyframes(el, k)` returns
+// [fromTransform, toTransform]; the bare facing (`landTransform`) is what the die
+// settles on inline. Shared by the solids/coin/d3.
+function useTumble(ref, { snap, seenKey, landTransform, keyframes, index, deps }) {
+  const [landed, setLanded] = useState(snap);
   useEffect(() => {
-    const el = spinRef.current;
+    const el = ref.current;
     if (!el) return undefined;
     if (snap) {
       el.style.transform = landTransform;
@@ -108,33 +124,30 @@ function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
     }
     if (seenKey != null) animatedRolls.add(seenKey);
     setLanded(false);
-
     let cancelled = false;
     let anim = null;
-    const spins = coarsePointer ? 2 : 3;
-    const delay = index * 90; // index-derived stagger — never RNG (replay-stable)
+    const k = 360 * (coarsePointer ? 5 : 6); // total turns — fast at the start, eased to rest
     const timer = setTimeout(() => {
-      if (cancelled || !spinRef.current) return;
-      const k = 360 * spins;
-      const [rx, ry, rz] = target;
-      const from = el.style.transform || rotStr([0, 0, 0]);
-      const spun =
-        `rotateX(${rx + k}deg) rotateY(${ry - k}deg) rotateZ(${rz}deg)` + (dropped ? DROPPED_T : "");
+      if (cancelled || !ref.current) return;
+      // One smooth spin that decelerates straight onto the face — no two-phase boundary,
+      // so there's no re-acceleration / jerk at the end.
+      const [from, to] = keyframes(el, k);
       el.style.willChange = "transform";
       anim = el.animate(
-        [{ transform: from }, { transform: spun }],
-        { duration: 740, easing: "cubic-bezier(.2,.8,.25,1)", fill: "forwards" }
+        [{ transform: from }, { transform: to }],
+        { duration: ROLL_MS, easing: ROLL_EASE, fill: "none" }
       );
+      // The to-keyframe carries the extra turns; settle on the bare facing inline so
+      // the next roll can't accumulate drift (visually identical — whole turns only).
+      el.style.transform = landTransform;
       anim.finished
         .then(() => {
           if (cancelled) return;
-          el.style.transform = landTransform; // strip the extra spins so the next roll's math can't drift
           el.style.willChange = "auto";
           setLanded(true);
         })
         .catch(() => {});
-    }, delay);
-
+    }, index * 90);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -147,90 +160,217 @@ function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sides, value, dropped, index, seenKey, animate]);
+  }, deps);
+  return landed;
+}
 
-  const cls =
-    "die" +
-    (dropped ? " dropped" : "") +
-    (landed ? " landed" : " rolling") +
-    (landed && crit ? " " + crit : "");
+// Real polyhedra (d4/d6/d8/d10/d12/d20) + a flat token fallback for odd sizes (d7…).
+function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
+  const spinRef = useRef(null);
+  const solid = POLY_SIDES.has(sides) ? buildSolid(sides, polyR(sides)) : null;
+  const seenKey = seenKeyOf(rollKey, index);
+  const snap = isSnap(rollKey, index, animate);
+  const target = solid ? solid.facing(value) : [0, 0, 0];
+  const droppedT = dropped ? DROPPED_T : "";
+  const landTransform = rotStr(target) + droppedT;
+  const landed = useTumble(spinRef, {
+    snap,
+    seenKey,
+    landTransform,
+    index,
+    keyframes: (el, k) => {
+      if (!solid) return ["rotateZ(0deg)" + droppedT, `rotateZ(${k}deg)` + droppedT]; // token: flat in-plane spin
+      const [rx, ry, rz] = target;
+      const from = (el.style.transform || rotStr([0, 0, 0])) ;
+      const to = `rotateX(${rx + k}deg) rotateY(${ry - k}deg) rotateZ(${rz}deg)` + droppedT;
+      return [from, to];
+    },
+    deps: [sides, value, dropped, index, seenKey, animate],
+  });
+  const spinStyle = snap ? { transform: landTransform } : undefined;
   const tip =
     `d${sides}: выпало ${value}` +
     (dropped ? "\n(отброшено правилом keep)" : "") +
     (crit === "nat20" ? "\nнатуральная 20" : crit === "nat1" ? "\nнатуральная 1" : "");
 
   return (
-    <Tooltip as="div" className={cls} style={{ "--i": index }} tipClassName="tool-tip" content={tip}>
-      <span className="die-aura" aria-hidden="true" />
-      <span className="die-scene">
-        {sides === 6 ? (
-          <span className="die-spin cube" ref={spinRef} style={spinStyle}>
-            {[1, 2, 3, 4, 5, 6].map((n) => (
-              <span className="cube-face" style={{ transform: CUBE_FACE[n] }} key={n}>
-                <svg viewBox="0 0 100 100" className="cube-svg" aria-hidden="true">
-                  {PIPS[n].map(([cx, cy], i) => (
-                    <circle key={i} cx={cx} cy={cy} r="9" className="die-pip" />
-                  ))}
-                </svg>
-              </span>
-            ))}
-          </span>
-        ) : (
-          <span className="die-spin shell" ref={spinRef} style={spinStyle}>
-            <span className="shell-face front">
-              <PolyFace sides={sides} value={value} />
+    <DieFrame index={index} dropped={dropped} crit={crit} landed={landed} tip={tip}>
+      {!solid ? (
+        <span className="die-spin token" ref={spinRef} style={spinStyle}>
+          <svg viewBox="0 0 100 100" className="token-svg">
+            <rect x="8" y="8" width="84" height="84" rx="18" className="poly-fill" style={{ fill: "#23232f" }} />
+            <text x="50" y="50" className="poly-num" textAnchor="middle" dominantBaseline="central" style={{ fontSize: value > 99 ? 24 : 30 }}>
+              {value}
+            </text>
+          </svg>
+        </span>
+      ) : (
+        <span className="die-spin solid" ref={spinRef} style={spinStyle}>
+          {solid.faces.map((f, i) => (
+            <span className="poly-face" style={{ transform: `matrix3d(${f.mtx.join(",")})` }} key={i}>
+              <svg viewBox="-40 -40 80 80" className="poly-svg">
+                <polygon
+                  points={f.pts.map((p) => `${p[0].toFixed(2)},${p[1].toFixed(2)}`).join(" ")}
+                  className="poly-fill"
+                  style={{ fill: shadeFill(f.shade) }}
+                />
+                {sides === 6 ? (
+                  cubeFacePips(f.pts, f.value).map((p, j) => (
+                    <circle key={j} cx={p.cx.toFixed(2)} cy={p.cy.toFixed(2)} r={p.r.toFixed(2)} className="die-pip" />
+                  ))
+                ) : (
+                  <text
+                    x="0"
+                    y="0"
+                    className="poly-num"
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    style={{ fontSize: NUM_FS[sides] || 14 }}
+                  >
+                    {f.value}
+                  </text>
+                )}
+              </svg>
             </span>
-            <span className="shell-face back">
-              <PolyFace sides={sides} value={value} back />
-            </span>
-          </span>
-        )}
-      </span>
-      <span className="die-shadow" aria-hidden="true" />
-    </Tooltip>
+          ))}
+        </span>
+      )}
+    </DieFrame>
   );
 }
 
-// A faceted polyhedral face. 3D look comes from a per-instance radial gradient
-// (lit top-left -> deep shadow) + facet lines + a gloss highlight — all static
-// (computed once), so the only animated thing is the shell's transform.
-function PolyFace({ sides, value, back }) {
-  const uid = useId().replace(/[:]/g, "");
-  const faceId = `f${uid}`;
-  const glossId = `g${uid}`;
-  const g = DICE[sides] || DICE.hex;
+// d2 — a real coin: two faces (1/2) along Z + a cylindrical rim, flipping end-over-end
+// (rotateX) and landing with the rolled face toward the camera.
+const COIN_R = 24;
+const COIN_SEG = Array.from({ length: 18 }, (_, i) => (360 / 18) * i);
+function CoinDie({ value, index, rollKey, animate }) {
+  const spinRef = useRef(null);
+  const seenKey = seenKeyOf(rollKey, index);
+  const snap = isSnap(rollKey, index, animate);
+  const ry = value === 2 ? 180 : 0;
+  const land = `rotateX(0deg) rotateY(${ry}deg)`;
+  const landed = useTumble(spinRef, {
+    snap,
+    seenKey,
+    landTransform: land,
+    index,
+    keyframes: (el, k) => ["rotateX(0deg) rotateY(0deg)", `rotateX(${k}deg) rotateY(${ry}deg)`],
+    deps: [value, index, seenKey, animate],
+  });
   return (
-    <svg viewBox="0 0 100 100" className={"die-svg" + (back ? " back" : "")} aria-hidden="true">
-      <defs>
-        <radialGradient id={faceId} cx="34%" cy="28%" r="82%">
-          <stop offset="0%" stopColor="#4a4127" />
-          <stop offset="46%" stopColor="#23232f" />
-          <stop offset="100%" stopColor="#0d0d16" />
-        </radialGradient>
-        <linearGradient id={glossId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#fff" stopOpacity=".26" />
-          <stop offset="46%" stopColor="#fff" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <polygon points={g.points} fill={`url(#${faceId})`} className="die-face" />
-      {g.facets.map((f, i) => (
-        <polyline key={i} points={f} className="die-facet" />
-      ))}
-      <polygon points={g.points} fill={`url(#${glossId})`} className="die-gloss" />
-      {!back && (
-        <text
-          x="50"
-          y={g.cy}
-          className="die-num"
-          textAnchor="middle"
-          dominantBaseline="central"
-          style={{ fontSize: g.fs }}
-        >
-          {value}
-        </text>
-      )}
-    </svg>
+    <DieFrame index={index} landed={landed} tip={`d2 (монета): выпало ${value}`}>
+      <span className="die-spin coin" ref={spinRef} style={snap ? { transform: land } : undefined}>
+        <span className="coin-face coin-front" style={{ transform: "translateZ(4px)" }}>1</span>
+        <span className="coin-face coin-back" style={{ transform: "rotateY(180deg) translateZ(4px)" }}>2</span>
+        {COIN_SEG.map((a, i) => (
+          <span className="coin-edge" key={i} style={{ transform: `rotateZ(${a}deg) translateX(${COIN_R}px) rotateY(90deg)` }} />
+        ))}
+      </span>
+    </DieFrame>
   );
+}
+
+// d3 — a sphere with three flat faces 120° apart around the VERTICAL axis. The value's
+// number sits on the rounded ridge facing the camera dead-centre; the two flats flank
+// it left and right, the third flat hides at the back (the one it "rests" on). Numbers
+// live on the ridges between flats. Spins about Y to land.
+const D3_R = 24, D3_FLAT_R = 16;
+function D3Die({ value, index, rollKey, animate }) {
+  const spinRef = useRef(null);
+  const seenKey = seenKeyOf(rollKey, index);
+  const snap = isSnap(rollKey, index, animate);
+  const ry = -120 * (value - 1); // brings the value's ridge to front-centre
+  const land = `rotateY(${ry}deg)`;
+  const landed = useTumble(spinRef, {
+    snap,
+    seenKey,
+    landTransform: land,
+    index,
+    keyframes: (el, k) => ["rotateY(0deg)", `rotateY(${ry - k}deg)`],
+    deps: [value, index, seenKey, animate],
+  });
+  return (
+    <DieFrame index={index} landed={landed} tip={`d3 (шар с 3 гранями): выпало ${value}`}>
+      <span className="d3-body" />
+      <span className="die-spin d3" ref={spinRef} style={snap ? { transform: land } : undefined}>
+        {[1, 2, 3].map((n) => (
+          <span className="d3-flat" key={"f" + n} style={{ transform: `rotateY(${60 + 120 * (n - 1)}deg) translateZ(${D3_FLAT_R}px)` }} />
+        ))}
+        {[1, 2, 3].map((n) => (
+          <span className="d3-num" key={"n" + n} style={{ transform: `rotateY(${120 * (n - 1)}deg) translateZ(${D3_R}px)` }}>
+            {n}
+          </span>
+        ))}
+      </span>
+    </DieFrame>
+  );
+}
+
+// d100 — a magic 8-ball: a glossy black sphere with a window where the number tumbles
+// through random values, then settles on the backend roll with a pop.
+function BallDie({ value, index, rollKey, animate }) {
+  const snap = isSnap(rollKey, index, animate);
+  const seenKey = seenKeyOf(rollKey, index);
+  const [num, setNum] = useState(value);
+  const [landed, setLanded] = useState(snap);
+  useEffect(() => {
+    if (snap) {
+      setNum(value);
+      setLanded(true);
+      return undefined;
+    }
+    if (seenKey != null) animatedRolls.add(seenKey);
+    setLanded(false);
+    let cancelled = false;
+    let raf = 0;
+    let last = 0;
+    const start = performance.now();
+    const dur = ROLL_MS + index * 90;
+    const tick = (now) => {
+      if (cancelled) return;
+      const t = now - start;
+      if (t >= dur) {
+        setNum(value);
+        setLanded(true);
+        return;
+      }
+      // window randomizes 1..100 (final value = backend roll, set above); the cycle
+      // slows like a slot machine toward the end so the reveal has anticipation.
+      const p = t / dur;
+      const interval = 55 + 200 * p * p;
+      if (now - last > interval) {
+        setNum(1 + Math.floor(Math.random() * 100));
+        last = now;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, index, seenKey, animate]);
+  return (
+    <DieFrame index={index} landed={landed} tip={`d100 (шар-предсказание): выпало ${value}`}>
+      <span className={"ball" + (landed ? " landed" : " rolling")}>
+        <span className="ball-body" />
+        <span className="ball-eight">8</span>
+        <span className="ball-window">
+          <span className="ball-num" style={{ fontSize: num > 99 ? 13 : 16 }}>{num}</span>
+        </span>
+        <span className="ball-gloss" />
+      </span>
+    </DieFrame>
+  );
+}
+
+// Picks the right visual per die size.
+function DieFor(props) {
+  if (props.sides === 2) return <CoinDie {...props} />;
+  if (props.sides === 3) return <D3Die {...props} />;
+  if (props.sides === 100) return <BallDie {...props} />;
+  return <Die {...props} />;
 }
 
 // Maps each rolled face to a Die, marking dropped (not in `kept`) and crit faces.
@@ -273,7 +413,7 @@ export function DiceBody({ roll, animate = true, rollId }) {
     <div className={"dice-body " + grade.cls}>
       <div className="dice-stage">
         {dice.map((d) => (
-          <Die
+          <DieFor
             key={d.key}
             sides={d.sides}
             value={d.value}

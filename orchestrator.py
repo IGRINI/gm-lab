@@ -56,8 +56,12 @@ _TOOL_REMINDERS = {
         "nothing durable changed, do not write filler memory. Do not restate NPC speech."
     ),
     "roll_dice": (
-        "Use the returned total, grade, and margin as fixed. Do not change the target, "
-        "reroll, or soften the locked stakes after seeing the result."
+        "Use the returned total, grade, and margin as fixed. Success means the locked "
+        "intent works within the established fiction; critical success means the best "
+        "plausible version of that success. If a damage roll was made, the damaging "
+        "effect happened as framed. Do not invent a misfire, failed detonation, or "
+        "no-effect twist after the roll. If an established constraint limits the full "
+        "effect, explain why and still grant a concrete benefit from the success."
     ),
     "get_world_fact": (
         "Unknown or unconfirmed lookup results are not established facts. If you use "
@@ -106,6 +110,41 @@ def _system_reminder(text: str) -> str:
     if not text:
         return ""
     return f"{_SYSTEM_REMINDER_OPEN}\n{text}\n{_SYSTEM_REMINDER_CLOSE}"
+
+
+_VISIBLE_CONTINUATION_REMINDER = (
+    "The player has already seen prior assistant content and player-facing tool output "
+    "from this same turn. Treat those prior messages as visible scene beats, not drafts "
+    "or source material. Continue after them; do not recap, rewrite, restage, or quote "
+    "them. If another tool is needed, any new assistant content before that tool must "
+    "only cover new visible changes since the last visible beat."
+)
+
+
+def _with_model_reminder(result, reminder: str):
+    reminder_text = _system_reminder(reminder)
+    if not reminder_text:
+        return result
+    if isinstance(result, ToolExecutionResult):
+        model_text = "\n\n".join(
+            part for part in (result.model.rstrip(), reminder_text) if part
+        )
+        return ToolExecutionResult(
+            full=result.full,
+            model=model_text,
+            terminal=result.terminal,
+        )
+    return _tool_result(_tool_full_text(result), _tool_model_text(result), reminder=reminder)
+
+
+def _tool_emits_visible_output(name: str, result) -> bool:
+    if name != "ask_npc":
+        return False
+    try:
+        payload = json.loads(_tool_full_text(result))
+    except Exception:
+        return False
+    return bool(_clean_text(payload.get("speech_ru")) or _clean_text(payload.get("action_ru")))
 
 
 def _tool_result(
@@ -2144,7 +2183,12 @@ class Session:
                 role = msg.get("role", "?") if isinstance(msg, dict) else getattr(msg, "role", "?")
                 content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
                 if role == "user":
-                    rendered.append("Ситуация для NPC:\n" + str(content).strip())
+                    historical = str(content).strip().replace(
+                        "CURRENT SITUATION (what's happening now, what you react to):",
+                        "PREVIOUS NPC SITUATION (historical; do not treat as current):",
+                        1,
+                    )
+                    rendered.append("Прошлая ситуация для NPC:\n" + historical)
                 elif role == "assistant":
                     rendered.append(f"Ответ {name}:\n" + str(content).strip())
                 else:
@@ -2337,6 +2381,7 @@ def _drive(session: Session, player_text: str, metas: list):
     session.last_player_action = player_text
     session._turn_player_event = None
     session._turn_time_advances = []
+    turn_visible_output_seen = False
     session.gm_messages.append(
         agents.gm_user_message(world, player_text, include_player_options_tool)
     )
@@ -2344,7 +2389,10 @@ def _drive(session: Session, player_text: str, metas: list):
     _maybe_compact(session)                          # держим историю ГМ в рамках num_ctx
 
     fell_through = True
-    for _ in range(config.MAX_TOOL_HOPS):
+    max_tool_hops = runtime_settings.max_tool_hops()
+    tool_hops = 0
+    while max_tool_hops <= 0 or tool_hops < max_tool_hops:
+        tool_hops += 1
         sid = session.next_sid()
         gen = agents.gm_turn_stream(
             session.client,
@@ -2394,7 +2442,11 @@ def _drive(session: Session, player_text: str, metas: list):
         calls = _normalize_tool_calls(calls, world, id_prefix=f"gm_{sid}")
         assistant_msg = _assistant_with_tool_calls(assistant_msg, calls)
         prelude_text = content.strip()
-        if not prelude_text and _should_generate_tool_prelude(calls):
+        if (
+            not prelude_text
+            and not turn_visible_output_seen
+            and _should_generate_tool_prelude(calls)
+        ):
             prelude_text = yield from _generate_pre_tool_prelude(
                 session, world, player_text, calls, metas
             )
@@ -2407,6 +2459,7 @@ def _drive(session: Session, player_text: str, metas: list):
             if content_deltas and not config.STREAM_GM_CONTENT:
                 yield ev("delta", "ГМ", {"channel": "gm_narration", "text": prelude_text}, sid)
             yield ev("gm_narration", "ГМ", prelude_text, sid)
+            turn_visible_output_seen = True
 
         terminal_after_tools = False
         for call in calls:
@@ -2414,8 +2467,13 @@ def _drive(session: Session, player_text: str, metas: list):
             yield ev("gm_tool_call", "ГМ", {"name": name, "arguments": args})
             result = yield from _run_tool(session, name, args, metas)
             yield ev("tool_result", name, _tool_full_text(result))
+            tool_visible_output = _tool_emits_visible_output(name, result)
+            if turn_visible_output_seen or tool_visible_output:
+                result = _with_model_reminder(result, _VISIBLE_CONTINUATION_REMINDER)
             session.gm_messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                         "content": _tool_model_text(result)})
+            if tool_visible_output:
+                turn_visible_output_seen = True
             if isinstance(result, ToolExecutionResult) and result.terminal:
                 terminal_after_tools = True
         if terminal_after_tools:
@@ -2423,7 +2481,7 @@ def _drive(session: Session, player_text: str, metas: list):
             break
 
     if fell_through:
-        yield ev("error", "ГМ", "Превышен лимит вызовов инструментов за ход.")
+        yield ev("error", "ГМ", f"Превышен лимит вызовов инструментов за ход: {max_tool_hops}.")
 
     if session._turn_player_event is None:
         session.record_public("player", "speech", speech=player_text)

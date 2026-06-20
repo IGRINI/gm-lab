@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   day: "2-digit",
@@ -51,9 +51,12 @@ export default function ChatHistorySidebar({
   onClose,
   onCreate,
   onActivate,
+  onDelete,
 }) {
   const closeRef = useRef(null);
   const createRef = useRef(null);
+  const [confirmId, setConfirmId] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
   const storyOptions = useMemo(() => (Array.isArray(stories) ? stories : []), [stories]);
   const selectedStory = storyOptions.find((story) => sameChatId(story.id, selectedStoryId)) || null;
@@ -61,13 +64,50 @@ export default function ChatHistorySidebar({
   const locked = busy || loading;
   const storyLocked = locked || storiesLoading || Boolean(storiesError) || !hasStories;
   const createLocked = locked || storyLocked || !selectedStoryId;
+  const confirmChat = confirmId
+    ? sortedChats.find((chat) => sameChatId(chat.id, confirmId)) || null
+    : null;
+
+  const cancelDelete = () => {
+    if (!deleting) setConfirmId(null);
+  };
+  const confirmDelete = async () => {
+    if (!confirmChat || deleting) return;
+    setDeleting(true);
+    try {
+      await onDelete?.(confirmChat.id);
+      setConfirmId(null);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // Confirm dialog owns Escape while open (capture phase, so it beats the sidebar handler).
+  useEffect(() => {
+    if (!confirmId || typeof document === "undefined") return undefined;
+    const onKey = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!deleting) setConfirmId(null);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [confirmId, deleting]);
 
   useEffect(() => {
     if (!open || typeof document === "undefined") return undefined;
+    // Only the mobile drawer needs focus-trapping + Esc-to-close. On desktop the
+    // sidebar is a docked, collapsible column: stealing focus on load or collapsing
+    // it on Escape would be surprising.
+    if (typeof window !== "undefined" && !window.matchMedia("(max-width: 700px)").matches) {
+      return undefined;
+    }
 
     const previousFocus = document.activeElement;
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
+      if (confirmId) return; // the confirm dialog handles Escape first
       event.preventDefault();
       onClose();
     };
@@ -166,31 +206,84 @@ export default function ChatHistorySidebar({
             sortedChats.map((chat) => {
               const active = chat.active || sameChatId(chat.id, activeChatId);
               return (
-                <button
+                <div
                   key={chat.id}
-                  type="button"
-                  className={"chat-history-row" + (active ? " active" : "")}
-                  onClick={() => {
-                    if (!active) onActivate(chat.id);
-                  }}
-                  disabled={locked}
-                  aria-current={active ? "page" : undefined}
+                  className={"chat-history-item" + (active ? " active" : "")}
                 >
-                  <span className="chat-row-head">
-                    <span className="chat-row-title">{chatTitle(chat)}</span>
-                    <span className="chat-row-date">{chatDate(chat)}</span>
-                  </span>
-                  <span className="chat-row-preview">{chatPreview(chat)}</span>
-                  <span className="chat-row-meta">
-                    <span>{turnCount(chat)}</span>
-                    {active && <span>активный</span>}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    className={"chat-history-row" + (active ? " active" : "")}
+                    onClick={() => {
+                      if (!active) onActivate(chat.id);
+                    }}
+                    disabled={locked}
+                    aria-current={active ? "page" : undefined}
+                  >
+                    <span className="chat-row-head">
+                      <span className="chat-row-title">{chatTitle(chat)}</span>
+                      <span className="chat-row-date">{chatDate(chat)}</span>
+                    </span>
+                    <span className="chat-row-preview">{chatPreview(chat)}</span>
+                    <span className="chat-row-meta">
+                      <span>{turnCount(chat)}</span>
+                      {active && <span>активный</span>}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-row-delete"
+                    title="Удалить чат"
+                    aria-label={`Удалить чат: ${chatTitle(chat)}`}
+                    onClick={() => setConfirmId(chat.id)}
+                    disabled={locked}
+                  >
+                    <span aria-hidden="true">🗑</span>
+                  </button>
+                </div>
               );
             })
           )}
         </nav>
       </aside>
+
+      {confirmChat && (
+        <div
+          className="confirm-backdrop"
+          role="presentation"
+          onMouseDown={cancelDelete}
+        >
+          <div
+            className="confirm-card"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="confirm-delete-title"
+            aria-describedby="confirm-delete-note"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="confirm-icon" aria-hidden="true">🗑</div>
+            <h3 id="confirm-delete-title">Удалить чат?</h3>
+            <p className="confirm-name">«{chatTitle(confirmChat)}»</p>
+            <p id="confirm-delete-note" className="confirm-note">
+              Чат и все его данные удалятся из базы безвозвратно — история, персонажи,
+              мир и связанные эмбеддинги. Это действие нельзя отменить.
+            </p>
+            <div className="confirm-actions">
+              <button type="button" className="btn" onClick={cancelDelete} disabled={deleting}>
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="btn confirm-danger"
+                onClick={confirmDelete}
+                disabled={deleting}
+                autoFocus
+              >
+                {deleting ? "Удаляю…" : "Удалить"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -1,10 +1,10 @@
 """Local web server for GM-Lab.
 
 GET  /           -> index.html
-GET  /state      -> current guest state
-GET  /transcript -> replayable current guest event log
-GET  /export     -> current guest JSON export
-GET  /chats      -> current guest chat list
+GET  /state      -> shared chat state
+GET  /transcript -> replayable shared event log
+GET  /export     -> shared JSON export
+GET  /chats      -> shared chat list
 GET  /stories    -> selectable story catalog
 POST /chats      -> create a chat
 POST /chats/{id}/activate -> switch active chat
@@ -17,11 +17,8 @@ DB:   $env:GM_DIALOG_DB="E:\\path\\gm_lab_dialogs.sqlite3"; python server.py
 """
 from __future__ import annotations
 
-from http.cookies import CookieError, SimpleCookie
 import json
 import os
-import re
-import secrets
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
@@ -41,12 +38,11 @@ PORT = int(os.environ.get("GM_PORT", "8000"))
 HOST = os.environ.get("GM_HOST", "127.0.0.1")
 DIALOG_DB = os.environ.get("GM_DIALOG_DB", os.path.join(HERE, "gm_lab_dialogs.sqlite3"))
 
-COOKIE_NAME = "gm_lab_guest"
-COOKIE_MAX_AGE = 60 * 60 * 24 * 365
-GUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{24,80}$")
+CHAT_SCOPE_ID = (os.environ.get("GM_CHAT_SCOPE_ID") or "shared").strip() or "shared"
 REPLAY_SKIP_KINDS = {"delta"}
 
 dialog_store = DialogStore(DIALOG_DB, make_client)
+MIGRATED_CHAT_COUNT = 0
 
 
 def _default_model() -> str:
@@ -279,6 +275,15 @@ def debug_data(dialog: DialogRuntime) -> dict:
             "run_usage": session.run_usage,
             "context_usage": context_usage(session),
         },
+        "runtime": {
+            "settings": runtime_settings.get(),
+            "cache": {
+                "prompt_cache_key": config.CODEX_PROMPT_CACHE_KEY
+                or getattr(session, "client_thread_id", ""),
+                "thread_id": getattr(session, "client_thread_id", ""),
+                "store": False,
+            },
+        },
         "story": {
             "id": getattr(w, "story_id", ""),
             "title": getattr(w, "story_title", ""),
@@ -416,61 +421,24 @@ def _find_model(models: list[dict], model_id: str) -> dict | None:
     return None
 
 
-def _new_guest_id() -> str:
-    return secrets.token_urlsafe(32)
-
-
-def _guest_id_from_cookie(header: str | None) -> str | None:
-    if not header:
-        return None
-    cookie = SimpleCookie()
-    try:
-        cookie.load(header)
-    except CookieError:
-        return None
-    morsel = cookie.get(COOKIE_NAME)
-    if not morsel:
-        return None
-    value = morsel.value.strip()
-    return value if GUEST_ID_RE.fullmatch(value) else None
-
-
-def _cookie_header(guest_id: str) -> str:
-    return (
-        f"{COOKIE_NAME}={guest_id}; "
-        f"Max-Age={COOKIE_MAX_AGE}; Path=/; SameSite=Lax; HttpOnly"
-    )
-
-
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _guest_id_value(self) -> str:
-        guest_id = getattr(self, "_guest_id", "")
-        if guest_id:
-            return guest_id
-        guest_id = _guest_id_from_cookie(self.headers.get("Cookie")) or _new_guest_id()
-        self._guest_id = guest_id
-        return guest_id
+    def _chat_scope_id(self) -> str:
+        return CHAT_SCOPE_ID
 
     def _dialog(self) -> DialogRuntime:
         dialog = getattr(self, "_dialog_runtime", None)
         if dialog is not None:
             return dialog
-        guest_id = self._guest_id_value()
-        self._dialog_runtime = dialog_store.get_active(guest_id)
+        chat_scope_id = self._chat_scope_id()
+        self._dialog_runtime = dialog_store.get_active(chat_scope_id)
         return self._dialog_runtime
-
-    def _set_guest_cookie(self) -> None:
-        guest_id = getattr(self, "_guest_id", "")
-        if guest_id:
-            self.send_header("Set-Cookie", _cookie_header(guest_id))
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
-        self._set_guest_cookie()
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -491,8 +459,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    def _activate_chat_response(self, guest_id: str, chat_id: str) -> None:
-        dialog = dialog_store.activate_chat(guest_id, chat_id)
+    def _activate_chat_response(self, chat_scope_id: str, chat_id: str) -> None:
+        dialog = dialog_store.activate_chat(chat_scope_id, chat_id)
         if dialog is None:
             self._json({"ok": False, "error": "chat not found"}, 404)
             return
@@ -512,7 +480,6 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(HERE, "index.html"), "rb") as f:
                 body = f.read()
             self.send_response(200)
-            self._set_guest_cookie()
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             # index.html is a single inlined bundle with no cache-busting filename,
@@ -523,18 +490,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/chats":
-            guest_id = self._guest_id_value()
-            dialog_store.get_active(guest_id)
-            chats = dialog_store.list_chats(guest_id)
+            chat_scope_id = self._chat_scope_id()
+            dialog_store.get_active(chat_scope_id)
+            chats = dialog_store.list_chats(chat_scope_id)
             self._json({
                 "ok": True,
-                "active_chat_id": dialog_store.active_chat_id(guest_id),
+                "active_chat_id": dialog_store.active_chat_id(chat_scope_id),
                 "chats": chats,
             })
             return
 
         if path == "/stories":
-            self._guest_id_value()
             self._json({
                 "ok": True,
                 "default_story_id": stories.DEFAULT_STORY_ID,
@@ -566,7 +532,6 @@ class Handler(BaseHTTPRequestHandler):
                     default=str,
                 ).encode("utf-8")
             self.send_response(200)
-            self._set_guest_cookie()
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Disposition", 'attachment; filename="gm-lab-export.json"')
             self.send_header("Content-Length", str(len(body)))
@@ -618,7 +583,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
 
         if path == "/chats":
-            guest_id = self._guest_id_value()
+            chat_scope_id = self._chat_scope_id()
             data = self._body()
             brief = str(data.get("brief") or "").strip()
             story_id = str(data.get("story_id") or "").strip()
@@ -633,10 +598,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if brief:
                 active_dialog = None
-                active_chat_id = dialog_store.active_chat_id(guest_id)
+                active_chat_id = dialog_store.active_chat_id(chat_scope_id)
                 if active_chat_id:
                     try:
-                        active_dialog = dialog_store.get(guest_id, active_chat_id)
+                        active_dialog = dialog_store.get(chat_scope_id, active_chat_id)
                     except KeyError:
                         active_dialog = None
                 try:
@@ -649,10 +614,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
             else:
                 active_dialog = None
-                active_chat_id = dialog_store.active_chat_id(guest_id)
+                active_chat_id = dialog_store.active_chat_id(chat_scope_id)
                 if active_chat_id:
                     try:
-                        active_dialog = dialog_store.get(guest_id, active_chat_id)
+                        active_dialog = dialog_store.get(chat_scope_id, active_chat_id)
                     except KeyError:
                         active_dialog = None
                 session = _story_session(
@@ -660,12 +625,12 @@ class Handler(BaseHTTPRequestHandler):
                     _model_hint_for_new_chat(active_dialog),
                 )
             dialog = dialog_store.create_chat(
-                guest_id,
+                chat_scope_id,
                 session=session,
                 title=title or brief or getattr(session.world, "story_title", ""),
                 activate=activate,
             )
-            active_chat_id = dialog_store.active_chat_id(guest_id)
+            active_chat_id = dialog_store.active_chat_id(chat_scope_id)
             if dialog.chat_id == active_chat_id:
                 self._dialog_runtime = dialog
             response = {
@@ -681,10 +646,37 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/chats/") and path.endswith("/activate"):
-            guest_id = self._guest_id_value()
+            chat_scope_id = self._chat_scope_id()
             parts = path.strip("/").split("/")
             chat_id = unquote(parts[1]) if len(parts) == 3 else ""
-            self._activate_chat_response(guest_id, chat_id)
+            self._activate_chat_response(chat_scope_id, chat_id)
+            return
+
+        if path.startswith("/chats/") and path.endswith("/delete"):
+            chat_scope_id = self._chat_scope_id()
+            parts = path.strip("/").split("/")
+            chat_id = unquote(parts[1]) if len(parts) == 3 else ""
+            result = dialog_store.delete_chat(chat_scope_id, chat_id)
+            if not result.get("deleted"):
+                self._json({"ok": False, "error": result.get("reason") or "chat not found"}, 404)
+                return
+            # The cached active dialog on this handler may now be stale/deleted; reload the
+            # (possibly newly created) active session so the client can switch to it.
+            self._dialog_runtime = None
+            active = dialog_store.get_active(chat_scope_id)
+            self._dialog_runtime = active
+            with active.lock:
+                response = {
+                    "ok": True,
+                    "deleted": True,
+                    "active_chat_id": dialog_store.active_chat_id(chat_scope_id),
+                    "chats": dialog_store.list_chats(chat_scope_id),
+                    "chat": _chat_response(active, active=True),
+                    "state": state(active),
+                    "transcript": {"events": replay_events(active)},
+                    "embeddings_purged": int(result.get("embeddings_purged") or 0),
+                }
+            self._json(response)
             return
 
         dialog = self._dialog()
@@ -893,10 +885,66 @@ class Handler(BaseHTTPRequestHandler):
             self._json(response, 200 if response.get("ok") else 400)
             return
 
+        if path == "/debug/story":
+            data = self._body()
+            with dialog.lock:
+                w = dialog.session.world
+                if "title" in data:
+                    w.set_story_title(data.get("title"))
+                if "public_intro" in data:
+                    w.set_public_intro(data.get("public_intro"))
+                if "hidden_truth" in data:
+                    w.set_hidden_truth(data.get("hidden_truth"))
+                if "hidden_events" in data:
+                    w.set_hidden_events(data.get("hidden_events"))
+                dialog_store.save(dialog)
+                response = debug_data(dialog)
+            self._json(response)
+            return
+
+        if path == "/debug/scene":
+            data = self._body()
+            with dialog.lock:
+                patch = data.get("patch") if isinstance(data.get("patch"), dict) else data
+                dialog.session.world.patch_scene(patch)
+                dialog_store.save(dialog)
+                response = debug_data(dialog)
+            self._json(response)
+            return
+
+        if path == "/debug/state_record":
+            data = self._body()
+            with dialog.lock:
+                dialog.session.world.apply_state_record_batch(
+                    add=data.get("add"),
+                    update=data.get("update"),
+                    delete=data.get("delete"),
+                    hard_delete=bool(data.get("hard_delete")),
+                )
+                dialog_store.save(dialog)
+                response = debug_data(dialog)
+            self._json(response)
+            return
+
+        if path == "/debug/rumor":
+            data = self._body()
+            with dialog.lock:
+                w = dialog.session.world
+                action = str(data.get("action") or "").lower()
+                if action == "add":
+                    w.add_debug_rumor(data.get("speaker"), data.get("text"))
+                elif action == "delete":
+                    w.remove_rumor(data.get("seq"))
+                elif action == "confirm":
+                    w.set_rumor_confirmed(data.get("seq"), data.get("confirmed", True))
+                dialog_store.save(dialog)
+                response = debug_data(dialog)
+            self._json(response)
+            return
+
         if path == "/turn":
             text = (self._body().get("text") or "").strip()
             self.send_response(200)
-            self._set_guest_cookie()
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("X-Accel-Buffering", "no")
@@ -936,12 +984,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global MIGRATED_CHAT_COUNT
+    MIGRATED_CHAT_COUNT = dialog_store.merge_all_chats_into_scope(CHAT_SCOPE_ID)
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     shown_host = "localhost" if HOST in ("", "0.0.0.0") else HOST
     url = f"http://{shown_host}:{PORT}"
     model = _default_model()
     print(f"GM-Lab веб-интерфейс: {url}  (модель {model}, backend {config.BACKEND})")
     print(f"SQLite dialogs: {DIALOG_DB}")
+    print(f"Shared chat scope: {CHAT_SCOPE_ID}")
+    if MIGRATED_CHAT_COUNT:
+        print(f"Migrated dialogs into shared scope: {MIGRATED_CHAT_COUNT}")
     print("Ctrl+C — остановить.")
     if os.environ.get("GM_OPEN_BROWSER", "0") == "1":
         try:

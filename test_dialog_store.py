@@ -259,6 +259,44 @@ def test_multiple_chats_for_one_guest(tmp: str) -> None:
     assert second_reloaded.session.world.constraints[-1] == "second-only constraint"
 
 
+def test_merge_all_chats_into_shared_scope(tmp: str) -> None:
+    db_path = os.path.join(tmp, "shared_scope.sqlite3")
+    store = DialogStore(db_path, make_client)
+
+    shared = store.create_chat("shared", title="Existing shared", activate=True)
+    first = store.create_chat("guest_a", title="Guest A", activate=True)
+    second = store.create_chat("guest_b", title="Guest B", activate=True)
+
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE dialog_chats SET updated_at = ? WHERE guest_id = ? AND chat_id = ?",
+            ("2026-06-18T00:00:00Z", "shared", shared.chat_id),
+        )
+        con.execute(
+            "UPDATE dialog_chats SET updated_at = ? WHERE guest_id = ? AND chat_id = ?",
+            ("2026-06-18T00:01:00Z", "guest_a", first.chat_id),
+        )
+        con.execute(
+            "UPDATE dialog_chats SET updated_at = ? WHERE guest_id = ? AND chat_id = ?",
+            ("2026-06-18T00:02:00Z", "guest_b", second.chat_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    assert store.merge_all_chats_into_scope("shared") == 2
+
+    chats = store.list_chats("shared")
+    assert [chat["title"] for chat in chats] == ["Guest B", "Guest A", "Existing shared"]
+    assert store.active_chat_id("shared") == second.chat_id
+    assert store.list_chats("guest_a") == []
+    assert store.list_chats("guest_b") == []
+
+    assert store.merge_all_chats_into_scope("shared") == 0
+    assert len(store.list_chats("shared")) == 3
+
+
 def test_selected_story_round_trip(tmp: str) -> None:
     db_path = os.path.join(tmp, "story.sqlite3")
     guest_id = "guest_story_0123456789abcdef01234"
@@ -329,6 +367,7 @@ def test_new_schema_and_default_title(tmp: str) -> None:
 with tempfile.TemporaryDirectory() as tmp:
     test_runtime_round_trip(tmp)
     test_multiple_chats_for_one_guest(tmp)
+    test_merge_all_chats_into_shared_scope(tmp)
     test_selected_story_round_trip(tmp)
     test_new_schema_and_default_title(tmp)
 

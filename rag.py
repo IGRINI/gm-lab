@@ -157,6 +157,23 @@ class EmbeddingCache:
                 payload,
             )
 
+    def delete_by_text_hashes(self, text_hashes: list[str]) -> int:
+        """Drop cached vectors for these content hashes across every model. Returns rows removed."""
+        hashes = [h for h in text_hashes if h]
+        if not hashes:
+            return 0
+        total = 0
+        with self._connect() as con:
+            for start in range(0, len(hashes), 400):  # stay under SQLite's bound-var limit
+                chunk = hashes[start:start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = con.execute(
+                    f"DELETE FROM embeddings WHERE text_hash IN ({placeholders})",
+                    chunk,
+                )
+                total += cur.rowcount or 0
+        return total
+
 
 class LocalEmbeddingClient:
     def __init__(self):
@@ -372,6 +389,26 @@ def retrieve_world_fact(query: str, documents: list[RagDocument]) -> dict | None
         "text": " ".join(lines),
         "sources": sources,
     }
+
+
+def purge_embeddings_for_texts(texts: list[str]) -> int:
+    """Best-effort removal of cached embeddings for the given raw texts.
+
+    Embeddings are a global content-addressed cache (keyed by the text's hash, shared
+    across chats), so this drops the vectors for one chat's world texts. Texts shared by
+    another chat will simply be re-embedded on demand — no data loss. Never raises.
+    """
+    if not config.RAG_ENABLED:
+        return 0
+    # Match EmbeddingCache.embed() normalization (it caches by _sha(text.strip())).
+    clean = [t.strip() for t in texts if isinstance(t, str) and t.strip()]
+    if not clean:
+        return 0
+    try:
+        cache = EmbeddingCache(config.RAG_CACHE_PATH)
+        return cache.delete_by_text_hashes([_sha(t) for t in clean])
+    except Exception:
+        return 0
 
 
 def docs_debug_json(documents: list[RagDocument]) -> str:

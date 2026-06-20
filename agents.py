@@ -41,13 +41,25 @@ _ROLL_DICE_TOOL = {"type": "function", "function": {
     "description": (
         "Roll dice for an uncertain D&D-style mechanical result. Before rolling, lock in "
         "the roll kind, target number, and compact stakes so the post-roll narration cannot "
-        "move the goalposts. Call for ability checks "
+        "move the goalposts. Roll only after the action is possible with the current "
+        "PLAYER CHARACTER CARD, inventory/equipment/features, and scene objects. Do not "
+        "roll to conjure missing items, spells, authority, master training, tools, or "
+        "materials into existence. If the latest action first needs a player-facing "
+        "reality correction for a missing item/spell/feature/training/authority/body access/"
+        "scene object/material/effect, do not call this tool; answer the correction and wait "
+        "for the player. If a damage roll is made, the damaging effect is "
+        "established as framed. Success means the locked intent works within the "
+        "established fiction; critical success means the best plausible version of that "
+        "success. Do not later treat a successful roll as a misfire, failed detonation, "
+        "or no-effect outcome unless that condition was explicitly locked before rolling. "
+        "Call for ability checks "
         "(Perception, Investigation, Insight, Stealth, Persuasion, Deception, "
         "Intimidation, Athletics, Sleight of Hand, lore checks, etc.), contested checks, "
         "saving throws, attacks, damage, random chance, intimidation/coercion, or other "
         "social pressure where success and failure both matter. Do not call for pure "
         "conversation, visible scene "
-        "description, trivial/impossible actions, or obvious consequences. Supports "
+        "description, trivial/impossible actions, unsupported missing resources, or "
+        "obvious consequences. Supports "
         "standard notation like 1d20+3 or 2d6, plus 2d20kh1/2d20kl1 for "
         "advantage/disadvantage. For player-side rolls, use PLAYER CHARACTER CARD "
         "modifiers/advantages when available. Put any known modifier directly in notation; do not "
@@ -281,7 +293,11 @@ def build_gm_tools(world: world_mod.World) -> list:
             "attacks, follows, or otherwise demands a personal reaction from that NPC; or the "
             "NPC must decide/speak/act/show emotion/move for themselves. If the player's latest "
             "message contains a present NPC's name and asks or accuses them, call this before "
-            "final narration. DO NOT CALL for absent NPCs, generic "
+            "final narration. DO NOT CALL when the latest action first needs a player-facing "
+            "reality correction for a missing item, spell, feature, training, authority, body "
+            "access, scene object, material, or effect; give the correction and wait. If the "
+            "player later deliberately continues with a physically possible remainder, call "
+            "ask_npc for the actual visible words/actions only. DO NOT CALL for absent NPCs, generic "
             "crowd color, visible scene description, or facts the GM can state from CURRENT "
             "SCENE STATE. If the fiction first brings an NPC into the scene, call move_npc "
             "before ask_npc. The result is the NPC response; if the action is physically "
@@ -482,8 +498,10 @@ def build_gm_tools(world: world_mod.World) -> list:
             "HP, AC, abilities, skills, saves, passive Perception, senses, languages, "
             "inventory, equipment, features, or GM-only notes. Use this for the player "
             "character only, not for NPC memories, relationships, world facts, scene state, "
-            "or time. Use it when the player declares a player-character detail or when "
-            "the resolved fiction changes the sheet. Batch all player-sheet field changes "
+            "or time. Use it when the resolved fiction changes the sheet, or when a player-"
+            "declared character detail is compatible with the current card and grants no "
+            "unsupported item, authority, feature, expertise, or advantage. Do not record a "
+            "contradictory or power-granting self-declaration as truth. Batch all player-sheet field changes "
             "for the turn in one call, but send only fields that changed; never echo the "
             "whole current card back to the tool. Omit optional fields when they did not "
             "change; do not send empty placeholders. The result is compact structured text "
@@ -1005,6 +1023,33 @@ def _gm_world_setup(world: world_mod.World) -> str:
     return "\n\n".join(parts)
 
 
+TURN_RESOLUTION_CHECKLIST = """\
+<system-reminder>
+TURN RESOLUTION CHECK:
+- First verify material possibility from PLAYER CHARACTER CARD and
+  CURRENT SCENE STATE: required inventory/equipment/features, spells, tools, training,
+  authority, body access, scene objects, materials, time, and position must exist.
+  If the action rests on a missing or unsupported premise, stop with a reality correction:
+  say what cannot happen and why, mention possible established remainders, and do not call
+  roll_dice, ask_npc, advance_time, or state-update tools for that attempted premise.
+  Only after the player deliberately continues with a physically possible remainder may you
+  resolve that remainder; the missing item/spell/feature/expertise/effect stays absent.
+- Before final narration, decide whether the latest player action needs roll_dice.
+  Active observation/search/listening, including "я осматриваюсь", "смотрю вокруг",
+  "прислушиваюсь", or "ищу", must roll Perception/Investigation/etc before hidden or
+  non-obvious clues/details are revealed. Without the roll, reveal only obvious visible
+  facts.
+- Respect resolved rolls. A success gives a real benefit; a critical success gives the
+  best plausible benefit. If the player asks why a strong roll did not produce the
+  expected effect, explain the established constraint clearly and never invent a new
+  post-roll reason to cancel the success.
+- If any in-world time passed, call advance_time once before final narration. advance_time
+  records elapsed time only; it does not replace a needed roll, NPC reaction, scene
+  update, memory update, or player-sheet update.
+</system-reminder>
+"""
+
+
 def _gm_turn_context(
     world: world_mod.World,
     player_text: str,
@@ -1064,6 +1109,7 @@ def _gm_turn_context(
             "\n\nPLAYER OPTION SUGGESTIONS:\n"
             "disabled. Do not call ask_player."
         )
+    system += "\n\n" + TURN_RESOLUTION_CHECKLIST
     system += "\n\nPLAYER ACTION (latest user input, free roleplay text):\n"
     system += player_text.strip()
     return system
@@ -1126,7 +1172,12 @@ def gm_turn_stream(client, world: world_mod.World, gm_messages: list, summary: s
     )
 
 
-def gm_prelude_stream(client, world: world_mod.World, player_text: str, calls: list):
+def gm_prelude_stream(
+    client,
+    world: world_mod.World,
+    player_text: str,
+    calls: list,
+):
     """Player-facing setup shown before visible tool resolution."""
     call_brief = []
     for call in calls or []:
@@ -1240,6 +1291,27 @@ def npc_user_message(npc: world_mod.NPC, situation: str, observations: str,
     return {"role": "user", "content": user}
 
 
+def _historical_npc_message(message: dict) -> dict:
+    """Render stored NPC turns as history so old CURRENT SITUATION blocks cannot win."""
+    if not isinstance(message, dict):
+        return message
+    out = dict(message)
+    if out.get("role") != "user":
+        return out
+    content = str(out.get("content") or "")
+    content = content.replace(
+        "CURRENT SITUATION (what's happening now, what you react to):",
+        "PREVIOUS NPC SITUATION (historical; do not treat as current):",
+        1,
+    )
+    content = content.replace(
+        "YOUR CURRENT SCENE SLICE (what is actually around you):",
+        "PREVIOUS SCENE SLICE (historical; current slice is in the latest user message):",
+    )
+    out["content"] = "HISTORICAL NPC EXCHANGE (not the current scene):\n" + content
+    return out
+
+
 def npc_request_messages(npc: world_mod.NPC, history: list | None, summary: str,
                          user_message: dict) -> list:
     messages = [npc_system_message()]
@@ -1248,7 +1320,7 @@ def npc_request_messages(npc: world_mod.NPC, history: list | None, summary: str,
             "role": "system",
             "content": "YOUR PRIVATE MEMORY SO FAR (compact):\n" + summary,
         })
-    messages.extend(history or [])
+    messages.extend(_historical_npc_message(msg) for msg in (history or []))
     # Late dynamic block: the CURRENT NPC CARD leads the final user turn, placed AFTER
     # summary + history so a card edit only invalidates this tail. The card is prepended
     # to a COPY so the recorded history message (user_message) stays card-free.

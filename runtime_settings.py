@@ -21,6 +21,7 @@ REASONING_SUMMARIES = ("auto", "concise", "detailed", "none")
 REASONING_ROLES = config.REASONING_ROLES  # single source: config.ROLE_GM/NPC/COMPACT
 TEXT_VERBOSITIES = ("default", "low", "medium", "high")
 TOOL_CHOICES = ("auto", "required", "none")
+MAX_TOOL_HOPS_CAP = 100
 
 _BASE_REASONING_EFFORT = (config.CODEX_REASONING_EFFORT or "low").strip().lower() or "low"
 _BASE_REASONING_SUMMARY = (
@@ -53,6 +54,7 @@ _DEFAULTS.update({
     "tool_choice": os.environ.get("GM_TOOL_CHOICE", "auto").strip().lower() or "auto",
     "parallel_tool_calls": config._env_bool("GM_PARALLEL_TOOL_CALLS", True),
     "gm_suggest_options": config._env_bool("GM_SUGGEST_OPTIONS", False),
+    "max_tool_hops": 0,
     "max_output_tokens": int(config.MAX_TOKENS or 0),
 })
 
@@ -79,6 +81,7 @@ def options() -> dict[str, Any]:
         "reasoning_roles": list(REASONING_ROLES),
         "text_verbosities": list(TEXT_VERBOSITIES),
         "tool_choices": list(TOOL_CHOICES),
+        "max_tool_hops_max": MAX_TOOL_HOPS_CAP,
         "max_output_tokens_max": config.MAX_OUTPUT_TOKENS_CAP,
     }
 
@@ -213,6 +216,14 @@ def gm_suggest_options_enabled(settings: dict[str, Any] | None = None) -> bool:
     return bool(values.get("gm_suggest_options", False))
 
 
+def max_tool_hops(settings: dict[str, Any] | None = None) -> int:
+    values = settings or get()
+    try:
+        return max(0, int(values.get("max_tool_hops") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def max_output_tokens() -> int:
     try:
         return max(0, int(get().get("max_output_tokens") or 0))
@@ -294,6 +305,14 @@ def _clean(data: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
 
     if "gm_suggest_options" in data:
         out["gm_suggest_options"] = _bool(data.get("gm_suggest_options"))
+
+    if "max_tool_hops" in data:
+        try:
+            out["max_tool_hops"] = min(
+                MAX_TOOL_HOPS_CAP, max(0, int(data.get("max_tool_hops") or 0))
+            )
+        except (TypeError, ValueError):
+            out["max_tool_hops"] = int(base.get("max_tool_hops") or 0)
 
     if "max_output_tokens" in data:
         try:

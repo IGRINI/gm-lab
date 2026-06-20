@@ -64,7 +64,8 @@ header h1 b{color:var(--acc)}
 .btn-icon{display:inline-flex;align-items:center;gap:6px}
 .btn .bi{font-size:14px;line-height:1}
 .btn-short{display:none}            /* compact label, shown only on narrow screens */
-.chat-toggle{display:none}
+.chat-toggle{display:inline-flex}
+.chat-toggle.is-active{color:var(--acc);border-color:var(--acc)}
 
 /* ---- left chat history ---- */
 .chat-sidebar-backdrop{display:none}
@@ -115,6 +116,35 @@ header h1 b{color:var(--acc)}
 .chat-row-preview{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mut);font-size:12.5px}
 .chat-row-meta{display:flex;align-items:center;gap:7px;color:var(--mut);font-size:11px}
 .chat-row-meta span+span{color:var(--acc)}
+.chat-history-item{display:flex;align-items:stretch;gap:4px}
+.chat-history-item>.chat-history-row{flex:1;width:auto;min-width:0}
+.chat-row-delete{flex:none;align-self:center;width:32px;height:32px;display:flex;
+  align-items:center;justify-content:center;border:1px solid transparent;border-radius:8px;
+  background:transparent;color:var(--mut);font-size:14px;line-height:1;cursor:pointer;opacity:.5;
+  transition:opacity .15s ease,color .15s ease,background .15s ease,border-color .15s ease}
+.chat-history-item:hover .chat-row-delete{opacity:1}
+.chat-row-delete:hover{color:var(--redo);background:rgba(224,134,152,.12);border-color:rgba(224,134,152,.34)}
+.chat-row-delete:focus-visible{opacity:1;outline:2px solid var(--acc);outline-offset:2px}
+.chat-row-delete:disabled{opacity:.3;cursor:default}
+
+/* delete-chat confirmation dialog */
+.confirm-backdrop{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.6);
+  display:flex;align-items:center;justify-content:center;padding:20px}
+.confirm-card{width:min(380px,100%);text-align:center;border-radius:14px;padding:22px 22px 18px;
+  background:linear-gradient(180deg,var(--bg2),var(--bg3));border:1px solid var(--line);
+  box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.confirm-icon{width:48px;height:48px;margin:0 auto 12px;display:flex;align-items:center;
+  justify-content:center;border-radius:50%;font-size:22px;
+  background:rgba(224,134,152,.12);border:1px solid rgba(224,134,152,.34)}
+.confirm-card h3{margin:0 0 6px;color:var(--tx);font-size:18px}
+.confirm-name{margin:0 0 10px;color:var(--acc);font-size:14px;font-weight:650;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.confirm-note{margin:0 0 18px;color:var(--mut);font-size:13px;line-height:1.5}
+.confirm-actions{display:flex;gap:10px;justify-content:center}
+.confirm-actions .btn{min-width:112px;justify-content:center;min-height:38px}
+.btn.confirm-danger{background:var(--redo);border-color:var(--redo);color:#11111b;font-weight:700}
+.btn.confirm-danger:hover{filter:brightness(1.06)}
+.btn.confirm-danger:disabled{opacity:.6;cursor:default}
 .chat-sidebar-empty{margin:4px;padding:10px 11px;color:var(--mut);font-size:13px;
   border:1px dashed rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.02)}
 
@@ -310,33 +340,68 @@ header h1 b{color:var(--acc)}
 .die-scene{position:absolute;inset:0;perspective:520px;perspective-origin:50% 34%}
 .die-spin{position:absolute;inset:0;transform-style:preserve-3d;transform-origin:50% 50%}
 
-/* d6 — real cube, six bordered pip faces (opposite faces sum to 7) */
-.cube-face{position:absolute;inset:0;border-radius:13px;backface-visibility:hidden;
-  background:radial-gradient(125% 125% at 32% 26%,#3b3529,#1d1d29 56%,#0f0f18);
-  border:2px solid var(--md-strong);box-shadow:inset 0 0 16px rgba(0,0,0,.55)}
-.cube-svg{position:absolute;inset:0;width:100%;height:100%}
-.die-pip{fill:#ece5d4}
+/* d6 pips (drawn inside the shared poly-face, on the cube's hull-derived squares) */
+.die-pip{fill:#f6eed8;stroke:#14141f;stroke-width:.7px;paint-order:stroke}
 
-/* polyhedral — double-sided faceted face; gradient shading sells the 3D at rest */
-.shell-face{position:absolute;inset:0;backface-visibility:hidden}
-.shell-face.front{transform:translateZ(3px)}
-.shell-face.back{transform:rotateY(180deg) translateZ(3px)}
-.die-svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
-.die-svg.back{opacity:.9}
-.die-face{stroke:var(--md-strong);stroke-width:2.4;stroke-linejoin:round}
-.die-facet{fill:none;stroke:rgba(230,192,138,.4);stroke-width:1.2;stroke-linejoin:round}
-.die-gloss{pointer-events:none}
-.die-num{fill:#f3ead4;font-weight:800;
-  font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;transition:opacity .16s ease}
-/* hide the numeral mid-tumble (it would flash mirrored), reveal on landing */
-.die.rolling .die-num{opacity:0}
-.die.dropped .die-facet{stroke-dasharray:4 3}
+/* d4/d6/d8/d10/d12/d20 — real polyhedra: each face is a 0-size node at the solid
+   centre, placed in 3D by a per-face matrix3d (from polyhedra.js); the SVG holds
+   the face polygon (baked flat-shade) + numeral. backface-visibility hides far faces. */
+.poly-face{position:absolute;left:50%;top:50%;width:0;height:0;backface-visibility:hidden}
+.poly-svg{position:absolute;left:-40px;top:-40px;width:80px;height:80px;overflow:visible}
+.poly-fill{stroke:var(--md-strong);stroke-width:1.4;stroke-linejoin:round}
+.poly-num{fill:#f6eed8;stroke:#14141f;stroke-width:.8px;paint-order:stroke;
+  font-weight:800;font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+.die.dropped .poly-fill{stroke-dasharray:3.5 2.5}
+.token-svg{position:absolute;inset:0;width:100%;height:100%;backface-visibility:hidden}
+
+/* d2 — coin: two gold faces (1/2) + a cylindrical rim, flips end-over-end */
+.die-spin.coin{transform-style:preserve-3d}
+.coin-face{position:absolute;left:50%;top:50%;width:48px;height:48px;margin:-24px 0 0 -24px;
+  border-radius:50%;backface-visibility:hidden;display:flex;align-items:center;justify-content:center;
+  border:1.5px solid var(--md-strong);color:#3a2f16;font:800 23px ui-monospace,SFMono-Regular,Consolas,monospace;
+  background:radial-gradient(circle at 36% 30%,#e7cf92,#b89a5a 52%,#6a5630)}
+.coin-edge{position:absolute;left:50%;top:50%;width:8.7px;height:9px;margin:-4.5px 0 0 -4.35px;
+  background:linear-gradient(#9c8550,#5c4d2c);border-top:1px solid #c9ad6e;border-bottom:1px solid #34291590}
+
+/* d3 — sphere body + 3 blank flat cuts; numbers ride the rounded ridges between them */
+.d3-body{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;
+  background:radial-gradient(circle at 34% 28%,#d8bd7e,#8a7345 52%,#2c2212);
+  box-shadow:inset -5px -7px 14px rgba(0,0,0,.5),inset 3px 4px 9px rgba(255,238,200,.16)}
+.die-spin.d3{transform-style:preserve-3d}
+.d3-flat{position:absolute;left:50%;top:50%;width:38px;height:38px;margin:-19px 0 0 -19px;border-radius:50%;
+  backface-visibility:hidden;
+  background:radial-gradient(circle at 42% 38%,#cbb06f,#7c6940 60%,#352b16);
+  box-shadow:inset 0 0 7px rgba(0,0,0,.4)}
+.d3-num{position:absolute;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;
+  display:flex;align-items:center;justify-content:center;backface-visibility:hidden;
+  color:#f6eed8;font:800 21px ui-monospace,SFMono-Regular,Consolas,monospace;
+  text-shadow:0 1px 2px rgba(0,0,0,.65)}
+
+/* d100 — magic 8-ball: glossy black sphere + a window where the number settles */
+.ball{position:absolute;inset:0}
+.ball.rolling{animation:ball-shake 540ms ease-in-out infinite}
+.ball-body{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;
+  background:radial-gradient(circle at 33% 26%,#50505c,#17171f 55%,#040406);
+  box-shadow:inset -5px -7px 16px rgba(0,0,0,.7),0 3px 8px rgba(0,0,0,.5)}
+.ball-eight{position:absolute;left:50%;top:13%;width:15px;height:15px;margin-left:-7.5px;border-radius:50%;
+  background:#f1f1f1;color:#111;font:800 10px ui-monospace,SFMono-Regular,Consolas,monospace;
+  display:flex;align-items:center;justify-content:center}
+.ball-window{position:absolute;left:50%;top:55%;width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;
+  background:radial-gradient(circle at 42% 36%,#2a3f7a,#0d1738 65%,#070c20);
+  border:1px solid rgba(130,160,235,.45);display:flex;align-items:center;justify-content:center;
+  box-shadow:inset 0 0 8px rgba(0,0,0,.6)}
+.ball-num{color:#dfe7ff;font-weight:800;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  text-shadow:0 0 6px rgba(150,180,255,.55);font-variant-numeric:tabular-nums}
+.ball.landed .ball-num{animation:ball-pop 320ms cubic-bezier(.18,.89,.32,1.28)}
+.ball-gloss{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;
+  pointer-events:none;background:radial-gradient(ellipse 42% 26% at 33% 22%,rgba(255,255,255,.5),transparent 60%)}
+@keyframes ball-shake{0%{transform:translate(0,0) rotate(0)}25%{transform:translate(-2px,1px) rotate(-2.5deg)}
+  50%{transform:translate(2px,-1px) rotate(2deg)}75%{transform:translate(-1px,1px) rotate(-1deg)}100%{transform:translate(0,0) rotate(0)}}
+@keyframes ball-pop{0%{transform:scale(.6);opacity:.4}60%{transform:scale(1.18)}100%{transform:scale(1);opacity:1}}
 
 /* crit accents — only after landing; the glow lives on .die-aura, never the shell */
-.die.nat20.landed .die-face{stroke:var(--md-strong)}
-.die.nat20.landed .die-num{fill:var(--md-strong)}
-.die.nat1.landed .die-face{stroke:var(--redo)}
-.die.nat1.landed .die-num{fill:var(--redo)}
+.die.nat20.landed .poly-fill{stroke:var(--md-strong);stroke-width:1.8}
+.die.nat1.landed .poly-fill{stroke:var(--redo);stroke-width:1.8}
 .die-aura{position:absolute;inset:-5px;border-radius:50%;pointer-events:none;opacity:0}
 .die.nat20.landed .die-aura{opacity:.5;
   box-shadow:0 0 13px 2px color-mix(in srgb,var(--md-strong) 70%,transparent);
@@ -374,7 +439,7 @@ header h1 b{color:var(--acc)}
 @media (prefers-reduced-motion: reduce){
   .tool-card{animation:none}
   .die-aura{animation:none!important}
-  .die-shadow,.die-num{transition:none}
+  .die-shadow{transition:none}
 }
 
 /* ---- spoiler (opens "upward": chat shifts up, bottom stays anchored) ---- */
@@ -598,7 +663,7 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
 .debug-section[open] > summary::before,.debug-npc[open] > summary::before{content:"▾"}
 .debug-section > :not(summary),.debug-npc > :not(summary){margin-left:12px;margin-right:12px}
 .debug-section > :last-child,.debug-npc > :last-child{margin-bottom:12px}
-.debug-section h4,.debug-npc h4{margin:10px 12px 5px;color:var(--mut);
+.debug-section h4,.debug-npc h4,.dbg-tabpanel h4{margin:10px 12px 5px;color:var(--mut);
   font-size:10.5px;letter-spacing:.85px;text-transform:uppercase;font-weight:800}
 .debug-text{background:var(--bg);border:1px solid rgba(255,255,255,.07);
   border-radius:8px;padding:8px 10px;color:var(--sub);font-size:13px}
@@ -774,6 +839,9 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
   .scene{padding:11px 13px}
   .narration,.player,.card,.tool-card{padding:10px 12px}
   .player{max-width:90%}
+  /* dice: tighter stage + spacing so a roll doesn't eat the small screen */
+  .dice-stage{gap:13px;padding:15px 4px 9px;min-height:68px}
+  .dice-total{font-size:27px}
 
   /* --- footer/composer: info bars stacked on top, input pinned at the bottom --- */
   footer{padding:10px 10px calc(10px + env(safe-area-inset-bottom))}
@@ -819,4 +887,44 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
   .chat-inner{padding:0 10px}
   .narration,.player,.card,.tool-card,.scene{padding:9px 11px}
   .quick-reply{flex-basis:100%}
+}
+
+/* ---- debug drawer: tabbed shell + helpers (added with the panel redesign) ---- */
+.dbg-tabs{flex:none;display:flex;gap:5px;overflow-x:auto;padding:8px 12px 0;
+  scrollbar-width:none;border-bottom:1px solid var(--line)}
+.dbg-tabs::-webkit-scrollbar{display:none}
+.dbg-tab-btn{flex:none;background:transparent;color:var(--mut);border:1px solid transparent;
+  border-bottom:0;border-radius:8px 8px 0 0;padding:7px 11px;font:inherit;font-size:12.5px;
+  font-weight:650;cursor:pointer;white-space:nowrap;transform:translateY(1px)}
+.dbg-tab-btn:hover{color:var(--tx);background:rgba(255,255,255,.03)}
+.dbg-tab-btn.active{color:var(--tx);background:var(--bg2);border-color:var(--line);
+  border-bottom:1px solid var(--bg2)}
+.dbg-tabpanel{display:flex;flex-direction:column;gap:4px;padding-top:10px}
+.dbg-tabpanel > .dbg-controls{margin-top:0}
+.debug-npc-head-right{display:flex;align-items:center;gap:8px;flex:none}
+.btn.small{padding:3px 9px;font-size:11.5px;min-height:0;border-radius:7px}
+.dbg-info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;
+  margin-left:5px;border-radius:50%;border:1px solid var(--line);background:var(--bg3);
+  color:var(--mut);font-size:10px;font-weight:700;cursor:help;vertical-align:middle;line-height:1}
+.dbg-info:hover{color:var(--acc);border-color:var(--acc)}
+.tip.dbg-tip{max-width:300px;font-size:12px;line-height:1.45}
+.dbg-warn{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--md-strong);
+  background:rgba(230,192,138,.12);border:1px solid rgba(230,192,138,.34);
+  border-radius:5px;padding:1px 5px;margin-left:6px;font-weight:700;vertical-align:middle}
+.dbg-mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;word-break:break-all}
+.dbg-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 12px;margin-top:8px}
+@media(max-width:560px){
+  .dbg-check-grid{grid-template-columns:1fr}
+  /* phones: wrap the 8 tabs into chips (all visible) instead of a hidden-scrollbar row */
+  .dbg-tabs{flex-wrap:wrap;gap:6px;padding:10px 12px 0}
+  .dbg-tab-btn{transform:none;border:1px solid var(--line);border-radius:8px;
+    background:var(--bg3);padding:8px 12px}
+  .dbg-tab-btn.active{color:var(--tx);background:var(--bg2);border-color:var(--acc)}
+}
+
+/* desktop (>700px): chat sidebar is a collapsible docked column.
+   The mobile drawer (<=700px, transform-based) is defined above and stays untouched. */
+@media(min-width:701px){
+  .chat-sidebar{transition:width .2s ease,min-width .2s ease,max-width .2s ease}
+  .app-body.chats-collapsed .chat-sidebar{width:0!important;min-width:0!important;max-width:0!important;overflow:hidden;border-right-width:0}
 }

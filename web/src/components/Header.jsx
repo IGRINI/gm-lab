@@ -222,6 +222,19 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
         </label>
 
         <label className="field">
+          <span>Лимит tool-hop</span>
+          <input
+            type="number"
+            min="0"
+            max={settingsOptions.max_tool_hops_max || undefined}
+            step="1"
+            value={draft.max_tool_hops || 0}
+            onChange={(e) => set({ max_tool_hops: Number(e.target.value || 0) })}
+            title="0 = без ограничения"
+          />
+        </label>
+
+        <label className="field">
           <span>Лимит ответа</span>
           <input
             type="number"
@@ -245,6 +258,7 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
 
 export default function Header({
   onToggleChats,
+  chatsOpen = false,
   srv,
   models,
   settings,
@@ -281,10 +295,12 @@ export default function Header({
       {onToggleChats && (
         <button
           type="button"
-          className="btn btn-icon chat-toggle"
+          className={"btn btn-icon chat-toggle" + (chatsOpen ? " is-active" : "")}
           onClick={onToggleChats}
-          title="Список чатов"
-          aria-label="Открыть список чатов"
+          title={chatsOpen ? "Свернуть список чатов" : "Развернуть список чатов"}
+          aria-label={chatsOpen ? "Свернуть список чатов" : "Развернуть список чатов"}
+          aria-expanded={chatsOpen}
+          aria-controls="chat-history-sidebar"
         >
           <span className="bi" aria-hidden="true">☰</span>
           <span className="btn-label">Чаты</span>
