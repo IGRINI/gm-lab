@@ -63,6 +63,15 @@ WORLD_STATE_SPLIT_GUIDE = (
     "write or update goal."
 )
 
+WORLD_STATE_CONSOLIDATION_GUIDE = (
+    "Consolidate memory by durable meaning: one event, clue cluster, testimony block, "
+    "or orientation for the same audience should usually be one record, not several "
+    "near-duplicates. Put names, descriptions, and search words in text/aliases; use "
+    "participants for extra actors who know the same record. Split only when truth status, "
+    "access scope, owner, relationship target, or future update lifecycle is genuinely "
+    "different."
+)
+
 WORLD_STATE_EXAMPLE_GUIDE = (
     "Examples: private witness claim -> rumor shared npc_id=<speaker> target=player; "
     "the witness remembers telling the player -> npc_memory shared npc_id=<speaker> "

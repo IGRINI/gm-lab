@@ -49,7 +49,9 @@ _TOOL_REMINDERS = {
         "attitude, promise, threat, lead, suspicion, clue, or known_name, call "
         "query_world_state first when a matching record may exist, then call "
         "update_world_state; update an existing relationship/goal/memory instead "
-        "of duplicating the same thread. "
+        "of duplicating the same thread. Consolidate one testimony or clue block "
+        "into one record; use participants for extra listeners instead of copying "
+        "the same memory per actor. "
         "Private leads from an NPC to the player are usually shared rumor plus "
         "npc_memory, not public fact. Call update_player_character for player-sheet "
         "changes or GM-only player notes. If time passed, call advance_time. If "
@@ -462,6 +464,7 @@ def _compact_world_state_update_payload(payload: dict) -> dict:
             ("target", "target"),
             ("entity_id", "entity_id"),
             ("source_npc", "source_npc"),
+            ("participants", "participants"),
             ("known_name", "known_name"),
             ("location_id", "location_id"),
             ("location_name", "location_name"),
@@ -491,6 +494,7 @@ def _compact_world_state_update_payload(payload: dict) -> dict:
             "target": row.get("target"),
             "entity_id": row.get("entity_id"),
             "source_npc": row.get("source_npc"),
+            "participants": row.get("participants"),
             "known_name": row.get("known_name"),
             "location_id": row.get("location_id"),
             "location_name": row.get("location_name"),
@@ -526,6 +530,7 @@ def _compact_world_query_payload(payload: dict) -> dict:
             "target": row.get("target"),
             "entity_id": row.get("entity_id"),
             "source_npc": row.get("source_npc"),
+            "participants": row.get("participants"),
             "known_name": row.get("known_name"),
             "location_id": row.get("location_id"),
             "location_name": row.get("location_name"),
@@ -669,8 +674,8 @@ def _model_world_state_update_text(payload: dict) -> str:
         for row in applied:
             summary = _row_summary(row, (
                 "i", "status", "op", "type", "id", "hash", "scope", "npc_id",
-                "target", "entity_id", "source_npc", "known_name", "location_id",
-                "region_id", "scene_id",
+                "target", "participants", "entity_id", "source_npc", "known_name",
+                "location_id", "region_id", "scene_id",
             ))
             if summary:
                 lines.append(f"- {summary}")
@@ -681,7 +686,7 @@ def _model_world_state_update_text(payload: dict) -> str:
             summary = _row_summary(row, (
                 "i", "status", "op", "type", "id", "existing_id",
                 "existing_hash", "expected_hash", "actual_hash", "scope",
-                "npc_id", "target", "entity_id", "error",
+                "npc_id", "target", "participants", "entity_id", "error",
             ))
             if summary:
                 lines.append(f"- {summary}")
@@ -701,8 +706,8 @@ def _model_world_query_text(payload: dict) -> str:
         for row in results:
             summary = _row_summary(row, (
                 "kind", "id", "hash", "scope", "npc_id", "target", "entity_id",
-                "source_npc", "known_name", "location_id", "location_name",
-                "region_id", "scene_id", "importance", "status",
+                "source_npc", "participants", "known_name", "location_id",
+                "location_name", "region_id", "scene_id", "importance", "status",
             ))
             text = _clip_text(row.get("text"), 500)
             if text:
@@ -861,6 +866,35 @@ def _resolve_npc_id(world: world_mod.World, raw: str) -> tuple[str, str]:
         return "", str(e)
 
 
+def _resolve_participants(world: world_mod.World, raw) -> tuple[list[str], str]:
+    participants: list[str] = []
+    seen: set[str] = set()
+    for item in _clean_list(raw):
+        key = item.lower()
+        if key in {"player", "игрок"}:
+            actor_id = "player"
+        else:
+            actor_id, error = _resolve_npc_id(world, item)
+            if error:
+                return [], f"participants contains unknown actor: {item}"
+        if actor_id not in seen:
+            seen.add(actor_id)
+            participants.append(actor_id)
+    return participants, ""
+
+
+def _resolve_actor_target(world: world_mod.World, raw: str) -> str:
+    target = _clean_text(raw)
+    if not target:
+        return ""
+    if target.lower() in {"player", "игрок"}:
+        return "player"
+    try:
+        return world.resolve(target).npc_id
+    except KeyError:
+        return ""
+
+
 def _append_npc_memory(session: "Session", npc_id: str, text: str) -> None:
     session.commitments.setdefault(npc_id, []).append(text)
     session.commitments[npc_id] = session.commitments[npc_id][-_COMMIT_BLOCKS:]
@@ -881,9 +915,13 @@ def _state_record_kind(item_type: str) -> str:
 def _state_record_scope(scope: str) -> str:
     return {
         "player": "public",
+        "public": "public",
         "gm": "gm",
         "npc": "owner",
+        "owner": "owner",
+        "subject": "subject",
         "shared": "participants",
+        "participants": "participants",
     }.get(scope, "public")
 
 
@@ -906,6 +944,63 @@ def _state_record_hash(record) -> str:
     if callable(hasher):
         return hasher(record)
     return ""
+
+
+def _record_text_key(text: str) -> str:
+    return re.sub(r"\s+", " ", _clean_text(text).lower()).strip()
+
+
+def _record_participant_ids(record) -> set[str]:
+    ids = {
+        _clean_text(getattr(record, "owner", "")).lower(),
+        _clean_text(getattr(record, "subject", "")).lower(),
+    }
+    ids.update(_clean_text(item).lower() for item in getattr(record, "participants", ()) or ())
+    ids.discard("")
+    return ids
+
+
+def _find_mergeable_state_record(
+    world: world_mod.World,
+    *,
+    kind: str,
+    text: str,
+    scope: str,
+    owner: str,
+    entity_id: str,
+    source_npc: str,
+    location_id: str,
+    region_id: str,
+    scene_id: str,
+):
+    if kind in {"relationship", "goal"}:
+        return None
+    text_key = _record_text_key(text)
+    if not text_key:
+        return None
+    wanted_scope = _state_record_scope(scope)
+    for record in getattr(world, "state_records", []) or []:
+        if not getattr(record, "active", True):
+            continue
+        if _state_record_kind(kind) != _state_record_kind(getattr(record, "kind", "")):
+            continue
+        if wanted_scope != _state_record_scope(getattr(record, "scope", "")):
+            continue
+        if _clean_text(getattr(record, "owner", "")).lower() != _clean_text(owner).lower():
+            continue
+        if _clean_text(getattr(record, "entity_id", "")).lower() != _clean_text(entity_id).lower():
+            continue
+        if _clean_text(getattr(record, "source_npc", "")).lower() != _clean_text(source_npc).lower():
+            continue
+        if _clean_text(getattr(record, "location_id", "")).lower() != _clean_text(location_id).lower():
+            continue
+        if _clean_text(getattr(record, "region_id", "")).lower() != _clean_text(region_id).lower():
+            continue
+        if _clean_text(getattr(record, "scene_id", "")).lower() != _clean_text(scene_id).lower():
+            continue
+        if _record_text_key(getattr(record, "text", "")) == text_key:
+            return record
+    return None
 
 
 def _expected_hash(item: dict) -> str:
@@ -983,26 +1078,6 @@ def _apply_state_record_item(
             update_payload["kind"] = _state_record_kind(item_type)
         if text:
             update_payload["text"] = text
-        if item.get("scope") or item.get("visibility"):
-            update_payload["scope"] = _state_record_scope(scope)
-            if scope == "npc" and not _clean_text(item.get("npc_id")):
-                return None, {
-                    "index": index,
-                    "op": op,
-                    "type": item_type,
-                    "id": record_id,
-                    "error": "npc_id is required when changing scope to npc",
-                }
-            if scope == "shared" and (
-                not _clean_text(item.get("npc_id")) or not _clean_text(item.get("target"))
-            ):
-                return None, {
-                    "index": index,
-                    "op": op,
-                    "type": item_type,
-                    "id": record_id,
-                    "error": "npc_id and target are required when changing scope to shared",
-                }
         owner = ""
         if item.get("npc_id"):
             owner, error = _resolve_npc_id(world, item.get("npc_id", ""))
@@ -1019,10 +1094,57 @@ def _apply_state_record_item(
         scene_id = _clean_text(item.get("scene_id"))
         importance = _clean_text(item.get("importance"))
         aliases = _clean_list(item.get("aliases"))
+        participants, error = _resolve_participants(world, item.get("participants"))
+        if error:
+            return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": error}
+        if item.get("scope") or item.get("visibility"):
+            update_payload["scope"] = _state_record_scope(scope)
+            if scope == "npc" and not (owner or _clean_text(getattr(existing_record, "owner", ""))):
+                return None, {
+                    "index": index,
+                    "op": op,
+                    "type": item_type,
+                    "id": record_id,
+                    "error": "npc_id is required when changing scope to npc",
+                }
+            if scope == "shared":
+                existing_participants = list(getattr(existing_record, "participants", ()) or ())
+                has_owner = owner or _clean_text(getattr(existing_record, "owner", ""))
+                has_target_or_participants = (
+                    bool(target)
+                    or bool(participants)
+                    or bool(_clean_text(getattr(existing_record, "subject", "")))
+                    or bool(existing_participants)
+                )
+                if not has_owner or not has_target_or_participants:
+                    return None, {
+                        "index": index,
+                        "op": op,
+                        "type": item_type,
+                        "id": record_id,
+                        "error": "npc_id and target or participants are required when changing scope to shared",
+                    }
         if source_npc:
             source_npc, error = _resolve_npc_id(world, source_npc)
             if error:
                 return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": error}
+        effective_scope = (
+            scope
+            if item.get("scope") or item.get("visibility")
+            else _state_visibility_from_scope(getattr(existing_record, "scope", ""))
+        )
+        if target and effective_scope == "shared":
+            target_actor = _resolve_actor_target(world, target)
+            if not target_actor:
+                return None, {
+                    "index": index,
+                    "op": op,
+                    "type": item_type,
+                    "id": record_id,
+                    "target": target,
+                    "error": "target for shared scope must be player or a known npc_id; use participants for multiple actors",
+                }
+            target = target_actor
         if known_name:
             known_entity_id = entity_id or getattr(existing_record, "entity_id", "")
             if not known_entity_id:
@@ -1052,6 +1174,8 @@ def _apply_state_record_item(
             update_payload["entity_id"] = entity_id
         if source_npc:
             update_payload["source_npc"] = source_npc
+        if "participants" in item:
+            update_payload["participants"] = participants
         if "location_id" in item:
             update_payload["location_id"] = location_id
         if "location_name" in item:
@@ -1087,6 +1211,7 @@ def _apply_state_record_item(
             "target": record.subject,
             "entity_id": record.entity_id,
             "source_npc": record.source_npc,
+            "participants": list(getattr(record, "participants", ()) or ()),
             "known_name": (record.metadata or {}).get("known_name", ""),
             "location_id": record.location_id,
             "location_name": record.location_name,
@@ -1112,6 +1237,9 @@ def _apply_state_record_item(
     scene_id = _clean_text(item.get("scene_id"))
     importance = _clean_text(item.get("importance"))
     aliases = _clean_list(item.get("aliases"))
+    participants, error = _resolve_participants(world, item.get("participants"))
+    if error:
+        return None, {"index": index, "op": op, "type": item_type, "error": error}
     if source_npc:
         source_npc, error = _resolve_npc_id(world, source_npc)
         if error:
@@ -1146,12 +1274,80 @@ def _apply_state_record_item(
             "npc_id": owner,
             "error": "target is required for relationship",
         }
-    if scope == "shared" and not target:
+    if target and scope == "shared":
+        target_actor = _resolve_actor_target(world, target)
+        if not target_actor:
+            return None, {
+                "index": index,
+                "op": op,
+                "type": item_type,
+                "target": target,
+                "error": "target for shared scope must be player or a known npc_id; use participants for multiple actors",
+            }
+        target = target_actor
+    if scope == "shared" and not (target or participants):
         return None, {
             "index": index,
             "op": op,
             "type": item_type,
-            "error": "target is required for shared scope",
+            "error": "target or participants is required for shared scope",
+        }
+
+    existing_record = _find_mergeable_state_record(
+        world,
+        kind=item_type,
+        text=text,
+        scope=scope,
+        owner=owner,
+        entity_id=entity_id,
+        source_npc=source_npc,
+        location_id=location_id,
+        region_id=region_id,
+        scene_id=scene_id,
+    )
+    if existing_record is not None:
+        existing_participants = _record_participant_ids(existing_record)
+        wanted_participants = {item.lower() for item in participants}
+        target_actor = _resolve_actor_target(world, target)
+        if target_actor:
+            wanted_participants.add(target_actor)
+        merged_participants = sorted(
+            (existing_participants | wanted_participants)
+            - {
+                _clean_text(getattr(existing_record, "owner", "")).lower(),
+                _clean_text(getattr(existing_record, "subject", "")).lower(),
+            }
+        )
+        if set(getattr(existing_record, "participants", ()) or ()) != set(merged_participants):
+            records = world.update_state_records([{
+                "id": existing_record.record_id,
+                "participants": merged_participants,
+            }])
+            existing_record = records[0] if records else existing_record
+            return {
+                "index": index,
+                "op": "update",
+                "type": existing_record.kind,
+                "id": existing_record.record_id,
+                "npc_id": existing_record.owner,
+                "target": existing_record.subject,
+                "participants": list(getattr(existing_record, "participants", ()) or ()),
+                "scope": _state_visibility_from_scope(existing_record.scope),
+                "hash": _state_record_hash(existing_record),
+                "status": "merged",
+            }, None
+        return None, {
+            "index": index,
+            "op": op,
+            "type": item_type,
+            "npc_id": owner,
+            "target": target,
+            "participants": participants,
+            "scope": scope,
+            "existing_id": existing_record.record_id,
+            "existing_hash": _state_record_hash(existing_record),
+            "status": "not_added",
+            "error": "not added: identical active memory already exists; update the existing record instead",
         }
 
     if item_type == "relationship":
@@ -1209,6 +1405,8 @@ def _apply_state_record_item(
         "entity_id": entity_id,
         "source_npc": source_npc,
     }
+    if participants:
+        record_payload["participants"] = participants
     for key, value in (
         ("location_id", location_id),
         ("location_name", location_name),
@@ -1236,6 +1434,7 @@ def _apply_state_record_item(
         "target": target,
         "entity_id": record.entity_id,
         "source_npc": record.source_npc,
+        "participants": list(getattr(record, "participants", ()) or ()),
         "known_name": (record.metadata or {}).get("known_name", ""),
         "location_id": record.location_id,
         "location_name": record.location_name,
@@ -1420,9 +1619,9 @@ def _scored_rows(query: str, rows: list[dict], limit: int) -> list[dict]:
             _clean_text(row.get(key))
             for key in (
                 "kind", "id", "npc_id", "target", "entity_id", "source_npc",
-                "known_name", "location_id", "location_name", "region_id",
-                "region_name", "scene_id", "importance", "aliases", "scope",
-                "visibility", "status", "text",
+                "participants", "known_name", "location_id", "location_name",
+                "region_id", "region_name", "scene_id", "importance", "aliases",
+                "scope", "visibility", "status", "text",
             )
             if _clean_text(row.get(key))
         )
@@ -1465,6 +1664,7 @@ def _state_record_rows(world: world_mod.World, actor_id: str) -> list[dict]:
             target=record.subject,
             entity_id=record.entity_id,
             source_npc=record.source_npc,
+            participants=list(getattr(record, "participants", ()) or ()),
             known_name=metadata.get("known_name", ""),
             location_id=record.location_id,
             location_name=record.location_name,
@@ -1490,6 +1690,8 @@ def _gm_query_rows(session: "Session") -> list[dict]:
     for index, event_text in enumerate(getattr(world, "hidden_events", []) or [], start=1):
         rows.append(_query_row("hidden_event", event_text, id=f"hidden:{index}", visibility="gm"))
     for record in getattr(world, "fact_records", []) or []:
+        if record.kind == "truth" and record.fact_id == "hidden_truth":
+            continue
         visibility = "gm" if record.kind == "truth" else "player"
         rows.append(_query_row(
             f"{record.kind}_fact",

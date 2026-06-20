@@ -592,13 +592,14 @@ def build_gm_tools(world: world_mod.World) -> list:
             "For update/delete, include expected_hash when you have a fresh hash from "
             "query_world_state or a just-returned update_world_state result. If you do not "
             "have a fresh id/hash and an active record may already exist for the same "
-            "npc_id and target, call query_world_state first; then update/delete that id "
+            "npc_id, target, and participants, call query_world_state first; then update/delete that id "
             "instead of adding a duplicate. Use add only when lookup is unknown or the note "
             "is genuinely new. For op=add, never invent or send id, expected_hash, mode, or "
             "placeholder hash values; the engine assigns ids. "
             f"{tool_guidance.WORLD_STATE_TYPE_GUIDE} "
             f"{tool_guidance.WORLD_STATE_SCOPE_GUIDE} "
             f"{tool_guidance.WORLD_STATE_SPLIT_GUIDE} "
+            f"{tool_guidance.WORLD_STATE_CONSOLIDATION_GUIDE} "
             f"{tool_guidance.WORLD_STATE_EXAMPLE_GUIDE} "
             f"{tool_guidance.WORLD_STATE_SEARCH_ANCHOR_GUIDE} "
             "Keep text short and in Russian. Do not put English access labels like "
@@ -606,8 +607,11 @@ def build_gm_tools(world: world_mod.World) -> list:
             "scope only. Omit optional fields when empty; do not send empty strings, "
             "empty arrays, or nulls for optional fields. Private NPC testimony, clues, "
             "promises, or leads told only to the player must use shared, not public. "
-            "Every shared item must include both "
-            "npc_id and target or it will be rejected. "
+            "When one durable note is known by several specific actors, write one "
+            "item and put the extra actor ids in participants instead of duplicating "
+            "the same text for each actor. "
+            "Every shared item must include npc_id and either target or participants "
+            "or it will be rejected. "
             "Do not use for visible scene movement, current-scene presence, or NPC speech; "
             "use set_scene, move_npc, or ask_npc for those. The result is compact structured "
             "text: applied/not-stored rows with ids, hashes, status, "
@@ -645,13 +649,15 @@ def build_gm_tools(world: world_mod.World) -> list:
                 "npc_id": {"type": "string",
                            "description": "NPC id that owns/knows this npc_memory, relationship, or goal; for rumor, the speaker if known. Required for shared scope. For private NPC-player exchange use npc_id=<speaker>. Omit when empty."},
                 "target": {"type": "string",
-                           "description": "Relationship/shared target such as player, an npc_id, faction, or place. Required for relationship and shared scope. For private NPC-player exchange use target=player."},
+                           "description": "Relationship target such as player, an npc_id, faction, or place. For shared scope, target must be player or a known npc_id for one primary listener; use participants for multiple listeners. Required for relationship. For private NPC-player exchange use target=player."},
                 "entity_id": {"type": "string",
                               "description": "Optional entity this note is about, such as an npc_id or location id. Use when someone reveals or remembers facts about another entity."},
                 "known_name": {"type": "string",
                                "description": "Optional player-known name/label for the NPC named by entity_id, e.g. after an introduction or another character identifies them. Requires entity_id to be an NPC id. Never use for the player, locations, factions, items, or ordinary facts. This is what the player may now call that NPC; it need not prove the NPC's true identity."},
                 "source_npc": {"type": "string",
                                "description": "Optional npc_id whose testimony/revelation is the source. Omit when same as npc_id or not relevant."},
+                "participants": {"type": "array", "items": {"type": "string"},
+                                 "description": "Optional extra actor ids who know/heard/share this exact record, such as player or npc ids. Use one record with participants instead of duplicating the same fact/rumor/npc_memory for several listeners. Do not use for public knowledge."},
                 "location_id": {"type": "string",
                                 "description": "Optional stable place id this note happened at or is about. Use for exact lookup; pair with location_name or aliases when the id is English/transliterated."},
                 "location_name": {"type": "string",
@@ -668,7 +674,7 @@ def build_gm_tools(world: world_mod.World) -> list:
                             "description": "Optional search aliases/spellings for this note: Russian names, case forms, transliterations, old names, nicknames, or common variants. Use to bridge English ids and Russian queries from the GM."},
                 "scope": {"type": "string",
                           "enum": ["public", "gm", "npc", "shared"],
-                          "description": "Who may know this state. public is not private player knowledge; shared means only npc_id and target know; npc means only npc_id knows/thinks/remembers; gm means hidden author truth. Use shared for a private NPC-player exchange. shared requires npc_id and target. Omit to use the type default."},
+                          "description": "Who may know this state. public is not private player knowledge; shared means only npc_id plus target and/or participants know; npc means only npc_id knows/thinks/remembers; gm means hidden author truth. Use shared for a private NPC-player exchange. shared requires npc_id and either target or participants. Omit to use the type default."},
                 "witnesses": {"type": "array", "items": {"type": "string"},
                                "description": "For public rumors only: ids who heard it, plus player if relevant. Omit when empty."},
                 "mode": {"type": "string", "enum": ["replace"],

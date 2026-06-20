@@ -1192,6 +1192,7 @@ def _state_record_to_payload(record: world_mod.StateRecord) -> dict:
         "tags": [str(item) for item in record.tags],
         "entity_id": getattr(record, "entity_id", ""),
         "source_npc": getattr(record, "source_npc", ""),
+        "participants": [str(item) for item in getattr(record, "participants", ())],
         "location_id": getattr(record, "location_id", ""),
         "location_name": getattr(record, "location_name", ""),
         "region_id": getattr(record, "region_id", ""),
@@ -1217,6 +1218,11 @@ def _state_record_from_payload(data: dict) -> world_mod.StateRecord:
         tags=tuple(str(item) for item in _json_list(data.get("tags"))),
         entity_id=str(data.get("entity_id") or data.get("entity") or data.get("about") or ""),
         source_npc=str(data.get("source_npc") or data.get("source_npc_id") or ""),
+        participants=tuple(
+            str(item).strip().lower()
+            for item in _json_list(data.get("participants"))
+            if str(item).strip()
+        ),
         location_id=str(data.get("location_id") or ""),
         location_name=str(data.get("location_name") or ""),
         region_id=str(data.get("region_id") or ""),

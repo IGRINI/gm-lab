@@ -162,6 +162,23 @@ export function Badge({ tone, tip, children }) {
   );
 }
 
+export function ActorRef({ id }) {
+  if (id === "player") return <Badge tone="muted">игрок</Badge>;
+  return <NpcRef id={id} />;
+}
+
+export function ParticipantChips({ ids }) {
+  const list = Array.isArray(ids) ? ids.filter(nonEmpty) : [];
+  if (!list.length) return null;
+  return (
+    <>
+      {list.map((id) => (
+        <span className="tc-arrow-to" key={id}>+ <ActorRef id={id} /></span>
+      ))}
+    </>
+  );
+}
+
 // A bordered text block for the "free-text" arguments (situation, reason, …).
 export function TextBlock({ tone, children }) {
   return (
@@ -485,6 +502,7 @@ function toolView(name, args, statusLabels) {
                     {nonEmpty(it.target) && (
                       <span className="tc-arrow-to">→ {it.target === "player" ? "игрок" : <NpcRef id={it.target} />}</span>
                     )}
+                    <ParticipantChips ids={it.participants} />
                     {nonEmpty(it.importance) && <Badge tone="warn">{it.importance}</Badge>}
                   </div>
                   {nonEmpty(it.text) && <TextBlock>{it.text}</TextBlock>}

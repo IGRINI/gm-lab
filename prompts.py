@@ -349,13 +349,16 @@ TOOL ROUTING:
   Batch 1-5 atomic items; use natural Russian text; access control belongs in scope, not
   in item text. Type guide: {tool_guidance.WORLD_STATE_TYPE_GUIDE} Scope guide:
   {tool_guidance.WORLD_STATE_SCOPE_GUIDE} Split guide:
-  {tool_guidance.WORLD_STATE_SPLIT_GUIDE} Search anchors:
+  {tool_guidance.WORLD_STATE_SPLIT_GUIDE} Consolidation guide:
+  {tool_guidance.WORLD_STATE_CONSOLIDATION_GUIDE} Search anchors:
   {tool_guidance.WORLD_STATE_SEARCH_ANCHOR_GUIDE}
-  Strong rules: shared scope requires npc_id + target; private NPC-to-player testimony is
-  usually shared rumor plus npc_memory, not public fact; one relationship thread should
-  usually be updated, not duplicated; for op=add never invent id/expected_hash/mode; use
-  known_name + entity_id only for NPC identities learned in fiction; do not record every
-  dialogue line, only state that should affect future play.
+  Strong rules: shared scope requires npc_id plus target or participants; private
+  NPC-to-player testimony is usually shared rumor plus npc_memory, not public fact; one
+  relationship thread should usually be updated, not duplicated; one testimony/clue block
+  for the same audience should usually be one rumor/fact/npc_memory with aliases and
+  participants, not several near-copy rows; for op=add never invent id/expected_hash/mode;
+  use known_name + entity_id only for NPC identities learned in fiction; do not record
+  every dialogue line, only state that should affect future play.
 - Mandatory update_world_state triggers: durable clue/fact/rumor; NPC learns, remembers,
   believes, doubts, promises, accepts a deal, owes a debt/favor, gains leverage, receives
   a threat, or changes plan; relationship/goal changes; player learns an NPC usable name;

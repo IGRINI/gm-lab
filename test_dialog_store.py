@@ -58,6 +58,7 @@ def test_runtime_round_trip(tmp: str) -> None:
         "subject": "player",
         "entity_id": "lysa",
         "source_npc": "borin",
+        "participants": ["mareth"],
         "location_id": "turnvale_square",
         "location_name": "Площадь Тёрнвейля",
         "region_id": "turnvale",
@@ -155,6 +156,13 @@ def test_runtime_round_trip(tmp: str) -> None:
     )
     assert len(entity_rows) == 1
     assert entity_rows[0].subject == "player"
+    assert entity_rows[0].participants == ("mareth",)
+    assert reloaded.session.world.state_records_for(
+        "mareth",
+        kinds=("rumor",),
+        entity_id="lysa",
+        source_npc="borin",
+    )
     assert entity_rows[0].location_id == "turnvale_square"
     assert entity_rows[0].location_name == "Площадь Тёрнвейля"
     assert entity_rows[0].region_id == "turnvale"

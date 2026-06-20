@@ -177,6 +177,7 @@ class StateRecord:
     tags: tuple[str, ...] = field(default_factory=tuple)
     entity_id: str = ""
     source_npc: str = ""
+    participants: tuple[str, ...] = field(default_factory=tuple)
     location_id: str = ""
     location_name: str = ""
     region_id: str = ""
@@ -209,6 +210,8 @@ def state_record_hash(record: StateRecord) -> str:
         "aliases": list(record.aliases or ()),
         "metadata": record.metadata or {},
     }
+    if record.participants:
+        payload["participants"] = list(record.participants)
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -340,6 +343,10 @@ def _state_record_tags(value: object) -> tuple[str, ...]:
 
 def _state_record_aliases(value: object) -> tuple[str, ...]:
     return _state_record_tags(value)
+
+
+def _state_record_participants(value: object) -> tuple[str, ...]:
+    return tuple(_actor_key(item) for item in _state_record_tags(value) if _actor_key(item))
 
 
 def _state_record_metadata(value: object) -> dict[str, Any]:
@@ -901,6 +908,7 @@ class World:
                 "tags": raw.tags,
                 "entity_id": raw.entity_id,
                 "source_npc": raw.source_npc,
+                "participants": raw.participants,
                 "location_id": raw.location_id,
                 "location_name": raw.location_name,
                 "region_id": raw.region_id,
@@ -940,6 +948,7 @@ class World:
             tags=_state_record_tags(data.get("tags")),
             entity_id=_as_str(data.get("entity_id") or data.get("entity") or data.get("about")),
             source_npc=_as_str(data.get("source_npc") or data.get("source_npc_id")),
+            participants=_state_record_participants(data.get("participants")),
             location_id=_as_str(data.get("location_id")),
             location_name=_as_str(data.get("location_name")),
             region_id=_as_str(data.get("region_id")),
@@ -973,6 +982,7 @@ class World:
         scope = _state_record_scope(record.scope)
         owner = _actor_key(record.owner)
         subject = _actor_key(record.subject)
+        participants = {_actor_key(item) for item in getattr(record, "participants", ()) if _actor_key(item)}
         if scope == "public":
             return True
         if actor in STATE_GM_ACTORS:
@@ -984,7 +994,7 @@ class World:
         if scope == "subject":
             return bool(subject and actor == subject)
         if scope == "participants":
-            return bool((owner and actor == owner) or (subject and actor == subject))
+            return bool((owner and actor == owner) or (subject and actor == subject) or actor in participants)
         return False
 
     def add_state_records(self, records) -> list[StateRecord]:
@@ -1037,6 +1047,8 @@ class World:
                 record.entity_id = _as_str(raw.get("entity_id") or raw.get("entity") or raw.get("about"))
             if "source_npc" in raw or "source_npc_id" in raw:
                 record.source_npc = _as_str(raw.get("source_npc") or raw.get("source_npc_id"))
+            if "participants" in raw:
+                record.participants = _state_record_participants(raw.get("participants"))
             if "location_id" in raw:
                 record.location_id = _as_str(raw.get("location_id"))
             if "location_name" in raw:
@@ -1152,6 +1164,7 @@ class World:
                     record.subject,
                     record.entity_id,
                     record.source_npc,
+                    *getattr(record, "participants", ()),
                     record.location_id,
                     record.location_name,
                     record.region_id,
@@ -1195,6 +1208,7 @@ class World:
                     "subject": record.subject,
                     "entity_id": record.entity_id,
                     "source_npc": record.source_npc,
+                    "participants": list(getattr(record, "participants", ()) or ()),
                     "location_id": record.location_id,
                     "location_name": record.location_name,
                     "region_id": record.region_id,

@@ -246,13 +246,16 @@ assert "player character sheet updates (`update_player_character`)" in gm_system
 assert "update_player_character: player character sheet only" in gm_system
 assert "`known_name` is only for NPC ids from the roster" in gm_system
 assert "Mandatory update_world_state triggers" in gm_system
-assert "Strong rules: shared scope requires npc_id + target" in gm_system
-assert "private NPC-to-player testimony is\n  usually shared rumor plus npc_memory" in gm_system
-assert "one relationship thread should\n  usually be updated" in gm_system
-assert "known_name + entity_id only for NPC identities learned in fiction" in gm_system
+gm_system_flat = " ".join(gm_system.split())
+assert "Strong rules: shared scope requires npc_id plus target or participants" in gm_system
+assert "NPC-to-player testimony is usually shared rumor plus npc_memory" in gm_system_flat
+assert "one relationship thread should usually be updated" in gm_system_flat
+assert "known_name + entity_id only for NPC identities learned in fiction" in gm_system_flat
+assert "aliases and participants" in gm_system_flat
 assert tool_guidance.WORLD_STATE_TYPE_GUIDE in gm_system
 assert tool_guidance.WORLD_STATE_SCOPE_GUIDE in gm_system
 assert tool_guidance.WORLD_STATE_SPLIT_GUIDE in gm_system
+assert tool_guidance.WORLD_STATE_CONSOLIDATION_GUIDE in gm_system
 assert tool_guidance.WORLD_STATE_SEARCH_ANCHOR_GUIDE in gm_system
 assert "English ids alone\n  are not enough for future Russian lookup" in gm_system
 assert "usually shared rumor plus npc_memory, not public fact" in gm_system
@@ -644,7 +647,7 @@ assert "query_world_state" in update_world_state["description"]
 assert "known_name" in update_world_state["description"]
 assert "never invent or send id, expected_hash, mode" in update_world_state["description"]
 assert "only for NPC entity_id values" in update_world_state["description"]
-assert "Every shared item must include both npc_id and target" in update_world_state["description"]
+assert "Every shared item must include npc_id and either target or participants" in update_world_state["description"]
 assert "access belongs in scope only" in update_world_state["description"]
 assert "After ask_npc" in update_world_state["description"]
 assert "compact structured text" in update_world_state["description"]
@@ -652,17 +655,21 @@ assert "applied/not-stored rows" in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_TYPE_GUIDE in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_SCOPE_GUIDE in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_SPLIT_GUIDE in update_world_state["description"]
+assert tool_guidance.WORLD_STATE_CONSOLIDATION_GUIDE in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_EXAMPLE_GUIDE in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_SEARCH_ANCHOR_GUIDE in update_world_state["description"]
 assert state_item_schema["properties"]["op"]["enum"] == ["add", "update", "delete"]
 assert state_item_schema["properties"]["scope"]["enum"] == ["public", "gm", "npc", "shared"]
 assert "public is not private player knowledge" in state_item_schema["properties"]["scope"]["description"]
-assert "shared means only npc_id and target know" in state_item_schema["properties"]["scope"]["description"]
+assert "shared means only npc_id plus target and/or participants know" in state_item_schema["properties"]["scope"]["description"]
 assert "use scope for access control" in state_item_schema["properties"]["text"]["description"]
 assert "Required for shared scope" in state_item_schema["properties"]["npc_id"]["description"]
-assert "Required for relationship and shared scope" in state_item_schema["properties"]["target"]["description"]
+assert "Required for relationship" in state_item_schema["properties"]["target"]["description"]
+assert "target must be player or a known npc_id" in state_item_schema["properties"]["target"]["description"]
+assert "participants for multiple listeners" in state_item_schema["properties"]["target"]["description"]
 assert "entity_id" in state_item_schema["properties"]
 assert "source_npc" in state_item_schema["properties"]
+assert "participants" in state_item_schema["properties"]
 assert "known_name" in state_item_schema["properties"]
 for _anchor in (
     "location_id", "location_name", "region_id", "region_name",
@@ -670,6 +677,8 @@ for _anchor in (
 ):
     assert _anchor in state_item_schema["properties"]
 assert "another entity" in state_item_schema["properties"]["entity_id"]["description"]
+assert "extra actor ids" in state_item_schema["properties"]["participants"]["description"]
+assert "instead of duplicating" in state_item_schema["properties"]["participants"]["description"]
 assert "Requires entity_id" in state_item_schema["properties"]["known_name"]["description"]
 assert "Never use for the player" in state_item_schema["properties"]["known_name"]["description"]
 assert "Russian queries" in state_item_schema["properties"]["aliases"]["description"]
@@ -1151,6 +1160,105 @@ entity_row = next(row for row in player_entity_query.get("results", [])
 assert entity_row["source_npc"] == "borin"
 assert entity_row["target"] == "player"
 
+participant_s = Session(None)
+participant_add_ret = _drive(_run_tool(participant_s, "update_world_state", {"items": [{
+    "type": "rumor",
+    "text": "MULTI_PARTICIPANT_SENTINEL Борин дал одно показание Дарре и Марет.",
+    "npc_id": "borin",
+    "target": "player",
+    "participants": ["mareth"],
+    "scope": "shared",
+}]}, []))
+participant_add = _tool_full_json(participant_add_ret)
+assert participant_add["applied"][0]["participants"] == ["mareth"]
+participant_player_ret = _drive(_run_tool(participant_s, "query_world_state", {
+    "scope": "player",
+    "query": "MULTI_PARTICIPANT_SENTINEL",
+}, []))
+participant_player = _tool_full_json(participant_player_ret)
+assert "MULTI_PARTICIPANT_SENTINEL" in json.dumps(participant_player, ensure_ascii=False)
+participant_mareth_ret = _drive(_run_tool(participant_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "mareth",
+    "query": "MULTI_PARTICIPANT_SENTINEL",
+}, []))
+participant_mareth = _tool_full_json(participant_mareth_ret)
+assert "MULTI_PARTICIPANT_SENTINEL" in json.dumps(participant_mareth, ensure_ascii=False)
+participant_lysa_ret = _drive(_run_tool(participant_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "lysa",
+    "query": "MULTI_PARTICIPANT_SENTINEL",
+}, []))
+participant_lysa = _tool_full_json(participant_lysa_ret)
+assert "MULTI_PARTICIPANT_SENTINEL" not in json.dumps(participant_lysa, ensure_ascii=False)
+participant_merge_ret = _drive(_run_tool(participant_s, "update_world_state", {"items": [{
+    "type": "rumor",
+    "text": "MULTI_PARTICIPANT_SENTINEL Борин дал одно показание Дарре и Марет.",
+    "npc_id": "borin",
+    "target": "lysa",
+    "scope": "shared",
+}]}, []))
+participant_merge = _tool_full_json(participant_merge_ret)
+assert participant_merge["applied"][0]["status"] == "merged"
+assert participant_merge["applied"][0]["id"] == participant_add["applied"][0]["id"]
+assert "lysa" in participant_merge["applied"][0]["participants"]
+participant_lysa_after_ret = _drive(_run_tool(participant_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "lysa",
+    "query": "MULTI_PARTICIPANT_SENTINEL",
+}, []))
+participant_lysa_after = _tool_full_json(participant_lysa_after_ret)
+assert "MULTI_PARTICIPANT_SENTINEL" in json.dumps(participant_lysa_after, ensure_ascii=False)
+participant_exact_duplicate_ret = _drive(_run_tool(participant_s, "update_world_state", {"items": [{
+    "type": "rumor",
+    "text": "MULTI_PARTICIPANT_SENTINEL Борин дал одно показание Дарре и Марет.",
+    "npc_id": "borin",
+    "target": "player",
+    "participants": ["mareth", "lysa"],
+    "scope": "shared",
+}]}, []))
+participant_exact_duplicate = _tool_full_json(participant_exact_duplicate_ret)
+assert participant_exact_duplicate["ok"] is False
+assert participant_exact_duplicate["errors"][0]["status"] == "not_added"
+assert participant_exact_duplicate["errors"][0]["existing_id"] == participant_add["applied"][0]["id"]
+
+participant_array_s = Session(None)
+participant_array_add_ret = _drive(_run_tool(participant_array_s, "update_world_state", {"items": [{
+    "type": "rumor",
+    "text": "TARGETLESS_PARTICIPANTS_SENTINEL одна запись известна сразу Дарре и Марет.",
+    "npc_id": "borin",
+    "participants": ["player", "mareth"],
+    "scope": "shared",
+}]}, []))
+participant_array_add = _tool_full_json(participant_array_add_ret)
+assert participant_array_add["ok"] is True
+assert participant_array_add["applied"][0].get("target", "") == ""
+assert participant_array_add["applied"][0]["participants"] == ["player", "mareth"]
+participant_array_player_ret = _drive(_run_tool(participant_array_s, "query_world_state", {
+    "scope": "player",
+    "query": "TARGETLESS_PARTICIPANTS_SENTINEL",
+}, []))
+participant_array_player = _tool_full_json(participant_array_player_ret)
+assert "TARGETLESS_PARTICIPANTS_SENTINEL" in json.dumps(participant_array_player, ensure_ascii=False)
+participant_array_mareth_ret = _drive(_run_tool(participant_array_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "mareth",
+    "query": "TARGETLESS_PARTICIPANTS_SENTINEL",
+}, []))
+participant_array_mareth = _tool_full_json(participant_array_mareth_ret)
+assert "TARGETLESS_PARTICIPANTS_SENTINEL" in json.dumps(participant_array_mareth, ensure_ascii=False)
+
+participant_bad_target_ret = _drive(_run_tool(Session(None), "update_world_state", {"items": [{
+    "type": "rumor",
+    "text": "BAD_SHARED_TARGET_SENTINEL не должен сохраниться.",
+    "npc_id": "borin",
+    "target": "turnvale_square",
+    "scope": "shared",
+}]}, []))
+participant_bad_target = _tool_full_json(participant_bad_target_ret)
+assert participant_bad_target["ok"] is False
+assert "target for shared scope must be player or a known npc_id" in participant_bad_target["errors"][0]["error"]
+
 player_place_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "scope": "player",
     "query": "что было в Тёрнвейле",
@@ -1171,6 +1279,24 @@ gm_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
 gm_query = _tool_full_json(gm_query_ret)
 assert gm_query["scope"] == "gm"
 assert "GM_SECRET_SENTINEL" in json.dumps(gm_query, ensure_ascii=False)
+
+default_gm_query_ret = _drive(_run_tool(Session(None), "query_world_state", {
+    "scope": "gm",
+    "query": "Борин тайник метка для встречи край стойки Дарра",
+}, []))
+default_gm_query = _tool_full_json(default_gm_query_ret)
+assert all(
+    not (row.get("kind") == "truth_fact" and row.get("id") == "hidden_truth")
+    for row in default_gm_query.get("results", [])
+)
+assert any(
+    row.get("kind") == "gm_canon"
+    for row in default_gm_query.get("results", [])
+)
+assert sum(
+    1 for row in default_gm_query.get("results", [])
+    if str(row.get("text") or "").startswith("Прошлой ночью в городе Тёрнвейл")
+) == 1
 
 npc_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "scope": "npc",

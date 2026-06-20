@@ -1,7 +1,7 @@
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip from "./Tooltip.jsx";
-import { NpcRef, Field, Badge, TextBlock, nonEmpty } from "./ToolCard.jsx";
+import { NpcRef, Field, Badge, TextBlock, nonEmpty, ActorRef, ParticipantChips } from "./ToolCard.jsx";
 
 // Presentation-only maps mirroring the request-card vocabulary in ToolCard.jsx.
 const FACT_STATUS = {
@@ -76,8 +76,7 @@ function ShortId({ id }) {
 }
 
 function Target({ id }) {
-  if (id === "player") return <span className="tc-arrow-to">→ игрок</span>;
-  return <span className="tc-arrow-to">→ <NpcRef id={id} /></span>;
+  return <span className="tc-arrow-to">→ <ActorRef id={id} /></span>;
 }
 
 export function resultView(name, p) {
@@ -150,6 +149,7 @@ export function resultView(name, p) {
                         {nonEmpty(r.scope) && <Badge tone="muted">{WS_SCOPE[r.scope] || r.scope}</Badge>}
                         {nonEmpty(r.npc_id) && <NpcRef id={r.npc_id} />}
                         {nonEmpty(r.target) && <Target id={r.target} />}
+                        <ParticipantChips ids={r.participants} />
                         <ShortId id={r.id} />
                       </div>
                       {nonEmpty(r.text) && <TextBlock>{r.text}</TextBlock>}
@@ -187,6 +187,8 @@ export function resultView(name, p) {
                       {nonEmpty(row.type) && <Badge tone={typ.tone}>{typ.label}</Badge>}
                       {nonEmpty(row.scope) && <Badge tone="muted">{WS_SCOPE[row.scope] || row.scope}</Badge>}
                       {nonEmpty(row.npc_id) && <NpcRef id={row.npc_id} />}
+                      {nonEmpty(row.target) && <Target id={row.target} />}
+                      <ParticipantChips ids={row.participants} />
                       <ShortId id={row.id} />
                     </div>
                   );
