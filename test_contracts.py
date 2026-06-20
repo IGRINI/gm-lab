@@ -2171,13 +2171,40 @@ assert fallback_prelude_idx < fallback_tool_idx
 
 class MissingAskPlayerClient:
     def __init__(self):
-        self.tool_names = []
+        self.calls = 0
+        self.tool_names_by_call = []
 
     def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
-        self.tool_names = [tool["function"]["name"] for tool in (tools or [])]
-        final = "Ты оставляешь себе секунду на выбор следующего шага."
-        yield ("content", final)
-        return "", final, [], {"role": "assistant", "content": final}, {}
+        self.calls += 1
+        self.tool_names_by_call.append([tool["function"]["name"] for tool in (tools or [])])
+        if self.calls == 1:
+            final = "Ты оставляешь себе секунду на выбор следующего шага."
+            yield ("content", final)
+            return "", final, [], {"role": "assistant", "content": final}, {}
+        args = {
+            "question": "Что дальше?",
+            "options": [
+                {"label": "Ремонтный вопрос", "message": "Выбираю действие из ремонтного вызова."},
+                {"label": "Спросить", "message": "Спрашиваю ближайшего свидетеля."},
+                {"label": "Осмотреть", "message": "Осматриваю место вокруг себя."},
+                {"label": "Подождать", "message": "Замираю и смотрю, кто первым отреагирует."},
+            ],
+        }
+        raw_tool_calls = [{
+            "id": "repaired_player_options",
+            "type": "function",
+            "function": {
+                "name": "ask_player",
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        }]
+        return (
+            "",
+            "",
+            [{"id": "repaired_player_options", "name": "ask_player", "arguments": args}],
+            {"role": "assistant", "content": "", "tool_calls": raw_tool_calls},
+            {},
+        )
 
 
 class AskPlayerToolClient:
@@ -2210,6 +2237,42 @@ class AskPlayerToolClient:
         )
 
 
+class AskPlayerWithoutNarrationClient:
+    def __init__(self):
+        self.calls = 0
+
+    def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
+        self.calls += 1
+        if tools is None:
+            prelude = "Ты задерживаешь взгляд на сцене и видишь несколько безопасных ходов."
+            yield ("content", prelude)
+            return "", prelude, [], {"role": "assistant", "content": prelude}, {}
+        args = {
+            "question": "Что дальше?",
+            "options": [
+                {"label": "Спросить", "message": "Спрашиваю ближайшего свидетеля."},
+                {"label": "Осмотреть", "message": "Осматриваю место вокруг себя."},
+                {"label": "Выйти", "message": "Выхожу проверить соседний проход."},
+                {"label": "Подождать", "message": "Замираю и смотрю, кто первым отреагирует."},
+            ],
+        }
+        raw_tool_calls = [{
+            "id": "bare_player_options",
+            "type": "function",
+            "function": {
+                "name": "ask_player",
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        }]
+        return (
+            "",
+            "",
+            [{"id": "bare_player_options", "name": "ask_player", "arguments": args}],
+            {"role": "assistant", "content": "", "tool_calls": raw_tool_calls},
+            {},
+        )
+
+
 _old_gm_suggest_options_enabled = runtime_settings.gm_suggest_options_enabled
 runtime_settings.gm_suggest_options_enabled = lambda settings=None: True
 try:
@@ -2218,9 +2281,11 @@ try:
     missing_options_payloads = [
         e["data"] for e in missing_options_events if e["kind"] == "player_options"
     ]
-    assert "ask_player" in missing_options_client.tool_names
+    assert missing_options_client.calls == 2
+    assert "ask_player" in missing_options_client.tool_names_by_call[0]
+    assert missing_options_client.tool_names_by_call[1] == ["ask_player"]
     assert len(missing_options_payloads) == 1
-    assert len(missing_options_payloads[0]["options"]) >= 4
+    assert missing_options_payloads[0]["options"][0]["label"] == "Ремонтный вопрос"
     assert not any(
         e["kind"] == "gm_tool_call" and e["data"]["name"] == "ask_player"
         for e in missing_options_events
@@ -2236,6 +2301,16 @@ try:
         e["kind"] == "tool_result" and e["agent"] == "ask_player"
         for e in ask_player_events
     )
+
+    bare_options_client = AskPlayerWithoutNarrationClient()
+    bare_options_events = list(run_turn(Session(bare_options_client), "Что можно сделать?"))
+    bare_narration_idx = next(
+        i for i, e in enumerate(bare_options_events)
+        if e["kind"] == "gm_narration" and "несколько безопасных ходов" in str(e["data"])
+    )
+    bare_options_idx = next(i for i, e in enumerate(bare_options_events) if e["kind"] == "player_options")
+    assert bare_options_client.calls == 2
+    assert bare_narration_idx < bare_options_idx
 finally:
     runtime_settings.gm_suggest_options_enabled = _old_gm_suggest_options_enabled
 
@@ -2315,16 +2390,21 @@ class TurnVisibilityReminderClient:
 
 visibility_client = TurnVisibilityReminderClient()
 visibility_session = Session(visibility_client)
-visibility_events = list(run_turn(visibility_session, "Проверяю стойку."))
-assert visibility_client.calls == 2
-assert "player has already seen prior assistant content" in visibility_client.second_request_text
-assert "player has already seen prior assistant content" not in visibility_client.second_request_system_text
-assert visibility_client.second_request_text.count("Ты рывком подходишь к стойке") == 1
-tool_messages = [m for m in visibility_session.gm_messages if m.get("role") == "tool"]
-assert tool_messages
-assert "Ты рывком подходишь к стойке" not in tool_messages[-1]["content"]
-assert "player has already seen prior assistant content" in tool_messages[-1]["content"]
-assert any("свежая царапина" in str(e.get("data")) for e in visibility_events)
+_old_gm_suggest_options_enabled = runtime_settings.gm_suggest_options_enabled
+runtime_settings.gm_suggest_options_enabled = lambda settings=None: False
+try:
+    visibility_events = list(run_turn(visibility_session, "Проверяю стойку."))
+    assert visibility_client.calls == 2
+    assert "player has already seen prior assistant content" in visibility_client.second_request_text
+    assert "player has already seen prior assistant content" not in visibility_client.second_request_system_text
+    assert visibility_client.second_request_text.count("Ты рывком подходишь к стойке") == 1
+    tool_messages = [m for m in visibility_session.gm_messages if m.get("role") == "tool"]
+    assert tool_messages
+    assert "Ты рывком подходишь к стойке" not in tool_messages[-1]["content"]
+    assert "player has already seen prior assistant content" in tool_messages[-1]["content"]
+    assert any("свежая царапина" in str(e.get("data")) for e in visibility_events)
+finally:
+    runtime_settings.gm_suggest_options_enabled = _old_gm_suggest_options_enabled
 
 
 class CanonicalToolCallClient:

@@ -1268,6 +1268,41 @@ MARKUP, use refs in the same shape, with the current player-facing label.
     )
 
 
+def gm_player_options_stream(
+    client,
+    world: world_mod.World,
+    gm_messages: list,
+    summary: str = "",
+    final_narration: str = "",
+):
+    """Repair request for a completed turn that ended without ask_player.
+
+    The visible GM narration is already done. This request exposes only ask_player and
+    asks for the missing quick replies, so the UI gets model-authored buttons instead
+    of jumping straight to deterministic fallback options.
+    """
+    messages = _gm_request_messages(world, gm_messages, summary)
+    messages.append({
+        "role": "user",
+        "content": (
+            "PLAYER OPTION SUGGESTIONS REPAIR:\n"
+            "The previous assistant message already gave the final player-facing narration "
+            "for this turn, but ask_player was not called. Do not write more narration. "
+            "Call ask_player now exactly once with 4-8 useful Russian quick replies for "
+            "the current situation. Keep them spoiler-free and compatible with free text "
+            "input.\n\n"
+            "FINAL NARRATION ALREADY SHOWN TO PLAYER:\n"
+            f"{final_narration.strip()}"
+        ),
+    })
+    return client.chat_stream(
+        messages,
+        tools=[gm_tool_catalog(world)[_PLAYER_OPTIONS_TOOL_NAME]],
+        think=False,
+        reasoning_role=config.ROLE_GM,
+    )
+
+
 def npc_system_message(npc: world_mod.NPC | None = None) -> dict:
     # Fully static now: the concrete character is delivered late via npc_card_block().
     # `npc` is accepted but ignored for call-site compatibility.

@@ -2929,6 +2929,10 @@ def _drive(session: Session, player_text: str, metas: list):
                     yield ev("delta", "ГМ", {"channel": "gm_narration", "text": final_text}, sid)
                 yield ev("gm_narration", "ГМ", final_text, sid)
                 yield from _sync_scene_delta(session, final_text, metas)
+                if include_player_options_tool and not player_options_shown:
+                    player_options_shown = yield from _repair_missing_player_options(
+                        session, world, final_text, metas
+                    )
             fell_through = False
             break
 
@@ -2994,6 +2998,7 @@ def _drive(session: Session, player_text: str, metas: list):
 
 _VISIBLE_PRELUDE_TOOLS = {
     "ask_npc",
+    "ask_player",
     "move_npc",
     "set_npc_presence",
     "set_npc_whereabouts",
@@ -3036,6 +3041,56 @@ def _generate_pre_tool_prelude(
         yield ev("gm_thinking", "ГМ", thinking.strip(), sid)
     metas.append(_meta("ГМ — прелюдия", stats, scope="gm"))
     return content.strip()
+
+
+def _repair_missing_player_options(
+    session: Session,
+    world: world_mod.World,
+    final_narration: str,
+    metas: list,
+) -> bool:
+    sid = session.next_sid()
+    gen = agents.gm_player_options_stream(
+        session.client,
+        world,
+        session.gm_messages,
+        session.gm_summary,
+        final_narration,
+    )
+    try:
+        while True:
+            ch, text = next(gen)
+            if ch == "thinking":
+                yield ev("delta", "ГМ", {"channel": "gm_thinking", "text": text}, sid)
+    except StopIteration as e:
+        thinking, content, calls, assistant_msg, stats = e.value
+    except Exception as e:
+        yield ev("error", "ГМ", f"Ошибка запроса вариантов игрока: {e}")
+        return False
+
+    if thinking.strip():
+        yield ev("gm_thinking", "ГМ", thinking.strip(), sid)
+    metas.append(_meta("ГМ — варианты", stats, scope="gm"))
+
+    calls = [
+        call for call in _normalize_tool_calls(calls, world, id_prefix=f"gm_{sid}")
+        if call.get("name") == "ask_player"
+    ]
+    if not calls:
+        return False
+
+    assistant_msg = _assistant_with_tool_calls(assistant_msg, calls[:1])
+    session.gm_messages.append(assistant_msg)
+    call = calls[0]
+    result = yield from _run_tool(session, call["name"], call["arguments"], metas)
+    if not isinstance(result, ToolExecutionResult) or not result.terminal:
+        return False
+    session.gm_messages.append({
+        "role": "tool",
+        "tool_call_id": call.get("id", ""),
+        "content": _tool_model_text(result),
+    })
+    return True
 
 
 def _run_tool(session: Session, name: str, args: dict, metas: list):
