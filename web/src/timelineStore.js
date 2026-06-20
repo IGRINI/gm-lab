@@ -86,6 +86,7 @@ export function createTimeline() {
         if (i != null) update(i, { revealed: true, speech: arr[i].speech + d.text });
       }
     } else if (k === "gm_tool_call") {
+      if (d?.name === "ask_player") return;
       // result stays undefined until the tool's outcome event arrives and attaches.
       push({ type: "tool", name: d.name, args: d.arguments, result: undefined });
     } else if (k === "gm_thinking") {

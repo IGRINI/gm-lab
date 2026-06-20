@@ -2164,6 +2164,77 @@ assert fallback_client.prelude_done
 assert fallback_prelude_idx < fallback_tool_idx
 
 
+class MissingAskPlayerClient:
+    def __init__(self):
+        self.tool_names = []
+
+    def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
+        self.tool_names = [tool["function"]["name"] for tool in (tools or [])]
+        final = "Ты оставляешь себе секунду на выбор следующего шага."
+        yield ("content", final)
+        return "", final, [], {"role": "assistant", "content": final}, {}
+
+
+class AskPlayerToolClient:
+    def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
+        prelude = "Перед тобой остаются несколько явных ходов."
+        yield ("content", prelude)
+        args = {
+            "question": "Что дальше?",
+            "options": [
+                {"label": "Спросить", "message": "Спрашиваю ближайшего свидетеля."},
+                {"label": "Осмотреть", "message": "Осматриваю место вокруг себя."},
+                {"label": "Выйти", "message": "Выхожу проверить соседний проход."},
+                {"label": "Подождать", "message": "Замираю и смотрю, кто первым отреагирует."},
+            ],
+        }
+        raw_tool_calls = [{
+            "id": "player_options",
+            "type": "function",
+            "function": {
+                "name": "ask_player",
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        }]
+        return (
+            "",
+            prelude,
+            [{"id": "player_options", "name": "ask_player", "arguments": args}],
+            {"role": "assistant", "content": prelude, "tool_calls": raw_tool_calls},
+            {},
+        )
+
+
+_old_gm_suggest_options_enabled = runtime_settings.gm_suggest_options_enabled
+runtime_settings.gm_suggest_options_enabled = lambda settings=None: True
+try:
+    missing_options_client = MissingAskPlayerClient()
+    missing_options_events = list(run_turn(Session(missing_options_client), "Жду."))
+    missing_options_payloads = [
+        e["data"] for e in missing_options_events if e["kind"] == "player_options"
+    ]
+    assert "ask_player" in missing_options_client.tool_names
+    assert len(missing_options_payloads) == 1
+    assert len(missing_options_payloads[0]["options"]) >= 4
+    assert not any(
+        e["kind"] == "gm_tool_call" and e["data"]["name"] == "ask_player"
+        for e in missing_options_events
+    )
+
+    ask_player_events = list(run_turn(Session(AskPlayerToolClient()), "Что можно сделать?"))
+    assert any(e["kind"] == "player_options" for e in ask_player_events)
+    assert not any(
+        e["kind"] == "gm_tool_call" and e["data"]["name"] == "ask_player"
+        for e in ask_player_events
+    )
+    assert not any(
+        e["kind"] == "tool_result" and e["agent"] == "ask_player"
+        for e in ask_player_events
+    )
+finally:
+    runtime_settings.gm_suggest_options_enabled = _old_gm_suggest_options_enabled
+
+
 class TurnVisibilityReminderClient:
     def __init__(self):
         self.calls = 0

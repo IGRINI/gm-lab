@@ -631,6 +631,87 @@ def _model_player_options_text(payload: dict) -> str:
     )
 
 
+def _fallback_player_options_payload(world: world_mod.World) -> dict:
+    """Last-resort quick replies when the model ends a turn without ask_player.
+
+    Model-authored choices are still preferred. This fallback only keeps the UI contract
+    true for the setting: if suggestions are enabled, the player always has buttons.
+    It uses visible scene affordances only, so it cannot leak hidden facts.
+    """
+    options: list[dict] = []
+    seen: set[str] = set()
+
+    def add(label: object, message: object) -> None:
+        if len(options) >= 8:
+            return
+        clean_label = _clip_text(label, 80)
+        clean_message = _clip_text(message, 700)
+        if not clean_label or not clean_message:
+            return
+        key = re.sub(r"\s+", " ", f"{clean_label}\n{clean_message}").casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        options.append({"label": clean_label, "message": clean_message})
+
+    scene = getattr(world, "scene", None)
+    present_npcs = sorted(getattr(scene, "present_npcs", set()) or set())
+    for npc_id in present_npcs:
+        if len(options) >= 3:
+            break
+        if not getattr(world, "npc_can_react", lambda _npc_id: False)(npc_id):
+            continue
+        label = world.npc_player_label(npc_id)
+        add(
+            f"Спросить: {label}",
+            f"Обращаюсь к персонажу ({label}) и задаю прямой вопрос о происходящем.",
+        )
+
+    visible_items = scene.visible_items() if scene is not None else []
+    for item in visible_items:
+        if len(options) >= 5:
+            break
+        add(
+            f"Осмотреть: {item.name}",
+            f"Внимательно осматриваю предмет: {item.name}, ищу важные детали и следы.",
+        )
+        if getattr(item, "portable", False):
+            add(
+                f"Взять: {item.name}",
+                f"Беру предмет: {item.name}, если это безопасно и возможно.",
+            )
+
+    visible_exits = scene.visible_exits() if scene is not None else []
+    for exit_ in visible_exits:
+        if len(options) >= 7:
+            break
+        destination = _clean_text(getattr(exit_, "destination", ""))
+        destination_note = f" в сторону: {destination}" if destination and destination != "unknown destination" else ""
+        add(
+            f"Идти: {exit_.name}",
+            f"Иду через {exit_.name}{destination_note}, внимательно следя за реакцией вокруг.",
+        )
+
+    add(
+        "Осмотреться",
+        "Осматриваюсь внимательнее: люди, предметы, выходы и то, что могло измениться.",
+    )
+    add(
+        "Прислушаться",
+        "Замираю на мгновение и прислушиваюсь к разговорам, шагам и реакции вокруг.",
+    )
+    add(
+        "Давить дальше",
+        "Сохраняю напор и пытаюсь получить ответ здесь и сейчас.",
+    )
+    add(
+        "Сменить подход",
+        "Сбавляю давление и пробую зайти с другой стороны.",
+    )
+
+    return {"question": "Что ты делаешь дальше?", "options": options[:8]}
+
+
 def _model_tool_search_text(payload: dict) -> str:
     loaded = list(payload.get("loaded_tools") or [])
     missing = list(payload.get("missing") or [])
@@ -2801,6 +2882,7 @@ def _drive(session: Session, player_text: str, metas: list):
     fell_through = True
     max_tool_hops = runtime_settings.max_tool_hops()
     tool_hops = 0
+    player_options_shown = False
     while max_tool_hops <= 0 or tool_hops < max_tool_hops:
         tool_hops += 1
         sid = session.next_sid()
@@ -2874,9 +2956,12 @@ def _drive(session: Session, player_text: str, metas: list):
         terminal_after_tools = False
         for call in calls:
             name, args = call["name"], call["arguments"]
-            yield ev("gm_tool_call", "ГМ", {"name": name, "arguments": args})
+            show_tool_event = name != "ask_player"
+            if show_tool_event:
+                yield ev("gm_tool_call", "ГМ", {"name": name, "arguments": args})
             result = yield from _run_tool(session, name, args, metas)
-            yield ev("tool_result", name, _tool_full_text(result))
+            if show_tool_event:
+                yield ev("tool_result", name, _tool_full_text(result))
             tool_visible_output = _tool_emits_visible_output(name, result)
             if turn_visible_output_seen or tool_visible_output:
                 result = _with_model_reminder(result, _VISIBLE_CONTINUATION_REMINDER)
@@ -2884,6 +2969,8 @@ def _drive(session: Session, player_text: str, metas: list):
                                         "content": _tool_model_text(result)})
             if tool_visible_output:
                 turn_visible_output_seen = True
+            if name == "ask_player" and isinstance(result, ToolExecutionResult) and result.terminal:
+                player_options_shown = True
             if isinstance(result, ToolExecutionResult) and result.terminal:
                 terminal_after_tools = True
         if terminal_after_tools:
@@ -2892,6 +2979,8 @@ def _drive(session: Session, player_text: str, metas: list):
 
     if fell_through:
         yield ev("error", "ГМ", f"Превышен лимит вызовов инструментов за ход: {max_tool_hops}.")
+    elif include_player_options_tool and not player_options_shown:
+        yield ev("player_options", "ГМ", _fallback_player_options_payload(world))
 
     if session._turn_player_event is None:
         session.record_public("player", "speech", speech=player_text)

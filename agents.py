@@ -496,13 +496,14 @@ def build_gm_tools(world: world_mod.World) -> list:
         "name": _PLAYER_OPTIONS_TOOL_NAME,
         "description": (
             "Show quick-reply buttons above the player's input when CURRENT TURN CONTEXT says "
-            "PLAYER OPTION SUGGESTIONS are enabled. This is a terminal end-of-turn tool: call "
-            "it only after the final player-facing narration for the turn, and do not continue "
-            "narrating after it. Provide at least 4 current, concrete actions or dialogue "
-            "lines that fit the situation without replacing free text input. Each option has "
-            "a short Russian label displayed on the button and a fuller Russian message that "
-            "will be sent as the player's next message if clicked. Do not use this tool for "
-            "hidden facts, spoilers, GM-only reasoning, NPC stats, or commands to the player. "
+            "PLAYER OPTION SUGGESTIONS are enabled. This is a terminal end-of-turn tool: when "
+            "enabled, every completed GM turn must end by calling it exactly once after the "
+            "final player-facing narration. Do not continue narrating after it. Provide at "
+            "least 4 current, concrete actions or dialogue lines that fit the situation "
+            "without replacing free text input. Each option has a short Russian label "
+            "displayed on the button and a fuller Russian message that will be sent as the "
+            "player's next message if clicked. Do not use this tool for hidden facts, "
+            "spoilers, GM-only reasoning, NPC stats, or commands to the player. "
             "The result is compact structured text confirming that the options were shown."
         ),
         "parameters": {"type": "object", "properties": {
@@ -1139,7 +1140,9 @@ def _gm_turn_context(
         system += (
             "\n\nPLAYER OPTION SUGGESTIONS:\n"
             "enabled. After the final player-facing narration for this turn, call ask_player "
-            "as the last tool of the turn with 4-8 useful Russian quick replies. Do not put "
+            "as the last tool of the turn with 4-8 useful Russian quick replies. This is "
+            "mandatory for every completed turn while the feature is enabled: do not finish "
+            "with narration only. Do not put "
             "a textual choice menu in final narration; the quick-reply buttons handle it. "
             "Each option needs a short label and a fuller message that can be sent as the "
             "player's next action. Keep free text input available by offering suggestions, "
