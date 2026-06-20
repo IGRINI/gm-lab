@@ -204,6 +204,15 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
         </label>
 
         <label className="field check-field">
+          <span>Стримить текст ГМ</span>
+          <input
+            type="checkbox"
+            checked={draft.stream_gm_content !== false}
+            onChange={(e) => set({ stream_gm_content: e.target.checked })}
+          />
+        </label>
+
+        <label className="field check-field">
           <span>Параллельные тулы</span>
           <input
             type="checkbox"

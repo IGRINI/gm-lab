@@ -52,6 +52,7 @@ _DEFAULTS.update({
     "text_verbosity": os.environ.get("GM_TEXT_VERBOSITY", "default").strip().lower()
     or "default",
     "tool_choice": os.environ.get("GM_TOOL_CHOICE", "auto").strip().lower() or "auto",
+    "stream_gm_content": config.STREAM_GM_CONTENT,
     "parallel_tool_calls": config._env_bool("GM_PARALLEL_TOOL_CALLS", True),
     "gm_suggest_options": config._env_bool("GM_SUGGEST_OPTIONS", False),
     "max_tool_hops": 0,
@@ -216,6 +217,11 @@ def gm_suggest_options_enabled(settings: dict[str, Any] | None = None) -> bool:
     return bool(values.get("gm_suggest_options", False))
 
 
+def stream_gm_content_enabled(settings: dict[str, Any] | None = None) -> bool:
+    values = settings or get()
+    return bool(values.get("stream_gm_content", True))
+
+
 def max_tool_hops(settings: dict[str, Any] | None = None) -> int:
     values = settings or get()
     try:
@@ -299,6 +305,9 @@ def _clean(data: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
         tool_choice = _string(data.get("tool_choice")).lower()
         if tool_choice in TOOL_CHOICES:
             out["tool_choice"] = tool_choice
+
+    if "stream_gm_content" in data:
+        out["stream_gm_content"] = _bool(data.get("stream_gm_content"))
 
     if "parallel_tool_calls" in data:
         out["parallel_tool_calls"] = _bool(data.get("parallel_tool_calls"))

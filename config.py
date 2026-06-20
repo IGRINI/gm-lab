@@ -73,11 +73,11 @@ BACKEND = os.environ.get("GM_BACKEND", "codex")
 # chat_template_kwargs/top_k/min_p. Для локального llama.cpp включено по умолчанию.
 USE_LLAMA_TEMPLATE_KWARGS = _env_bool("GM_LLAMA_TEMPLATE_KWARGS", BACKEND == "llamacpp")
 
-# Сырой стрим видимого текста ГМ. Выключен по умолчанию, потому что некоторые
-# модели сначала пишут pre-tool фразу, а потом всё же вызывают ask_npc/roll_dice.
-# Если нужно видеть текст ГМ сразу и принять этот риск:
-#   $env:GM_STREAM_GM_CONTENT="1"
-STREAM_GM_CONTENT = _env_bool("GM_STREAM_GM_CONTENT", False)
+# Сырой стрим видимого текста ГМ. По умолчанию включён: чат должен показывать
+# ход генерации сразу, а не ждать финального gm_narration. Можно выключить для
+# диагностики моделей, которые плохо отделяют видимую прелюдию от tool-call.
+#   $env:GM_STREAM_GM_CONTENT="0"
+STREAM_GM_CONTENT = _env_bool("GM_STREAM_GM_CONTENT", True)
 
 # Компакт истории ГМ: делаем поздно, когда длинный контекст уже реально подходит к
 # рабочему потолку. До этого выгоднее держать append-only историю и давать

@@ -937,6 +937,7 @@ function RuntimeView({ meta, runtime }) {
         <div><span>Compact reasoning</span><b>{(s.compact_reasoning_effort || "—") + " / " + (s.compact_reasoning_summary || "—")}</b></div>
         <div><span>verbosity</span><b>{s.text_verbosity || "—"}</b></div>
         <div><span>tool_choice</span><b>{s.tool_choice || "—"}</b></div>
+        <div><span>GM stream</span><b>{String(s.stream_gm_content !== false)}</b></div>
         <div><span>parallel tools</span><b>{String(!!s.parallel_tool_calls)}</b></div>
         <div><span>предлагать варианты</span><b>{String(!!s.gm_suggest_options)}</b></div>
         <div><span>tool-hop лимит</span><b>{s.max_tool_hops ? s.max_tool_hops : "без ограничения"}</b></div>

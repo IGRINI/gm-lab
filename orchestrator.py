@@ -2868,6 +2868,7 @@ def _finalize_turn_time(session: Session) -> None:
 def _drive(session: Session, player_text: str, metas: list):
     world = session.world
     include_player_options_tool = runtime_settings.gm_suggest_options_enabled()
+    stream_gm_content = runtime_settings.stream_gm_content_enabled()
     session.turn += 1
     session.last_player_action = player_text
     session._turn_player_event = None
@@ -2904,7 +2905,7 @@ def _drive(session: Session, player_text: str, metas: list):
                     # Some local chat templates stream assistant content before a tool-call
                     # ("Let's call ask_npc..."). Buffer it until we know whether this turn
                     # is actual narration or a tool decision.
-                    if config.STREAM_GM_CONTENT:
+                    if stream_gm_content:
                         yield ev("delta", "ГМ", {"channel": "gm_narration", "text": text}, sid)
                     else:
                         content_deltas.append(text)
@@ -2924,7 +2925,7 @@ def _drive(session: Session, player_text: str, metas: list):
             final_text = content.strip()
             session.gm_messages.append(assistant_msg)   # каноничный echo в историю
             if final_text:
-                if content_deltas and not config.STREAM_GM_CONTENT:
+                if content_deltas and not stream_gm_content:
                     yield ev("delta", "ГМ", {"channel": "gm_narration", "text": final_text}, sid)
                 yield ev("gm_narration", "ГМ", final_text, sid)
                 yield from _sync_scene_delta(session, final_text, metas)
@@ -2940,7 +2941,7 @@ def _drive(session: Session, player_text: str, metas: list):
             and _should_generate_tool_prelude(calls)
         ):
             prelude_text = yield from _generate_pre_tool_prelude(
-                session, world, player_text, calls, metas
+                session, world, player_text, calls, metas, stream_gm_content
             )
             if prelude_text:
                 assistant_msg = dict(assistant_msg)
@@ -2948,7 +2949,7 @@ def _drive(session: Session, player_text: str, metas: list):
 
         session.gm_messages.append(assistant_msg)   # каноничный echo в историю
         if prelude_text:
-            if content_deltas and not config.STREAM_GM_CONTENT:
+            if content_deltas and not stream_gm_content:
                 yield ev("delta", "ГМ", {"channel": "gm_narration", "text": prelude_text}, sid)
             yield ev("gm_narration", "ГМ", prelude_text, sid)
             turn_visible_output_seen = True
@@ -3014,6 +3015,7 @@ def _generate_pre_tool_prelude(
     player_text: str,
     calls: list,
     metas: list,
+    stream_gm_content: bool,
 ) -> str:
     sid = session.next_sid()
     gen = agents.gm_prelude_stream(session.client, world, player_text, calls)
@@ -3022,7 +3024,7 @@ def _generate_pre_tool_prelude(
             ch, text = next(gen)
             if ch == "thinking":
                 yield ev("delta", "ГМ", {"channel": "gm_thinking", "text": text}, sid)
-            elif config.STREAM_GM_CONTENT:
+            elif stream_gm_content:
                 yield ev("delta", "ГМ", {"channel": "gm_narration", "text": text}, sid)
     except StopIteration as e:
         thinking, content, _calls, _assistant_msg, stats = e.value

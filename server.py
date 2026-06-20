@@ -59,6 +59,7 @@ def _session_matches_backend(session: Session) -> bool:
 def state(dialog: DialogRuntime) -> dict:
     session = dialog.session
     w = session.world
+    settings = runtime_settings.get()
     model = (
         getattr(session.client, "model", "")
         or (getattr(session, "client_model", "") if _session_matches_backend(session) else "")
@@ -84,8 +85,8 @@ def state(dialog: DialogRuntime) -> dict:
     data = {
         "model": model,
         "backend": config.BACKEND,
-        "stream_gm_content": config.STREAM_GM_CONTENT,
-        "settings": runtime_settings.get(),
+        "stream_gm_content": runtime_settings.stream_gm_content_enabled(settings),
+        "settings": settings,
         "settings_options": runtime_settings.options(),
         "run_usage": session.run_usage,
         "context_usage": context_usage(session),

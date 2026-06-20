@@ -61,6 +61,11 @@ w = world_mod.World()
 story_list = stories.list_stories()
 assert not hasattr(config, "MAX_TOOL_HOPS")
 assert runtime_settings.defaults()["max_tool_hops"] == 0
+assert runtime_settings.defaults()["stream_gm_content"] is True
+assert runtime_settings.stream_gm_content_enabled({"stream_gm_content": False}) is False
+assert runtime_settings._clean(
+    {"stream_gm_content": "0"}, base=runtime_settings.defaults()
+)["stream_gm_content"] is False
 assert runtime_settings.max_tool_hops({"max_tool_hops": 0}) == 0
 assert runtime_settings.max_tool_hops({"max_tool_hops": 12}) == 12
 assert runtime_settings.max_tool_hops({"max_tool_hops": "bad"}) == 0
@@ -2233,6 +2238,37 @@ try:
     )
 finally:
     runtime_settings.gm_suggest_options_enabled = _old_gm_suggest_options_enabled
+
+
+class StreamingNarrationClient:
+    def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
+        for chunk in ("Поток ", "идёт ", "сразу."):
+            yield ("content", chunk)
+        final = "Поток идёт сразу."
+        return "", final, [], {"role": "assistant", "content": final}, {}
+
+
+_old_stream_gm_content_enabled = runtime_settings.stream_gm_content_enabled
+try:
+    runtime_settings.stream_gm_content_enabled = lambda settings=None: True
+    stream_events = list(run_turn(Session(StreamingNarrationClient()), "Проверяю стрим."))
+    stream_deltas = [
+        e["data"]["text"]
+        for e in stream_events
+        if e["kind"] == "delta" and e["data"].get("channel") == "gm_narration"
+    ]
+    assert stream_deltas == ["Поток ", "идёт ", "сразу."]
+
+    runtime_settings.stream_gm_content_enabled = lambda settings=None: False
+    buffered_events = list(run_turn(Session(StreamingNarrationClient()), "Проверяю буфер."))
+    buffered_deltas = [
+        e["data"]["text"]
+        for e in buffered_events
+        if e["kind"] == "delta" and e["data"].get("channel") == "gm_narration"
+    ]
+    assert buffered_deltas == ["Поток идёт сразу."]
+finally:
+    runtime_settings.stream_gm_content_enabled = _old_stream_gm_content_enabled
 
 
 class TurnVisibilityReminderClient:
