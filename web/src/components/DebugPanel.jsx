@@ -113,27 +113,63 @@ function EditField({ label, children }) {
 
 // --- Редактор карточки персонажа (полная карточка) ---
 function NpcEditor({ npc, statusLabels, onSave }) {
+  const mechanics = npc.mechanics || {};
   const [d, setD] = useState(() => ({
     name: npc.name || "", color: npc.color || "", role: npc.role || "", pronouns: npc.pronouns || "",
-    persona: npc.persona || "", voice: npc.voice || "", goals: npc.goals || "",
+    public_label: npc.public_label || "", age: npc.age || "",
+    physical_type: npc.physical_type || "", distinctive_features: npc.distinctive_features || "",
+    life_status: npc.life_status || "alive", life_status_note: npc.life_status_note || "",
+    condition: npc.condition || "",
+    persona: npc.persona || "", personality: npc.personality || "", values: npc.values || "",
+    habits: npc.habits || "", pressure_response: npc.pressure_response || "",
+    boundaries: npc.boundaries || "", voice: npc.voice || "", goals: npc.goals || "",
     knowledge: npc.knowledge || "", secret: npc.secret || "",
+    abilities: prettyJson(mechanics.abilities),
+    skills: prettyJson(mechanics.skills),
+    saving_throws: prettyJson(mechanics.saving_throws),
+    passive_perception: mechanics.passive_perception != null ? String(mechanics.passive_perception) : "",
+    ac: mechanics.ac != null ? String(mechanics.ac) : "",
+    hp: prettyJson(mechanics.hp),
+    speed: mechanics.speed || "",
+    senses: mechanics.senses || "",
+    languages: mechanics.languages || "",
     present: !!npc.present,
     wb_location: npc.whereabouts?.location_name || "",
     wb_status: npc.whereabouts?.status || "unknown",
     wb_details: npc.whereabouts?.details || "",
     reset_memory: false,
   }));
+  const [editError, setEditError] = useState("");
   const set = (patch) => setD((p) => ({ ...p, ...patch }));
   const statusEntries = Object.entries(statusLabels || {});
   const secretChanged = d.secret !== (npc.secret || "");
   const presenceChanged = d.present !== !!npc.present;
   const save = () => {
+    let fields;
+    try {
+      fields = {
+        name: d.name, color: d.color, role: d.role, pronouns: d.pronouns,
+        public_label: d.public_label, age: d.age,
+        physical_type: d.physical_type, distinctive_features: d.distinctive_features,
+        life_status: d.life_status, life_status_note: d.life_status_note,
+        condition: d.condition, persona: d.persona, personality: d.personality,
+        values: d.values, habits: d.habits, pressure_response: d.pressure_response,
+        boundaries: d.boundaries, voice: d.voice, goals: d.goals, knowledge: d.knowledge,
+        secret: d.secret, abilities: parseObjectField("Abilities", d.abilities),
+        skills: parseObjectField("Skills", d.skills),
+        saving_throws: parseObjectField("Saving throws", d.saving_throws),
+        passive_perception: parseIntegerField("Passive Perception", d.passive_perception),
+        ac: parseIntegerField("AC", d.ac), hp: parseObjectField("HP", d.hp),
+        speed: d.speed, senses: d.senses, languages: d.languages,
+      };
+      setEditError("");
+    } catch (e) {
+      setEditError(e.message || String(e));
+      return;
+    }
     const body = {
       id: npc.id,
-      fields: {
-        name: d.name, color: d.color, role: d.role, pronouns: d.pronouns,
-        persona: d.persona, voice: d.voice, goals: d.goals, knowledge: d.knowledge, secret: d.secret,
-      },
+      fields,
       reset_memory: d.reset_memory,
     };
     // Only touch presence when the checkbox actually changed: a card-only edit
@@ -147,6 +183,7 @@ function NpcEditor({ npc, statusLabels, onSave }) {
     <div className="dbg-form">
       <div className="dbg-edit-grid">
         <EditField label="Имя"><input value={d.name} onChange={(e) => set({ name: e.target.value })} /></EditField>
+        <EditField label="Игрок видит"><input value={npc.player_label || npc.public_label || npc.name || ""} readOnly /></EditField>
         <EditField label="Цвет">
           <span className="dbg-color">
             <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : "#908caa"} onChange={(e) => set({ color: e.target.value })} />
@@ -155,13 +192,41 @@ function NpcEditor({ npc, statusLabels, onSave }) {
         </EditField>
         <EditField label="Роль"><input value={d.role} onChange={(e) => set({ role: e.target.value })} /></EditField>
         <EditField label="Род"><input value={d.pronouns} placeholder="M, F, N, PL, OTHER" onChange={(e) => set({ pronouns: e.target.value })} /></EditField>
+        <EditField label="Публичный ярлык"><input value={d.public_label} placeholder="трактирщик" onChange={(e) => set({ public_label: e.target.value })} /></EditField>
+        <EditField label="Известное имя"><input value={npc.known_name || ""} readOnly /></EditField>
+        <EditField label="Возраст"><input value={d.age} onChange={(e) => set({ age: e.target.value })} /></EditField>
+        <EditField label="Тип/размер/вид"><input value={d.physical_type} onChange={(e) => set({ physical_type: e.target.value })} /></EditField>
+        <EditField label="Приметы"><input value={d.distinctive_features} onChange={(e) => set({ distinctive_features: e.target.value })} /></EditField>
+        <EditField label="Состояние жизни"><input value={d.life_status} onChange={(e) => set({ life_status: e.target.value })} /></EditField>
+        <EditField label="Заметка статуса"><input value={d.life_status_note} onChange={(e) => set({ life_status_note: e.target.value })} /></EditField>
+        <EditField label="Текущее состояние"><input value={d.condition} onChange={(e) => set({ condition: e.target.value })} /></EditField>
       </div>
 
       <EditField label="Описание"><textarea rows={2} value={d.persona} onChange={(e) => set({ persona: e.target.value })} /></EditField>
+      <EditField label="Характер"><textarea rows={2} value={d.personality} onChange={(e) => set({ personality: e.target.value })} /></EditField>
+      <EditField label="Ценности"><textarea rows={2} value={d.values} onChange={(e) => set({ values: e.target.value })} /></EditField>
+      <EditField label="Привычки"><textarea rows={2} value={d.habits} onChange={(e) => set({ habits: e.target.value })} /></EditField>
+      <EditField label="Реакция на давление"><textarea rows={2} value={d.pressure_response} onChange={(e) => set({ pressure_response: e.target.value })} /></EditField>
+      <EditField label="Границы"><textarea rows={2} value={d.boundaries} onChange={(e) => set({ boundaries: e.target.value })} /></EditField>
       <EditField label="Голос"><textarea rows={2} value={d.voice} onChange={(e) => set({ voice: e.target.value })} /></EditField>
       <EditField label="Мотивы"><textarea rows={2} value={d.goals} onChange={(e) => set({ goals: e.target.value })} /></EditField>
       <EditField label="Что знает"><textarea rows={2} value={d.knowledge} onChange={(e) => set({ knowledge: e.target.value })} /></EditField>
       <EditField label="Секрет (в контекст ГМ не попадает)"><textarea rows={2} className="dbg-secret" value={d.secret} onChange={(e) => set({ secret: e.target.value })} /></EditField>
+      <div className="dbg-block">
+        <div className="dbg-block-head"><b>Механика</b><span className="dbg-badge">GM only</span></div>
+        <div className="dbg-edit-grid">
+          <EditField label="Abilities JSON"><textarea rows={4} value={d.abilities} onChange={(e) => set({ abilities: e.target.value })} /></EditField>
+          <EditField label="Skills JSON"><textarea rows={4} value={d.skills} onChange={(e) => set({ skills: e.target.value })} /></EditField>
+          <EditField label="Saves JSON"><textarea rows={3} value={d.saving_throws} onChange={(e) => set({ saving_throws: e.target.value })} /></EditField>
+          <EditField label="HP JSON"><textarea rows={3} value={d.hp} onChange={(e) => set({ hp: e.target.value })} /></EditField>
+          <EditField label="Passive Perception"><input type="number" value={d.passive_perception} onChange={(e) => set({ passive_perception: e.target.value })} /></EditField>
+          <EditField label="AC"><input type="number" value={d.ac} onChange={(e) => set({ ac: e.target.value })} /></EditField>
+          <EditField label="Speed"><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
+          <EditField label="Senses"><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
+          <EditField label="Languages"><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
+        </div>
+      </div>
+      {editError && <div className="err">{editError}</div>}
       {secretChanged && (
         <div className="dbg-danger-hint" role="alert">
           ⚠️ Смена секрета — опасная правка. Старая память NPC может конфликтовать с новой картой.
@@ -208,8 +273,156 @@ function NpcEditor({ npc, statusLabels, onSave }) {
   );
 }
 
+function PlayerEditor({ player, onSave }) {
+  const [d, setD] = useState(() => ({
+    name: player.name || "",
+    pronouns: player.pronouns || "",
+    class_role: player.class_role || "",
+    level: player.level != null ? String(player.level) : "",
+    background: player.background || "",
+    age: player.age || "",
+    physical_type: player.physical_type || "",
+    distinctive_features: player.distinctive_features || "",
+    life_status: player.life_status || "alive",
+    life_status_note: player.life_status_note || "",
+    condition: player.condition || "",
+    personality: player.personality || "",
+    values: player.values || "",
+    gm_notes: player.gm_notes || "",
+    abilities: prettyJson(player.abilities),
+    skills: prettyJson(player.skills),
+    saving_throws: prettyJson(player.saving_throws),
+    passive_perception: player.passive_perception != null ? String(player.passive_perception) : "",
+    ac: player.ac != null ? String(player.ac) : "",
+    hp: prettyJson(player.hp),
+    speed: player.speed || "",
+    senses: player.senses || "",
+    languages: player.languages || "",
+    inventory: listText(player.inventory),
+    equipment: listText(player.equipment),
+    features: listText(player.features),
+  }));
+  const [editError, setEditError] = useState("");
+  const set = (patch) => setD((p) => ({ ...p, ...patch }));
+  const save = () => {
+    let fields;
+    try {
+      fields = {
+        name: d.name,
+        pronouns: d.pronouns,
+        class_role: d.class_role,
+        level: parseIntegerField("Level", d.level),
+        background: d.background,
+        age: d.age,
+        physical_type: d.physical_type,
+        distinctive_features: d.distinctive_features,
+        life_status: d.life_status,
+        life_status_note: d.life_status_note,
+        condition: d.condition,
+        personality: d.personality,
+        values: d.values,
+        gm_notes: d.gm_notes,
+        abilities: parseObjectField("Abilities", d.abilities),
+        skills: parseObjectField("Skills", d.skills),
+        saving_throws: parseObjectField("Saving throws", d.saving_throws),
+        passive_perception: parseIntegerField("Passive Perception", d.passive_perception),
+        ac: parseIntegerField("AC", d.ac),
+        hp: parseObjectField("HP", d.hp),
+        speed: d.speed,
+        senses: d.senses,
+        languages: d.languages,
+        inventory: parseListField(d.inventory),
+        equipment: parseListField(d.equipment),
+        features: parseListField(d.features),
+      };
+      setEditError("");
+    } catch (e) {
+      setEditError(e.message || String(e));
+      return;
+    }
+    onSave({ fields, reason: "debug edit" });
+  };
+  return (
+    <div className="dbg-form">
+      <div className="dbg-edit-grid">
+        <EditField label="Имя"><input value={d.name} onChange={(e) => set({ name: e.target.value })} /></EditField>
+        <EditField label="Род"><input value={d.pronouns} placeholder="M, F, N, PL, OTHER" onChange={(e) => set({ pronouns: e.target.value })} /></EditField>
+        <EditField label="Класс/роль"><input value={d.class_role} onChange={(e) => set({ class_role: e.target.value })} /></EditField>
+        <EditField label="Уровень"><input type="number" value={d.level} onChange={(e) => set({ level: e.target.value })} /></EditField>
+        <EditField label="Предыстория"><input value={d.background} onChange={(e) => set({ background: e.target.value })} /></EditField>
+        <EditField label="Возраст"><input value={d.age} onChange={(e) => set({ age: e.target.value })} /></EditField>
+        <EditField label="Тип/вид"><input value={d.physical_type} onChange={(e) => set({ physical_type: e.target.value })} /></EditField>
+        <EditField label="Приметы"><input value={d.distinctive_features} onChange={(e) => set({ distinctive_features: e.target.value })} /></EditField>
+        <EditField label="Жизнь"><input value={d.life_status} onChange={(e) => set({ life_status: e.target.value })} /></EditField>
+        <EditField label="Заметка статуса"><input value={d.life_status_note} onChange={(e) => set({ life_status_note: e.target.value })} /></EditField>
+        <EditField label="Состояние"><input value={d.condition} onChange={(e) => set({ condition: e.target.value })} /></EditField>
+      </div>
+      <EditField label="Характер"><textarea rows={2} value={d.personality} onChange={(e) => set({ personality: e.target.value })} /></EditField>
+      <EditField label="Ценности"><textarea rows={2} value={d.values} onChange={(e) => set({ values: e.target.value })} /></EditField>
+      <EditField label="Заметки ГМ"><textarea rows={2} className="dbg-secret" value={d.gm_notes} onChange={(e) => set({ gm_notes: e.target.value })} /></EditField>
+      <div className="dbg-block">
+        <div className="dbg-block-head"><b>Механика игрока</b><span className="dbg-badge">sheet</span></div>
+        <div className="dbg-edit-grid">
+          <EditField label="Abilities JSON"><textarea rows={4} value={d.abilities} onChange={(e) => set({ abilities: e.target.value })} /></EditField>
+          <EditField label="Skills JSON"><textarea rows={4} value={d.skills} onChange={(e) => set({ skills: e.target.value })} /></EditField>
+          <EditField label="Saves JSON"><textarea rows={3} value={d.saving_throws} onChange={(e) => set({ saving_throws: e.target.value })} /></EditField>
+          <EditField label="HP JSON"><textarea rows={3} value={d.hp} onChange={(e) => set({ hp: e.target.value })} /></EditField>
+          <EditField label="Passive Perception"><input type="number" value={d.passive_perception} onChange={(e) => set({ passive_perception: e.target.value })} /></EditField>
+          <EditField label="AC"><input type="number" value={d.ac} onChange={(e) => set({ ac: e.target.value })} /></EditField>
+          <EditField label="Speed"><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
+          <EditField label="Senses"><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
+          <EditField label="Languages"><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
+        </div>
+      </div>
+      <div className="dbg-edit-grid">
+        <EditField label="Инвентарь"><textarea rows={4} value={d.inventory} onChange={(e) => set({ inventory: e.target.value })} /></EditField>
+        <EditField label="Снаряжение"><textarea rows={4} value={d.equipment} onChange={(e) => set({ equipment: e.target.value })} /></EditField>
+        <EditField label="Особенности"><textarea rows={4} value={d.features} onChange={(e) => set({ features: e.target.value })} /></EditField>
+      </div>
+      {editError && <div className="err">{editError}</div>}
+      <div className="dbg-modal-actions">
+        <button type="button" className="btn primary" onClick={save}>Сохранить</button>
+      </div>
+    </div>
+  );
+}
+
 function asList(items) {
   return Array.isArray(items) ? items.filter((item) => item != null && item !== "") : [];
+}
+
+function listText(items) {
+  return asList(items).join("\n");
+}
+
+function parseListField(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function prettyJson(value) {
+  if (!value || (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length)) return "";
+  return JSON.stringify(value, null, 2);
+}
+
+function parseObjectField(label, value) {
+  const raw = String(value || "").trim();
+  if (!raw) return {};
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label}: нужен JSON-объект`);
+  }
+  return parsed;
+}
+
+function parseIntegerField(label, value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) throw new Error(`${label}: нужно целое число`);
+  return parsed;
 }
 
 function Empty({ children = "пока пусто" }) {
@@ -224,6 +437,19 @@ function TextBlock({ children, secret = false }) {
       <MarkdownText>{text}</MarkdownText>
     </div>
   );
+}
+
+function JsonBlock({ value }) {
+  const cleaned = Object.fromEntries(
+    Object.entries(value || {}).filter(([, item]) => {
+      if (item == null || item === "") return false;
+      if (Array.isArray(item)) return item.length > 0;
+      if (typeof item === "object") return Object.keys(item).length > 0;
+      return true;
+    })
+  );
+  if (!Object.keys(cleaned).length) return <Empty />;
+  return <pre className="debug-json">{JSON.stringify(cleaned, null, 2)}</pre>;
 }
 
 function DebugList({ items, secret = false }) {
@@ -285,21 +511,42 @@ function Facts({ facts, rumors }) {
 
 function NpcCard({ npc, statusLabels = {} }) {
   const status = npc.whereabouts?.status || (npc.present ? "present" : "unknown");
+  const mechanics = npc.mechanics || {};
   return (
     <details className="debug-npc" open={npc.present}>
       <summary>
         <span>
           <b style={{ color: npc.color || "var(--entity-unknown)" }}>{npc.name}</b>
-          <em>{npc.role || "персонаж"}{npc.present ? " · в сцене" : ""}</em>
+          <em>{npc.role || "персонаж"}{npc.player_label && npc.player_label !== npc.name ? ` · игрок видит: ${npc.player_label}` : ""}{npc.present ? " · в сцене" : ""}</em>
         </span>
         <small>{npc.messages || 0} сообщ.</small>
       </summary>
       <div className="debug-grid">
         <div><span>id</span><b>{npc.id}</b></div>
+        <div><span>игрок видит</span><b>{npc.player_label || npc.public_label || "—"}</b></div>
+        <div><span>известное имя</span><b>{npc.known_name || "—"}</b></div>
+        <div><span>публичный ярлык</span><b>{npc.public_label || "—"}</b></div>
         <div><span>род</span><b>{npc.pronouns || "—"}</b></div>
+        <div><span>возраст</span><b>{npc.age || "—"}</b></div>
+        <div><span>тип/вид</span><b>{npc.physical_type || "—"}</b></div>
+        <div><span>приметы</span><b>{npc.distinctive_features || "—"}</b></div>
+        <div><span>жизнь</span><b>{npc.life_status || "—"}</b></div>
+        <div><span>статус жизни</span><b>{npc.life_status_note || "—"}</b></div>
+        <div><span>состояние</span><b>{npc.condition || "—"}</b></div>
         <div><span>где</span><b>{npc.whereabouts?.location_name || npc.whereabouts?.location_id || "—"}</b></div>
         <div><span>статус</span><b>{statusLabels[status] || status}</b></div>
       </div>
+
+      <h4>Личность</h4>
+      <TextBlock>{npc.persona}</TextBlock>
+      <DebugList items={[
+        npc.personality && `Характер: ${npc.personality}`,
+        npc.values && `Ценности: ${npc.values}`,
+        npc.habits && `Привычки: ${npc.habits}`,
+        npc.pressure_response && `Под давлением: ${npc.pressure_response}`,
+        npc.boundaries && `Границы: ${npc.boundaries}`,
+        npc.voice && `Голос: ${npc.voice}`,
+      ].filter(Boolean)} />
 
       <h4>Мотивы</h4>
       <TextBlock>{npc.goals}</TextBlock>
@@ -310,11 +557,81 @@ function NpcCard({ npc, statusLabels = {} }) {
       <h4>Секрет</h4>
       <TextBlock secret>{npc.secret}</TextBlock>
 
+      <h4>Механика</h4>
+      <div className="debug-grid">
+        <div><span>passive perception</span><b>{mechanics.passive_perception ?? "—"}</b></div>
+        <div><span>AC</span><b>{mechanics.ac ?? "—"}</b></div>
+        <div><span>speed</span><b>{mechanics.speed || "—"}</b></div>
+        <div><span>senses</span><b>{mechanics.senses || "—"}</b></div>
+        <div><span>languages</span><b>{mechanics.languages || "—"}</b></div>
+      </div>
+      <JsonBlock value={{
+        abilities: mechanics.abilities,
+        skills: mechanics.skills,
+        saving_throws: mechanics.saving_throws,
+        hp: mechanics.hp,
+      }} />
+
       <h4>Память NPC</h4>
       <TextBlock>{npc.summary || npc.history}</TextBlock>
 
       <h4>Коммиты ответа</h4>
       <DebugList items={npc.commitments} />
+    </details>
+  );
+}
+
+function PlayerCard({ player }) {
+  if (!player) return <Empty>карточка игрока не загружена</Empty>;
+  return (
+    <details className="debug-npc debug-player" open>
+      <summary>
+        <span>
+          <b>{player.name || "Персонаж игрока"}</b>
+          <em>{[player.class_role, player.level != null ? `ур. ${player.level}` : ""].filter(Boolean).join(" · ") || "лист персонажа"}</em>
+        </span>
+        <small>rev {player.card_revision || 0}</small>
+      </summary>
+      <div className="debug-grid">
+        <div><span>род</span><b>{player.pronouns || "—"}</b></div>
+        <div><span>предыстория</span><b>{player.background || "—"}</b></div>
+        <div><span>возраст</span><b>{player.age || "—"}</b></div>
+        <div><span>тип/вид</span><b>{player.physical_type || "—"}</b></div>
+        <div><span>приметы</span><b>{player.distinctive_features || "—"}</b></div>
+        <div><span>жизнь</span><b>{player.life_status || "—"}</b></div>
+        <div><span>статус</span><b>{player.life_status_note || "—"}</b></div>
+        <div><span>состояние</span><b>{player.condition || "—"}</b></div>
+      </div>
+
+      <h4>Характер</h4>
+      <DebugList items={[
+        player.personality && `Характер: ${player.personality}`,
+        player.values && `Ценности: ${player.values}`,
+      ].filter(Boolean)} />
+
+      <h4>Механика</h4>
+      <div className="debug-grid">
+        <div><span>passive perception</span><b>{player.passive_perception ?? "—"}</b></div>
+        <div><span>AC</span><b>{player.ac ?? "—"}</b></div>
+        <div><span>speed</span><b>{player.speed || "—"}</b></div>
+        <div><span>senses</span><b>{player.senses || "—"}</b></div>
+        <div><span>languages</span><b>{player.languages || "—"}</b></div>
+      </div>
+      <JsonBlock value={{
+        abilities: player.abilities,
+        skills: player.skills,
+        saving_throws: player.saving_throws,
+        hp: player.hp,
+      }} />
+
+      <h4>Инвентарь</h4>
+      <DebugList items={player.inventory} />
+
+      <h4>Снаряжение и особенности</h4>
+      <DebugList items={[...asList(player.equipment), ...asList(player.features)]} />
+
+      <h4>Заметки ГМ</h4>
+      <TextBlock secret>{player.gm_notes}</TextBlock>
     </details>
   );
 }
@@ -338,8 +655,11 @@ function Events({ events, npcs }) {
   );
 }
 
-export default function DebugPanel({ refreshKey = "" }) {
-  const [open, setOpen] = useState(false);
+export default function DebugPanel({ refreshKey = "", open = false, onOpenChange }) {
+  const setOpen = useCallback(
+    (next) => onOpenChange?.(typeof next === "function" ? next(open) : next),
+    [onOpenChange, open]
+  );
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -394,6 +714,7 @@ export default function DebugPanel({ refreshKey = "" }) {
   const runRoll = useCallback((body) => apply(api.debugRoll(body)), [apply]);
   const runAddFact = useCallback((text, kind) => apply(api.addFact(text, kind)), [apply]);
   const runDeleteFact = useCallback((id) => apply(api.deleteFact(id)), [apply]);
+  const runUpdatePlayer = useCallback((body) => { apply(api.updatePlayer(body)); closeTop(); }, [apply, closeTop]);
   const runUpdateNpc = useCallback((body) => { apply(api.updateNpc(body)); closeTop(); }, [apply, closeTop]);
 
   const override = data?.roll_override || {};
@@ -447,6 +768,7 @@ export default function DebugPanel({ refreshKey = "" }) {
                   🎲 Броски{rollBadge ? ` · ${rollBadge}` : ""}
                 </button>
                 <button type="button" className="btn" onClick={() => openModal({ type: "facts" })}>📖 Факты мира</button>
+                <button type="button" className="btn" onClick={() => openModal({ type: "playerEdit" })}>🧍 Персонаж игрока</button>
                 <button type="button" className="btn" onClick={() => openModal({ type: "npcs" })}>👤 Персонажи</button>
               </div>
             </details>
@@ -475,6 +797,11 @@ export default function DebugPanel({ refreshKey = "" }) {
               <DebugList items={data.scene?.constraints || data.story?.constraints} />
               <h4>Скрытые события</h4>
               <DebugList items={data.story?.hidden_events} secret />
+            </details>
+
+            <details className="debug-section" open>
+              <summary>Персонаж игрока</summary>
+              <PlayerCard player={data.player_character} />
             </details>
 
             <details className="debug-section" open>
@@ -516,6 +843,13 @@ export default function DebugPanel({ refreshKey = "" }) {
           return (
             <Modal key="npcs" depth={i} title="Персонажи" subtitle="выбери для правки" onClose={closeTop}>
               <NpcPicker npcs={asList(data?.npcs)} onPick={(id) => pushModal({ type: "npcEdit", id })} />
+            </Modal>
+          );
+        }
+        if (m.type === "playerEdit") {
+          return (
+            <Modal key="playerEdit" depth={i} wide title="Правка персонажа игрока" subtitle="лист персонажа" onClose={closeTop}>
+              <PlayerEditor player={data?.player_character || {}} onSave={runUpdatePlayer} />
             </Modal>
           );
         }

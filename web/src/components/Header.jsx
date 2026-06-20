@@ -212,6 +212,15 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
           />
         </label>
 
+        <label className="field check-field">
+          <span>ГМ будет предлагать варианты</span>
+          <input
+            type="checkbox"
+            checked={!!draft.gm_suggest_options}
+            onChange={(e) => set({ gm_suggest_options: e.target.checked })}
+          />
+        </label>
+
         <label className="field">
           <span>Лимит ответа</span>
           <input

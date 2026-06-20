@@ -22,6 +22,7 @@ from orchestrator import Session, run_turn
 
 
 OUT = Path(__file__).with_name("scene_trial_last.json")
+QUIET = os.environ.get("GM_TRIAL_QUIET", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _n_ctx() -> int:
@@ -50,7 +51,8 @@ def _print_costs(rows: list[dict], n_ctx: int, prefix: str = "   "):
 
 
 def play(session: Session, text: str, n_ctx: int) -> dict:
-    print(f"\n### ИГРОК: {text}")
+    if not QUIET:
+        print(f"\n### ИГРОК: {text}")
     record = {
         "input": text,
         "tools": [],
@@ -66,49 +68,66 @@ def play(session: Session, text: str, n_ctx: int) -> dict:
             if "situation" in args:
                 args["situation"] = args["situation"][:120]
             record["tools"].append({"name": data["name"], "arguments": args})
-            print(f"   tool: {data['name']} {args}")
+            if not QUIET:
+                print(f"   tool: {data['name']} {args}")
         elif kind == "npc_speech":
             row = {"npc": agent, **data}
             record["npc"].append(row)
             act = f" [{data['action']}]" if data.get("action") else ""
-            print(f"   {agent}: «{data.get('speech', '')}»{act}")
+            if not QUIET:
+                print(f"   {agent}: «{data.get('speech', '')}»{act}")
         elif kind == "gm_narration":
             record["narration"] = data
-            print(f"   ГМ: {data[:420]}")
+            if not QUIET:
+                print(f"   ГМ: {data[:420]}")
         elif kind == "error":
             record["errors"].append({"agent": agent, "data": data})
-            print(f"   ERROR {agent}: {data[:260]}")
+            if not QUIET:
+                print(f"   ERROR {agent}: {data[:260]}")
         elif kind == "meta_total":
             record["meta_total"] = data
             peak = data.get("peak_context", 0)
             pct = round(peak / n_ctx * 100, 2) if n_ctx else 0
-            print(
-                f"   TOKENS: calls={len(data.get('calls', []))} "
-                f"in={data.get('in')} out={data.get('out')} "
-                f"total={data.get('tokens')} peak_ctx={peak} ({pct}%) "
-                f"secs={data.get('secs')}"
-            )
+            if not QUIET:
+                print(
+                    f"   TOKENS: calls={len(data.get('calls', []))} "
+                    f"in={data.get('in')} out={data.get('out')} "
+                    f"total={data.get('tokens')} peak_ctx={peak} ({pct}%) "
+                    f"secs={data.get('secs')}"
+                )
+    if QUIET:
+        tool_names = [row["name"] for row in record["tools"]]
+        meta = record.get("meta_total") or {}
+        print(
+            "TURN "
+            f"tools={tool_names} npc={len(record['npc'])} errors={len(record['errors'])} "
+            f"tokens={meta.get('tokens', 0)} secs={meta.get('secs', 0)}"
+        )
     return record
 
 
 def main():
     n_ctx = _n_ctx()
     client = make_client()
-    print(f"backend={config.BACKEND} model={config.MODEL or 'auto'} n_ctx={n_ctx or 'unknown'}")
+    model = getattr(client, "model", "") or config.MODEL or config.CODEX_MODEL or "auto"
+    print(f"backend={config.BACKEND} model={model} n_ctx={n_ctx or 'unknown'}")
 
     results = {"default_scene": [], "fresh_world": [], "seed": {}, "n_ctx": n_ctx}
 
     default_session = Session(client)
-    print("\n=== DEFAULT SCENE ===")
-    print(default_session.world.scene_context())
+    if not QUIET:
+        print("\n=== DEFAULT SCENE ===")
+        print(default_session.world.scene_context())
     for text in [
         "Подхожу к капитану Марет у стойки и шепчу ей: расскажи, что видела у тела Алдрика.",
+        "Пока Борин рядом, пытаюсь незаметно стянуть у него связку ключей со стойки.",
         "Борин, ты сбежал через заднюю дверь после убийства? Признавайся.",
         "Я кричу: Наль, кузнец, выходи сюда, я знаю, что ты прячешься за дверью!",
     ]:
         results["default_scene"].append(play(default_session, text, n_ctx))
 
-    print("\n=== FRESH WORLD SEED ===")
+    if not QUIET:
+        print("\n=== FRESH WORLD SEED ===")
     brief = (
         "Новый мир: ледяной порт Нордхольм. Пропал корабль «Северная свеча». "
         "В стартовой таверне видимые персонажи: хозяйка Ива и моряк Рун."
@@ -116,13 +135,15 @@ def main():
     start = len(getattr(client, "call_log", []))
     seed = agents.build_world_seed(client, brief)
     seed_costs = _call_costs(client, start)
-    print(json.dumps(seed, ensure_ascii=False, indent=2)[:1800])
-    _print_costs(seed_costs, n_ctx)
+    if not QUIET:
+        print(json.dumps(seed, ensure_ascii=False, indent=2)[:1800])
+        _print_costs(seed_costs, n_ctx)
     results["seed"] = {"brief": brief, "seed": seed, "costs": seed_costs}
 
     fresh_session = Session(client, world_mod.World.from_seed(seed))
-    print("\n=== FRESH WORLD SCENE ===")
-    print(fresh_session.world.scene_context())
+    if not QUIET:
+        print("\n=== FRESH WORLD SCENE ===")
+        print(fresh_session.world.scene_context())
     for text in [
         "Оглядываюсь. Кто здесь и что видно?",
         "Подхожу к Иве и спрашиваю: что ты знаешь о «Северной свече»?",
@@ -130,6 +151,17 @@ def main():
         results["fresh_world"].append(play(fresh_session, text, n_ctx))
 
     OUT.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    if QUIET:
+        all_turns = results["default_scene"] + results["fresh_world"]
+        tool_counts = {}
+        for turn in all_turns:
+            for row in turn.get("tools", []):
+                tool_counts[row.get("name", "")] = tool_counts.get(row.get("name", ""), 0) + 1
+        print(
+            "SUMMARY "
+            f"turns={len(all_turns)} errors={sum(len(t.get('errors', [])) for t in all_turns)} "
+            f"tools={tool_counts}"
+        )
     print(f"\nSaved: {OUT}")
 
 

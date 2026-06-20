@@ -13,6 +13,8 @@ const EMPTY_SRV = {
   model: "",
   stream_gm_content: false,
   scene: "",
+  time: null,
+  playerCharacter: null,
   npcs: [],
   entities: { byKey: {} },
   statusLabels: {},
@@ -83,6 +85,32 @@ function activeChatIdFrom(data) {
   return data?.active_chat_id || data?.chats?.find((chat) => chat.active)?.id || "";
 }
 
+function normalizePlayerOptions(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const options = Array.isArray(payload.options)
+    ? payload.options
+        .map((option) => ({
+          label: textValue(option?.label),
+          message: textValue(option?.message),
+        }))
+        .filter((option) => option.label && option.message)
+    : [];
+  if (!options.length) return null;
+  return {
+    question: textValue(payload.question) || "Что ты делаешь дальше?",
+    options,
+  };
+}
+
+function playerOptionsFromEvents(events) {
+  let current = null;
+  for (const ev of Array.isArray(events) ? events : []) {
+    if (ev?.kind === "player") current = null;
+    if (ev?.kind === "player_options") current = normalizePlayerOptions(ev.data);
+  }
+  return current;
+}
+
 function mergeChatList(prevChats, chat, activeChatId) {
   const list = Array.isArray(prevChats) ? prevChats : [];
   if (!chat) {
@@ -112,6 +140,38 @@ function requireChatSessionPayload(payload) {
   return { chatId: payload.chat.id, state: payload.state, transcript: payload.transcript };
 }
 
+function WorldHud({ time, scene, playerCharacter }) {
+  const dateLabel = textValue(time?.current_date_label) || (time?.day_number ? `День ${time.day_number}` : "");
+  const timeOfDay = textValue(time?.time_of_day);
+  const calendar = textValue(time?.calendar_name);
+  const sceneTitle = textValue(scene?.title);
+  const pcName = textValue(playerCharacter?.name);
+  if (!dateLabel && !timeOfDay && !sceneTitle && !pcName) return null;
+  return (
+    <aside className="world-hud" aria-label="Текущее состояние мира">
+      <div className="world-hud-kicker">мир</div>
+      <div className="world-hud-row">
+        <span>дата</span>
+        <b>{calendar ? `${calendar}, ${dateLabel || "—"}` : dateLabel || "—"}</b>
+      </div>
+      <div className="world-hud-row">
+        <span>время</span>
+        <b>{timeOfDay || "—"}</b>
+      </div>
+      <div className="world-hud-row">
+        <span>сцена</span>
+        <b>{sceneTitle || "—"}</b>
+      </div>
+      {pcName && (
+        <div className="world-hud-row">
+          <span>персонаж</span>
+          <b>{pcName}</b>
+        </div>
+      )}
+    </aside>
+  );
+}
+
 export default function App() {
   const store = useMemo(createTimeline, []);
   const messages = useSyncExternalStore(store.subscribe, store.getSnapshot);
@@ -134,6 +194,8 @@ export default function App() {
   const [selectedStoryId, setSelectedStoryId] = useState("");
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [storiesError, setStoriesError] = useState("");
+  const [playerOptions, setPlayerOptions] = useState(null);
+  const [debugOpen, setDebugOpen] = useState(false);
 
   const setStateFromServer = useCallback((s) => {
     setSrv({
@@ -141,6 +203,8 @@ export default function App() {
       model: s.model,
       stream_gm_content: s.stream_gm_content,
       scene: s.scene || s.public,
+      time: s.time || null,
+      playerCharacter: s.player_character || null,
       npcs: s.npcs || [],
       entities: normalizeEntities(s.entities),
       statusLabels: s.status_labels || {},
@@ -212,7 +276,9 @@ export default function App() {
 
       store.clear();
       setStateFromServer(nextState);
-      store.dispatchMany(nextTranscript?.events || []);
+      const events = nextTranscript?.events || [];
+      store.dispatchMany(events);
+      setPlayerOptions(playerOptionsFromEvents(events));
       setActiveChatId(nextChatId || "");
       if (payload?.chat || nextChatId) {
         setChats((prev) => mergeChatList(prev, payload?.chat, nextChatId));
@@ -250,7 +316,9 @@ export default function App() {
       try {
         const t = await api.transcript();
         store.clear();
-        store.dispatchMany(t.events || []);
+        const events = t.events || [];
+        store.dispatchMany(events);
+        setPlayerOptions(playerOptionsFromEvents(events));
       } catch (e) {
         store.dispatch({ kind: "error", agent: "история", data: e.message });
       }
@@ -262,11 +330,14 @@ export default function App() {
   const sendTurn = useCallback(
     async (text) => {
       store.beginTurn();
+      setPlayerOptions(null);
       setBusy(true);
       setStatus("ГМ думает…");
       try {
         await streamTurn(text, (ev) => {
           store.dispatch(ev);
+          if (ev.kind === "player_options") setPlayerOptions(normalizePlayerOptions(ev.data));
+          if (ev.kind === "player") setPlayerOptions(null);
           if (ev.kind === "meta_total") {
             if (ev.data?.run) setRunUsage(ev.data.run);
             if (ev.data?.context) setContextUsage(ev.data.context);
@@ -303,10 +374,12 @@ export default function App() {
         }
         if (cmd === "reset") {
           store.clear();
+          setPlayerOptions(null);
           setStateFromServer(data.state);
           store.pushLocal({ type: "command", text: "Новая партия" });
         } else if (cmd === "new") {
           store.clear();
+          setPlayerOptions(null);
           setStateFromServer(data.state);
           store.pushLocal({
             type: "command",
@@ -461,6 +534,7 @@ export default function App() {
     try {
       const data = await api.command("reset");
       store.clear();
+      setPlayerOptions(null);
       if (data.ok) setStateFromServer(data.state);
       await refreshChats();
     } catch (e) {
@@ -489,7 +563,8 @@ export default function App() {
         onExport={() => api.export()}
         onReset={onReset}
       />
-      <div className="app-body">
+      <div className={"app-body" + (debugOpen ? " debug-open" : "")}>
+        <WorldHud time={srv.time} scene={srv.scene} playerCharacter={srv.playerCharacter} />
         <ChatHistorySidebar
           chats={chats}
           activeChatId={activeChatId}
@@ -519,13 +594,18 @@ export default function App() {
             onSend={send}
             busy={interactionBusy}
             status={status}
+            playerOptions={playerOptions}
             runUsage={runUsage}
             contextUsage={contextUsage}
             modelWindow={currentModel?.context_window || currentModel?.max_context_window || 0}
           />
         </main>
       </div>
-      <DebugPanel refreshKey={`${activeChatId}:${runUsage.turns}:${srv.model}:${srv.scene?.scene_id || ""}`} />
+      <DebugPanel
+        open={debugOpen}
+        onOpenChange={setDebugOpen}
+        refreshKey={`${activeChatId}:${runUsage.turns}:${srv.model}:${srv.scene?.scene_id || ""}`}
+      />
     </div>
   );
 }

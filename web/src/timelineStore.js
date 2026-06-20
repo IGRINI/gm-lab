@@ -12,6 +12,7 @@ export function createTimeline() {
   let pub = arr; // published snapshot for useSyncExternalStore
   let liveIdx = new Map(); // "sid|type" -> index in arr (streaming targets)
   let nextId = 1;
+  let live = false; // true while folding a live streamed event (vs restoring history)
   const listeners = new Set();
   let scheduled = false;
 
@@ -47,6 +48,24 @@ export function createTimeline() {
     arr[idx] = { ...arr[idx], ...patch };
   };
 
+  // A tool's result arrives as a separate event right after its gm_tool_call.
+  // Attach it to that pending tool row so call + result render as ONE card.
+  // Scans from the end for the nearest matching tool call still awaiting a result.
+  const attachResult = (toolName, payload, extra) => {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const m = arr[i];
+      if (m.type === "tool" && m.name === toolName && m.result === undefined) {
+        arr[i] = { ...m, result: payload, ...(extra || null) };
+        return true;
+      }
+    }
+    return false;
+  };
+  // Attach to the matching call, or fall back to a standalone result card.
+  const toolResult = (toolName, payload) => {
+    if (!attachResult(toolName, payload)) push({ type: "tool_result", name: toolName, payload });
+  };
+
   function applyEvent(ev) {
     const k = ev.kind;
     const a = ev.agent;
@@ -67,14 +86,29 @@ export function createTimeline() {
         if (i != null) update(i, { revealed: true, speech: arr[i].speech + d.text });
       }
     } else if (k === "gm_tool_call") {
-      push({ type: "tool", name: d.name, args: d.arguments });
+      // result stays undefined until the tool's outcome event arrives and attaches.
+      push({ type: "tool", name: d.name, args: d.arguments, result: undefined });
     } else if (k === "gm_thinking") {
       if (d && d.trim()) {
         const i = ensureIdx(sid, "gm_think", () => ({ type: "gm_think", sid, text: "" }));
         update(i, { text: d });
       }
     } else if (k === "world_fact") {
-      push({ type: "fact", text: d });
+      // New backend streams a structured payload; old transcripts streamed a string.
+      if (d && typeof d === "object") toolResult("get_world_fact", d);
+      else push({ type: "fact", text: d });
+    } else if (k === "world_state_update") {
+      toolResult("update_world_state", d);
+    } else if (k === "world_query") {
+      toolResult("query_world_state", d);
+    } else if (k === "npc_profile") {
+      toolResult("get_npc_profile", d);
+    } else if (k === "time") {
+      toolResult("advance_time", d);
+    } else if (k === "player_character_update") {
+      toolResult("update_player_character", d);
+    } else if (k === "tool_search") {
+      toolResult("tool_search", { text: d });
     } else if (k === "scene_update") {
       if (d?.title || d?.scene_id) {
         push({
@@ -101,7 +135,14 @@ export function createTimeline() {
         whereabouts: d.whereabouts || {},
       });
     } else if (k === "dice") {
-      push({ type: "dice", text: d });
+      // New backend streams the full roll payload (faces, kept dice, grade) so the UI
+      // can animate real dice; old transcripts streamed just the detail string.
+      if (d && typeof d === "object") {
+        // resultLive=true only for a live roll, so restored history snaps instead of re-tumbling.
+        if (!attachResult("roll_dice", d, { resultLive: live })) {
+          push({ type: "dice_roll", roll: d, resultLive: live });
+        }
+      } else push({ type: "dice", text: d });
     } else if (k === "tool_result") {
       /* internal, not rendered */
     } else if (k === "npc_start") {
@@ -154,13 +195,16 @@ export function createTimeline() {
     getSnapshot() {
       return pub;
     },
-    // single live event -> coalesced render
+    // single live event -> coalesced render (dice from a live roll should animate)
     dispatch(ev) {
+      live = true;
       applyEvent(ev);
+      live = false;
       schedule();
     },
-    // batch (restore transcript) -> one render
+    // batch (restore transcript) -> one render (historical dice snap, never re-tumble)
     dispatchMany(events) {
+      live = false;
       events.forEach(applyEvent);
       notify();
     },

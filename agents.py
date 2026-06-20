@@ -49,8 +49,17 @@ _ROLL_DICE_TOOL = {"type": "function", "function": {
         "conversation, visible scene "
         "description, trivial/impossible actions, or obvious consequences. Supports "
         "standard notation like 1d20+3 or 2d6, plus 2d20kh1/2d20kl1 for "
-        "advantage/disadvantage. Put any known modifier directly in notation; do not "
-        "invent unknown character-sheet bonuses."
+        "advantage/disadvantage. For player-side rolls, use PLAYER CHARACTER CARD "
+        "modifiers/advantages when available. Put any known modifier directly in notation; do not "
+        "invent unknown character-sheet bonuses. Skill/save modifiers must be exact card "
+        "keys; never borrow a nearby skill or call an unlisted skill known. If the exact "
+        "skill/save is missing, derive the ability modifier from the named ability score "
+        "or roll plain 1d20 when that is also unknown. For actions opposed by a named NPC "
+        "(stealing from them, sneaking past them, lying to them, attacking them, or testing "
+        "whether they notice), get selected mechanics through get_npc_profile first when not "
+        "already known; use their passive_perception, AC, save, skill, or ability data instead "
+        "of a generic DC. The result is compact structured text containing only the "
+        "new roll outcome: total, grade, margin, and natural roll."
     ),
     "parameters": {"type": "object", "properties": {
         "roll_kind": {"type": "string",
@@ -92,8 +101,9 @@ _GET_FACT_TOOL = {"type": "function", "function": {
         "whereabouts, public lore, or prior statement that is not already in CURRENT SCENE "
         "STATE, the public intro, or the conversation. Use before asserting or summarizing "
         "non-visible suspects, leads, clue meanings, timelines, ownership, relationships, "
-        "factions, prior testimony, or offscreen NPC locations. Results include "
-        "source/provenance and may contain unconfirmed testimony. Do not call for facts "
+        "factions, prior testimony, or offscreen NPC locations. The result is compact "
+        "structured text with status, text, and compact source lines; it may contain "
+        "unconfirmed testimony. Do not call for facts "
         "that are visible right now. If the result status is unknown or a source is "
         "unconfirmed, preserve uncertainty instead of inventing an answer."
     ),
@@ -120,25 +130,36 @@ _INITIAL_GM_TOOL_NAMES = frozenset({
     "get_world_fact",
     "query_world_state",
     "update_world_state",
+    "update_player_character",
+    "advance_time",
     "tool_search",
 })
+_PLAYER_OPTIONS_TOOL_NAME = "ask_player"
 
 _TOOL_SEARCH_HINTS = {
     "ask_npc": (
         "npc нпс персонаж поговорить спросить допросить ответить реакция речь "
-        "угроза угрожать убедить обмануть торг приказать борин лиза марет"
+        "угроза угрожать убедить обмануть торг приказать"
     ),
     "move_npc": (
         "npc нпс персонаж входит выходит появился ушел переместить присутствует "
-        "сцена слышит видит visibility presence марет пришла борин ушел"
+        "сцена слышит видит visibility presence пришел ушел"
     ),
     "set_npc_whereabouts": (
         "npc нпс местонахождение где искать куда ушел где находится известное "
-        "вероятное слух whereabouts absent offscreen марет стража караульная"
+        "вероятное слух whereabouts absent offscreen"
     ),
     "set_scene": (
         "сцена локация перейти войти выйти добраться место комната улица здание "
         "travel location scene exits items present_npcs"
+    ),
+    "get_npc_profile": (
+        "npc profile карточка персонаж статы механика abilities skills saves passive perception "
+        "ac hp speed senses languages personality habits voice внешний вид приметы состояние"
+    ),
+    "advance_time": (
+        "time время часы календарь прошло минут ожидать подождать спустя пауза день ночь "
+        "advance clock elapsed minutes"
     ),
     "roll_dice": (
         "куб кубик бросок проверка d20 dice roll внимание расследование insight "
@@ -150,7 +171,16 @@ _TOOL_SEARCH_HINTS = {
     ),
     "update_world_state": (
         "batch пакет обновить записать удалить состояние мир факт слух память npc relationship "
-        "отношение цель goal goals npc_memory facts rumors world state compact scope id"
+        "отношение цель goal goals npc_memory facts rumors world state compact scope id known_name "
+        "локация место город регион scene location aliases алиасы"
+    ),
+    "update_player_character": (
+        "player character персонаж игрока лист персонажа карточка игрок hp ac abilities skills "
+        "inventory equipment feature condition status update damage heal предмет инвентарь"
+    ),
+    "ask_player": (
+        "варианты действия реплики кнопки быстрый ответ player options quick replies "
+        "suggest choices задать вопрос что делать дальше"
     ),
     "query_world_state": (
         "query scoped scope область player gm npc спросить проверить состояние память "
@@ -230,8 +260,11 @@ def _score_tool(query_terms: list[str], required_terms: list[str], tool: dict) -
     return score
 
 
-def initial_gm_tool_names() -> set[str]:
-    return set(_INITIAL_GM_TOOL_NAMES)
+def initial_gm_tool_names(include_player_options_tool: bool = False) -> set[str]:
+    names = set(_INITIAL_GM_TOOL_NAMES)
+    if include_player_options_tool:
+        names.add(_PLAYER_OPTIONS_TOOL_NAME)
+    return names
 
 
 def build_gm_tools(world: world_mod.World) -> list:
@@ -251,17 +284,18 @@ def build_gm_tools(world: world_mod.World) -> list:
             "final narration. DO NOT CALL for absent NPCs, generic "
             "crowd color, visible scene description, or facts the GM can state from CURRENT "
             "SCENE STATE. If the fiction first brings an NPC into the scene, call move_npc "
-            "before ask_npc. The result is a draft; if the action is physically impossible, "
-            "call ask_npc again with the same npc_id and a correction. Use the npc_id from the "
-            "current roster in CURRENT TURN CONTEXT; if the id is unknown the tool returns an "
-            "error so you can retry with a valid id."
+            "before ask_npc. The result is the NPC response; if the action is physically "
+            "impossible, call ask_npc again with the same npc_id and a correction. Use the "
+            "npc_id from the current roster in CURRENT TURN CONTEXT; if the id is unknown "
+            "the tool returns an error so you can retry with a valid id. The result is "
+            "compact structured text with NPC speech/action already emitted to the player."
         ),
         "parameters": {"type": "object", "properties": {
             "npc_id": {"type": "string",
                        "description": "Whom to wake: the npc_id of a present NPC from the current roster."},
             "situation": {"type": "string", "description": _SITUATION_DESC},
             "correction": {"type": "string",
-                           "description": "Fill in ONLY when sending a draft back for a redo: "
+                           "description": "Fill in ONLY when sending an NPC response back for a redo: "
                                           "what is wrong and what to fix, in Russian. Omit this "
                                           "field on the first ask_npc call for a fresh player "
                                           "action."},
@@ -272,12 +306,13 @@ def build_gm_tools(world: world_mod.World) -> list:
         "description": (
             "Update current-scene presence for a named NPC. WHEN TO CALL: a named NPC enters, "
             "leaves, becomes visible/hidden, moves into hearing range, leaves hearing range, "
-            "or an accepted NPC draft physically changes their presence. Call before final "
+            "or an accepted NPC response physically changes their presence. Call before final "
             "narration. DO NOT CALL for anonymous crowds, future plans, rumors, a player "
             "ordering an NPC to move, the player approaching an already-present NPC, or NPC "
             "speech/motives. This tool only changes state; it does not make the NPC speak, "
             "decide, or feel anything. Use the npc_id from the current roster in CURRENT TURN "
-            "CONTEXT; an unknown id returns an error instead of changing state."
+            "CONTEXT; an unknown id returns an error instead of changing state. The result "
+            "is compact structured text with presence status only."
         ),
         "parameters": {"type": "object", "properties": {
             "npc_id": {"type": "string",
@@ -308,7 +343,8 @@ def build_gm_tools(world: world_mod.World) -> list:
             "CALL to make the NPC speak, react, enter, leave the current scene, or become "
             "visible. Use move_npc for current-scene presence and set_scene when the player "
             "actually reaches that place. Use the npc_id from the current roster in CURRENT "
-            "TURN CONTEXT; an unknown id returns an error instead of recording whereabouts."
+            "TURN CONTEXT; an unknown id returns an error instead of recording whereabouts. "
+            "The result is compact structured text with whereabouts status."
         ),
         "parameters": {"type": "object", "properties": {
             "npc_id": {"type": "string",
@@ -325,6 +361,26 @@ def build_gm_tools(world: world_mod.World) -> list:
                        "description": "What established this, in Russian: witness, public lore, scene result, etc."},
         }, "required": ["npc_id", "status"], "additionalProperties": False},
     }}
+    get_npc_profile = {"type": "function", "function": {
+        "name": "get_npc_profile",
+        "description": (
+            "Fetch selected safe NPC card/mechanics fields without returning the full private "
+            "NPC card. Use when a roll, visible description, status check, or social read "
+            "needs specific NPC data. GM-internal: do not reveal raw stats to the player. "
+            "It includes no secrets, private knowledge, or goals. The result is compact "
+            "structured text listing only selected fields."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "npc_id": {"type": "string",
+                       "description": "NPC id from CURRENT TURN CONTEXT."},
+            "preset": {"type": "string",
+                       "enum": ["visible", "social", "mechanics", "status", "identity"],
+                       "description": "Common field group. Omit for visible."},
+            "fields": {"type": "array",
+                       "items": {"type": "string", "enum": list(world_mod.NPC_PROFILE_FIELDS)},
+                       "description": "Optional exact fields to union with preset."},
+        }, "required": ["npc_id"], "additionalProperties": False},
+    }}
     set_scene = {"type": "function", "function": {
         "name": "set_scene",
         "description": (
@@ -340,7 +396,9 @@ def build_gm_tools(world: world_mod.World) -> list:
             "area, e.g. 'У входа в караульную' if they are still outside. Do not invent hidden "
             "facts or conclusions. List in present_npcs only the npc_ids (from the current "
             "roster in CURRENT TURN CONTEXT) of NPCs actually in the new scene; unknown ids "
-            "are ignored and reported back so you can correct them."
+            "are ignored and reported back so you can correct them. The result is compact "
+            "structured text with saved scene title, ids, items, exits, "
+            "and dropped NPC ids."
         ),
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string",
@@ -374,31 +432,144 @@ def build_gm_tools(world: world_mod.World) -> list:
                        "description": "Why the current scene changed, in Russian."},
         }, "required": ["title", "description", "reason"], "additionalProperties": False},
     }}
+    advance_time = {"type": "function", "function": {
+        "name": "advance_time",
+        "description": (
+            "Advance the hidden world clock by elapsed in-world minutes for this resolved "
+            "player turn. Call once before final narration when time passes. NPC speech or "
+            "a social exchange usually consumes at least a short amount of time. The result "
+            "is compact structured text with elapsed minutes and current time."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "minutes": {"type": "integer",
+                        "description": "Elapsed in-world minutes, non-negative."},
+            "reason": {"type": "string",
+                       "description": "Very short Russian reason."},
+        }, "required": ["minutes", "reason"], "additionalProperties": False},
+    }}
+    ask_player = {"type": "function", "function": {
+        "name": _PLAYER_OPTIONS_TOOL_NAME,
+        "description": (
+            "Show quick-reply buttons above the player's input when CURRENT TURN CONTEXT says "
+            "PLAYER OPTION SUGGESTIONS are enabled. This is a terminal end-of-turn tool: call "
+            "it only after the final player-facing narration for the turn, and do not continue "
+            "narrating after it. Provide at least 4 current, concrete actions or dialogue "
+            "lines that fit the situation without replacing free text input. Each option has "
+            "a short Russian label displayed on the button and a fuller Russian message that "
+            "will be sent as the player's next message if clicked. Do not use this tool for "
+            "hidden facts, spoilers, GM-only reasoning, NPC stats, or commands to the player. "
+            "The result is compact structured text confirming that the options were shown."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "question": {"type": "string",
+                         "description": "Short Russian prompt above the buttons, e.g. 'Что ты делаешь дальше?'."},
+            "options": {"type": "array", "minItems": 4, "maxItems": 8,
+                        "items": {"type": "object", "properties": {
+                            "label": {"type": "string",
+                                      "description": "Short Russian button label, ideally 1-4 words."},
+                            "message": {"type": "string",
+                                        "description": "Full Russian player message to send when clicked."},
+                        }, "required": ["label", "message"], "additionalProperties": False},
+                        "description": "Four to eight distinct playable options for the current situation."},
+        }, "required": ["question", "options"], "additionalProperties": False},
+    }}
+    update_player_character = {"type": "function", "function": {
+        "name": "update_player_character",
+        "strict": False,
+        "description": (
+            "Update the player character sheet after the fiction establishes a real change "
+            "to the player's character: name/class/background details, life status, condition, "
+            "HP, AC, abilities, skills, saves, passive Perception, senses, languages, "
+            "inventory, equipment, features, or GM-only notes. Use this for the player "
+            "character only, not for NPC memories, relationships, world facts, scene state, "
+            "or time. Use it when the player declares a player-character detail or when "
+            "the resolved fiction changes the sheet. Batch all player-sheet field changes "
+            "for the turn in one call, but send only fields that changed; never echo the "
+            "whole current card back to the tool. Omit optional fields when they did not "
+            "change; do not send empty placeholders. The result is compact structured text "
+            "with changed field names and card revision only."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "fields": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "pronouns": {"type": "string"},
+                "class_role": {"type": "string"},
+                "level": {"type": "integer"},
+                "background": {"type": "string"},
+                "age": {"type": "string"},
+                "physical_type": {"type": "string"},
+                "distinctive_features": {"type": "string"},
+                "life_status": {"type": "string"},
+                "life_status_note": {"type": "string"},
+                "condition": {"type": "string"},
+                "personality": {"type": "string"},
+                "values": {"type": "string"},
+                "gm_notes": {"type": "string",
+                             "description": "GM-only notes about the player character; never narrate directly."},
+                "abilities": {"type": "object",
+                              "description": "D&D ability scores, e.g. STR/DEX/CON/INT/WIS/CHA as scores, not roll modifiers."},
+                "skills": {"type": "object",
+                           "description": "Exact skill-name final modifiers only, e.g. Perception: 5. Do not add unlisted skills here unless the sheet truly changes."},
+                "saving_throws": {"type": "object",
+                                  "description": "Exact saving throw final modifiers, e.g. DEX: 5."},
+                "passive_perception": {"type": "integer"},
+                "ac": {"type": "integer"},
+                "hp": {"type": "object",
+                       "description": "Current hit point state, usually {current, max, temp?}."},
+                "speed": {"type": "string"},
+                "senses": {"type": "string"},
+                "languages": {"type": "string"},
+                "inventory": {"type": "array", "items": {"type": "string"},
+                              "description": "Full current inventory only when inventory changed."},
+                "equipment": {"type": "array", "items": {"type": "string"},
+                              "description": "Full current equipment only when equipment changed."},
+                "features": {"type": "array", "items": {"type": "string"},
+                             "description": "Full current features only when features changed."},
+            }, "additionalProperties": False,
+                "description": "Only changed player-character fields. Omit unchanged or empty fields; never resend the full card."},
+            "reason": {"type": "string",
+                       "description": "Very short Russian reason for the sheet update."},
+        }, "required": ["fields", "reason"], "additionalProperties": False},
+    }}
     update_world_state = {"type": "function", "function": {
         "name": "update_world_state",
+        "strict": False,
         "description": (
             "Apply a compact batch of GM-authored world-state updates after the fiction "
             "establishes them. Accepts items[] for fact, rumor, npc_memory, relationship, "
             "and goal records. One item is one atomic durable note; batch 1-5 important "
             "changes instead of making repeated tool calls. Use op=add to create, op=update "
             "to revise an existing id, and op=delete to remove an id from active memory/RAG. "
+            "After ask_npc, use this before final narration when the NPC answer confirms, "
+            "denies, hides, promises, threatens, refuses, or changes something that should "
+            "matter later. "
+            "When the player learns what to call an NPC, include known_name plus entity_id=<npc_id>; "
+            "this is GM-authored identity state, never inferred automatically. known_name is "
+            "only for NPC entity_id values, never for the player, locations, factions, items, "
+            "or ordinary facts. "
             "For update/delete, include expected_hash when you have a fresh hash from "
             "query_world_state or a just-returned update_world_state result. If you do not "
             "have a fresh id/hash and an active record may already exist for the same "
             "npc_id and target, call query_world_state first; then update/delete that id "
             "instead of adding a duplicate. Use add only when lookup is unknown or the note "
-            "is genuinely new. "
+            "is genuinely new. For op=add, never invent or send id, expected_hash, mode, or "
+            "placeholder hash values; the engine assigns ids. "
             f"{tool_guidance.WORLD_STATE_TYPE_GUIDE} "
             f"{tool_guidance.WORLD_STATE_SCOPE_GUIDE} "
             f"{tool_guidance.WORLD_STATE_SPLIT_GUIDE} "
             f"{tool_guidance.WORLD_STATE_EXAMPLE_GUIDE} "
-            "Keep text short and in Russian. Omit optional fields when empty; do not send "
-            "empty strings, empty arrays, or nulls for optional fields. Private NPC "
-            "testimony, clues, promises, or leads told only to the player must use shared, "
-            "not public. Every shared item must include both "
+            f"{tool_guidance.WORLD_STATE_SEARCH_ANCHOR_GUIDE} "
+            "Keep text short and in Russian. Do not put English access labels like "
+            "private, privately, shared, or public into item text; access belongs in "
+            "scope only. Omit optional fields when empty; do not send empty strings, "
+            "empty arrays, or nulls for optional fields. Private NPC testimony, clues, "
+            "promises, or leads told only to the player must use shared, not public. "
+            "Every shared item must include both "
             "npc_id and target or it will be rejected. "
             "Do not use for visible scene movement, current-scene presence, or NPC speech; "
-            "use set_scene, move_npc, or ask_npc for those."
+            "use set_scene, move_npc, or ask_npc for those. The result is compact structured "
+            "text: applied/not-stored rows with ids, hashes, status, "
+            "and conflict/duplicate hints."
         ),
         "parameters": {"type": "object", "properties": {
             "items": {"type": "array", "items": {"type": "object", "properties": {
@@ -422,8 +593,10 @@ def build_gm_tools(world: world_mod.World) -> list:
                          )},
                 "text": {"type": "string",
                          "description": (
-                             "Compact Russian durable meaning, not a transcript quote. "
-                             "Required for add/update unless deleting. For relationship, keep "
+                            "Compact Russian durable meaning, not a transcript quote. "
+                            "Do not include English access labels like private, "
+                            "privately, shared, or public; use scope for access control. "
+                            "Required for add/update unless deleting. For relationship, keep "
                              "the full multi-layer attitude in one string and update that "
                              "record as it changes."
                          )},
@@ -431,6 +604,26 @@ def build_gm_tools(world: world_mod.World) -> list:
                            "description": "NPC id that owns/knows this npc_memory, relationship, or goal; for rumor, the speaker if known. Required for shared scope. For private NPC-player exchange use npc_id=<speaker>. Omit when empty."},
                 "target": {"type": "string",
                            "description": "Relationship/shared target such as player, an npc_id, faction, or place. Required for relationship and shared scope. For private NPC-player exchange use target=player."},
+                "entity_id": {"type": "string",
+                              "description": "Optional entity this note is about, such as an npc_id or location id. Use when someone reveals or remembers facts about another entity."},
+                "known_name": {"type": "string",
+                               "description": "Optional player-known name/label for the NPC named by entity_id, e.g. after an introduction or another character identifies them. Requires entity_id to be an NPC id. Never use for the player, locations, factions, items, or ordinary facts. This is what the player may now call that NPC; it need not prove the NPC's true identity."},
+                "source_npc": {"type": "string",
+                               "description": "Optional npc_id whose testimony/revelation is the source. Omit when same as npc_id or not relevant."},
+                "location_id": {"type": "string",
+                                "description": "Optional stable place id this note happened at or is about. Use for exact lookup; pair with location_name or aliases when the id is English/transliterated."},
+                "location_name": {"type": "string",
+                                  "description": "Optional human/Russian place name for search, e.g. a tavern, street, room, ruin, or district. Use when location_id alone may not match future Russian queries."},
+                "region_id": {"type": "string",
+                              "description": "Optional broader area id such as city, village, district, dungeon, faction territory, or campaign region."},
+                "region_name": {"type": "string",
+                                "description": "Optional human/Russian broader area name for search, e.g. the town/city name the GM may ask about later."},
+                "scene_id": {"type": "string",
+                             "description": "Optional exact scene id when the note belongs to a specific current or past scene. Omit when the note is not scene-specific."},
+                "importance": {"type": "string",
+                               "description": "Optional short priority label like low, normal, high, pinned, or clue. Omit when not useful."},
+                "aliases": {"type": "array", "items": {"type": "string"},
+                            "description": "Optional search aliases/spellings for this note: Russian names, case forms, transliterations, old names, nicknames, or common variants. Use to bridge English ids and Russian queries from the GM."},
                 "scope": {"type": "string",
                           "enum": ["public", "gm", "npc", "shared"],
                           "description": "Who may know this state. public is not private player knowledge; shared means only npc_id and target know; npc means only npc_id knows/thinks/remembers; gm means hidden author truth. Use shared for a private NPC-player exchange. shared requires npc_id and target. Omit to use the type default."},
@@ -446,20 +639,22 @@ def build_gm_tools(world: world_mod.World) -> list:
         "name": "query_world_state",
         "description": (
             "Scoped world-state lookup. Use before update_world_state update/delete, and "
-            "before adding a relationship, goal, or npc_memory that may already exist. Results "
-            "include record ids and hashes for update/delete expected_hash. Use player scope for player-known safe memory "
+            "before adding a relationship, goal, or npc_memory that may already exist. The "
+            "result is compact structured text with matching rows and record "
+            "ids/hashes for update/delete expected_hash. Use player scope for player-known safe memory "
             "(public plus private notes shared with player); "
             "player scope must never reveal GM truth, hidden events, NPC secrets, private NPC "
             "memory, or private goals. Use npc scope with npc_id for what that NPC may know: "
             "public memory plus that NPC's own private card/memory only. Use gm scope for "
             "author-only truth, hidden events, all NPC private notes, and public memory. "
-            "Results are compact and include only matching scoped state."
+            "The result includes only matching scoped state. Search can match "
+            "record text plus location, region, scene, and aliases when those anchors were stored."
         ),
         "parameters": {"type": "object", "properties": {
             "scope": {"type": "string", "enum": ["player", "gm", "npc"],
                       "description": "Visibility namespace to query."},
             "query": {"type": "string",
-                      "description": "What to look up, in Russian or English. Include kind and parties when useful, e.g. 'relationship borin player' or 'goal lysa'. Keep proper nouns exact."},
+                      "description": "What to look up, in Russian or English. Include kind, parties, place, region, scene, or alias when useful, e.g. 'relationship borin player', 'goal lysa', or 'что было в Тёрнвейле'. Keep proper nouns exact."},
             "npc_id": {"type": "string",
                        "description": "Required for npc scope. Omit for player or gm scope."},
             "max_results": {"type": "integer",
@@ -470,7 +665,11 @@ def build_gm_tools(world: world_mod.World) -> list:
         ask_npc,
         move_npc,
         set_npc_whereabouts,
+        get_npc_profile,
         set_scene,
+        advance_time,
+        ask_player,
+        update_player_character,
         update_world_state,
         query_world_state,
         _ROLL_DICE_TOOL,
@@ -484,16 +683,22 @@ def gm_tool_catalog(world: world_mod.World) -> dict[str, dict]:
     return {_tool_name(tool): tool for tool in build_gm_tools(world)}
 
 
-def build_gm_tools_for_model(world: world_mod.World, loaded_tool_names: set[str] | None = None) -> list:
+def build_gm_tools_for_model(
+    world: world_mod.World,
+    loaded_tool_names: set[str] | None = None,
+    include_player_options_tool: bool = False,
+) -> list:
     """Return only tools visible to the model right now.
 
     If loaded_tool_names is None, preserve the legacy behavior and expose every tool.
     Otherwise expose tool_search plus the previously discovered tools.
     """
     catalog = gm_tool_catalog(world)
+    if not include_player_options_tool:
+        catalog = {name: tool for name, tool in catalog.items() if name != _PLAYER_OPTIONS_TOOL_NAME}
     if loaded_tool_names is None:
         return list(catalog.values())
-    visible = set(loaded_tool_names) | _INITIAL_GM_TOOL_NAMES
+    visible = set(loaded_tool_names) | initial_gm_tool_names(include_player_options_tool)
     return [tool for name, tool in catalog.items() if name in visible]
 
 
@@ -502,8 +707,11 @@ def search_gm_tools(
     query: str,
     max_results: int = 5,
     already_loaded: set[str] | None = None,
+    include_player_options_tool: bool = False,
 ) -> dict:
     catalog = gm_tool_catalog(world)
+    if not include_player_options_tool:
+        catalog = {name: tool for name, tool in catalog.items() if name != _PLAYER_OPTIONS_TOOL_NAME}
     already_loaded = set(already_loaded or set())
     searchable = {
         name: tool
@@ -797,21 +1005,27 @@ def _gm_world_setup(world: world_mod.World) -> str:
     return "\n\n".join(parts)
 
 
-def _gm_turn_context(world: world_mod.World, player_text: str) -> str:
+def _gm_turn_context(
+    world: world_mod.World,
+    player_text: str,
+    include_player_options_tool: bool = False,
+) -> str:
     """Latest mutable state plus the player's free-text action.
 
     Appended as the new user turn. Old turns stay byte-for-byte unchanged so prefix
     caches reuse the long history. The named-NPC roster and current public facts live
     here (not in the early _gm_world_setup) because they change between turns; keeping
-    them in the late tail means an NPC rename/add/remove or a public-fact edit only
-    recomputes this turn, not the cached prefix. Both sections are built from live world
-    state (no hardcoded names) and stay public-only: the roster exposes just
-    id/name/role/род via _public_gender, and facts are filtered to kind == "public"
-    (truth/rumor records and hidden_events are never included).
+    them in the late tail means an NPC rename/add/remove, player-sheet edit, or
+    public-fact edit only recomputes this turn, not the cached prefix. These sections are
+    built from live world state (no hardcoded names). The roster exposes ids plus
+    internal/player-facing labels so the GM can call tools without treating canonical
+    names as player-known; facts are filtered to kind == "public" (truth/rumor records
+    and hidden_events are never included).
     """
     roster = "\n".join(
-        f"- {npc.npc_id}: {npc.name}, {npc.role}"
-        + (f", род: {world_mod._public_gender(npc.pronouns)}" if npc.pronouns else "")
+        f"- id={npc.npc_id}; internal_name={npc.name}; "
+        f"player_label={world.npc_player_label(npc.npc_id)}; role={npc.role}"
+        + (f"; род={world_mod._public_gender(npc.pronouns)}" if npc.pronouns else "")
         for npc in world.npcs.values()
     )
     public_facts = [
@@ -819,23 +1033,51 @@ def _gm_turn_context(world: world_mod.World, player_text: str) -> str:
         if getattr(record, "kind", "") == "public"
     ]
     system = "CURRENT TURN CONTEXT (latest engine state snapshot):\n"
-    system += "\nCURRENT NAMED NPC ROSTER:\n" + (roster or "(none)")
+    system += "\nTIME STATE:\n" + world.time_context()
+    system += (
+        "\nINTERNAL NPC ROSTER (tool ids; internal_name is GM-only unless player_label "
+        "matches it):\n" + (roster or "(none)")
+    )
     if public_facts:
         system += "\n\nCURRENT PUBLIC FACTS:\n" + "\n".join(
             f"- {fact}" for fact in public_facts[:12]
         )
+    system += "\n\nPLAYER CHARACTER CARD (current sheet; GM-only notes may be present):\n"
+    system += world.player_character_context()
     system += "\n\nCURRENT SCENE STATE:\n" + world.scene_context()
     system += "\n\nENTITY REFERENCE MARKUP:\n" + world.entity_reference_context()
     if world.constraints:
-        system += "\n\nSCENE CONSTRAINTS (must enforce when reviewing NPC drafts):\n"
+        system += "\n\nSCENE CONSTRAINTS (must enforce when reviewing NPC responses):\n"
         system += "\n".join(f"- {c}" for c in world.constraints)
+    if include_player_options_tool:
+        system += (
+            "\n\nPLAYER OPTION SUGGESTIONS:\n"
+            "enabled. After the final player-facing narration for this turn, call ask_player "
+            "as the last tool of the turn with 4-8 useful Russian quick replies. Do not put "
+            "a textual choice menu in final narration; the quick-reply buttons handle it. "
+            "Each option needs a short label and a fuller message that can be sent as the "
+            "player's next action. Keep free text input available by offering suggestions, "
+            "not commands."
+        )
+    else:
+        system += (
+            "\n\nPLAYER OPTION SUGGESTIONS:\n"
+            "disabled. Do not call ask_player."
+        )
     system += "\n\nPLAYER ACTION (latest user input, free roleplay text):\n"
     system += player_text.strip()
     return system
 
 
-def gm_user_message(world: world_mod.World, player_text: str) -> dict:
-    return {"role": "user", "content": _gm_turn_context(world, player_text)}
+def gm_user_message(
+    world: world_mod.World,
+    player_text: str,
+    include_player_options_tool: bool = False,
+) -> dict:
+    return {
+        "role": "user",
+        "content": _gm_turn_context(world, player_text, include_player_options_tool),
+    }
 
 
 def _gm_request_messages(world: world_mod.World, gm_messages: list, summary: str = "") -> list:
@@ -850,25 +1092,35 @@ def _gm_request_messages(world: world_mod.World, gm_messages: list, summary: str
 
 
 def gm_turn(client, world: world_mod.World, gm_messages: list, summary: str = "",
-            loaded_tool_names: set[str] | None = None):
+            loaded_tool_names: set[str] | None = None,
+            include_player_options_tool: bool = False):
     """Ход ГМ. Возвращает (thinking, content, calls, assistant_msg)."""
     messages = _gm_request_messages(world, gm_messages, summary)
     return client.chat(
         messages,
-        tools=build_gm_tools_for_model(world, loaded_tool_names),
+        tools=build_gm_tools_for_model(
+            world,
+            loaded_tool_names,
+            include_player_options_tool,
+        ),
         think=True,
         reasoning_role=config.ROLE_GM,
     )
 
 
 def gm_turn_stream(client, world: world_mod.World, gm_messages: list, summary: str = "",
-                   loaded_tool_names: set[str] | None = None):
+                   loaded_tool_names: set[str] | None = None,
+                   include_player_options_tool: bool = False):
     """Стримящий ход ГМ. Возвращает генератор client.chat_stream
     (yield ('thinking'|'content', delta); return (thinking, content, calls, assistant_msg, stats))."""
     messages = _gm_request_messages(world, gm_messages, summary)
     return client.chat_stream(
         messages,
-        tools=build_gm_tools_for_model(world, loaded_tool_names),
+        tools=build_gm_tools_for_model(
+            world,
+            loaded_tool_names,
+            include_player_options_tool,
+        ),
         think=True,
         reasoning_role=config.ROLE_GM,
     )
@@ -897,10 +1149,10 @@ Describe only what is already visible or directly declared by the player: where 
 stand, who they address, how loudly/quietly they speak, what the room can notice, and
 what sensory details and unresolved tension matter.
 Do not resolve the action. Do not make NPCs answer, obey, refuse, enter, leave, reveal
-facts, or react personally. Do not mention tools, JSON, checks, prompts, or internal
-mechanics. Keep proper nouns exactly as written.
+facts, or react personally. Do not mention tools, checks, prompts, or internal mechanics.
+Keep proper nouns exactly as written.
 When important people or places are mentioned and the id is listed in ENTITY REFERENCE
-MARKUP, use refs such as [[npc:borin|Борин]] or [[loc:grey_griffon|Трактир]].
+MARKUP, use refs in the same shape, with the current player-facing label.
 """
     user = (
         "CURRENT SCENE STATE:\n"
@@ -929,15 +1181,39 @@ def npc_system_message(npc: world_mod.NPC | None = None) -> dict:
 
 def npc_card_block(npc: world_mod.NPC) -> str:
     """Render the late CURRENT NPC CARD block (overrides older memory on conflict)."""
+    mechanics = {
+        "abilities": getattr(npc, "abilities", {}) or {},
+        "skills": getattr(npc, "skills", {}) or {},
+        "saving_throws": getattr(npc, "saving_throws", {}) or {},
+        "passive_perception": getattr(npc, "passive_perception", None),
+        "ac": getattr(npc, "ac", None),
+        "hp": getattr(npc, "hp", {}) or {},
+        "speed": getattr(npc, "speed", "") or "",
+        "senses": getattr(npc, "senses", "") or "",
+        "languages": getattr(npc, "languages", "") or "",
+    }
+    mechanics = {key: value for key, value in mechanics.items() if value not in (None, "", {}, [])}
     return prompts.NPC_CARD_TEMPLATE.format(
         revision=int(getattr(npc, "card_revision", 0) or 0),
         name=npc.name,
         role=npc.role or "(не указана)",
         gender=npc.pronouns or "OTHER",
+        public_label=getattr(npc, "public_label", "") or "(не указан)",
+        age=getattr(npc, "age", "") or "(не указан)",
+        physical_type=getattr(npc, "physical_type", "") or "(не указан)",
+        distinctive_features=getattr(npc, "distinctive_features", "") or "(не указаны)",
+        life_status=getattr(npc, "life_status", "") or "alive",
+        condition=getattr(npc, "condition", "") or "(не указано)",
         persona=npc.persona,
+        personality=getattr(npc, "personality", "") or "(не указано)",
+        values=getattr(npc, "values", "") or "(не указаны)",
+        habits=getattr(npc, "habits", "") or "(не указаны)",
+        pressure_response=getattr(npc, "pressure_response", "") or "(не указано)",
+        boundaries=getattr(npc, "boundaries", "") or "(не указаны)",
         voice=npc.voice,
         goals=npc.goals,
         knowledge=npc.knowledge,
+        mechanics=json.dumps(mechanics, ensure_ascii=False, separators=(",", ":")),
         secret=npc.secret,
     )
 

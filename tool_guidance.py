@@ -8,12 +8,15 @@ VISIBLE_TOOL_CAPABILITIES: tuple[tuple[str, str], ...] = (
     ("get_world_fact", "public/player-safe world fact lookup"),
     ("query_world_state", "scoped world/NPC memory lookup before memory writes"),
     ("update_world_state", "durable world/NPC memory writes"),
+    ("update_player_character", "player character sheet updates"),
+    ("advance_time", "world clock advancement"),
 )
 
 HIDDEN_TOOL_CAPABILITIES: tuple[tuple[str, str], ...] = (
     ("set_scene", "scene changes"),
     ("move_npc", "NPC presence/movement"),
     ("set_npc_whereabouts", "offscreen NPC whereabouts"),
+    ("get_npc_profile", "selected NPC card/mechanics fields"),
 )
 
 
@@ -24,10 +27,17 @@ def _capability_list(rows: tuple[tuple[str, str], ...]) -> str:
 VISIBLE_TOOL_CAPABILITY_TEXT = _capability_list(VISIBLE_TOOL_CAPABILITIES)
 HIDDEN_TOOL_CAPABILITY_TEXT = _capability_list(HIDDEN_TOOL_CAPABILITIES)
 
+MODEL_TOOL_RESULT_GUIDE = (
+    "GM tool results are compact structured text. They usually omit arguments "
+    "you already sent and include only new information: totals, found text, changed state, "
+    "ids/hashes, status/error lines, and optional <system-reminder> blocks."
+)
+
 GM_TOOL_CAPABILITY_OVERVIEW = (
     f"Visible GM tool capabilities: {VISIBLE_TOOL_CAPABILITY_TEXT}. "
     f"Hidden GM capabilities can be loaded with `tool_search`: "
-    f"{HIDDEN_TOOL_CAPABILITY_TEXT}."
+    f"{HIDDEN_TOOL_CAPABILITY_TEXT}. "
+    f"{MODEL_TOOL_RESULT_GUIDE}"
 )
 
 WORLD_STATE_TYPE_GUIDE = (
@@ -58,13 +68,22 @@ WORLD_STATE_EXAMPLE_GUIDE = (
     "Examples: private witness claim -> rumor shared npc_id=<speaker> target=player; "
     "the witness remembers telling the player -> npc_memory shared npc_id=<speaker> "
     "target=player; private resentment after a threat -> relationship npc npc_id=<npc> "
-    "target=player; secret plan to mislead the player -> goal npc npc_id=<npc>."
+    "target=player; secret plan to mislead the player -> goal npc npc_id=<npc>; "
+    "identity revealed -> fact with entity_id=<npc> known_name=<player-facing name>."
+)
+
+WORLD_STATE_SEARCH_ANCHOR_GUIDE = (
+    "Search anchors: when a note is tied to a place, use location_id/location_name for "
+    "the concrete site, region_id/region_name for the broader town/area, scene_id only "
+    "when the exact scene matters, and aliases for Russian names, case forms, "
+    "transliterations, old names, nicknames, or spelling variants. Machine ids help exact lookup, but names "
+    "and aliases help Russian semantic/keyword search."
 )
 
 TOOL_SEARCH_DESCRIPTION = (
     "Search and load hidden GM tools named in the system tool capability map. Use "
-    "this when a needed hidden scene, NPC movement, or whereabouts capability is "
+    "this when a needed hidden scene, NPC movement, NPC profile, or whereabouts capability is "
     "not visible. Query with keywords or exact selection such as "
     "select:tool_name or select:tool_a,tool_b; matching tools become available on "
-    "the next GM step."
+    "the next GM step. Result is compact structured text: loaded and missing tools."
 )

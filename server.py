@@ -68,6 +68,23 @@ def state(dialog: DialogRuntime) -> dict:
         or (getattr(session, "client_model", "") if _session_matches_backend(session) else "")
         or _default_model()
     )
+    def public_npc(npc) -> dict:
+        label = w.npc_player_label(npc.npc_id)
+        return {
+            "id": npc.npc_id,
+            "name": label,
+            "label": label,
+            "known_name": w.npc_known_name(npc.npc_id),
+            "public_label": getattr(npc, "public_label", ""),
+            "role": world_mod._public_role(npc.role),
+            "pronouns": world_mod._public_gender(npc.pronouns),
+            "color": npc.color,
+            "physical_type": getattr(npc, "physical_type", ""),
+            "distinctive_features": getattr(npc, "distinctive_features", ""),
+            "condition": getattr(npc, "condition", ""),
+            "life_status": getattr(npc, "life_status", "alive"),
+        }
+
     data = {
         "model": model,
         "backend": config.BACKEND,
@@ -79,14 +96,12 @@ def state(dialog: DialogRuntime) -> dict:
         "story_id": getattr(w, "story_id", ""),
         "story_title": getattr(w, "story_title", ""),
         "public": w.public,
+        "time": w.time_export(),
+        "player_character": w.player_character_export(public=True),
         "scene": w.scene_export(),
         "entities": w.entity_refs(),
         "status_labels": dict(world_mod.WHEREABOUTS_STATUS_LABELS),
-        "npcs": [
-            {"id": n.npc_id, "name": n.name, "role": world_mod._public_role(n.role),
-             "pronouns": world_mod._public_gender(n.pronouns), "color": n.color}
-            for n in w.npcs.values()
-        ],
+        "npcs": [public_npc(n) for n in w.npcs.values()],
     }
     if config.BACKEND == "codex":
         data["codex_auth"] = codex_oauth.auth_status()
@@ -122,6 +137,8 @@ def export_data(dialog: DialogRuntime) -> dict:
             "story_id": getattr(w, "story_id", ""),
             "story_title": getattr(w, "story_title", ""),
             "public": w.public,
+            "time": w.time_export(),
+            "player_character": w.player_character_export(public=False),
             "constraints": w.constraints,
             "scene": w.scene_export(),
             "rumors": [vars(r) | {"witnesses": sorted(r.witnesses)} for r in w.rumors],
@@ -211,18 +228,43 @@ def debug_data(dialog: DialogRuntime) -> dict:
         npcs.append({
             "id": npc_id,
             "name": npc.name,
+            "player_label": w.npc_player_label(npc_id),
+            "known_name": w.npc_known_name(npc_id),
             "color": npc.color,
             "role": npc.role,
             "pronouns": npc.pronouns,
+            "public_label": getattr(npc, "public_label", ""),
+            "age": getattr(npc, "age", ""),
+            "physical_type": getattr(npc, "physical_type", ""),
+            "distinctive_features": getattr(npc, "distinctive_features", ""),
+            "life_status": getattr(npc, "life_status", "alive"),
+            "life_status_note": getattr(npc, "life_status_note", ""),
+            "condition": getattr(npc, "condition", ""),
             "card_revision": int(getattr(npc, "card_revision", 0) or 0),
             "present": npc_id in w.scene.present_npcs,
             "presence": vars(presence) if presence else None,
             "whereabouts": w.npc_whereabouts_export(npc_id),
             "persona": npc.persona,
+            "personality": getattr(npc, "personality", ""),
+            "values": getattr(npc, "values", ""),
+            "habits": getattr(npc, "habits", ""),
+            "pressure_response": getattr(npc, "pressure_response", ""),
+            "boundaries": getattr(npc, "boundaries", ""),
             "voice": npc.voice,
             "goals": npc.goals,
             "knowledge": npc.knowledge,
             "secret": npc.secret,
+            "mechanics": {
+                "abilities": getattr(npc, "abilities", {}),
+                "skills": getattr(npc, "skills", {}),
+                "saving_throws": getattr(npc, "saving_throws", {}),
+                "passive_perception": getattr(npc, "passive_perception", None),
+                "ac": getattr(npc, "ac", None),
+                "hp": getattr(npc, "hp", {}),
+                "speed": getattr(npc, "speed", ""),
+                "senses": getattr(npc, "senses", ""),
+                "languages": getattr(npc, "languages", ""),
+            },
             "summary": session.npc_summaries.get(npc_id, ""),
             "commitments": session.commitments.get(npc_id, []),
             "messages": len(session.npc_messages.get(npc_id, [])),
@@ -250,6 +292,8 @@ def debug_data(dialog: DialogRuntime) -> dict:
             "hidden_events": list(getattr(w, "hidden_events", []) or []),
         },
         "scene": w.scene_export(),
+        "time": w.time_export(),
+        "player_character": w.player_character_export(public=False),
         "roll_override": {
             "next": getattr(w, "forced_die_next", None),
             "all": getattr(w, "forced_die_all", None),
@@ -819,6 +863,16 @@ class Handler(BaseHTTPRequestHandler):
             data = self._body()
             with dialog.lock:
                 dialog.session.world.remove_fact(data.get("id"))
+                dialog_store.save(dialog)
+                response = debug_data(dialog)
+            self._json(response)
+            return
+
+        if path == "/debug/player":
+            data = self._body()
+            with dialog.lock:
+                fields = data.get("fields") if isinstance(data.get("fields"), dict) else {}
+                dialog.session.world.update_player_character(fields, data.get("reason", "debug edit"))
                 dialog_store.save(dialog)
                 response = debug_data(dialog)
             self._json(response)

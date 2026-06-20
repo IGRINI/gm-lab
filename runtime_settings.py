@@ -52,6 +52,7 @@ _DEFAULTS.update({
     or "default",
     "tool_choice": os.environ.get("GM_TOOL_CHOICE", "auto").strip().lower() or "auto",
     "parallel_tool_calls": config._env_bool("GM_PARALLEL_TOOL_CALLS", True),
+    "gm_suggest_options": config._env_bool("GM_SUGGEST_OPTIONS", False),
     "max_output_tokens": int(config.MAX_TOKENS or 0),
 })
 
@@ -207,6 +208,11 @@ def parallel_tool_calls_for_request(has_tools: bool) -> bool:
     return bool(has_tools and get().get("parallel_tool_calls", True))
 
 
+def gm_suggest_options_enabled(settings: dict[str, Any] | None = None) -> bool:
+    values = settings or get()
+    return bool(values.get("gm_suggest_options", False))
+
+
 def max_output_tokens() -> int:
     try:
         return max(0, int(get().get("max_output_tokens") or 0))
@@ -285,6 +291,9 @@ def _clean(data: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
 
     if "parallel_tool_calls" in data:
         out["parallel_tool_calls"] = _bool(data.get("parallel_tool_calls"))
+
+    if "gm_suggest_options" in data:
+        out["gm_suggest_options"] = _bool(data.get("gm_suggest_options"))
 
     if "max_output_tokens" in data:
         try:

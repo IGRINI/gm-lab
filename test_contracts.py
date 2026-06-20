@@ -12,10 +12,12 @@ from llm_client import make_client
 from llm_client import _proper_nouns_line
 from orchestrator import (
     Session,
+    _finalize_turn_time,
     _normalize_tool_calls,
     _run_tool,
     _tool_full_text,
     _tool_model_text,
+    _msg_text_for_summary,
     context_usage,
     run_turn,
 )
@@ -23,6 +25,33 @@ from orchestrator import (
 
 def tool_by_name(tools, name):
     return next(t["function"] for t in tools if t["function"]["name"] == name)
+
+
+def _strip_tool_reminders(text: str) -> str:
+    return str(text or "").split("\n\n<system-reminder>", 1)[0]
+
+
+def _tool_model_plain(result) -> str:
+    return _strip_tool_reminders(_tool_model_text(result))
+
+
+def _tool_full_json(result):
+    return json.loads(_tool_full_text(result))
+
+
+def _assert_text_is_structured_tool_result(text):
+    text = str(text or "").strip()
+    assert text, "model tool result must not be empty"
+    assert not text.startswith(("{", "[")), text
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        return
+    raise AssertionError(f"model tool result unexpectedly uses raw machine payload: {text!r}")
+
+
+def _assert_model_result_is_structured_text(result):
+    _assert_text_is_structured_tool_result(_tool_model_plain(result))
 
 
 w = world_mod.World()
@@ -40,6 +69,20 @@ assert "mareth" not in w.scene.present_npcs
 assert w.npc_can_react("borin")
 assert not w.npc_can_react("mareth")
 assert w.npc("mareth").pronouns == "F"
+assert w.npc("borin").age.startswith("Фактически 53")
+assert w.npc("borin").physical_type == "крупный пожилой человек"
+assert w.npc("borin").abilities["WIS"] == 13
+assert w.npc("borin").passive_perception == 13
+assert w.player_character.name == "Искатель"
+assert w.player_character.skills["Perception"] == 4
+assert "gm_notes" not in w.player_character_export(public=True)
+w.update_player_character({"gm_notes": "PLAYER_GM_NOTE_SENTINEL", "hp": {"current": 7, "max": 9}}, "test")
+assert w.player_character.card_revision == 1
+assert w.player_character.hp["current"] == 7
+assert "PLAYER_GM_NOTE_SENTINEL" not in json.dumps(w.player_character_export(public=True), ensure_ascii=False)
+assert "PLAYER_GM_NOTE_SENTINEL" in w.player_character_context()
+assert w.time_export()["current_date_label"] == "День 1"
+assert "World time" in w.scene_context()
 mareth_where = w.npc_whereabouts_export("mareth")
 assert mareth_where["status"] == "likely"
 assert "страж" in mareth_where["location_name"]
@@ -49,6 +92,25 @@ assert "Капитан Марет" in w.scene_context()
 assert "Visible exits" in w.npc_scene_slice("borin")
 assert "Борин" in _proper_nouns_line(w.proper_nouns())
 assert "Borin" not in _proper_nouns_line(w.proper_nouns())
+assert w.npc_known_name("borin") == "Борин"
+assert w.npc_player_label("borin") == "Борин"
+assert w.npc_known_name("lysa") == ""
+assert w.npc_player_label("lysa") == "служанка"
+initial_entity_refs = json.dumps(w.entity_refs(), ensure_ascii=False)
+assert '"label": "Борин"' in initial_entity_refs
+assert '"label": "служанка"' in initial_entity_refs
+assert '"label": "Лиза"' not in initial_entity_refs
+assert "Available player-safe entity refs" in w.entity_reference_context()
+assert "[[npc:lysa|служанка]]" in w.entity_reference_context()
+no_persona_leak_world = world_mod.World()
+assert no_persona_leak_world.update_npc("lysa", {
+    "persona": "PERSONA_LEAK_SENTINEL",
+    "physical_type": "",
+    "distinctive_features": "",
+    "condition": "",
+})
+no_persona_refs = json.dumps(no_persona_leak_world.entity_refs(), ensure_ascii=False)
+assert "PERSONA_LEAK_SENTINEL" not in no_persona_refs
 
 import dialog_store
 w_rev = world_mod.World()
@@ -79,6 +141,19 @@ except KeyError:
     pass
 
 gm_system = agents._gm_system(w, "")
+assert "STATIC PROMPT CACHE CONTRACT" in gm_system
+assert "Mutable data arrives later in CURRENT TURN CONTEXT" in gm_system
+assert "TOOL RESULT REMINDERS" in gm_system
+assert "Tool results are compact structured text" in gm_system
+assert "<system-reminder>...</system-reminder>" in gm_system
+assert "model-only follow-up reminders" in gm_system
+assert "Never mention, quote, reveal, or paraphrase system-reminder" in gm_system
+assert "PLAYER CHARACTER CARD" in gm_system
+assert "INTERNAL NPC ROSTER is a GM/tool index" in gm_system
+assert "`internal_name` as known to the player" in gm_system
+assert "generic-looking like" in gm_system
+assert "known_name` and `entity_id=<that NPC id>`" in gm_system
+assert "Get only the data needed for the decision" in gm_system
 assert "Do not require action ids" in gm_system
 assert "Tool argument values are in RUSSIAN" in gm_system
 assert "Streamed thinking / internal notes" in gm_system
@@ -88,18 +163,34 @@ assert "room heard the private content" in gm_system
 assert "credible intimidation" in gm_system
 assert "roll_dice before ask_npc" in gm_system
 assert "Time and initiative must keep moving" in gm_system
+assert "read TIME STATE" in gm_system
+assert "approaching guards" in gm_system
 assert "advance the world to the next meaningful change" in gm_system
 assert "Treat that as permission to advance time" in gm_system
+assert "call advance_time once" in gm_system
+assert "After ask_npc, assume at least a short amount of time" in gm_system
+assert "Do not parse elapsed time from final narration" in gm_system
+assert "call\n  update_player_character in that same turn" in gm_system
+assert "Do not leave a burn, wound, spent item" in gm_system
 assert "paying it\n  off on a later beat" in gm_system
 assert "Before asserting, summarizing, or acting on any non-visible world fact" in gm_system
 assert "If get_world_fact returns unknown" in gm_system
 assert "D&D 5E ROLL DISCIPLINE" in gm_system
+assert "For player-side rolls, use PLAYER CHARACTER CARD first" in gm_system
+assert "exact skill/save key" in gm_system
+assert "Never borrow a nearby skill" in gm_system
+assert "first use get_npc_profile with preset=mechanics" in gm_system
+assert "load it with tool_search first" in gm_system
+assert "stealing from them" in gm_system
+assert "do not default to DC 15 just because the target is a named NPC" in gm_system
 assert "Actively call roll_dice for player-initiated attention" in gm_system
 assert "2d20kh1" in gm_system
 assert "Do not adjust the target after seeing the roll" in gm_system
 assert "roll_dice private notes compact and English" in gm_system
 assert "never use it for social leverage" in gm_system
 assert "do not block core clues behind one bad roll" in gm_system
+assert "call roll_dice before narrating the outcome" in gm_system
+assert "translate the mechanical grade into\n  visible fiction" in gm_system
 assert "CORE GM PRIORITY" in gm_system
 assert "not to print a sparse event log" in gm_system
 assert "PRE-TOOL NARRATION" in gm_system
@@ -110,27 +201,55 @@ assert "Never mention tools" in gm_system
 assert "there are no named-NPC words or personal actions" in gm_system
 assert "Do not invent hidden facts" in gm_system
 assert "Retrieved memory is source material, not automatic truth" in gm_system
+assert "NPC mechanics are GM-internal" in gm_system
+assert "Do not reveal raw NPC stat blocks" in gm_system
 assert tool_guidance.GM_TOOL_CAPABILITY_OVERVIEW in gm_system
+assert tool_guidance.MODEL_TOOL_RESULT_GUIDE in gm_system
 assert "Always remember these tool capabilities exist" in gm_system
+assert "GM tool results are compact structured text" in gm_system
 assert "durable world/NPC memory writes (`update_world_state`)" in gm_system
 assert "scoped world/NPC memory lookup before memory writes (`query_world_state`)" in gm_system
+assert "world clock advancement (`advance_time`)" in gm_system
+assert "player character sheet updates (`update_player_character`)" in gm_system
+assert "update_player_character: use when the player's character sheet itself changes" in gm_system
+assert "never echo the whole current card" in gm_system
+assert "known_name is only for NPC entity ids" in gm_system
 assert "Before changing durable memory" in gm_system
 assert "Mandatory update_world_state triggers" in gm_system
+assert "After ask_npc, check the NPC result before final narration" in gm_system
+assert "state-update pass" in gm_system
+assert "what this NPC remembers or knows" in gm_system
+assert "Public rebukes, protective\n  warnings, threats" in gm_system
+assert "write or update a relationship record" in gm_system
+assert "active pressure that must survive" in gm_system
+assert "not a scheduled event" in gm_system
 assert "scope=shared with target=player" in gm_system
 assert "one active record per npc_id + target + scope" in gm_system
 assert tool_guidance.WORLD_STATE_TYPE_GUIDE in gm_system
 assert tool_guidance.WORLD_STATE_SCOPE_GUIDE in gm_system
 assert tool_guidance.WORLD_STATE_SPLIT_GUIDE in gm_system
 assert tool_guidance.WORLD_STATE_EXAMPLE_GUIDE in gm_system
+assert tool_guidance.WORLD_STATE_SEARCH_ANCHOR_GUIDE in gm_system
+assert "English ids alone\n  are not enough for future Russian lookup" in gm_system
 assert "Do not collapse these into\n  fact" in gm_system
 assert "call move_npc before final" in gm_system
 assert "set_scene before final narration" in gm_system
 assert "Known offscreen NPC whereabouts" in gm_system
 assert "set_npc_whereabouts" in gm_system
+assert "get_npc_profile" in gm_system
+assert "advance_time: use once before final narration" in gm_system
+assert "After NPC speech or a social exchange" in gm_system
 assert "After ask_npc, still write like a real GM" in gm_system
 assert "A normal NPC exchange should usually have two parts" in gm_system
-assert "breathing after the NPC card" in gm_system
+assert "ask_npc output is already the player-facing NPC" in gm_system
+assert "breathing after the NPC response" in gm_system
 assert "Avoid bland static openers" in gm_system
+assert "PLAYER OPTION SUGGESTIONS" in gm_system
+assert "quick-reply layer above the player's free input" in gm_system
+assert "your turn must end by calling ask_player" in gm_system
+assert "The buttons are the menu" in gm_system
+assert "Do not append a menu of suggested actions in final narration" in gm_system
+assert "when a textual list is useful, keep it to 2-4 concrete" in gm_system
 assert "You may briefly consolidate investigation progress" in gm_system
 assert "Do not call a single NPC's statement a proven fact" in gm_system
 assert "It is allowed to summarize the current case state" in gm_system
@@ -139,17 +258,39 @@ assert "Russian, immersive, sensory" in gm_system
 assert "terse status update" in gm_system
 assert "immediate visible result" in gm_system
 assert "Atmosphere must be concrete" in gm_system
+assert "memory-writing explanations" in gm_system
 assert "Emojis are allowed when they improve scanning" in gm_system
 assert "Борин, Лиза, Капитан Марет" not in gm_system
 
 gm_context = agents._gm_turn_context(w, "Спрашиваю Борина о слухах.")
+assert "TIME STATE" in gm_context
+assert "Current world time: День 1, 00:00" in gm_context
+assert "Previous player turn elapsed: 0 minutes" in gm_context
 assert "CURRENT SCENE STATE" in gm_context
+assert "PLAYER CHARACTER CARD" in gm_context
+assert "PLAYER_GM_NOTE_SENTINEL" in gm_context
 assert "SCENE CONSTRAINTS" in gm_context
 assert w.constraints[0] in gm_context
+assert "PLAYER OPTION SUGGESTIONS" in gm_context
+assert "disabled. Do not call ask_player" in gm_context
 assert "PLAYER ACTION" in gm_context
 assert "Спрашиваю Борина" in gm_context
-assert "CURRENT NAMED NPC ROSTER" in gm_context
-assert w.npc("borin").name in gm_context
+assert "INTERNAL NPC ROSTER" in gm_context
+assert "CURRENT NAMED NPC ROSTER" not in gm_context
+assert "id=borin; internal_name=Борин; player_label=Борин" in gm_context
+assert "id=lysa; internal_name=Лиза; player_label=служанка" in gm_context
+gm_context_with_options = agents._gm_turn_context(w, "Жду.", include_player_options_tool=True)
+assert "enabled. After the final player-facing narration" in gm_context_with_options
+assert "call ask_player" in gm_context_with_options
+assert "4-8 useful Russian quick replies" in gm_context_with_options
+scene_context = w.scene_context()
+assert "служанка (lysa" in scene_context
+assert "Лиза (" not in scene_context
+summary_text = _msg_text_for_summary(agents.gm_user_message(w, "Расспрашиваю служанку."))
+assert "Расспрашиваю служанку" in summary_text
+assert "INTERNAL NPC ROSTER" not in summary_text
+assert "CURRENT SCENE STATE" not in summary_text
+assert "internal_name=Лиза" not in summary_text
 _public_fact_texts = [r.text for r in w.fact_records if r.kind == "public"]
 assert "CURRENT PUBLIC FACTS" in gm_context
 assert _public_fact_texts[0] in gm_context
@@ -195,6 +336,10 @@ assert "Russian grammatical gender marker: M" not in npc_system
 assert npc_msgs[-1]["role"] == "user"
 assert "CURRENT NPC CARD" in npc_card_turn
 assert "Gender: M" in npc_card_turn
+assert "Physical type:" in npc_card_turn
+assert "Personality:" in npc_card_turn
+assert "Mechanics:" in npc_card_turn
+assert '"passive_perception":13' in npc_card_turn
 assert w.npc("borin").persona in npc_card_turn
 assert "This card overrides older memory" in npc_card_turn
 npc_with_constraints = agents._npc_messages(
@@ -222,9 +367,13 @@ assert {
     "ask_npc",
     "roll_dice",
     "get_world_fact",
+    "get_npc_profile",
     "tool_search",
     "update_world_state",
     "query_world_state",
+    "update_player_character",
+    "advance_time",
+    "ask_player",
 } <= tool_names
 initial_tools = agents.build_gm_tools_for_model(w, agents.initial_gm_tool_names())
 initial_tool_names = {tool["function"]["name"] for tool in initial_tools}
@@ -234,11 +383,23 @@ assert initial_tool_names == {
     "get_world_fact",
     "query_world_state",
     "update_world_state",
+    "update_player_character",
+    "advance_time",
     "tool_search",
 }
+initial_tools_with_options = agents.build_gm_tools_for_model(
+    w,
+    agents.initial_gm_tool_names(include_player_options_tool=True),
+    include_player_options_tool=True,
+)
+initial_tool_names_with_options = {tool["function"]["name"] for tool in initial_tools_with_options}
+assert "ask_player" in initial_tool_names_with_options
 assert "set_scene" not in initial_tool_names
+assert "get_npc_profile" not in initial_tool_names
 searched_scene = agents.search_gm_tools(w, "перейти новая сцена локация", 3, initial_tool_names)
 assert "set_scene" in searched_scene["loaded_tools"]
+searched_profile = agents.search_gm_tools(w, "select:get_npc_profile", 3, initial_tool_names)
+assert searched_profile["loaded_tools"] == ["get_npc_profile"]
 searched_world_state = agents.search_gm_tools(w, "select:update_world_state", 5, initial_tool_names)
 assert searched_world_state["loaded_tools"] == []
 assert searched_world_state["already_loaded"] == ["update_world_state"]
@@ -254,28 +415,88 @@ assert "Russian neutral third-person brief" in ask_npc["parameters"]["properties
 assert "intended listener/audience" in ask_npc["parameters"]["properties"]["situation"]["description"]
 assert "immediate leverage and danger" in ask_npc["parameters"]["properties"]["situation"]["description"]
 assert "in Russian" in ask_npc["parameters"]["properties"]["correction"]["description"]
+assert "compact structured text" in ask_npc["description"]
 
 move_npc = tool_by_name(tools, "move_npc")
 assert move_npc["parameters"]["required"] == ["npc_id", "present", "reason"]
 assert move_npc["parameters"]["additionalProperties"] is False
 assert "in Russian" in move_npc["parameters"]["properties"]["reason"]["description"]
+assert "compact structured text" in move_npc["description"]
 
 set_npc_whereabouts = tool_by_name(tools, "set_npc_whereabouts")
 assert set_npc_whereabouts["parameters"]["additionalProperties"] is False
 assert "offscreen whereabouts" in set_npc_whereabouts["description"]
 assert set_npc_whereabouts["parameters"]["required"] == ["npc_id", "status"]
+assert "compact structured text" in set_npc_whereabouts["description"]
 
 set_scene = tool_by_name(tools, "set_scene")
 assert set_scene["parameters"]["required"] == ["title", "description", "reason"]
 assert set_scene["parameters"]["additionalProperties"] is False
 assert "different room" in set_scene["description"]
+assert "compact structured text" in set_scene["description"]
+
+get_npc_profile = tool_by_name(tools, "get_npc_profile")
+assert get_npc_profile["parameters"]["required"] == ["npc_id"]
+assert get_npc_profile["parameters"]["additionalProperties"] is False
+assert "do not reveal raw stats" in get_npc_profile["description"]
+assert "includes no secrets" in get_npc_profile["description"]
+assert "compact structured text" in get_npc_profile["description"]
+assert get_npc_profile["parameters"]["properties"]["preset"]["enum"] == [
+    "visible", "social", "mechanics", "status", "identity"
+]
+assert "private_npc" not in get_npc_profile["parameters"]["properties"]["preset"]["enum"]
+assert "abilities" in get_npc_profile["parameters"]["properties"]["fields"]["items"]["enum"]
+assert "secret" not in get_npc_profile["parameters"]["properties"]["fields"]["items"]["enum"]
+assert "goals" not in get_npc_profile["parameters"]["properties"]["fields"]["items"]["enum"]
+
+advance_time = tool_by_name(tools, "advance_time")
+assert advance_time["parameters"]["required"] == ["minutes", "reason"]
+assert advance_time["parameters"]["additionalProperties"] is False
+assert "hidden world clock" in advance_time["description"]
+assert "NPC speech" in advance_time["description"]
+assert "compact structured text" in advance_time["description"]
+
+ask_player = tool_by_name(tools, "ask_player")
+assert ask_player["parameters"]["required"] == ["question", "options"]
+assert ask_player["parameters"]["additionalProperties"] is False
+assert "terminal end-of-turn tool" in ask_player["description"]
+assert "at least 4" in ask_player["description"]
+assert "free text input" in ask_player["description"]
+assert ask_player["parameters"]["properties"]["options"]["minItems"] == 4
+assert ask_player["parameters"]["properties"]["options"]["maxItems"] == 8
+ask_player_option = ask_player["parameters"]["properties"]["options"]["items"]
+assert ask_player_option["required"] == ["label", "message"]
+assert ask_player_option["additionalProperties"] is False
+assert "Full Russian player message" in ask_player_option["properties"]["message"]["description"]
+
+update_player_character = tool_by_name(tools, "update_player_character")
+assert update_player_character["strict"] is False
+assert update_player_character["parameters"]["required"] == ["fields", "reason"]
+assert update_player_character["parameters"]["additionalProperties"] is False
+assert "player character sheet" in update_player_character["description"]
+assert "never echo the whole current card" in update_player_character["description"]
+assert "compact structured text" in update_player_character["description"]
+assert "inventory" in update_player_character["parameters"]["properties"]["fields"]["properties"]
+assert "gm_notes" in update_player_character["parameters"]["properties"]["fields"]["properties"]
+player_fields_schema = update_player_character["parameters"]["properties"]["fields"]["properties"]
+assert "D&D ability scores" in player_fields_schema["abilities"]["description"]
+assert "Exact skill-name final modifiers" in player_fields_schema["skills"]["description"]
+assert "GM-only notes" in player_fields_schema["gm_notes"]["description"]
 
 roll_dice = tool_by_name(tools, "roll_dice")
 assert roll_dice["parameters"]["additionalProperties"] is False
 assert "intimidation/coercion" in roll_dice["description"]
 assert "Perception" in roll_dice["description"]
 assert "2d20kh1" in roll_dice["description"]
+assert "PLAYER CHARACTER CARD" in roll_dice["description"]
 assert "Put any known modifier directly in notation" in roll_dice["description"]
+assert "Skill/save modifiers must be exact card keys" in roll_dice["description"]
+assert "never borrow a nearby skill" in roll_dice["description"]
+assert "get selected mechanics through get_npc_profile first" in roll_dice["description"]
+assert "stealing from them" in roll_dice["description"]
+assert "instead of a generic DC" in roll_dice["description"]
+assert "compact structured text" in roll_dice["description"]
+assert "total, grade, margin, and natural roll" in roll_dice["description"]
 assert roll_dice["parameters"]["required"] == ["roll_kind", "notation", "check_name", "reason"]
 assert roll_dice["parameters"]["properties"]["roll_kind"]["enum"] == [
     "check", "save", "attack", "damage", "chance", "contest"
@@ -339,11 +560,13 @@ assert normalized_ungraded == {
 
 get_world_fact = tool_by_name(tools, "get_world_fact")
 assert get_world_fact["parameters"]["additionalProperties"] is False
-assert "source/provenance" in get_world_fact["description"]
+assert "compact source lines" in get_world_fact["description"]
 assert "before asserting or summarizing" in get_world_fact["description"]
+assert "compact structured text" in get_world_fact["description"]
 assert "in Russian" in get_world_fact["parameters"]["properties"]["query"]["description"]
 
 update_world_state = tool_by_name(tools, "update_world_state")
+assert update_world_state["strict"] is False
 assert update_world_state["parameters"]["required"] == ["items"]
 assert update_world_state["parameters"]["additionalProperties"] is False
 state_item_schema = update_world_state["parameters"]["properties"]["items"]["items"]
@@ -355,17 +578,39 @@ assert "Omit optional fields when empty" in update_world_state["description"]
 assert "Private NPC testimony" in update_world_state["description"]
 assert "expected_hash" in update_world_state["description"]
 assert "query_world_state" in update_world_state["description"]
+assert "known_name" in update_world_state["description"]
+assert "never invent or send id, expected_hash, mode" in update_world_state["description"]
+assert "only for NPC entity_id values" in update_world_state["description"]
 assert "Every shared item must include both npc_id and target" in update_world_state["description"]
+assert "access belongs in scope only" in update_world_state["description"]
+assert "After ask_npc" in update_world_state["description"]
+assert "compact structured text" in update_world_state["description"]
+assert "applied/not-stored rows" in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_TYPE_GUIDE in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_SCOPE_GUIDE in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_SPLIT_GUIDE in update_world_state["description"]
 assert tool_guidance.WORLD_STATE_EXAMPLE_GUIDE in update_world_state["description"]
+assert tool_guidance.WORLD_STATE_SEARCH_ANCHOR_GUIDE in update_world_state["description"]
 assert state_item_schema["properties"]["op"]["enum"] == ["add", "update", "delete"]
 assert state_item_schema["properties"]["scope"]["enum"] == ["public", "gm", "npc", "shared"]
 assert "public is not private player knowledge" in state_item_schema["properties"]["scope"]["description"]
 assert "shared means only npc_id and target know" in state_item_schema["properties"]["scope"]["description"]
+assert "use scope for access control" in state_item_schema["properties"]["text"]["description"]
 assert "Required for shared scope" in state_item_schema["properties"]["npc_id"]["description"]
 assert "Required for relationship and shared scope" in state_item_schema["properties"]["target"]["description"]
+assert "entity_id" in state_item_schema["properties"]
+assert "source_npc" in state_item_schema["properties"]
+assert "known_name" in state_item_schema["properties"]
+for _anchor in (
+    "location_id", "location_name", "region_id", "region_name",
+    "scene_id", "importance", "aliases",
+):
+    assert _anchor in state_item_schema["properties"]
+assert "another entity" in state_item_schema["properties"]["entity_id"]["description"]
+assert "Requires entity_id" in state_item_schema["properties"]["known_name"]["description"]
+assert "Never use for the player" in state_item_schema["properties"]["known_name"]["description"]
+assert "Russian queries" in state_item_schema["properties"]["aliases"]["description"]
+assert "id alone may not match" in state_item_schema["properties"]["location_name"]["description"]
 assert "Do not store NPC testimony as fact" in state_item_schema["properties"]["type"]["description"]
 assert "what one NPC remembers" in state_item_schema["properties"]["type"]["description"]
 assert "ongoing attitude" in state_item_schema["properties"]["type"]["description"]
@@ -381,13 +626,16 @@ assert query_world_state["parameters"]["required"] == ["scope", "query"]
 assert query_world_state["parameters"]["additionalProperties"] is False
 assert query_world_state["parameters"]["properties"]["scope"]["enum"] == ["player", "gm", "npc"]
 assert "player scope must never reveal" in query_world_state["description"]
-assert "ids and hashes" in query_world_state["description"]
+assert "ids/hashes" in query_world_state["description"]
+assert "compact structured text" in query_world_state["description"]
 assert "relationship borin player" in query_world_state["parameters"]["properties"]["query"]["description"]
+assert "Тёрнвейле" in query_world_state["parameters"]["properties"]["query"]["description"]
 
 tool_search = tool_by_name(tools, "tool_search")
 assert tool_search["parameters"]["additionalProperties"] is False
 assert "select:tool_name" in tool_search["description"]
 assert "system tool capability map" in tool_search["description"]
+assert "compact structured text" in tool_search["description"]
 assert "scoped-memory" not in tool_search["description"]
 assert "update_world_state" not in tool_search["description"]
 
@@ -408,6 +656,44 @@ for _t in tools:
     for _live in ("location_id", "location"):
         if _live in _props:
             assert "enum" not in _props[_live], f"{_fn['name']}.{_live} has a dynamic enum"
+
+identity_s = Session(None)
+assert identity_s.world.npc_player_label("lysa") == "служанка"
+identity_ret = _drive(_run_tool(identity_s, "update_world_state", {"items": [{
+    "type": "fact",
+    "text": "Игрок узнал от Борина, что служанку зовут Лиза.",
+    "scope": "shared",
+    "npc_id": "borin",
+    "target": "player",
+    "entity_id": "lysa",
+    "known_name": "Лиза",
+}]}, []))
+_assert_model_result_is_structured_text(identity_ret)
+identity_model = _tool_full_json(identity_ret)
+assert identity_model["applied"][0]["known_name"] == "Лиза"
+assert identity_model["applied"][0]["entity_id"] == "lysa"
+assert identity_s.world.npc_known_name("lysa") == "Лиза"
+assert identity_s.world.npc_player_label("lysa") == "Лиза"
+identity_refs = json.dumps(identity_s.world.entity_refs(), ensure_ascii=False)
+assert '"label": "Лиза"' in identity_refs
+identity_query_ret = _drive(_run_tool(identity_s, "query_world_state", {
+    "scope": "player",
+    "query": "known_name Лиза",
+}, []))
+_assert_model_result_is_structured_text(identity_query_ret)
+identity_query = _tool_full_json(identity_query_ret)
+identity_rows = [row for row in identity_query.get("results", []) if row.get("known_name") == "Лиза"]
+assert identity_rows and identity_rows[0]["hash"]
+bad_identity_ret = _drive(_run_tool(identity_s, "update_world_state", {"items": [{
+    "type": "fact",
+    "text": "Игрок узнал имя без entity_id.",
+    "known_name": "Ошибка",
+}]}, []))
+_assert_model_result_is_structured_text(bad_identity_ret)
+bad_identity = _tool_full_json(bad_identity_ret)
+assert bad_identity["ok"] is False
+assert "entity_id is required" in bad_identity["errors"][0]["error"]
+
 assert set_scene["parameters"]["properties"]["present_npcs"]["items"] == {"type": "string"}
 for _coll in ("items", "exits"):
     _item_schema = set_scene["parameters"]["properties"][_coll]["items"]
@@ -451,11 +737,49 @@ normalized_optional_args = {
             "reason": "тест",
         }},
         {"name": "tool_search", "arguments": {"query": "select:set_scene", "max_results": None}},
+        {"name": "get_npc_profile", "arguments": {
+            "npc_id": "borin",
+            "preset": None,
+            "fields": ["abilities", None, "passive_perception"],
+        }},
+        {"name": "advance_time", "arguments": {
+            "minutes": 5,
+            "reason": "тест",
+        }},
+        {"name": "ask_player", "arguments": {
+            "question": "Что дальше?",
+            "options": [
+                {"label": "Спросить Борина", "message": "Спросить Борина о ночных гостях."},
+                {"label": "Осмотреть стол", "message": "Осмотреть стол у окна.", "extra": "drop"},
+                {"label": "", "message": ""},
+                {"label": "Выйти", "message": "Выйти на улицу и осмотреться."},
+                {"label": "Ждать", "message": "Остаться на месте и подождать."},
+            ],
+        }},
+        {"name": "update_player_character", "arguments": {
+            "fields": {
+                "condition": "ранен",
+                "gm_notes": None,
+                "inventory": ["фонарь", None, ""],
+                "hp": {"current": 6, "max": 9},
+            },
+            "reason": "тест",
+        }},
         {"name": "update_world_state", "arguments": {"items": [{
             "type": "relationship",
             "text": "стал осторожнее",
             "npc_id": "borin",
             "target": "player",
+            "entity_id": None,
+            "known_name": None,
+            "source_npc": None,
+            "location_id": "",
+            "location_name": None,
+            "region_id": "",
+            "region_name": None,
+            "scene_id": "",
+            "importance": "",
+            "aliases": [],
             "scope": None,
             "source": "",
             "witnesses": [],
@@ -478,6 +802,28 @@ assert normalized_optional_args["set_scene"] == {
     "reason": "тест",
 }
 assert normalized_optional_args["tool_search"] == {"query": "select:set_scene"}
+assert normalized_optional_args["get_npc_profile"] == {
+    "npc_id": "borin",
+    "fields": ["abilities", "passive_perception"],
+}
+assert normalized_optional_args["advance_time"] == {"minutes": 5, "reason": "тест"}
+assert normalized_optional_args["ask_player"] == {
+    "question": "Что дальше?",
+    "options": [
+        {"label": "Спросить Борина", "message": "Спросить Борина о ночных гостях."},
+        {"label": "Осмотреть стол", "message": "Осмотреть стол у окна."},
+        {"label": "Выйти", "message": "Выйти на улицу и осмотреться."},
+        {"label": "Ждать", "message": "Остаться на месте и подождать."},
+    ],
+}
+assert normalized_optional_args["update_player_character"] == {
+    "fields": {
+        "condition": "ранен",
+        "inventory": ["фонарь"],
+        "hp": {"current": 6, "max": 9},
+    },
+    "reason": "тест",
+}
 assert normalized_optional_args["update_world_state"] == {
     "items": [{
         "type": "relationship",
@@ -511,13 +857,42 @@ generated_id_call = _normalize_tool_calls([{
 assert generated_id_call["id"] == "test_1"
 _s = Session(None)
 _s.world = w
-assert "no such NPC" in _tool_full_text(_drive(_run_tool(_s, "ask_npc", {"npc_id": "no_such_npc", "situation": "x"}, [])))
-assert "tool error" in _tool_full_text(_drive(_run_tool(_s, "move_npc", {"npc_id": "ghost", "present": True, "reason": "тест"}, [])))
-assert "tool error" in _tool_full_text(_drive(_run_tool(_s, "set_npc_whereabouts", {"npc_id": "ghost", "status": "known", "source": "тест"}, [])))
+_missing_npc_ret = _drive(_run_tool(_s, "ask_npc", {"npc_id": "no_such_npc", "situation": "x"}, []))
+_assert_model_result_is_structured_text(_missing_npc_ret)
+assert "no such NPC" in _tool_full_text(_missing_npc_ret)
+assert "code: unknown_npc" in _tool_model_plain(_missing_npc_ret)
+_bad_move_ret = _drive(_run_tool(_s, "move_npc", {"npc_id": "ghost", "present": True, "reason": "тест"}, []))
+_assert_model_result_is_structured_text(_bad_move_ret)
+assert "tool error" in _tool_full_text(_bad_move_ret)
+assert "tool: move_npc" in _tool_model_plain(_bad_move_ret)
+_bad_whereabouts_ret = _drive(_run_tool(_s, "set_npc_whereabouts", {"npc_id": "ghost", "status": "known", "source": "тест"}, []))
+_assert_model_result_is_structured_text(_bad_whereabouts_ret)
+assert "tool error" in _tool_full_text(_bad_whereabouts_ret)
+assert "tool: set_npc_whereabouts" in _tool_model_plain(_bad_whereabouts_ret)
 _scene_ret = _drive(_run_tool(_s, "set_scene", {"title": "Тест", "description": "Тест", "reason": "тест", "present_npcs": ["ghost"]}, []))
+_assert_model_result_is_structured_text(_scene_ret)
 _scene_payload = json.loads(_tool_full_text(_scene_ret))
 assert "ghost" in _scene_payload.get("dropped_present_npcs", [])
 assert "ghost" not in _scene_payload.get("present_npcs", [])
+_options_ret = _drive(_run_tool(_s, "ask_player", {
+    "question": "Что дальше?",
+    "options": [
+        {"label": "Спросить", "message": "Спросить Борина о шуме за дверью."},
+        {"label": "Осмотреть", "message": "Осмотреть общий зал и ближайшие столы."},
+        {"label": "Выйти", "message": "Выйти на улицу и проверить переулок."},
+        {"label": "Ждать", "message": "Остаться у стойки и подождать развития событий."},
+    ],
+}, []))
+_assert_model_result_is_structured_text(_options_ret)
+assert getattr(_options_ret, "terminal", False) is True
+assert _tool_full_text(_options_ret) == "PLAYER OPTIONS\nshown: 4"
+assert _tool_model_plain(_options_ret) == "PLAYER OPTIONS\nshown: 4"
+_bad_options_ret = _drive(_run_tool(_s, "ask_player", {
+    "question": "Что дальше?",
+    "options": [{"label": "Спросить", "message": "Спросить Борина."}],
+}, []))
+assert getattr(_bad_options_ret, "terminal", False) is False
+assert "not_enough_options" in _tool_model_plain(_bad_options_ret)
 move_null_s = Session(None)
 move_null_args = _normalize_tool_calls([{"name": "move_npc", "arguments": {
     "npc_id": "borin",
@@ -579,7 +954,18 @@ assert where_s.world.npc_whereabouts_export("mareth")["source"] == "gm"
 
 batch_s = Session(None)
 batch_ret = _drive(_run_tool(batch_s, "update_world_state", {"items": [
-    {"type": "fact", "text": "На площади закрыли ворота.", "scope": "public"},
+    {
+        "type": "fact",
+        "text": "На площади закрыли ворота.",
+        "scope": "public",
+        "location_id": "turnvale_square",
+        "location_name": "Площадь Тёрнвейля",
+        "region_id": "turnvale",
+        "region_name": "Тёрнвейль",
+        "scene_id": "turnvale_square_gate",
+        "importance": "clue",
+        "aliases": ["Тёрнвейл", "Тёрнвейле", "Turnvale", "turnvale"],
+    },
     {"type": "fact", "text": "GM_SECRET_SENTINEL прячется под сценой.", "scope": "gm"},
     {"type": "rumor", "text": "PUBLIC_RUMOR_SENTINEL видели у лавки.", "npc_id": "borin"},
     {
@@ -589,25 +975,68 @@ batch_ret = _drive(_run_tool(batch_s, "update_world_state", {"items": [
         "target": "player",
         "scope": "shared",
     },
-    {"type": "npc_memory", "text": "NPC_PRIVATE_SENTINEL хранить молчание.", "npc_id": "borin"},
+    {
+        "type": "rumor",
+        "text": "ENTITY_FACT_SENTINEL Борин утверждает, что Лизе 24.",
+        "npc_id": "borin",
+        "target": "player",
+        "scope": "shared",
+        "entity_id": "lysa",
+        "source_npc": "borin",
+    },
+    {
+        "type": "npc_memory",
+        "text": "NPC_PRIVATE_SENTINEL хранить молчание.",
+        "npc_id": "borin",
+        "location_id": "secret_cellar",
+        "location_name": "Тайный подвал",
+        "region_id": "turnvale",
+        "region_name": "Тёрнвейль",
+        "aliases": ["PRIVATE_ALIAS_SENTINEL"],
+    },
     {"type": "relationship", "text": "стал доверять осторожнее", "npc_id": "borin", "target": "player"},
     {"type": "goal", "text": "GOAL_SENTINEL проверить кладовую.", "npc_id": "borin", "mode": "append"},
 ]}, []))
+_assert_model_result_is_structured_text(batch_ret)
 batch_payload = json.loads(_tool_full_text(batch_ret))
-batch_model_payload = json.loads(_tool_model_text(batch_ret))
+batch_model_text = _tool_model_plain(batch_ret)
 assert batch_payload["ok"] is True
-assert len(batch_payload["applied"]) == 7
-assert all("text" not in row for row in batch_model_payload["applied"])
+assert len(batch_payload["applied"]) == 8
+assert "На площади закрыли ворота" not in batch_model_text
+assert "GM_SECRET_SENTINEL" not in batch_model_text
+assert "NPC_PRIVATE_SENTINEL" not in batch_model_text
+assert "WORLD STATE WRITE" in batch_model_text
+anchor_applied = batch_payload["applied"][0]
+assert anchor_applied["location_id"] == "turnvale_square"
+assert anchor_applied["region_id"] == "turnvale"
+assert anchor_applied["scene_id"] == "turnvale_square_gate"
+assert anchor_applied["aliases"] == ["Тёрнвейл", "Тёрнвейле", "Turnvale", "turnvale"]
 if hasattr(batch_s.world, "state_records"):
     assert any(record.text == "На площади закрыли ворота." and record.kind == "fact"
-               and record.scope == "public" for record in batch_s.world.state_records)
+               and record.scope == "public"
+               and record.location_id == "turnvale_square"
+               and record.location_name == "Площадь Тёрнвейля"
+               and record.region_id == "turnvale"
+               and record.region_name == "Тёрнвейль"
+               and record.scene_id == "turnvale_square_gate"
+               and record.importance == "clue"
+               and "Тёрнвейле" in record.aliases
+               for record in batch_s.world.state_records)
     assert any(record.text == "GM_SECRET_SENTINEL прячется под сценой." and record.kind == "fact"
                and record.scope == "gm" for record in batch_s.world.state_records)
     assert any(record.text == "NPC_PRIVATE_SENTINEL хранить молчание." and record.kind == "npc_memory"
-               and record.owner == "borin" for record in batch_s.world.state_records)
+               and record.owner == "borin"
+               and record.location_id == "secret_cellar"
+               and "PRIVATE_ALIAS_SENTINEL" in record.aliases
+               for record in batch_s.world.state_records)
     assert any(record.text == "SHARED_RUMOR_SENTINEL сказала Лиза только игроку."
                and record.kind == "rumor" and record.scope == "participants"
                and record.owner == "lysa" and record.subject == "player"
+               for record in batch_s.world.state_records)
+    assert any(record.text == "ENTITY_FACT_SENTINEL Борин утверждает, что Лизе 24."
+               and record.kind == "rumor" and record.scope == "participants"
+               and record.owner == "borin" and record.subject == "player"
+               and record.entity_id == "lysa" and record.source_npc == "borin"
                for record in batch_s.world.state_records)
     assert any(record.kind == "goal" and "GOAL_SENTINEL" in record.text
                and record.owner == "borin" for record in batch_s.world.state_records)
@@ -623,30 +1052,60 @@ player_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "scope": "player",
     "query": "GM_SECRET_SENTINEL NPC_PRIVATE_SENTINEL GOAL_SENTINEL",
 }, []))
+_assert_model_result_is_structured_text(player_query_ret)
 player_query = json.loads(_tool_full_text(player_query_ret))
-player_model_query = json.loads(_tool_model_text(player_query_ret))
+player_model_query = _tool_full_json(player_query_ret)
 assert player_query["scope"] == "player"
 assert "GM_SECRET_SENTINEL" not in json.dumps(player_query, ensure_ascii=False)
 assert "NPC_PRIVATE_SENTINEL" not in json.dumps(player_query, ensure_ascii=False)
 assert "GOAL_SENTINEL" not in json.dumps(player_query, ensure_ascii=False)
 assert "GM_SECRET_SENTINEL" not in json.dumps(player_model_query, ensure_ascii=False)
 assert "NPC_PRIVATE_SENTINEL" not in json.dumps(player_model_query, ensure_ascii=False)
+assert "<system-reminder>" in _tool_model_text(player_query_ret)
+assert "Scope-limited memory is internal" in _tool_model_text(player_query_ret)
+assert "do not reveal gm/npc-scope secrets" in _tool_model_text(player_query_ret)
+assert "<system-reminder>" not in _tool_full_text(player_query_ret)
 
 player_shared_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "scope": "player",
     "query": "SHARED_RUMOR_SENTINEL",
 }, []))
-player_shared_query = json.loads(_tool_model_text(player_shared_query_ret))
+_assert_model_result_is_structured_text(player_shared_query_ret)
+player_shared_query = _tool_full_json(player_shared_query_ret)
 assert "SHARED_RUMOR_SENTINEL" in json.dumps(player_shared_query, ensure_ascii=False)
 assert any(row.get("id") and row.get("target") == "player"
            for row in player_shared_query.get("results", []))
 assert any(row.get("hash") for row in player_shared_query.get("results", []))
 
+player_entity_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "player",
+    "query": "ENTITY_FACT_SENTINEL lysa borin",
+}, []))
+player_entity_query = _tool_full_json(player_entity_query_ret)
+assert "ENTITY_FACT_SENTINEL" in json.dumps(player_entity_query, ensure_ascii=False)
+entity_row = next(row for row in player_entity_query.get("results", [])
+                  if row.get("entity_id") == "lysa")
+assert entity_row["source_npc"] == "borin"
+assert entity_row["target"] == "player"
+
+player_place_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "player",
+    "query": "что было в Тёрнвейле",
+}, []))
+player_place_query = _tool_full_json(player_place_query_ret)
+assert player_place_query["scope"] == "player"
+place_row = next(row for row in player_place_query.get("results", [])
+                 if row.get("location_id") == "turnvale_square")
+assert place_row["region_id"] == "turnvale"
+assert place_row["location_name"] == "Площадь Тёрнвейля"
+assert "Тёрнвейле" in place_row["aliases"]
+assert place_row["hash"]
+
 gm_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "scope": "gm",
     "query": "GM_SECRET_SENTINEL",
 }, []))
-gm_query = json.loads(_tool_model_text(gm_query_ret))
+gm_query = _tool_full_json(gm_query_ret)
 assert gm_query["scope"] == "gm"
 assert "GM_SECRET_SENTINEL" in json.dumps(gm_query, ensure_ascii=False)
 
@@ -655,7 +1114,7 @@ npc_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "npc_id": "borin",
     "query": "NPC_PRIVATE_SENTINEL GOAL_SENTINEL",
 }, []))
-npc_query = json.loads(_tool_model_text(npc_query_ret))
+npc_query = _tool_full_json(npc_query_ret)
 assert npc_query["scope"] == "npc"
 assert "NPC_PRIVATE_SENTINEL" in json.dumps(npc_query, ensure_ascii=False)
 assert "GOAL_SENTINEL" in json.dumps(npc_query, ensure_ascii=False)
@@ -666,7 +1125,7 @@ borin_shared_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "npc_id": "borin",
     "query": "SHARED_RUMOR_SENTINEL",
 }, []))
-borin_shared_query = json.loads(_tool_model_text(borin_shared_query_ret))
+borin_shared_query = _tool_full_json(borin_shared_query_ret)
 assert "SHARED_RUMOR_SENTINEL" not in json.dumps(borin_shared_query, ensure_ascii=False)
 
 lysa_shared_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
@@ -674,15 +1133,23 @@ lysa_shared_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "npc_id": "lysa",
     "query": "SHARED_RUMOR_SENTINEL",
 }, []))
-lysa_shared_query = json.loads(_tool_model_text(lysa_shared_query_ret))
+lysa_shared_query = _tool_full_json(lysa_shared_query_ret)
 assert "SHARED_RUMOR_SENTINEL" in json.dumps(lysa_shared_query, ensure_ascii=False)
+
+lysa_entity_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "lysa",
+    "query": "ENTITY_FACT_SENTINEL",
+}, []))
+lysa_entity_query = _tool_full_json(lysa_entity_query_ret)
+assert "ENTITY_FACT_SENTINEL" not in json.dumps(lysa_entity_query, ensure_ascii=False)
 
 relation_lookup_ret = _drive(_run_tool(batch_s, "query_world_state", {
     "scope": "npc",
     "npc_id": "borin",
     "query": "relationship borin player",
 }, []))
-relation_lookup = json.loads(_tool_model_text(relation_lookup_ret))
+relation_lookup = _tool_full_json(relation_lookup_ret)
 relation_rows = [
     row for row in relation_lookup.get("results", [])
     if row.get("kind") == "state_relationship" and row.get("npc_id") == "borin"
@@ -706,15 +1173,30 @@ public_docs_text = json.dumps(
 assert "SHARED_RUMOR_SENTINEL" in player_docs_text
 assert "SHARED_RUMOR_SENTINEL" not in borin_docs_text
 assert "SHARED_RUMOR_SENTINEL" not in public_docs_text
+assert "ENTITY_FACT_SENTINEL" in player_docs_text
+assert "ENTITY_FACT_SENTINEL" in borin_docs_text
+assert "ENTITY_FACT_SENTINEL" not in public_docs_text
+assert "source_npc" in player_docs_text
+assert "Площадь Тёрнвейля" in player_docs_text
+assert "turnvale_square" in player_docs_text
+assert "Тёрнвейле" in player_docs_text
 assert "NPC_PRIVATE_SENTINEL" in borin_docs_text
 assert "NPC_PRIVATE_SENTINEL" not in player_docs_text
+assert "PRIVATE_ALIAS_SENTINEL" in borin_docs_text
+assert "PRIVATE_ALIAS_SENTINEL" not in player_docs_text
+assert "PRIVATE_ALIAS_SENTINEL" not in public_docs_text
 
 bad_batch_ret = _drive(_run_tool(batch_s, "update_world_state", {"items": [
     {"type": "npc_memory", "text": "x", "npc_id": "ghost"},
 ]}, []))
-bad_batch = json.loads(_tool_model_text(bad_batch_ret))
+_assert_model_result_is_structured_text(bad_batch_ret)
+bad_batch = _tool_full_json(bad_batch_ret)
 assert bad_batch["ok"] is False
-assert bad_batch["errors"][0]["i"] == 1
+assert bad_batch["errors"][0]["index"] == 1
+bad_batch_model_text = _tool_model_text(bad_batch_ret)
+assert "i=1" in bad_batch_model_text
+assert "conflict or not_added" in bad_batch_model_text
+assert "<system-reminder>" not in _tool_full_text(bad_batch_ret)
 
 mutable_s = Session(None)
 mutable_add_ret = _drive(_run_tool(mutable_s, "update_world_state", {"items": [
@@ -724,13 +1206,14 @@ mutable_id = json.loads(_tool_full_text(mutable_add_ret))["applied"][0]["id"]
 mutable_update_ret = _drive(_run_tool(mutable_s, "update_world_state", {"items": [
     {"op": "update", "id": mutable_id, "text": "MUTABLE_FACT_SENTINEL ушёл к воротам."},
 ]}, []))
-mutable_update = json.loads(_tool_model_text(mutable_update_ret))
+_assert_model_result_is_structured_text(mutable_update_ret)
+mutable_update = _tool_full_json(mutable_update_ret)
 assert mutable_update["applied"][0]["status"] == "updated"
 assert "ушёл к воротам" in mutable_s.world.fact("MUTABLE_FACT_SENTINEL").as_tool_payload()["text"]
 mutable_delete_ret = _drive(_run_tool(mutable_s, "update_world_state", {"items": [
     {"op": "delete", "id": mutable_id},
 ]}, []))
-mutable_delete = json.loads(_tool_model_text(mutable_delete_ret))
+mutable_delete = _tool_full_json(mutable_delete_ret)
 assert mutable_delete["applied"][0]["status"] == "deleted"
 assert "MUTABLE_FACT_SENTINEL" not in mutable_s.world.fact("MUTABLE_FACT_SENTINEL").as_tool_payload()["text"]
 
@@ -742,14 +1225,15 @@ relation_add_ret = _drive(_run_tool(relation_s, "update_world_state", {"items": 
     "npc_id": "borin",
     "target": "player",
 }]}, []))
-relation_add = json.loads(_tool_model_text(relation_add_ret))
+relation_add = _tool_full_json(relation_add_ret)
 assert relation_add["applied"][0]["status"] == "stored"
 relation_query_ret = _drive(_run_tool(relation_s, "query_world_state", {
     "scope": "npc",
     "npc_id": "borin",
     "query": "relationship borin player",
 }, []))
-relation_query = json.loads(_tool_model_text(relation_query_ret))
+_assert_model_result_is_structured_text(relation_query_ret)
+relation_query = _tool_full_json(relation_query_ret)
 relation_row = next(
     row for row in relation_query["results"]
     if row.get("kind") == "state_relationship" and row.get("target") == "player"
@@ -765,7 +1249,7 @@ relation_update_ret = _drive(_run_tool(relation_s, "update_world_state", {"items
     "npc_id": "borin",
     "target": "player",
 }]}, []))
-relation_update = json.loads(_tool_model_text(relation_update_ret))
+relation_update = _tool_full_json(relation_update_ret)
 assert relation_update["applied"][0]["status"] == "updated"
 assert relation_update["applied"][0]["hash"]
 updated_relation_hash = relation_update["applied"][0]["hash"]
@@ -786,7 +1270,8 @@ relation_conflict_ret = _drive(_run_tool(relation_s, "update_world_state", {"ite
     "npc_id": "borin",
     "target": "player",
 }]}, []))
-relation_conflict = json.loads(_tool_model_text(relation_conflict_ret))
+_assert_model_result_is_structured_text(relation_conflict_ret)
+relation_conflict = _tool_full_json(relation_conflict_ret)
 assert relation_conflict["ok"] is False
 assert relation_conflict["errors"][0]["status"] == "conflict"
 assert relation_conflict["errors"][0]["expected_hash"] == relation_hash
@@ -799,7 +1284,7 @@ relation_duplicate_ret = _drive(_run_tool(relation_s, "update_world_state", {"it
     "npc_id": "borin",
     "target": "player",
 }]}, []))
-relation_duplicate = json.loads(_tool_model_text(relation_duplicate_ret))
+relation_duplicate = _tool_full_json(relation_duplicate_ret)
 assert relation_duplicate["ok"] is False
 assert relation_duplicate["errors"][0]["status"] == "not_added"
 assert relation_duplicate["errors"][0]["existing_id"] == relation_id
@@ -810,14 +1295,14 @@ relation_delete_ret = _drive(_run_tool(relation_s, "update_world_state", {"items
     "id": relation_id,
     "expected_hash": updated_relation_hash,
 }]}, []))
-relation_delete = json.loads(_tool_model_text(relation_delete_ret))
+relation_delete = _tool_full_json(relation_delete_ret)
 assert relation_delete["applied"][0]["status"] == "deleted"
 relation_deleted_query_ret = _drive(_run_tool(relation_s, "query_world_state", {
     "scope": "npc",
     "npc_id": "borin",
     "query": "RELATION_SENTINEL",
 }, []))
-relation_deleted_query = json.loads(_tool_model_text(relation_deleted_query_ret))
+relation_deleted_query = _tool_full_json(relation_deleted_query_ret)
 assert "RELATION_SENTINEL" not in json.dumps(relation_deleted_query, ensure_ascii=False)
 
 unknown = w.fact("Who exactly forged the mayor's seal?").as_tool_payload()
@@ -903,8 +1388,10 @@ try:
         events.append(next(gen))
 except StopIteration as stop:
     result = stop.value
+_assert_model_result_is_structured_text(result)
 assert any(e["kind"] == "error" and "situation" in e["data"] for e in events)
 assert "tool error" in _tool_full_text(result)
+assert "code: missing_situation" in _tool_model_plain(result)
 
 gen = _run_tool(s, "get_world_fact", {"query": "unknown thing"}, [])
 try:
@@ -912,8 +1399,9 @@ try:
         next(gen)
 except StopIteration as stop:
     result = stop.value
+    _assert_model_result_is_structured_text(result)
     payload = json.loads(_tool_full_text(result))
-    model_payload = json.loads(_tool_model_text(result))
+    model_payload = _tool_full_json(result)
 assert payload["status"] == "unknown"
 assert model_payload["status"] == "unknown"
 assert set(model_payload) <= {"status", "text", "sources"}
@@ -924,11 +1412,129 @@ try:
         next(gen)
 except StopIteration as stop:
     result = stop.value
-    known_fact_model = json.loads(_tool_model_text(result))
+    _assert_model_result_is_structured_text(result)
+    known_fact_model = _tool_full_json(result)
 assert known_fact_model["status"] == "known"
 assert known_fact_model.get("sources")
-assert all(set(source) <= {"n", "kind", "status", "source"} for source in known_fact_model["sources"])
-assert all("score" not in source for source in known_fact_model["sources"])
+known_fact_text = _tool_model_plain(result)
+assert "WORLD FACT" in known_fact_text
+assert "score" not in known_fact_text
+assert "<system-reminder>" in _tool_model_text(result)
+assert "only lore the player can know right now" in _tool_model_text(result)
+assert "do not reveal hidden sources" in _tool_model_text(result)
+assert "<system-reminder>" not in _tool_full_text(result)
+
+s.world.forced_die_next = 17
+gen = _run_tool(s, "roll_dice", {
+    "roll_kind": "check",
+    "notation": "1d20+3",
+    "target_number": 20,
+    "target_kind": "DC",
+    "check_name": "Wisdom (Perception)",
+    "reason": "Scan room.",
+}, [])
+events = []
+try:
+    while True:
+        events.append(next(gen))
+except StopIteration as stop:
+    result = stop.value
+_assert_model_result_is_structured_text(result)
+dice_full = _tool_full_text(result)
+dice_model_text = _tool_model_text(result)
+dice_model_plain = _tool_model_plain(result)
+assert "grade=success" in dice_full
+assert "margin=+0" in dice_full
+assert "[forced]" not in dice_full
+assert "<system-reminder>" in dice_model_text
+assert "Do not change the target" in dice_model_text
+assert "<system-reminder>" not in dice_full
+assert dice_model_plain == "RESULT: total 20, success, margin +0, natural 17."
+assert "1d20+3" not in dice_model_plain
+assert "Wisdom" not in dice_model_plain
+assert "DC" not in dice_model_plain
+assert "forced" not in _tool_model_text(result)
+assert "detail" not in dice_model_plain
+assert "rolls" not in dice_model_plain
+assert any(e["kind"] == "dice" for e in events)
+
+gen = _run_tool(s, "get_npc_profile", {
+    "npc_id": "borin",
+    "preset": "mechanics",
+    "fields": ["passive_perception", "abilities"],
+}, [])
+try:
+    while True:
+        next(gen)
+except StopIteration as stop:
+    result = stop.value
+    _assert_model_result_is_structured_text(result)
+    profile_payload = _tool_full_json(result)
+profile_model_full = _tool_model_text(result)
+profile_model_text = _tool_model_plain(result)
+profile_text = json.dumps(profile_payload, ensure_ascii=False)
+assert profile_payload["npc_id"] == "borin"
+assert profile_payload["profile"]["passive_perception"] == 13
+assert profile_payload["profile"]["abilities"]["WIS"] == 13
+assert s.world.npc("borin").secret not in profile_text
+assert s.world.npc("borin").knowledge not in profile_text
+assert s.world.npc("borin").goals not in profile_text
+assert "passive_perception: 13" in profile_model_text
+assert s.world.npc("borin").secret not in profile_model_text
+assert "<system-reminder>" in profile_model_full
+assert "player sees only observable fiction" in profile_model_full
+assert "do not reveal raw NPC stats" in profile_model_full
+assert "<system-reminder>" not in _tool_full_text(result)
+
+before_minutes = s.world.time_export()["absolute_minutes"]
+gen = _run_tool(s, "advance_time", {"minutes": 7, "reason": "допрос у стойки"}, [])
+try:
+    while True:
+        next(gen)
+except StopIteration as stop:
+    result = stop.value
+    _assert_model_result_is_structured_text(result)
+    time_payload = _tool_full_json(result)
+time_model_text = _tool_model_plain(result)
+assert time_payload["elapsed_minutes"] == 7
+assert time_payload["current"]["absolute_minutes"] == before_minutes + 7
+assert "elapsed: 7 min" in time_model_text
+assert "допрос у стойки" not in time_model_text
+assert s.world.time_export()["absolute_minutes"] == before_minutes + 7
+assert s.world.time_export()["last_advance_minutes"] == 7
+assert s.world.time_export()["last_advance_reason"] == "допрос у стойки"
+time_context = s.world.time_context()
+assert "Previous player turn elapsed: 7 minutes" in time_context
+assert "Previous time reason: допрос у стойки" in time_context
+
+multi_time_s = Session(None)
+before_multi = multi_time_s.world.time_export()["absolute_minutes"]
+_drive(_run_tool(multi_time_s, "advance_time", {"minutes": 6, "reason": "дорога к караульной"}, []))
+_drive(_run_tool(multi_time_s, "advance_time", {"minutes": 1, "reason": "короткий допрос"}, []))
+_finalize_turn_time(multi_time_s)
+multi_time = multi_time_s.world.time_export()
+assert multi_time["absolute_minutes"] == before_multi + 7
+assert multi_time["last_advance_minutes"] == 7
+assert multi_time["last_advance_reason"] == "дорога к караульной; короткий допрос"
+assert "Previous player turn elapsed: 7 minutes" in multi_time_s.world.time_context()
+
+gen = _run_tool(s, "update_player_character", {
+    "fields": {"condition": "ранен", "hp": {"current": 5, "max": 9}},
+    "reason": "получил ранение",
+}, [])
+events = []
+try:
+    while True:
+        events.append(next(gen))
+except StopIteration as stop:
+    result = stop.value
+    _assert_model_result_is_structured_text(result)
+    player_update_model = _tool_full_json(result)
+assert player_update_model["updated"] == ["condition", "hp"]
+assert "player_character" not in _tool_model_plain(result)
+assert s.world.player_character.condition == "ранен"
+assert s.world.player_character.hp["current"] == 5
+assert any(e["kind"] == "player_character_update" for e in events)
 
 gen = _run_tool(s, "set_npc_whereabouts", {
     "npc_id": "mareth",
@@ -944,8 +1550,9 @@ try:
         events.append(next(gen))
 except StopIteration as stop:
     result = stop.value
+    _assert_model_result_is_structured_text(result)
     payload = json.loads(_tool_full_text(result))
-    model_payload = json.loads(_tool_model_text(result))
+    model_payload = _tool_full_json(result)
 assert payload["whereabouts"]["location_name"] == "караульная Тёрнвейла"
 assert payload["whereabouts"]["status"] == "known"
 assert model_payload["whereabouts"]["location_name"] == "караульная Тёрнвейла"
@@ -962,8 +1569,10 @@ try:
         events.append(next(gen))
 except StopIteration as stop:
     result = stop.value
+_assert_model_result_is_structured_text(result)
 assert "not present" in _tool_full_text(result)
 assert "Known whereabouts" in _tool_full_text(result)
+assert "code: npc_not_present" in _tool_model_plain(result)
 assert not s.pending
 
 ask_success = Session(make_client())
@@ -977,14 +1586,43 @@ try:
         events.append(next(gen))
 except StopIteration as stop:
     result = stop.value
+_assert_model_result_is_structured_text(result)
 ask_full = json.loads(_tool_full_text(result))
-ask_model = json.loads(_tool_model_text(result))
+ask_model_text = _tool_model_text(result)
+ask_model_plain = _tool_model_plain(result)
 assert "gm_instruction" in ask_full
-assert "gm_instruction" not in ask_model
-assert ask_model["already_emitted"] is True
-assert "paraphrase" in ask_model["final_narration_rule"]
-assert "ask_npc" in ask_model["final_narration_rule"]
+assert "gm_instruction" not in ask_model_plain
+assert "<system-reminder>" in ask_model_text
+assert "call update_world_state" in ask_model_text
+assert "call advance_time" in ask_model_text
+assert "durable testimony, rumor, npc_memory, relationship" in ask_model_text
+assert "Private leads from an NPC to the player" in ask_model_text
+assert "nothing durable changed" in ask_model_text
+assert "update_player_character" in ask_model_text
+assert "<system-reminder>" not in _tool_full_text(result)
+assert "npc: Борин (borin)" in ask_model_plain
+assert "npc_name" not in ask_model_plain
+assert "already_emitted: yes" in ask_model_plain
+assert "final_narration:" in ask_model_plain
+assert "ask_npc" in ask_model_plain
 assert any(e["kind"] == "npc_speech" for e in events)
+
+ask_label = Session(make_client())
+gen = _run_tool(ask_label, "ask_npc", {
+    "npc_id": "lysa",
+    "situation": "Игрок тихо спрашивает служанку, как её зовут.",
+}, [])
+try:
+    while True:
+        next(gen)
+except StopIteration as stop:
+    result = stop.value
+_assert_model_result_is_structured_text(result)
+ask_label_full = json.loads(_tool_full_text(result))
+ask_label_model = _tool_model_plain(result)
+assert ask_label_full["npc_name"] == "Лиза"
+assert "npc: служанка (lysa)" in ask_label_model
+assert "npc_name" not in ask_label_model
 
 gen = _run_tool(s, "move_npc", {
     "npc_id": "mareth",
@@ -1001,11 +1639,15 @@ try:
         events.append(next(gen))
 except StopIteration as stop:
     result = stop.value
+    _assert_model_result_is_structured_text(result)
     payload = json.loads(_tool_full_text(result))
-    model_payload = json.loads(_tool_model_text(result))
+    move_model_text = _tool_model_text(result)
+    model_payload = _tool_full_json(result)
 assert payload["present"] is True
 assert payload["whereabouts"]["status"] == "present"
-assert "present_npcs" not in model_payload
+assert "call ask_npc" in move_model_text
+assert "<system-reminder>" not in _tool_full_text(result)
+assert "present_npcs" not in move_model_text
 assert model_payload["whereabouts"]["status"] == "present"
 assert s.world.npc_can_react("mareth")
 assert any(e["kind"] == "scene_update" for e in events)
@@ -1028,13 +1670,17 @@ try:
         events.append(next(gen))
 except StopIteration as stop:
     result = stop.value
+    _assert_model_result_is_structured_text(result)
     payload = json.loads(_tool_full_text(result))
-    model_payload = json.loads(_tool_model_text(result))
+    scene_model_text = _tool_model_text(result)
+    model_payload = _tool_full_json(result)
 assert payload["title"] == "Караульная Тёрнвейла"
 assert payload["location_id"] == "turnvale_guardhouse"
 assert "mareth" in s.world.scene.present_npcs
 assert payload["npc_whereabouts"]["mareth"]["status"] == "present"
-assert "description" not in model_payload
+assert "Scene state is now updated" in scene_model_text
+assert "<system-reminder>" not in _tool_full_text(result)
+assert "description" not in scene_model_text
 assert model_payload["title"] == "Караульная Тёрнвейла"
 assert model_payload["present_npcs"] == ["mareth"]
 assert s.world.npc_can_react("mareth")
@@ -1238,7 +1884,8 @@ canonical_tool_result_event = next(e for e in canonical_events if e["kind"] == "
 assert canonical_tool_call["id"]
 assert canonical_tool_result["tool_call_id"] == canonical_tool_call["id"]
 assert canonical_tool_call["function"]["arguments"] == '{"query":"select:set_scene"}'
-assert canonical_tool_result["content"] == '{"loaded_tools":["set_scene"],"missing":[]}'
+assert canonical_tool_result["content"] == "TOOL SEARCH\nloaded: set_scene\nmissing: none"
+_assert_text_is_structured_tool_result(canonical_tool_result["content"])
 assert "matches" in json.loads(canonical_tool_result_event["data"])
 
 
@@ -1283,12 +1930,15 @@ scene_history_session = Session(CompactSceneHistoryClient())
 scene_history_events = list(run_turn(scene_history_session, "Захожу на склад."))
 scene_history_tool_msg = next(m for m in scene_history_session.gm_messages if m.get("role") == "tool")
 scene_history_event = next(e for e in scene_history_events if e["kind"] == "tool_result")
-scene_history_model = json.loads(scene_history_tool_msg["content"])
+scene_history_model = _strip_tool_reminders(scene_history_tool_msg["content"])
 scene_history_full = json.loads(scene_history_event["data"])
+_assert_text_is_structured_tool_result(scene_history_model)
 assert "description" not in scene_history_model
 assert "npc_whereabouts" not in scene_history_model
-assert scene_history_model["title"] == "Склад у трактира"
-assert scene_history_model["items"] == [{"item_id": "item_1", "name": "фонарь", "visible": True, "portable": False}]
+assert "<system-reminder>" in scene_history_tool_msg["content"]
+assert "<system-reminder>" not in scene_history_event["data"]
+assert "title: Склад у трактира" in scene_history_model
+assert "item_id=item_1 name=фонарь visible=yes portable=no" in scene_history_model
 assert scene_history_full["description"] == "Темный склад с мешками у стены."
 
 rs = Session(None)

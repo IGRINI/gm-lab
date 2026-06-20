@@ -3,6 +3,8 @@ import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip from "./Tooltip.jsx";
 import ToolCard from "./ToolCard.jsx";
+import ToolResultCard from "./ToolResultCard.jsx";
+import DiceRoll from "./DiceRoll.jsx";
 import { NpcRosterContext } from "../npcContext.js";
 import { StatusLabelsContext } from "../statusContext.js";
 import { nameColor } from "../nameColor.js";
@@ -111,7 +113,10 @@ function Message({ m }) {
     }
 
     case "tool":
-      return <ToolCard name={m.name} args={m.args} />;
+      return <ToolCard name={m.name} args={m.args} result={m.result} resultLive={m.resultLive} rollId={m.id} />;
+
+    case "tool_result":
+      return <ToolResultCard name={m.name} payload={m.payload} />;
 
     case "fact":
       return (
@@ -119,6 +124,9 @@ function Message({ m }) {
           <Spoiler label="📖 факт мира (ГМ запросил)"><MarkdownText>{m.text}</MarkdownText></Spoiler>
         </div>
       );
+
+    case "dice_roll":
+      return <DiceRoll roll={m.roll} animate={m.resultLive} rollId={m.id} />;
 
     case "dice":
       return <div className="step dice">🎲 <MarkdownInline>{m.text}</MarkdownInline></div>;

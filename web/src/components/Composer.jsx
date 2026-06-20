@@ -175,7 +175,40 @@ function ContextUsage({ context, modelWindow }) {
   );
 }
 
-export default function Composer({ onSend, busy, status, runUsage, contextUsage, modelWindow }) {
+function QuickReplies({ playerOptions, busy, onPick }) {
+  const options = Array.isArray(playerOptions?.options) ? playerOptions.options : [];
+  if (!options.length) return null;
+  return (
+    <section className="quick-replies" aria-label="Варианты действий">
+      <div className="quick-replies-head">{playerOptions.question || "Что ты делаешь дальше?"}</div>
+      <div className="quick-replies-list">
+        {options.map((option, index) => (
+          <button
+            type="button"
+            className="quick-reply"
+            key={`${option.label}:${index}`}
+            disabled={busy}
+            title={option.message}
+            onClick={() => onPick(option.message)}
+          >
+            <span>{option.label}</span>
+            <small>{option.message}</small>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export default function Composer({
+  onSend,
+  busy,
+  status,
+  playerOptions,
+  runUsage,
+  contextUsage,
+  modelWindow,
+}) {
   const [value, setValue] = useState("");
   const ref = useRef(null);
   const compact = useCompact();
@@ -204,6 +237,17 @@ export default function Composer({ onSend, busy, status, runUsage, contextUsage,
     });
   };
 
+  const sendQuickReply = (message) => {
+    const text = String(message || "").trim();
+    if (!text || busy) return;
+    onSend(text);
+    setValue("");
+    requestAnimationFrame(() => {
+      resize();
+      ref.current?.focus();
+    });
+  };
+
   const onKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
@@ -215,23 +259,26 @@ export default function Composer({ onSend, busy, status, runUsage, contextUsage,
     <footer>
       <div className="footer-main">
         <ContextUsage context={contextUsage} modelWindow={modelWindow} />
-        <div className="composer">
-          <div className="inp-wrap">
-            <textarea
-              id="inp"
-              ref={ref}
-              rows={1}
-              value={value}
-              placeholder={compact ? PLACEHOLDER_COMPACT : PLACEHOLDER}
-              autoComplete="off"
-              onChange={(e) => setValue(e.target.value)}
-              onKeyDown={onKeyDown}
-            />
+        <div className="composer-zone">
+          <QuickReplies playerOptions={playerOptions} busy={busy} onPick={sendQuickReply} />
+          <div className="composer">
+            <div className="inp-wrap">
+              <textarea
+                id="inp"
+                ref={ref}
+                rows={1}
+                value={value}
+                placeholder={compact ? PLACEHOLDER_COMPACT : PLACEHOLDER}
+                autoComplete="off"
+                onChange={(e) => setValue(e.target.value)}
+                onKeyDown={onKeyDown}
+              />
+            </div>
+            <button id="send" onClick={submit} disabled={busy || !value.trim()} aria-label="Отправить">
+              <span className="send-label">Отправить</span>
+              <span className="send-ico" aria-hidden="true">➤</span>
+            </button>
           </div>
-          <button id="send" onClick={submit} disabled={busy || !value.trim()} aria-label="Отправить">
-            <span className="send-label">Отправить</span>
-            <span className="send-ico" aria-hidden="true">➤</span>
-          </button>
         </div>
         <RunUsage run={runUsage} />
       </div>

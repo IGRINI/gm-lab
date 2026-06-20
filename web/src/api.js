@@ -61,6 +61,7 @@ export const api = {
   debugRoll: (body) => _post("/debug/roll", body),
   addFact: (text, kind) => _post("/debug/fact", { text, kind }),
   deleteFact: (id) => _post("/debug/fact_delete", { id }),
+  updatePlayer: (body) => _post("/debug/player", body),
   updateNpc: (body) => _post("/debug/npc", body),
 
   async export() {

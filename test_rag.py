@@ -24,6 +24,26 @@ assert "Марет" in payload["text"] or "страж" in payload["text"]
 assert payload.get("sources")
 assert any(source["kind"] == "npc_whereabouts" for source in payload["sources"])
 
+w.add_state_records([{
+    "kind": "fact",
+    "text": "RAG_ANCHOR_SENTINEL на площади закрыли ворота.",
+    "scope": "public",
+    "location_id": "turnvale_square",
+    "location_name": "Площадь Тёрнвейля",
+    "region_id": "turnvale",
+    "region_name": "Тёрнвейль",
+    "scene_id": "turnvale_square_gate",
+    "importance": "clue",
+    "aliases": ["Тёрнвейл", "Тёрнвейле", "Turnvale", "turnvale"],
+}])
+anchor_doc = next(doc for doc in w.retrieval_documents() if "RAG_ANCHOR_SENTINEL" in doc.text)
+assert "Тёрнвейле" in anchor_doc.contextual_text()
+anchor = w.fact("что было в Тёрнвейле?")
+anchor_payload = anchor.as_tool_payload()
+assert anchor_payload["status"] == "known"
+assert "RAG_ANCHOR_SENTINEL" in anchor_payload["text"]
+assert any(source["kind"] == "state_fact" for source in anchor_payload.get("sources", []))
+
 w.record_rumor(42, 3, "borin", "Я видел человека в тёмном плаще у лавки Алдрика.", frozenset({"player", "borin"}))
 rumor = w.fact("Кто видел тёмный плащ у лавки Алдрика?")
 rumor_payload = rumor.as_tool_payload()

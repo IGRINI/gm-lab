@@ -41,8 +41,66 @@ class NPC:
     role: str = ""           # короткая публичная роль (для ростера в инструменте ГМ)
     pronouns: str = ""       # grammatical gender marker for Russian output: M | F | N | PL | OTHER/custom
     color: str = ""          # player-facing accent hex (e.g. "#e6c08a"); empty -> theme token on the frontend
+    public_label: str = ""   # player-facing label before/without identity, e.g. "трактирщик"
+    age: str = ""            # free text: actual/apparent age notes if relevant
+    physical_type: str = ""  # combined species/type/size/body impression
+    distinctive_features: str = ""
+    life_status: str = "alive"
+    life_status_note: str = ""
+    condition: str = ""
+    personality: str = ""
+    values: str = ""
+    habits: str = ""
+    pressure_response: str = ""
+    boundaries: str = ""
+    abilities: dict[str, Any] = field(default_factory=dict)
+    skills: dict[str, Any] = field(default_factory=dict)
+    saving_throws: dict[str, Any] = field(default_factory=dict)
+    passive_perception: int | None = None
+    ac: Any = None
+    hp: dict[str, Any] = field(default_factory=dict)
+    speed: str = ""
+    senses: str = ""
+    languages: str = ""
     default_whereabouts: dict | None = None  # optional card-defined offscreen whereabouts seed
     card_revision: int = 0   # bumped when a content card field changes; old snapshots default to 0
+
+
+@dataclass
+class PlayerCharacter:
+    name: str = "Искатель"
+    pronouns: str = "OTHER"
+    class_role: str = "сыщик-авантюрист"
+    level: int | None = 1
+    background: str = "странствующий расследователь"
+    age: str = "Взрослый персонаж; точный возраст не задан."
+    physical_type: str = "обычный гуманоид среднего размера"
+    distinctive_features: str = ""
+    life_status: str = "alive"
+    life_status_note: str = ""
+    condition: str = ""
+    personality: str = ""
+    values: str = ""
+    gm_notes: str = ""
+    abilities: dict[str, Any] = field(default_factory=lambda: {
+        "STR": 10, "DEX": 12, "CON": 11, "INT": 13, "WIS": 14, "CHA": 12,
+    })
+    skills: dict[str, Any] = field(default_factory=lambda: {
+        "Investigation": 3, "Perception": 4, "Insight": 4, "Persuasion": 3,
+    })
+    saving_throws: dict[str, Any] = field(default_factory=dict)
+    passive_perception: int | None = 14
+    ac: Any = 12
+    hp: dict[str, Any] = field(default_factory=lambda: {"current": 9, "max": 9})
+    speed: str = "30 ft"
+    senses: str = "обычное зрение"
+    languages: str = "Общий"
+    inventory: list[str] = field(default_factory=lambda: [
+        "дорожная одежда", "кинжал", "фонарь", "записная книжка",
+    ])
+    equipment: list[str] = field(default_factory=list)
+    features: list[str] = field(default_factory=list)
+    card_revision: int = 0
 
 
 @dataclass
@@ -117,6 +175,15 @@ class StateRecord:
     source: str = ""
     status: str = "known"
     tags: tuple[str, ...] = field(default_factory=tuple)
+    entity_id: str = ""
+    source_npc: str = ""
+    location_id: str = ""
+    location_name: str = ""
+    region_id: str = ""
+    region_name: str = ""
+    scene_id: str = ""
+    importance: str = ""
+    aliases: tuple[str, ...] = field(default_factory=tuple)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -131,6 +198,15 @@ def state_record_hash(record: StateRecord) -> str:
         "subject": _as_str(record.subject),
         "status": _as_str(record.status) or "known",
         "tags": list(record.tags or ()),
+        "entity_id": _as_str(record.entity_id),
+        "source_npc": _as_str(record.source_npc),
+        "location_id": _as_str(record.location_id),
+        "location_name": _as_str(record.location_name),
+        "region_id": _as_str(record.region_id),
+        "region_name": _as_str(record.region_name),
+        "scene_id": _as_str(record.scene_id),
+        "importance": _as_str(record.importance),
+        "aliases": list(record.aliases or ()),
         "metadata": record.metadata or {},
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
@@ -156,6 +232,19 @@ class SceneState:
 
     def visible_exits(self) -> list[SceneExit]:
         return [exit_ for exit_ in self.exits if exit_.visible]
+
+
+@dataclass
+class WorldTime:
+    calendar_name: str = ""
+    absolute_minutes: int = 0
+    current_date_label: str = ""
+    minutes_per_hour: int = 60
+    hours_per_day: int = 24
+    day_names: list[str] = field(default_factory=list)
+    month_names: list[str] = field(default_factory=list)
+    last_advance_minutes: int = 0
+    last_advance_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -186,10 +275,34 @@ def _as_list(value: Any) -> list:
     return [value]
 
 
+def _as_dict(value: Any) -> dict:
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _as_str(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _as_joined_str(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(_as_str(item) for item in value if _as_str(item))
+    return _as_str(value)
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        m = re.search(r"-?\d+", value)
+        if m:
+            return int(m.group(0))
+    return None
 
 
 def _match_words(text: str) -> set[str]:
@@ -225,10 +338,22 @@ def _state_record_tags(value: object) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _state_record_aliases(value: object) -> tuple[str, ...]:
+    return _state_record_tags(value)
+
+
 def _state_record_metadata(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     return {str(key): val for key, val in value.items() if key is not None}
+
+
+def _anchor_label(name: str, identifier: str) -> str:
+    name = _as_str(name)
+    identifier = _as_str(identifier)
+    if name and identifier and name != identifier:
+        return f"{name} ({identifier})"
+    return name or identifier
 
 
 def _state_record_active(value: object, default: bool = True) -> bool:
@@ -286,6 +411,35 @@ STATE_RECORD_SCOPE_ALIASES = {
 }
 STATE_DEBUG_ACTORS = {"debug", "system"}
 STATE_GM_ACTORS = {"gm", *STATE_DEBUG_ACTORS}
+
+NPC_PROFILE_PRESETS = {
+    "visible": (
+        "public_label", "role", "physical_type", "distinctive_features",
+        "condition", "life_status",
+    ),
+    "social": (
+        "persona", "personality", "values", "habits", "pressure_response",
+        "boundaries", "voice",
+    ),
+    "mechanics": (
+        "abilities", "skills", "saving_throws", "passive_perception",
+        "ac", "hp", "speed", "senses", "languages",
+    ),
+    "status": ("life_status", "life_status_note", "condition", "hp"),
+    "identity": (
+        "name", "public_label", "role", "age", "physical_type",
+        "distinctive_features",
+    ),
+}
+NPC_PROFILE_FIELDS = tuple(sorted({field for fields in NPC_PROFILE_PRESETS.values() for field in fields}))
+
+PLAYER_CHARACTER_FIELDS = (
+    "name", "pronouns", "class_role", "level", "background", "age",
+    "physical_type", "distinctive_features", "life_status", "life_status_note",
+    "condition", "personality", "values", "gm_notes", "abilities", "skills",
+    "saving_throws", "passive_perception", "ac", "hp", "speed", "senses",
+    "languages", "inventory", "equipment", "features",
+)
 
 # Machine source tags for whereabouts/facts. Named constants so the emit sites and
 # the SOURCE_RU label map below cannot drift apart.
@@ -499,6 +653,10 @@ class World:
             "Новая сцена готова. Игрок видит место, людей рядом и ближайший источник конфликта."
         )
         self.canon = _as_str(seed.get("hidden_truth") or seed.get("canon"))
+        self.time = self._seed_time(seed.get("time"))
+        self.player_character = self._seed_player_character(
+            seed.get("player_character") if "player_character" in seed else seed.get("player")
+        )
         self.extra_proper_nouns = [
             _as_str(name) for name in _as_list(seed.get("proper_nouns")) if _as_str(name)
         ]
@@ -509,6 +667,30 @@ class World:
         self.state_records = self._seed_state_records(seed)
         self.npc_whereabouts = {}
         self._ensure_npc_whereabouts()
+
+    def _seed_time(self, raw: object) -> WorldTime:
+        data = raw if isinstance(raw, dict) else {}
+        minutes_per_hour = _as_int_or_none(data.get("minutes_per_hour")) or 60
+        hours_per_day = _as_int_or_none(data.get("hours_per_day")) or 24
+        return WorldTime(
+            calendar_name=_as_str(data.get("calendar_name")),
+            absolute_minutes=max(0, _as_int_or_none(data.get("absolute_minutes")) or 0),
+            current_date_label=_as_str(data.get("current_date_label")) or "День 1",
+            minutes_per_hour=max(1, minutes_per_hour),
+            hours_per_day=max(1, hours_per_day),
+            day_names=[_as_str(item) for item in _as_list(data.get("day_names")) if _as_str(item)],
+            month_names=[_as_str(item) for item in _as_list(data.get("month_names")) if _as_str(item)],
+            last_advance_minutes=max(0, _as_int_or_none(data.get("last_advance_minutes")) or 0),
+            last_advance_reason=_as_str(data.get("last_advance_reason")),
+        )
+
+    def _seed_player_character(self, raw: object) -> PlayerCharacter:
+        if not isinstance(raw, dict):
+            return PlayerCharacter()
+        pc = PlayerCharacter()
+        self._apply_player_character_fields(pc, raw)
+        pc.card_revision = max(0, _as_int_or_none(raw.get("card_revision")) or 0)
+        return pc
 
     def _seed_npcs(self, seed: dict) -> dict[str, NPC]:
         out: dict[str, NPC] = {}
@@ -527,11 +709,32 @@ class World:
                 role=_as_str(raw.get("role")) or "персонаж сцены",
                 pronouns=_as_str(raw.get("pronouns") or raw.get("gender")),
                 color=_as_str(raw.get("color")),
+                public_label=_as_str(raw.get("public_label")),
+                age=_as_str(raw.get("age")),
+                physical_type=_as_str(raw.get("physical_type")),
+                distinctive_features=_as_str(raw.get("distinctive_features")),
+                life_status=_as_str(raw.get("life_status")) or "alive",
+                life_status_note=_as_str(raw.get("life_status_note")),
+                condition=_as_str(raw.get("condition")),
                 persona=_as_str(raw.get("persona")) or _as_str(raw.get("description")),
+                personality=_as_str(raw.get("personality")),
+                values=_as_str(raw.get("values")),
+                habits=_as_str(raw.get("habits")),
+                pressure_response=_as_str(raw.get("pressure_response")),
+                boundaries=_as_str(raw.get("boundaries")),
                 voice=_as_str(raw.get("voice")) or "Естественно, кратко, в образе.",
                 goals=_as_str(raw.get("goals")) or "Реагировать правдоподобно и защищать свои интересы.",
                 knowledge=_as_str(raw.get("knowledge")) or "Только то, что очевидно в текущей сцене.",
                 secret=_as_str(raw.get("secret")) or "Личная тайна не задана.",
+                abilities=_as_dict(raw.get("abilities")),
+                skills=_as_dict(raw.get("skills")),
+                saving_throws=_as_dict(raw.get("saving_throws")),
+                passive_perception=_as_int_or_none(raw.get("passive_perception")),
+                ac=raw.get("ac"),
+                hp=_as_dict(raw.get("hp")),
+                speed=_as_joined_str(raw.get("speed")),
+                senses=_as_joined_str(raw.get("senses")),
+                languages=_as_joined_str(raw.get("languages")),
                 default_whereabouts=raw.get("default_whereabouts")
                 if isinstance(raw.get("default_whereabouts"), dict) else None,
             )
@@ -696,6 +899,15 @@ class World:
                 "source": raw.source,
                 "status": raw.status,
                 "tags": raw.tags,
+                "entity_id": raw.entity_id,
+                "source_npc": raw.source_npc,
+                "location_id": raw.location_id,
+                "location_name": raw.location_name,
+                "region_id": raw.region_id,
+                "region_name": raw.region_name,
+                "scene_id": raw.scene_id,
+                "importance": raw.importance,
+                "aliases": raw.aliases,
                 "metadata": raw.metadata,
             }
         elif isinstance(raw, dict):
@@ -726,6 +938,15 @@ class World:
             source=_as_str(data.get("source")),
             status=_as_str(data.get("status")) or "known",
             tags=_state_record_tags(data.get("tags")),
+            entity_id=_as_str(data.get("entity_id") or data.get("entity") or data.get("about")),
+            source_npc=_as_str(data.get("source_npc") or data.get("source_npc_id")),
+            location_id=_as_str(data.get("location_id")),
+            location_name=_as_str(data.get("location_name")),
+            region_id=_as_str(data.get("region_id")),
+            region_name=_as_str(data.get("region_name")),
+            scene_id=_as_str(data.get("scene_id")),
+            importance=_as_str(data.get("importance")),
+            aliases=_state_record_aliases(data.get("aliases")),
             metadata=_state_record_metadata(data.get("metadata")),
         )
 
@@ -812,6 +1033,24 @@ class World:
                 record.status = _as_str(raw.get("status")) or "known"
             if "tags" in raw:
                 record.tags = _state_record_tags(raw.get("tags"))
+            if "entity_id" in raw or "entity" in raw or "about" in raw:
+                record.entity_id = _as_str(raw.get("entity_id") or raw.get("entity") or raw.get("about"))
+            if "source_npc" in raw or "source_npc_id" in raw:
+                record.source_npc = _as_str(raw.get("source_npc") or raw.get("source_npc_id"))
+            if "location_id" in raw:
+                record.location_id = _as_str(raw.get("location_id"))
+            if "location_name" in raw:
+                record.location_name = _as_str(raw.get("location_name"))
+            if "region_id" in raw:
+                record.region_id = _as_str(raw.get("region_id"))
+            if "region_name" in raw:
+                record.region_name = _as_str(raw.get("region_name"))
+            if "scene_id" in raw:
+                record.scene_id = _as_str(raw.get("scene_id"))
+            if "importance" in raw:
+                record.importance = _as_str(raw.get("importance"))
+            if "aliases" in raw:
+                record.aliases = _state_record_aliases(raw.get("aliases"))
             if "metadata" in raw:
                 record.metadata = _state_record_metadata(raw.get("metadata"))
             updated.append(record)
@@ -857,12 +1096,22 @@ class World:
         active: bool | None = True,
         owner: str = "",
         subject: str = "",
+        entity_id: str = "",
+        source_npc: str = "",
+        location_id: str = "",
+        region_id: str = "",
+        scene_id: str = "",
         scopes=None,
     ) -> list[StateRecord]:
         kind_filter = {_state_record_kind(kind) for kind in _as_list(kinds)} if kinds is not None else None
         scope_filter = {_state_record_scope(scope) for scope in _as_list(scopes)} if scopes is not None else None
         owner_filter = _actor_key(owner)
         subject_filter = _actor_key(subject)
+        entity_filter = _actor_key(entity_id)
+        source_npc_filter = _actor_key(source_npc)
+        location_filter = _actor_key(location_id)
+        region_filter = _actor_key(region_id)
+        scene_filter = _actor_key(scene_id)
 
         out: list[StateRecord] = []
         for record in getattr(self, "state_records", []):
@@ -875,6 +1124,16 @@ class World:
             if owner_filter and _actor_key(record.owner) != owner_filter:
                 continue
             if subject_filter and _actor_key(record.subject) != subject_filter:
+                continue
+            if entity_filter and _actor_key(record.entity_id) != entity_filter:
+                continue
+            if source_npc_filter and _actor_key(record.source_npc) != source_npc_filter:
+                continue
+            if location_filter and _actor_key(record.location_id) != location_filter:
+                continue
+            if region_filter and _actor_key(record.region_id) != region_filter:
+                continue
+            if scene_filter and _actor_key(record.scene_id) != scene_filter:
                 continue
             if not self._state_record_visible_to(record, actor_id):
                 continue
@@ -891,15 +1150,38 @@ class World:
                     _state_record_kind(record.kind),
                     record.owner,
                     record.subject,
+                    record.entity_id,
+                    record.source_npc,
+                    record.location_id,
+                    record.location_name,
+                    record.region_id,
+                    record.region_name,
+                    record.scene_id,
+                    record.importance,
                     _state_record_scope(record.scope),
                     *record.tags,
+                    *record.aliases,
                 )
                 if value
             )
+            context_bits = []
+            if record.region_name or record.region_id:
+                context_bits.append(f"region: {_anchor_label(record.region_name, record.region_id)}")
+            if record.location_name or record.location_id:
+                context_bits.append(f"location: {_anchor_label(record.location_name, record.location_id)}")
+            if record.scene_id:
+                context_bits.append(f"scene: {record.scene_id}")
+            if record.aliases:
+                context_bits.append("aliases: " + ", ".join(record.aliases))
+            if record.importance:
+                context_bits.append(f"importance: {record.importance}")
+            doc_text = record.text
+            if context_bits:
+                doc_text = f"Memory context: {'; '.join(context_bits)}. {record.text}"
             docs.append(RagDocument(
                 doc_id=f"state:{record.record_id}",
                 kind=f"state_{_state_record_kind(record.kind)}",
-                text=record.text,
+                text=doc_text,
                 status=record.status,
                 source=record.source or record.record_id,
                 visibility=_state_record_scope(record.scope),
@@ -911,6 +1193,15 @@ class World:
                     "scope": _state_record_scope(record.scope),
                     "owner": record.owner,
                     "subject": record.subject,
+                    "entity_id": record.entity_id,
+                    "source_npc": record.source_npc,
+                    "location_id": record.location_id,
+                    "location_name": record.location_name,
+                    "region_id": record.region_id,
+                    "region_name": record.region_name,
+                    "scene_id": record.scene_id,
+                    "importance": record.importance,
+                    "aliases": list(record.aliases or ()),
                     "active": record.active,
                 },
             ))
@@ -924,6 +1215,11 @@ class World:
         active: bool | None = True,
         owner: str = "",
         subject: str = "",
+        entity_id: str = "",
+        source_npc: str = "",
+        location_id: str = "",
+        region_id: str = "",
+        scene_id: str = "",
         scopes=None,
     ) -> list[dict]:
         out = []
@@ -933,12 +1229,35 @@ class World:
             active=active,
             owner=owner,
             subject=subject,
+            entity_id=entity_id,
+            source_npc=source_npc,
+            location_id=location_id,
+            region_id=region_id,
+            scene_id=scene_id,
             scopes=scopes,
         ):
             row = vars(record).copy()
             row["hash"] = state_record_hash(record)
             out.append(row)
         return out
+
+    def npc_known_name(self, npc_id: str, actor_id: str = "player") -> str:
+        """Name/label explicitly revealed to this actor through durable state."""
+        clean_id = _actor_key(npc_id)
+        if not clean_id:
+            return ""
+        for record in reversed(self.state_records_for(actor_id, entity_id=clean_id)):
+            metadata = record.metadata if isinstance(record.metadata, dict) else {}
+            known_name = _as_str(metadata.get("known_name"))
+            if known_name:
+                return known_name
+        return ""
+
+    def npc_player_label(self, npc_id: str, actor_id: str = "player") -> str:
+        npc = self.npcs.get(_actor_key(npc_id))
+        if npc is None:
+            return _as_str(npc_id)
+        return self.npc_known_name(npc.npc_id, actor_id) or _as_str(npc.public_label) or npc.name
 
     def _ensure_npc_whereabouts(self) -> None:
         raw = getattr(self, "npc_whereabouts", {})
@@ -1026,7 +1345,7 @@ class World:
         if not npc or not row or row.status == "unknown":
             return ""
         bits = [
-            f"{npc.name} ({npc_id}, {npc.role})",
+            f"{self.npc_player_label(npc_id)} ({npc_id}, {npc.role})",
             "NOT in current scene" if npc_id not in self.scene.present_npcs else "in current scene",
             f"status: {row.status}",
         ]
@@ -1064,12 +1383,16 @@ class World:
                 metadata={"fact_id": record.fact_id, "record_kind": record.kind},
             ))
 
+        present_labels = [
+            self.npc_player_label(npc_id, actor_id)
+            for npc_id in sorted(self.scene.present_npcs)
+        ]
         docs.append(RagDocument(
             doc_id=f"scene:{self.scene.scene_id}",
             kind="scene_state",
             text=(
                 f"Текущая сцена: {self.scene.title}. {self.scene.description} "
-                f"В сцене: {', '.join(sorted(self.scene.present_npcs)) or 'нет именованных NPC'}. "
+                f"В сцене: {', '.join(present_labels) or 'нет именованных NPC'}. "
                 f"Выходы: {', '.join(exit_.name + ' -> ' + exit_.destination for exit_ in self.scene.visible_exits()) or 'нет известных выходов'}."
             ),
             status="current",
@@ -1097,18 +1420,26 @@ class World:
 
         self._ensure_npc_whereabouts()
         for npc_id, npc in self.npcs.items():
+            label = self.npc_player_label(npc_id, actor_id)
+            known_name = self.npc_known_name(npc_id, actor_id)
+            appearance = ""
+            if npc.physical_type:
+                appearance += f" Тип/внешнее впечатление: {npc.physical_type}."
+            if npc.distinctive_features:
+                appearance += f" Приметы: {npc.distinctive_features}."
             docs.append(RagDocument(
                 doc_id=f"npc_public:{npc_id}",
                 kind="npc_public",
                 text=(
-                    f"{npc.name} ({npc_id}) — {npc.role}."
+                    f"{label} ({npc_id}) — {npc.role}."
                     + (f" Род: {_public_gender(npc.pronouns)} ({npc.pronouns})." if npc.pronouns else "")
+                    + appearance
                 ),
                 status="known",
                 source="npc_roster",
                 visibility="player",
-                tags=(npc_id, npc.name, npc.role, npc.pronouns),
-                metadata={"npc_id": npc_id},
+                tags=(npc_id, label, npc.role, npc.pronouns, npc.physical_type),
+                metadata={"npc_id": npc_id, "known_name": known_name},
             ))
             where = self.npc_whereabouts.get(npc_id)
             if where and where.status != "unknown":
@@ -1117,7 +1448,7 @@ class World:
                     doc_id=f"npc_whereabouts:{npc_id}",
                     kind="npc_whereabouts",
                     text=(
-                        f"{npc.name} сейчас {present_text}. Статус местонахождения: {where.status}. "
+                        f"{label} сейчас {present_text}. Статус местонахождения: {where.status}. "
                         f"Где искать: {where.location_name or where.location_id or 'неизвестно'}."
                         + (f" Детали: {where.details}." if where.details else "")
                     ),
@@ -1126,7 +1457,7 @@ class World:
                     ),
                     source=where.source or "world_state",
                     visibility="player",
-                    tags=(npc_id, npc.name, where.location_id, where.location_name, where.status),
+                    tags=(npc_id, label, where.location_id, where.location_name, where.status),
                     metadata={"npc_id": npc_id, "location_id": where.location_id},
                 ))
 
@@ -1134,7 +1465,7 @@ class World:
             if "player" not in rumor.witnesses:
                 continue
             speaker = self.npcs.get(rumor.speaker)
-            speaker_name = speaker.name if speaker else rumor.speaker
+            speaker_name = self.npc_player_label(rumor.speaker, actor_id) if speaker else rumor.speaker
             docs.append(RagDocument(
                 doc_id=f"testimony:{rumor.seq}",
                 kind="testimony",
@@ -1173,7 +1504,11 @@ class World:
             if not npc:
                 continue
             p = self.scene.presence.get(npc_id)
-            detail = f"{npc.name} ({npc.role})"
+            detail = f"{self.npc_player_label(npc_id)} ({npc_id}, {npc.role})"
+            if npc.physical_type:
+                detail += f", {npc.physical_type}"
+            if npc.condition:
+                detail += f", condition: {npc.condition}"
             if npc.pronouns:
                 detail += f", род: {_public_gender(npc.pronouns)}"
             if p and p.visible:
@@ -1196,6 +1531,7 @@ class World:
         parts = [
             f"Scene: {self.scene.title}",
             f"Location: {self.scene.location_id}",
+            "World time: " + self.time_summary(),
             f"Description: {self.scene.description}",
             "Present named NPCs: " + (", ".join(present) if present else "(none)"),
             "Known offscreen NPC whereabouts: " + (
@@ -1238,13 +1574,18 @@ class World:
         status_labels = WHEREABOUTS_STATUS_LABELS
 
         def public_npc_description(npc: NPC) -> str:
-            text = _as_str(npc.persona)
-            cyrillic = len(re.findall(r"[а-яА-ЯёЁ]", text))
-            latin = len(re.findall(r"[a-zA-Z]", text))
-            if text and cyrillic >= latin:
+            visible_bits = []
+            if npc.physical_type:
+                visible_bits.append(npc.physical_type)
+            if npc.distinctive_features:
+                visible_bits.append(npc.distinctive_features)
+            if npc.condition:
+                visible_bits.append(npc.condition)
+            text = ". ".join(visible_bits)
+            if text:
                 return text
             role = f" Публичная роль: {_public_role(npc.role)}." if npc.role else ""
-            return f"Именованный персонаж текущего мира.{role} Подробности держатся в состоянии сцены."
+            return f"Конкретный персонаж текущего мира.{role} Подробности появятся, когда игрок их узнает."
 
         for npc_id in sorted(self.npcs):
             npc = self.npcs[npc_id]
@@ -1253,6 +1594,7 @@ class World:
             whereabouts = self.npc_whereabouts.get(npc_id) or NPCWhereabouts(npc_id=npc_id)
             role = _public_role(npc.role)
             pronouns = _public_gender(npc.pronouns)
+            label = self.npc_player_label(npc_id)
             where = ""
             if present:
                 where = presence.location if presence else self.scene.title
@@ -1271,8 +1613,8 @@ class World:
             add_entity(
                 "npc",
                 npc_id,
-                npc.name,
-                title=npc.name,
+                label,
+                title=label,
                 subtitle="персонаж" + (f" · {role}" if role else ""),
                 description=public_npc_description(npc),
                 meta=meta,
@@ -1348,7 +1690,10 @@ class World:
         locs = [e for e in registry if e.get("kind") == "loc"]
         npc_refs = ", ".join(f"[[npc:{e['id']}|{e['label']}]]" for e in npcs[:12]) or "(none)"
         loc_refs = ", ".join(f"[[loc:{e['id']}|{e['label']}]]" for e in locs[:12]) or "(none)"
-        return "Available entity refs:\nNPCs: " + npc_refs + "\nLocations: " + loc_refs
+        return (
+            "Available player-safe entity refs (use exact labels for specific listed entities):\n"
+            "NPCs: " + npc_refs + "\nLocations: " + loc_refs
+        )
 
     def npc_scene_slice(self, npc_id: str) -> str:
         npc = self.npcs.get(npc_id)
@@ -1636,6 +1981,250 @@ class World:
                 return npc
         raise KeyError(f"No such NPC: '{npc_id}'. Available: {list(self.npcs)}")
 
+    def time_export(self) -> dict:
+        time = getattr(self, "time", WorldTime())
+        minutes_per_hour = max(1, int(getattr(time, "minutes_per_hour", 60) or 60))
+        hours_per_day = max(1, int(getattr(time, "hours_per_day", 24) or 24))
+        day_minutes = minutes_per_hour * hours_per_day
+        absolute = max(0, int(getattr(time, "absolute_minutes", 0) or 0))
+        minute_of_day = absolute % day_minutes
+        hour = minute_of_day // minutes_per_hour
+        minute = minute_of_day % minutes_per_hour
+        return {
+            "calendar_name": _as_str(getattr(time, "calendar_name", "")),
+            "absolute_minutes": absolute,
+            "current_date_label": _as_str(getattr(time, "current_date_label", "")) or "День 1",
+            "day_number": absolute // day_minutes + 1,
+            "time_of_day": f"{hour:02d}:{minute:02d}",
+            "minutes_per_hour": minutes_per_hour,
+            "hours_per_day": hours_per_day,
+            "day_names": list(getattr(time, "day_names", []) or []),
+            "month_names": list(getattr(time, "month_names", []) or []),
+            "last_advance_minutes": max(0, int(getattr(time, "last_advance_minutes", 0) or 0)),
+            "last_advance_reason": _as_str(getattr(time, "last_advance_reason", "")),
+        }
+
+    def time_summary(self) -> str:
+        payload = self.time_export()
+        calendar = payload.get("calendar_name")
+        date = payload.get("current_date_label") or f"День {payload.get('day_number')}"
+        prefix = f"{calendar}, " if calendar else ""
+        return f"{prefix}{date}, {payload.get('time_of_day')}"
+
+    def time_context(self) -> str:
+        payload = self.time_export()
+        lines = [
+            "Current world time: " + self.time_summary(),
+            f"Previous player turn elapsed: {payload.get('last_advance_minutes', 0)} minutes",
+        ]
+        reason = _as_str(payload.get("last_advance_reason"))
+        if reason:
+            lines.append("Previous time reason: " + reason)
+        return "\n".join(lines)
+
+    def advance_time(self, minutes: Any, reason: str = "") -> dict:
+        amount = _as_int_or_none(minutes)
+        if amount is None or amount < 0:
+            raise ValueError("minutes must be a non-negative integer")
+        if not hasattr(self, "time"):
+            self.time = WorldTime()
+        before = self.time_export()
+        self.time.absolute_minutes = before["absolute_minutes"] + amount
+        self.time.last_advance_minutes = amount
+        self.time.last_advance_reason = _as_str(reason)
+        after = self.time_export()
+        return {
+            "ok": True,
+            "elapsed_minutes": amount,
+            "reason": _as_str(reason),
+            "before": before,
+            "current": after,
+            "summary": self.time_summary(),
+        }
+
+    def _apply_player_character_fields(
+        self,
+        pc: PlayerCharacter,
+        fields: dict,
+    ) -> set[str]:
+        if not isinstance(fields, dict):
+            return set()
+        text_fields = (
+            "name", "pronouns", "class_role", "background", "age",
+            "physical_type", "distinctive_features", "life_status",
+            "life_status_note", "condition", "personality", "values",
+            "gm_notes", "speed", "senses", "languages",
+        )
+        dict_fields = ("abilities", "skills", "saving_throws", "hp")
+        list_fields = ("inventory", "equipment", "features")
+        changed: set[str] = set()
+        for key in PLAYER_CHARACTER_FIELDS:
+            if key not in fields:
+                continue
+            if key in dict_fields:
+                new_value = _as_dict(fields[key])
+            elif key in list_fields:
+                new_value = [_as_str(item) for item in _as_list(fields[key]) if _as_str(item)]
+            elif key in {"level", "passive_perception"}:
+                new_value = _as_int_or_none(fields[key])
+            elif key == "ac":
+                new_value = fields[key]
+            elif key in text_fields:
+                new_value = _as_joined_str(fields[key]) if key in {"speed", "senses", "languages"} else _as_str(fields[key])
+            else:
+                continue
+            if new_value != getattr(pc, key, None):
+                setattr(pc, key, new_value)
+                changed.add(key)
+        return changed
+
+    def update_player_character(self, fields: dict, reason: str = "") -> dict:
+        if not hasattr(self, "player_character"):
+            self.player_character = PlayerCharacter()
+        pc = self.player_character
+        changed = self._apply_player_character_fields(pc, fields if isinstance(fields, dict) else {})
+        if changed:
+            pc.card_revision = int(getattr(pc, "card_revision", 0) or 0) + 1
+        return {
+            "ok": True,
+            "updated": sorted(changed),
+            "reason": _as_str(reason),
+            "card_revision": int(getattr(pc, "card_revision", 0) or 0),
+            "player_character": self.player_character_export(public=False),
+        }
+
+    def player_character_export(self, public: bool = True) -> dict:
+        pc = getattr(self, "player_character", None) or PlayerCharacter()
+        payload = {
+            "name": pc.name,
+            "pronouns": pc.pronouns,
+            "class_role": pc.class_role,
+            "level": pc.level,
+            "background": pc.background,
+            "age": pc.age,
+            "physical_type": pc.physical_type,
+            "distinctive_features": pc.distinctive_features,
+            "life_status": pc.life_status,
+            "life_status_note": pc.life_status_note,
+            "condition": pc.condition,
+            "personality": pc.personality,
+            "values": pc.values,
+            "abilities": dict(pc.abilities),
+            "skills": dict(pc.skills),
+            "saving_throws": dict(pc.saving_throws),
+            "passive_perception": pc.passive_perception,
+            "ac": pc.ac,
+            "hp": dict(pc.hp),
+            "speed": pc.speed,
+            "senses": pc.senses,
+            "languages": pc.languages,
+            "inventory": list(pc.inventory),
+            "equipment": list(pc.equipment),
+            "features": list(pc.features),
+            "card_revision": int(getattr(pc, "card_revision", 0) or 0),
+        }
+        if not public:
+            payload["gm_notes"] = pc.gm_notes
+        return payload
+
+    @staticmethod
+    def _context_value_empty(value: Any) -> bool:
+        return value is None or value == "" or value == {} or value == []
+
+    def player_character_context(self) -> str:
+        pc = getattr(self, "player_character", None) or PlayerCharacter()
+        mechanics = {
+            "abilities": pc.abilities,
+            "skills": pc.skills,
+            "saving_throws": pc.saving_throws,
+            "passive_perception": pc.passive_perception,
+            "ac": pc.ac,
+            "hp": pc.hp,
+            "speed": pc.speed,
+            "senses": pc.senses,
+            "languages": pc.languages,
+        }
+        mechanics = {
+            key: value for key, value in mechanics.items()
+            if not self._context_value_empty(value)
+        }
+        lines = [
+            f"Name: {pc.name}",
+            f"Pronouns: {pc.pronouns}",
+        ]
+        for label, value in (
+            ("Class/role", pc.class_role),
+            ("Level", pc.level),
+            ("Background", pc.background),
+            ("Age", pc.age),
+            ("Type/size/appearance", pc.physical_type),
+            ("Distinctive features", pc.distinctive_features),
+            ("Life status", pc.life_status),
+            ("Life status note", pc.life_status_note),
+            ("Condition", pc.condition),
+            ("Personality", pc.personality),
+            ("Values", pc.values),
+        ):
+            if not self._context_value_empty(value):
+                lines.append(f"{label}: {value}")
+        if mechanics:
+            lines.append(
+                "Mechanics: " + json.dumps(
+                    mechanics, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+            )
+        for label, items in (
+            ("Inventory", pc.inventory),
+            ("Equipment", pc.equipment),
+            ("Features", pc.features),
+        ):
+            values = [_as_str(item) for item in items if _as_str(item)]
+            if values:
+                lines.append(f"{label}: " + "; ".join(values))
+        if pc.gm_notes:
+            lines.append("GM notes: " + pc.gm_notes)
+        lines.append(f"Card revision: {int(getattr(pc, 'card_revision', 0) or 0)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _profile_empty(value: Any) -> bool:
+        return value is None or value == "" or value == {} or value == []
+
+    def npc_profile(self, npc_id: str, preset: str = "visible", fields=None) -> dict:
+        npc = self.resolve(npc_id)
+        clean_preset = _safe_id(_as_str(preset), "visible")
+        if clean_preset not in NPC_PROFILE_PRESETS:
+            clean_preset = "visible"
+
+        wanted: list[str] = list(NPC_PROFILE_PRESETS[clean_preset])
+        ignored: list[str] = []
+        for raw in _as_list(fields):
+            field_name = _safe_id(_as_str(raw), "")
+            if not field_name:
+                continue
+            if field_name in NPC_PROFILE_FIELDS and field_name not in wanted:
+                wanted.append(field_name)
+            elif field_name not in NPC_PROFILE_FIELDS:
+                ignored.append(_as_str(raw))
+
+        profile = {}
+        for field_name in wanted:
+            value = getattr(npc, field_name, None)
+            if self._profile_empty(value):
+                continue
+            profile[field_name] = value
+
+        label = self.npc_player_label(npc.npc_id)
+        return {
+            "status": "known",
+            "npc_id": npc.npc_id,
+            "label": label,
+            "preset": clean_preset,
+            "card_revision": int(getattr(npc, "card_revision", 0) or 0),
+            "profile": profile,
+            "ignored_fields": ignored,
+        }
+
     # --- Dice tool (deterministic, in code) -------------------------------
     @staticmethod
     def _coerce_int(value: Any) -> int | None:
@@ -1735,6 +2324,9 @@ class World:
         return {
             "ok": True,
             "notation": notation,
+            "sides": sides,
+            "count": count,
+            "keep": keep_raw,
             "rolls": rolls,
             "kept": kept,
             "modifier": mod,
@@ -1755,16 +2347,54 @@ class World:
         target_kind: str = "",
         roll_kind: str = "",
     ) -> tuple[int, str]:
+        payload = self.roll_outcome_payload(notation, target_number, target_kind, roll_kind)
+        return int(payload.get("total", 0) or 0), str(payload.get("detail", ""))
+
+    def roll_outcome_payload(
+        self,
+        notation: str,
+        target_number: Any = None,
+        target_kind: str = "",
+        roll_kind: str = "",
+    ) -> dict:
         data = self._roll_data(notation)
         total = int(data["total"])
         detail = str(data["detail"])
         if not data.get("ok"):
-            return total, detail
+            return {
+                "ok": False,
+                "notation": notation,
+                "total": total,
+                "grade": "invalid",
+                "detail": detail,
+            }
+
+        # Physical dice geometry (faces actually rolled) so a renderer can show the
+        # real result instead of re-rolling or re-parsing the notation. The model-facing
+        # compact payload whitelists fields, so these never reach the model.
+        geometry = {
+            "sides": data.get("sides"),
+            "count": data.get("count"),
+            "keep": data.get("keep"),
+            "rolls": data.get("rolls"),
+            "kept": data.get("kept"),
+            "modifier": data.get("modifier"),
+            "forced": data.get("forced"),
+        }
 
         kind = self._roll_kind(roll_kind)
         target = self._coerce_int(target_number)
         if kind not in {"check", "save", "attack", "contest"} or target is None:
-            return total, f"{detail}: grade=ungraded"
+            return {
+                "ok": True,
+                "notation": data.get("notation", notation),
+                "roll_kind": kind or "roll",
+                "total": total,
+                "grade": "ungraded",
+                "natural": data.get("natural"),
+                "detail": f"{detail}: grade=ungraded",
+                **geometry,
+            }
 
         margin = total - target
         grade = self._grade_from_margin(margin)
@@ -1776,24 +2406,52 @@ class World:
             grade = "critical_failure"
 
         target_label = self._target_label(target_kind, kind)
-        return total, f"{detail} vs {target_label} {target}: grade={grade}, margin={margin:+d}{natural_note}"
+        return {
+            "ok": True,
+            "notation": data.get("notation", notation),
+            "roll_kind": kind,
+            "target_kind": target_label,
+            "target_number": target,
+            "total": total,
+            "grade": grade,
+            "margin": margin,
+            "natural": natural,
+            "detail": f"{detail} vs {target_label} {target}: grade={grade}, margin={margin:+d}{natural_note}",
+            **geometry,
+        }
 
     # --- Debug / authoring mutators ---------------------------------------
     def update_npc(self, npc_id: str, fields: dict) -> bool:
         npc = self.npcs.get(npc_id)
         if npc is None or not isinstance(fields, dict):
             return False
-        editable = ("name", "color", "role", "pronouns", "persona", "voice",
-                    "goals", "knowledge", "secret")
+        text_fields = (
+            "name", "color", "role", "pronouns", "public_label", "age",
+            "physical_type", "distinctive_features", "life_status",
+            "life_status_note", "condition", "persona", "personality", "values",
+            "habits", "pressure_response", "boundaries", "voice", "goals",
+            "knowledge", "secret", "speed", "senses", "languages",
+        )
+        dict_fields = ("abilities", "skills", "saving_throws", "hp")
+        scalar_fields = ("passive_perception", "ac")
+        editable = text_fields + dict_fields + scalar_fields
         # Content fields bump card_revision when they actually change. "color" is
         # editable but cosmetic, so color-only edits must not bump the revision.
-        content = ("name", "role", "pronouns", "persona", "voice",
-                   "goals", "knowledge", "secret")
+        content = tuple(field for field in editable if field != "color")
         content_changed = False
         for key in editable:
             if key not in fields:
                 continue
-            new_value = _as_str(fields[key])
+            if key in dict_fields:
+                new_value = _as_dict(fields[key])
+            elif key == "passive_perception":
+                new_value = _as_int_or_none(fields[key])
+            elif key == "ac":
+                new_value = fields[key]
+            elif key in {"speed", "senses", "languages"}:
+                new_value = _as_joined_str(fields[key])
+            else:
+                new_value = _as_str(fields[key])
             if key in content and new_value != getattr(npc, key, ""):
                 content_changed = True
             setattr(npc, key, new_value)
@@ -1853,7 +2511,23 @@ class World:
                 label = "rumor" if record.kind == "rumor" or not record.confirmed else "known"
                 matches.append(f"{label}: {record.text}")
         for record in self.state_records_for(actor_id, kinds=("fact", "rumor")):
-            haystack = " ".join([record.text, *record.tags, record.owner, record.subject]).lower()
+            metadata = record.metadata if isinstance(record.metadata, dict) else {}
+            haystack = " ".join([
+                record.text,
+                *record.tags,
+                record.owner,
+                record.subject,
+                record.entity_id,
+                record.source_npc,
+                record.location_id,
+                record.location_name,
+                record.region_id,
+                record.region_name,
+                record.scene_id,
+                record.importance,
+                *record.aliases,
+                _as_str(metadata.get("known_name")),
+            ]).lower()
             hay_words = _match_words(haystack)
             if (q and q in haystack) or (q_words and q_words & hay_words):
                 label = "rumor" if record.kind == "rumor" else record.status
@@ -1866,7 +2540,7 @@ class World:
             text_words = _match_words(rumor.text)
             if q_words and q_words & text_words:
                 speaker = self.npcs.get(rumor.speaker)
-                name = speaker.name if speaker else rumor.speaker
+                name = self.npc_player_label(rumor.speaker, actor_id) if speaker else rumor.speaker
                 rumor_matches.append(f"{name} said: «{rumor.text}»")
         if rumor_matches:
             return WorldFact("unknown", "Unconfirmed statements only: "

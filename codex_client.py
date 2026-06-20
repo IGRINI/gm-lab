@@ -207,13 +207,19 @@ def convert_tool_for_responses(tool: dict) -> dict:
     if tool.get("type") != "function":
         return tool
     fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
-    parameters = strict_schema_for_responses(fn.get("parameters") or {})
+    strict = bool(fn.get("strict", True))
+    source_parameters = fn.get("parameters") or {}
+    parameters = (
+        strict_schema_for_responses(source_parameters)
+        if strict
+        else copy.deepcopy(source_parameters)
+    )
     return {
         "type": "function",
         "name": fn.get("name", ""),
         "description": fn.get("description", ""),
         "parameters": parameters,
-        "strict": bool(fn.get("strict", True)),
+        "strict": strict,
     }
 
 

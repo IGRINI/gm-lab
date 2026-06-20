@@ -64,6 +64,26 @@ assert tool == {
     "strict": True,
 }
 
+loose_source_parameters = {"type": "object", "properties": {
+    "fields": {"type": "object", "properties": {
+        "condition": {"type": "string"},
+        "hp": {"type": "object"},
+    }, "additionalProperties": False},
+    "reason": {"type": "string"},
+}, "required": ["fields", "reason"], "additionalProperties": False}
+loose_tool = convert_tool_for_responses({
+    "type": "function",
+    "function": {
+        "name": "update_player_character",
+        "strict": False,
+        "description": "Patch player character",
+        "parameters": loose_source_parameters,
+    },
+})
+assert loose_tool["strict"] is False
+assert loose_tool["parameters"] == loose_source_parameters
+assert "required" not in loose_tool["parameters"]["properties"]["fields"]
+
 strict_nested = strict_schema_for_responses({
     "type": "object",
     "properties": {
@@ -100,8 +120,18 @@ real_tools = {
         for raw_tool in agents.build_gm_tools(world_mod.World())
     )
 }
-for real_tool in real_tools.values():
+for name, real_tool in real_tools.items():
+    if name in {"update_player_character", "update_world_state"}:
+        continue
     _assert_strict_objects(real_tool["parameters"])
+
+assert real_tools["update_player_character"]["strict"] is False
+player_fields = real_tools["update_player_character"]["parameters"]["properties"]["fields"]
+assert "required" not in player_fields
+assert set(player_fields["properties"]) >= {"condition", "hp", "inventory"}
+assert real_tools["update_world_state"]["strict"] is False
+state_item = real_tools["update_world_state"]["parameters"]["properties"]["items"]["items"]
+assert state_item.get("required") == []
 
 ask_params = real_tools["ask_npc"]["parameters"]["properties"]
 assert ask_params["npc_id"]["type"] == "string"

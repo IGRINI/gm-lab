@@ -12,6 +12,7 @@ import time
 import config
 import agents
 import prompts
+import runtime_settings
 import world as world_mod
 from llm_client import extract_json_string, json_unescape, make_client
 
@@ -30,15 +31,111 @@ _OMIT = object()
 class ToolExecutionResult:
     full: str
     model: str
+    terminal: bool = False
 
 
 def _json_compact(data) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
-def _tool_result(full: str, model: str | None = None) -> ToolExecutionResult:
+_SYSTEM_REMINDER_OPEN = "<system-reminder>"
+_SYSTEM_REMINDER_CLOSE = "</system-reminder>"
+
+_TOOL_REMINDERS = {
+    "ask_npc": (
+        "After this NPC response, do a state-update pass before final narration. If "
+        "the exchange changed durable testimony, rumor, npc_memory, relationship, "
+        "goal, what an NPC knows/remembers, what the player learned privately, an "
+        "attitude, promise, threat, lead, suspicion, clue, or known_name, call "
+        "query_world_state first when a matching record may exist, then call "
+        "update_world_state; update an existing relationship/goal/memory instead "
+        "of duplicating the same thread. "
+        "Private leads from an NPC to the player are usually shared rumor plus "
+        "npc_memory, not public fact. Call update_player_character for player-sheet "
+        "changes or GM-only player notes. If time passed, call advance_time. If "
+        "nothing durable changed, do not write filler memory. Do not restate NPC speech."
+    ),
+    "roll_dice": (
+        "Use the returned total, grade, and margin as fixed. Do not change the target, "
+        "reroll, or soften the locked stakes after seeing the result."
+    ),
+    "get_world_fact": (
+        "Unknown or unconfirmed lookup results are not established facts. If you use "
+        "them, narrate uncertainty honestly and do not upgrade testimony into truth. "
+        "Player-facing narration may include only lore the player can know right now; "
+        "do not reveal hidden sources, secrets, or meta-information."
+    ),
+    "query_world_state": (
+        "Use returned id/hash for update/delete. For the same relationship, goal, or "
+        "memory thread, update the existing record instead of adding a duplicate. "
+        "Scope-limited memory is internal unless the fiction makes it available to the "
+        "player; do not reveal gm/npc-scope secrets, private thoughts, ids/hashes, or "
+        "meta-information in narration."
+    ),
+    "update_world_state": (
+        "If status is conflict or not_added, the change was not stored. Use the returned "
+        "id/hash or query_world_state before retrying; otherwise continue without "
+        "duplicating the stored note."
+    ),
+    "get_npc_profile": (
+        "Use returned mechanics/status/profile fields internally for resolution. The "
+        "player sees only observable fiction; do not reveal raw NPC stats, secrets, "
+        "private knowledge/goals, hidden card data, or meta-information."
+    ),
+    "set_npc_whereabouts": (
+        "This only updates offscreen location knowledge. If the named NPC must speak or "
+        "react, bring them into the scene if appropriate and call ask_npc."
+    ),
+    "move_npc": (
+        "This only changes current-scene presence. If this named NPC must speak or react, "
+        "call ask_npc; do not invent personal speech/action in narration."
+    ),
+    "set_scene": (
+        "Scene state is now updated. If a named NPC in this scene must speak or react, "
+        "call ask_npc; do not invent personal speech/action in narration."
+    ),
+    "update_player_character": (
+        "Use the changed character-sheet fields in future resolution. Do not reveal "
+        "GM-only player notes directly."
+    ),
+}
+
+
+def _system_reminder(text: str) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not text:
+        return ""
+    return f"{_SYSTEM_REMINDER_OPEN}\n{text}\n{_SYSTEM_REMINDER_CLOSE}"
+
+
+def _tool_result(
+    full: str,
+    model: str | None = None,
+    *,
+    reminder: str | None = None,
+    terminal: bool = False,
+) -> ToolExecutionResult:
     full = str(full or "")
-    return ToolExecutionResult(full=full, model=str(model if model is not None else full))
+    model_text = str(model if model is not None else full)
+    reminder_text = _system_reminder(reminder or "")
+    if reminder_text:
+        model_text = "\n\n".join(part for part in (model_text.rstrip(), reminder_text) if part)
+    return ToolExecutionResult(full=full, model=model_text, terminal=terminal)
+
+
+def _tool_error(tool: str, message: str, *, full: str | None = None, code: str = "", **fields) -> ToolExecutionResult:
+    payload = {
+        "ok": False,
+        "status": "error",
+        "tool": tool,
+        "error": str(message or ""),
+    }
+    if code:
+        payload["code"] = code
+    for key, value in fields.items():
+        if value is not None and value != "" and value != [] and value != {}:
+            payload[key] = value
+    return _tool_result(full or f"(tool error: {message})", _model_error_text(payload))
 
 
 def _tool_full_text(result) -> str:
@@ -47,6 +144,70 @@ def _tool_full_text(result) -> str:
 
 def _tool_model_text(result) -> str:
     return result.model if isinstance(result, ToolExecutionResult) else str(result or "")
+
+
+def _plain_lines(title: str, *lines: str) -> str:
+    out = [title]
+    out.extend(line for line in lines if line)
+    return "\n".join(out)
+
+
+def _scalar_text(value) -> str:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return ", ".join(_scalar_text(item) for item in value if _scalar_text(item))
+    if isinstance(value, dict):
+        parts = []
+        for key, child in value.items():
+            child_text = _scalar_text(child)
+            if child_text:
+                parts.append(f"{key} {child_text}")
+        return ", ".join(parts)
+    return str(value).strip()
+
+
+def _kv(label: str, value) -> str:
+    text = _scalar_text(value)
+    return f"{label}: {text}" if text else ""
+
+
+def _margin_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        return f"{int(value):+d}"
+    except (TypeError, ValueError):
+        return _scalar_text(value)
+
+
+def _row_summary(row: dict, keys: tuple[str, ...]) -> str:
+    parts = []
+    for key in keys:
+        value = row.get(key)
+        text = _scalar_text(value)
+        if text:
+            parts.append(f"{key}={text}")
+    return " ".join(parts)
+
+
+def _model_error_text(payload: dict) -> str:
+    lines = [
+        _kv("tool", payload.get("tool")),
+        _kv("code", payload.get("code")),
+        _kv("message", payload.get("error")),
+    ]
+    for key in ("npc_id", "npc_label", "whereabouts"):
+        line = _kv(key, payload.get(key))
+        if line:
+            lines.append(line)
+    return _plain_lines("ERROR", *lines)
 
 
 def _compact_sources(sources: list, limit: int = 3) -> list:
@@ -135,7 +296,7 @@ def _compact_scene_payload(payload: dict) -> dict:
 
 def _compact_ask_npc_payload(payload: dict) -> dict:
     out = {}
-    for key in ("npc_id", "npc_name", "speech_ru", "action_ru"):
+    for key in ("npc_id", "npc_label", "speech_ru", "action_ru"):
         if key in payload:
             out[key] = payload[key]
     out["already_emitted"] = True
@@ -146,6 +307,20 @@ def _compact_ask_npc_payload(payload: dict) -> dict:
         "call ask_npc for that NPC."
     )
     return out
+
+
+def _compact_roll_payload(payload: dict) -> dict:
+    return _drop_empty({
+        "ok": payload.get("ok"),
+        "notation": payload.get("notation"),
+        "roll_kind": payload.get("roll_kind"),
+        "target_kind": payload.get("target_kind"),
+        "target_number": payload.get("target_number"),
+        "total": payload.get("total"),
+        "grade": payload.get("grade"),
+        "margin": payload.get("margin"),
+        "natural": payload.get("natural"),
+    })
 
 
 def _clean_text(value) -> str:
@@ -206,6 +381,26 @@ def _normalize_update_world_state_args(value: dict) -> dict:
     return {"items": clean_items}
 
 
+def _normalize_ask_player_args(value: dict) -> dict:
+    out = {}
+    question = _clean_text(value.get("question"))
+    if question:
+        out["question"] = question
+    options = []
+    raw_options = value.get("options")
+    if isinstance(raw_options, list):
+        for item in raw_options:
+            if not isinstance(item, dict):
+                continue
+            label = _clean_text(item.get("label"))
+            message = _clean_text(item.get("message"))
+            if label and message:
+                options.append({"label": label, "message": message})
+    if options:
+        out["options"] = options
+    return out
+
+
 def _clip_text(value, limit: int = 700) -> str:
     text = _clean_text(value)
     if len(text) <= limit:
@@ -226,6 +421,16 @@ def _compact_world_state_update_payload(payload: dict) -> dict:
             ("id", "id"),
             ("npc_id", "npc_id"),
             ("target", "target"),
+            ("entity_id", "entity_id"),
+            ("source_npc", "source_npc"),
+            ("known_name", "known_name"),
+            ("location_id", "location_id"),
+            ("location_name", "location_name"),
+            ("region_id", "region_id"),
+            ("region_name", "region_name"),
+            ("scene_id", "scene_id"),
+            ("importance", "importance"),
+            ("aliases", "aliases"),
             ("scope", "scope"),
             ("mode", "mode"),
             ("hash", "hash"),
@@ -233,7 +438,7 @@ def _compact_world_state_update_payload(payload: dict) -> dict:
         ):
             if source_key in row:
                 compact[target_key] = row[source_key]
-        applied.append(compact)
+        applied.append(_drop_empty(compact))
     errors = []
     for row in payload.get("errors") or []:
         if not isinstance(row, dict):
@@ -245,6 +450,16 @@ def _compact_world_state_update_payload(payload: dict) -> dict:
             "id": row.get("id"),
             "npc_id": row.get("npc_id"),
             "target": row.get("target"),
+            "entity_id": row.get("entity_id"),
+            "source_npc": row.get("source_npc"),
+            "known_name": row.get("known_name"),
+            "location_id": row.get("location_id"),
+            "location_name": row.get("location_name"),
+            "region_id": row.get("region_id"),
+            "region_name": row.get("region_name"),
+            "scene_id": row.get("scene_id"),
+            "importance": row.get("importance"),
+            "aliases": row.get("aliases"),
             "scope": row.get("scope"),
             "existing_id": row.get("existing_id"),
             "existing_hash": row.get("existing_hash"),
@@ -270,6 +485,16 @@ def _compact_world_query_payload(payload: dict) -> dict:
             "id": row.get("id"),
             "npc_id": row.get("npc_id"),
             "target": row.get("target"),
+            "entity_id": row.get("entity_id"),
+            "source_npc": row.get("source_npc"),
+            "known_name": row.get("known_name"),
+            "location_id": row.get("location_id"),
+            "location_name": row.get("location_name"),
+            "region_id": row.get("region_id"),
+            "region_name": row.get("region_name"),
+            "scene_id": row.get("scene_id"),
+            "importance": row.get("importance"),
+            "aliases": row.get("aliases"),
             "scope": row.get("scope") or row.get("visibility"),
             "status": row.get("status"),
             "hash": row.get("hash"),
@@ -284,6 +509,289 @@ def _compact_world_query_payload(payload: dict) -> dict:
         "error": payload.get("error"),
     }
     return _drop_empty(out)
+
+
+def _compact_npc_profile_payload(payload: dict) -> dict:
+    profile = {}
+    for key, value in (payload.get("profile") or {}).items():
+        if isinstance(value, str):
+            profile[key] = _clip_text(value, 500)
+        else:
+            profile[key] = value
+    return _drop_empty({
+        "status": payload.get("status"),
+        "npc_id": payload.get("npc_id"),
+        "label": payload.get("label"),
+        "preset": payload.get("preset"),
+        "card_revision": payload.get("card_revision"),
+        "profile": profile,
+        "ignored_fields": payload.get("ignored_fields"),
+        "error": payload.get("error"),
+    })
+
+
+def _compact_time_payload(payload: dict) -> dict:
+    current = payload.get("current") if isinstance(payload.get("current"), dict) else {}
+    return _drop_empty({
+        "ok": payload.get("ok"),
+        "elapsed_minutes": payload.get("elapsed_minutes"),
+        "summary": payload.get("summary"),
+        "current": {
+            "absolute_minutes": current.get("absolute_minutes"),
+            "current_date_label": current.get("current_date_label"),
+            "day_number": current.get("day_number"),
+            "time_of_day": current.get("time_of_day"),
+        },
+        "error": payload.get("error"),
+    })
+
+
+def _compact_player_character_update_payload(payload: dict) -> dict:
+    return _drop_empty({
+        "ok": payload.get("ok"),
+        "updated": payload.get("updated"),
+        "card_revision": payload.get("card_revision"),
+        "reason": _clip_text(payload.get("reason"), 180),
+        "error": payload.get("error"),
+    })
+
+
+def _player_options_payload(args: dict) -> tuple[dict, str]:
+    question = _clip_text(args.get("question"), 180) or "Что ты делаешь дальше?"
+    raw_options = args.get("options") if isinstance(args.get("options"), list) else []
+    options = []
+    for row in raw_options:
+        if not isinstance(row, dict):
+            continue
+        label = _clip_text(row.get("label"), 80)
+        message = _clip_text(row.get("message"), 700)
+        if label and message:
+            options.append({"label": label, "message": message})
+    if len(options) < 4:
+        return {}, "ask_player requires at least 4 options with label and message"
+    return {"question": question, "options": options[:8]}, ""
+
+
+def _model_player_options_text(payload: dict) -> str:
+    options = payload.get("options") if isinstance(payload.get("options"), list) else []
+    return _plain_lines(
+        "PLAYER OPTIONS",
+        _kv("shown", len(options)),
+    )
+
+
+def _model_tool_search_text(payload: dict) -> str:
+    loaded = list(payload.get("loaded_tools") or [])
+    missing = list(payload.get("missing") or [])
+    lines = [
+        _kv("loaded", loaded if loaded else "none"),
+        _kv("missing", missing if missing else "none"),
+    ]
+    return _plain_lines("TOOL SEARCH", *lines)
+
+
+def _model_roll_text(payload: dict) -> str:
+    compact = _compact_roll_payload(payload)
+    parts = []
+    if "total" in compact:
+        parts.append(f"total {compact['total']}")
+    if compact.get("grade"):
+        parts.append(str(compact["grade"]))
+    if "margin" in compact:
+        parts.append(f"margin {_margin_text(compact.get('margin'))}")
+    if "natural" in compact:
+        parts.append(f"natural {compact['natural']}")
+    return "RESULT: " + ", ".join(parts) + "."
+
+
+def _model_world_fact_text(payload: dict) -> str:
+    compact = _compact_world_fact_payload(payload)
+    lines = [
+        _kv("status", compact.get("status")),
+        _kv("text", _clip_text(compact.get("text"), 700)),
+    ]
+    sources = []
+    for source in compact.get("sources") or []:
+        summary = _row_summary(source, ("n", "kind", "status", "source"))
+        if summary:
+            sources.append(f"- {summary}")
+    if sources:
+        lines.append("sources:")
+        lines.extend(sources)
+    return _plain_lines("WORLD FACT", *lines)
+
+
+def _model_world_state_update_text(payload: dict) -> str:
+    compact = _compact_world_state_update_payload(payload)
+    lines = [_kv("ok", compact.get("ok"))]
+    applied = compact.get("applied") or []
+    if applied:
+        lines.append("applied:")
+        for row in applied:
+            summary = _row_summary(row, (
+                "i", "status", "op", "type", "id", "hash", "scope", "npc_id",
+                "target", "entity_id", "source_npc", "known_name", "location_id",
+                "region_id", "scene_id",
+            ))
+            if summary:
+                lines.append(f"- {summary}")
+    errors = compact.get("errors") or []
+    if errors:
+        lines.append("not stored:")
+        for row in errors:
+            summary = _row_summary(row, (
+                "i", "status", "op", "type", "id", "existing_id",
+                "existing_hash", "expected_hash", "actual_hash", "scope",
+                "npc_id", "target", "entity_id", "error",
+            ))
+            if summary:
+                lines.append(f"- {summary}")
+    return _plain_lines("WORLD STATE WRITE", *lines)
+
+
+def _model_world_query_text(payload: dict) -> str:
+    compact = _compact_world_query_payload(payload)
+    lines = [
+        _kv("status", compact.get("status")),
+        _kv("text", _clip_text(compact.get("text"), 500)),
+    ]
+    results = compact.get("results") or []
+    lines.append(_kv("found", len(results)))
+    if results:
+        lines.append("results:")
+        for row in results:
+            summary = _row_summary(row, (
+                "kind", "id", "hash", "scope", "npc_id", "target", "entity_id",
+                "source_npc", "known_name", "location_id", "location_name",
+                "region_id", "scene_id", "importance", "status",
+            ))
+            text = _clip_text(row.get("text"), 500)
+            if text:
+                summary = f"{summary} text={text}" if summary else f"text={text}"
+            if summary:
+                lines.append(f"- {summary}")
+    return _plain_lines("WORLD STATE QUERY", *lines)
+
+
+def _model_npc_profile_text(payload: dict) -> str:
+    compact = _compact_npc_profile_payload(payload)
+    lines = [
+        _kv("status", compact.get("status")),
+        _kv("npc", compact.get("npc_id")),
+        _kv("label", compact.get("label")),
+        _kv("revision", compact.get("card_revision")),
+    ]
+    profile = compact.get("profile") or {}
+    if profile:
+        lines.append("fields:")
+        for key, value in profile.items():
+            value_text = _scalar_text(value)
+            if value_text:
+                lines.append(f"- {key}: {value_text}")
+    ignored = compact.get("ignored_fields") or []
+    if ignored:
+        lines.append(_kv("ignored", ignored))
+    if compact.get("error"):
+        lines.append(_kv("error", compact.get("error")))
+    return _plain_lines("NPC PROFILE", *lines)
+
+
+def _model_time_text(payload: dict) -> str:
+    compact = _compact_time_payload(payload)
+    current = compact.get("current") if isinstance(compact.get("current"), dict) else {}
+    lines = [
+        _kv("ok", compact.get("ok")),
+        _kv("elapsed", f"{compact.get('elapsed_minutes')} min" if "elapsed_minutes" in compact else ""),
+        _kv("now", ", ".join(part for part in (
+            _scalar_text(current.get("current_date_label")),
+            _scalar_text(current.get("time_of_day")),
+        ) if part)),
+        _kv("absolute_minutes", current.get("absolute_minutes")),
+        _kv("summary", compact.get("summary")),
+        _kv("error", compact.get("error")),
+    ]
+    return _plain_lines("TIME", *lines)
+
+
+def _model_player_character_update_text(payload: dict) -> str:
+    compact = _compact_player_character_update_payload(payload)
+    return _plain_lines(
+        "PLAYER CHARACTER UPDATE",
+        _kv("ok", compact.get("ok")),
+        _kv("updated", compact.get("updated")),
+        _kv("revision", compact.get("card_revision")),
+        _kv("error", compact.get("error")),
+    )
+
+
+def _model_whereabouts_text(payload: dict) -> str:
+    compact = _compact_whereabouts_payload(payload)
+    whereabouts = compact.get("whereabouts") if isinstance(compact.get("whereabouts"), dict) else {}
+    lines = [
+        _kv("npc", compact.get("npc_id")),
+        _kv("label", compact.get("name")),
+        _kv("present", compact.get("present")),
+        _kv("status", whereabouts.get("status")),
+        _kv("location", whereabouts.get("location_name") or whereabouts.get("location_id")),
+        _kv("details", _clip_text(whereabouts.get("details"), 300)),
+    ]
+    return _plain_lines("NPC WHEREABOUTS", *lines)
+
+
+def _model_presence_text(payload: dict) -> str:
+    compact = _compact_presence_payload(payload)
+    whereabouts = compact.get("whereabouts") if isinstance(compact.get("whereabouts"), dict) else {}
+    lines = [
+        _kv("npc", compact.get("npc_id")),
+        _kv("label", compact.get("name")),
+        _kv("present", compact.get("present")),
+        _kv("scene", compact.get("scene")),
+        _kv("whereabouts", whereabouts.get("status")),
+    ]
+    return _plain_lines("NPC PRESENCE", *lines)
+
+
+def _model_scene_text(payload: dict) -> str:
+    compact = _compact_scene_payload(payload)
+    lines = [
+        _kv("scene_id", compact.get("scene_id")),
+        _kv("location_id", compact.get("location_id")),
+        _kv("title", compact.get("title")),
+        _kv("present_npcs", compact.get("present_npcs")),
+        _kv("dropped_present_npcs", compact.get("dropped_present_npcs")),
+        _kv("repair_hint", compact.get("repair_hint")),
+    ]
+    items = compact.get("items") or []
+    if items:
+        lines.append("items:")
+        for item in items:
+            summary = _row_summary(item, ("item_id", "name", "visible", "portable"))
+            if summary:
+                lines.append(f"- {summary}")
+    exits = compact.get("exits") or []
+    if exits:
+        lines.append("exits:")
+        for exit_ in exits:
+            summary = _row_summary(exit_, ("exit_id", "name", "destination", "visible", "blocked_by"))
+            if summary:
+                lines.append(f"- {summary}")
+    return _plain_lines("SCENE SAVED", *lines)
+
+
+def _model_ask_npc_text(payload: dict) -> str:
+    compact = _compact_ask_npc_payload(payload)
+    label = compact.get("npc_label") or compact.get("npc_id")
+    npc_line = label
+    if label and compact.get("npc_id") and label != compact.get("npc_id"):
+        npc_line = f"{label} ({compact.get('npc_id')})"
+    return _plain_lines(
+        "NPC RESULT",
+        _kv("npc", npc_line),
+        _kv("speech", compact.get("speech_ru")),
+        _kv("action", compact.get("action_ru")),
+        "already_emitted: yes",
+        "final_narration: only new non-NPC consequences; ask_npc for another named NPC reaction.",
+    )
 
 
 def _visibility(value, default: str) -> str:
@@ -379,6 +887,9 @@ def _hash_conflict_error(index: int, op: str, item_type: str, record, expected_h
         "id": getattr(record, "record_id", ""),
         "npc_id": getattr(record, "owner", ""),
         "target": getattr(record, "subject", ""),
+        "location_id": getattr(record, "location_id", ""),
+        "region_id": getattr(record, "region_id", ""),
+        "scene_id": getattr(record, "scene_id", ""),
         "scope": _state_visibility_from_scope(getattr(record, "scope", "")),
         "expected_hash": expected_hash,
         "actual_hash": actual_hash,
@@ -459,12 +970,69 @@ def _apply_state_record_item(
             if error:
                 return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": error}
         target = _clean_text(item.get("target"))
+        entity_id = _clean_text(item.get("entity_id") or item.get("entity") or item.get("about"))
+        source_npc = _clean_text(item.get("source_npc") or item.get("source_npc_id"))
+        known_name = _clean_text(item.get("known_name"))
+        location_id = _clean_text(item.get("location_id"))
+        location_name = _clean_text(item.get("location_name"))
+        region_id = _clean_text(item.get("region_id"))
+        region_name = _clean_text(item.get("region_name"))
+        scene_id = _clean_text(item.get("scene_id"))
+        importance = _clean_text(item.get("importance"))
+        aliases = _clean_list(item.get("aliases"))
+        if source_npc:
+            source_npc, error = _resolve_npc_id(world, source_npc)
+            if error:
+                return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": error}
+        if known_name:
+            known_entity_id = entity_id or getattr(existing_record, "entity_id", "")
+            if not known_entity_id:
+                return None, {
+                    "index": index,
+                    "op": op,
+                    "type": item_type,
+                    "id": record_id,
+                    "error": "entity_id is required when setting known_name",
+                }
+            known_entity_id, error = _resolve_npc_id(world, known_entity_id)
+            if error:
+                return None, {
+                    "index": index,
+                    "op": op,
+                    "type": item_type,
+                    "id": record_id,
+                    "entity_id": known_entity_id,
+                    "error": "known_name requires entity_id to be an NPC id",
+                }
+            entity_id = known_entity_id
         if owner:
             update_payload["owner"] = owner
         if target:
             update_payload["subject"] = target
+        if entity_id:
+            update_payload["entity_id"] = entity_id
+        if source_npc:
+            update_payload["source_npc"] = source_npc
+        if "location_id" in item:
+            update_payload["location_id"] = location_id
+        if "location_name" in item:
+            update_payload["location_name"] = location_name
+        if "region_id" in item:
+            update_payload["region_id"] = region_id
+        if "region_name" in item:
+            update_payload["region_name"] = region_name
+        if "scene_id" in item:
+            update_payload["scene_id"] = scene_id
+        if "importance" in item:
+            update_payload["importance"] = importance
+        if "aliases" in item:
+            update_payload["aliases"] = aliases
         if source:
             update_payload["source"] = source
+        if known_name:
+            metadata = dict(getattr(existing_record, "metadata", {}) or {})
+            metadata["known_name"] = known_name
+            update_payload["metadata"] = metadata
         if "active" in item:
             update_payload["active"] = item.get("active")
         records = world.update_state_records([update_payload])
@@ -478,6 +1046,16 @@ def _apply_state_record_item(
             "id": record.record_id,
             "npc_id": record.owner,
             "target": record.subject,
+            "entity_id": record.entity_id,
+            "source_npc": record.source_npc,
+            "known_name": (record.metadata or {}).get("known_name", ""),
+            "location_id": record.location_id,
+            "location_name": record.location_name,
+            "region_id": record.region_id,
+            "region_name": record.region_name,
+            "scene_id": record.scene_id,
+            "importance": record.importance,
+            "aliases": list(record.aliases or ()),
             "scope": _state_visibility_from_scope(record.scope),
             "hash": _state_record_hash(record),
             "status": "updated",
@@ -485,6 +1063,37 @@ def _apply_state_record_item(
 
     owner = ""
     target = _clean_text(item.get("target"))
+    entity_id = _clean_text(item.get("entity_id") or item.get("entity") or item.get("about"))
+    source_npc = _clean_text(item.get("source_npc") or item.get("source_npc_id"))
+    known_name = _clean_text(item.get("known_name"))
+    location_id = _clean_text(item.get("location_id"))
+    location_name = _clean_text(item.get("location_name"))
+    region_id = _clean_text(item.get("region_id"))
+    region_name = _clean_text(item.get("region_name"))
+    scene_id = _clean_text(item.get("scene_id"))
+    importance = _clean_text(item.get("importance"))
+    aliases = _clean_list(item.get("aliases"))
+    if source_npc:
+        source_npc, error = _resolve_npc_id(world, source_npc)
+        if error:
+            return None, {"index": index, "op": op, "type": item_type, "error": error}
+    if known_name:
+        if not entity_id:
+            return None, {
+                "index": index,
+                "op": op,
+                "type": item_type,
+                "error": "entity_id is required when setting known_name",
+            }
+        entity_id, error = _resolve_npc_id(world, entity_id)
+        if error:
+            return None, {
+                "index": index,
+                "op": op,
+                "type": item_type,
+                "entity_id": entity_id,
+                "error": "known_name requires entity_id to be an NPC id",
+            }
     needs_npc = item_type in {"npc_memory", "relationship", "goal", "goals"} or scope in {"npc", "shared"}
     if needs_npc:
         owner, error = _resolve_npc_id(world, item.get("npc_id", ""))
@@ -523,6 +1132,15 @@ def _apply_state_record_item(
                     "type": item_type,
                     "npc_id": owner,
                     "target": target,
+                    "entity_id": entity_id,
+                    "source_npc": source_npc,
+                    "location_id": location_id,
+                    "location_name": location_name,
+                    "region_id": region_id,
+                    "region_name": region_name,
+                    "scene_id": scene_id,
+                    "importance": importance,
+                    "aliases": aliases,
                     "scope": scope,
                     "existing_id": existing[0].record_id,
                     "existing_hash": _state_record_hash(existing[0]),
@@ -549,7 +1167,23 @@ def _apply_state_record_item(
         "subject": target,
         "source": source or "gm_tool",
         "status": status,
+        "entity_id": entity_id,
+        "source_npc": source_npc,
     }
+    for key, value in (
+        ("location_id", location_id),
+        ("location_name", location_name),
+        ("region_id", region_id),
+        ("region_name", region_name),
+        ("scene_id", scene_id),
+        ("importance", importance),
+    ):
+        if value:
+            record_payload[key] = value
+    if aliases:
+        record_payload["aliases"] = aliases
+    if known_name:
+        record_payload["metadata"] = {"known_name": known_name}
     records = world.add_state_records([record_payload])
     if not records:
         return None, {"index": index, "op": op, "type": item_type, "error": "state record was not stored"}
@@ -561,6 +1195,16 @@ def _apply_state_record_item(
         "id": record.record_id,
         "npc_id": owner,
         "target": target,
+        "entity_id": record.entity_id,
+        "source_npc": record.source_npc,
+        "known_name": (record.metadata or {}).get("known_name", ""),
+        "location_id": record.location_id,
+        "location_name": record.location_name,
+        "region_id": record.region_id,
+        "region_name": record.region_name,
+        "scene_id": record.scene_id,
+        "importance": record.importance,
+        "aliases": list(record.aliases or ()),
         "scope": scope,
         "mode": mode if item_type in {"goal", "goals"} and mode == "replace" else "",
         "hash": _state_record_hash(record),
@@ -735,7 +1379,12 @@ def _scored_rows(query: str, rows: list[dict], limit: int) -> list[dict]:
     for row in rows:
         search_text = " ".join(
             _clean_text(row.get(key))
-            for key in ("kind", "id", "npc_id", "target", "scope", "visibility", "status", "text")
+            for key in (
+                "kind", "id", "npc_id", "target", "entity_id", "source_npc",
+                "known_name", "location_id", "location_name", "region_id",
+                "region_name", "scene_id", "importance", "aliases", "scope",
+                "visibility", "status", "text",
+            )
             if _clean_text(row.get(key))
         )
         score = _score_query_text(query, terms, search_text)
@@ -768,12 +1417,23 @@ def _state_record_rows(world: world_mod.World, actor_id: str) -> list[dict]:
         return []
     rows = []
     for record in state_records_for(actor_id):
+        metadata = record.metadata if isinstance(record.metadata, dict) else {}
         rows.append(_query_row(
             f"state_{record.kind}",
             record.text,
             id=record.record_id,
             npc_id=record.owner,
             target=record.subject,
+            entity_id=record.entity_id,
+            source_npc=record.source_npc,
+            known_name=metadata.get("known_name", ""),
+            location_id=record.location_id,
+            location_name=record.location_name,
+            region_id=record.region_id,
+            region_name=record.region_name,
+            scene_id=record.scene_id,
+            importance=record.importance,
+            aliases=", ".join(record.aliases or ()),
             visibility=_state_visibility_from_scope(record.scope),
             status=record.status,
             hash=_state_record_hash(record),
@@ -911,6 +1571,11 @@ def _compact_tool_value(schema: dict, value, required: bool):
         if not isinstance(value, dict):
             return value
         props = props if isinstance(props, dict) else {}
+        if not props:
+            clean = _drop_empty(value)
+            if required or not _is_empty_value(clean):
+                return clean
+            return _OMIT
         required_keys = set(schema.get("required") or [])
         out = {}
         for key, prop_schema in props.items():
@@ -930,7 +1595,7 @@ def _compact_tool_value(schema: dict, value, required: bool):
         out = []
         for item in value:
             child = _compact_tool_value(item_schema, item, True) if item_schema else item
-            if child is not _OMIT:
+            if child is not _OMIT and not _is_empty_value(child):
                 out.append(child)
         return out
 
@@ -957,6 +1622,8 @@ def _normalize_tool_args(name: str, args: dict, parameters_schema: dict | None =
         return {}
     if name == "update_world_state":
         normalized = _normalize_update_world_state_args(normalized)
+    elif name == "ask_player":
+        normalized = _normalize_ask_player_args(normalized)
     return normalized if isinstance(normalized, dict) else {}
 
 
@@ -1071,6 +1738,16 @@ def _usage_from_payload(value) -> dict:
 def _msg_text(m) -> str:
     role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
     content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+    return f"{role}: {content}".strip()
+
+
+def _msg_text_for_summary(m) -> str:
+    role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "")
+    content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+    if role == "user":
+        marker = "PLAYER ACTION (latest user input, free roleplay text):"
+        if marker in content:
+            content = content.split(marker, 1)[1].strip()
     return f"{role}: {content}".strip()
 
 
@@ -1191,7 +1868,7 @@ def _maybe_compact(session):
         return
     cut = starts[-config.GM_KEEP_TURNS]
     old, recent = msgs[:cut], msgs[cut:]
-    old_text = "\n".join(t for t in (_msg_text(m) for m in old) if t)
+    old_text = "\n".join(t for t in (_msg_text_for_summary(m) for m in old) if t)
     base = (session.gm_summary + "\n" + old_text).strip()
     session.gm_summary = session.client.summarize(base, proper_nouns=session.world.proper_nouns())
     session.gm_messages = recent
@@ -1295,6 +1972,7 @@ class Session:
         self.run_usage = _empty_usage()              # накопительная статистика за текущий ран
         self.last_player_action = ""                # дословное действие игрока этого хода
         self._sid = 0                               # счётчик id для стрим-элементов
+        self._turn_time_advances: list[dict] = []    # successful advance_time calls this player turn
         # --- Лог событий и память сцены ---
         self.events: list = []                      # ЗАКОММИЧЕННЫЕ события (игрок/кубы сразу; реплики NPC — в конце хода)
         self._seq = 0                               # монотонный счётчик seq
@@ -1630,12 +2308,38 @@ def run_turn(session: Session, player_text: str):
     yield ev("meta_total", None, total)
 
 
+def _finalize_turn_time(session: Session) -> None:
+    time_state = getattr(session.world, "time", None)
+    if time_state is None:
+        return
+    advances = [
+        row for row in getattr(session, "_turn_time_advances", []) or []
+        if isinstance(row, dict)
+    ]
+    if not advances:
+        time_state.last_advance_minutes = 0
+        time_state.last_advance_reason = ""
+        return
+    total = sum(max(0, int(row.get("minutes") or 0)) for row in advances)
+    reasons = []
+    for row in advances:
+        reason = _clean_text(row.get("reason"))
+        if reason:
+            reasons.append(reason)
+    time_state.last_advance_minutes = total
+    time_state.last_advance_reason = "; ".join(reasons)[:300]
+
+
 def _drive(session: Session, player_text: str, metas: list):
     world = session.world
+    include_player_options_tool = runtime_settings.gm_suggest_options_enabled()
     session.turn += 1
     session.last_player_action = player_text
     session._turn_player_event = None
-    session.gm_messages.append(agents.gm_user_message(world, player_text))
+    session._turn_time_advances = []
+    session.gm_messages.append(
+        agents.gm_user_message(world, player_text, include_player_options_tool)
+    )
     yield ev("player", "Игрок", player_text)
     _maybe_compact(session)                          # держим историю ГМ в рамках num_ctx
 
@@ -1648,6 +2352,7 @@ def _drive(session: Session, player_text: str, metas: list):
             session.gm_messages,
             session.gm_summary,
             session.loaded_gm_tools,
+            include_player_options_tool,
         )
         content_deltas: list[str] = []
         try:
@@ -1703,6 +2408,7 @@ def _drive(session: Session, player_text: str, metas: list):
                 yield ev("delta", "ГМ", {"channel": "gm_narration", "text": prelude_text}, sid)
             yield ev("gm_narration", "ГМ", prelude_text, sid)
 
+        terminal_after_tools = False
         for call in calls:
             name, args = call["name"], call["arguments"]
             yield ev("gm_tool_call", "ГМ", {"name": name, "arguments": args})
@@ -1710,12 +2416,19 @@ def _drive(session: Session, player_text: str, metas: list):
             yield ev("tool_result", name, _tool_full_text(result))
             session.gm_messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                         "content": _tool_model_text(result)})
+            if isinstance(result, ToolExecutionResult) and result.terminal:
+                terminal_after_tools = True
+        if terminal_after_tools:
+            fell_through = False
+            break
 
     if fell_through:
         yield ev("error", "ГМ", "Превышен лимит вызовов инструментов за ход.")
 
     if session._turn_player_event is None:
         session.record_public("player", "speech", speech=player_text)
+
+    _finalize_turn_time(session)
 
     # Конец хода: зафиксировать черновики NPC в лог + их память (видны на след. ходу).
     session.commit_turn()
@@ -1776,6 +2489,7 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             args.get("query", ""),
             args.get("max_results", 5),
             session.loaded_gm_tools,
+            runtime_settings.gm_suggest_options_enabled(),
         )
         for tool_name in payload.get("loaded_tools") or []:
             session.loaded_gm_tools.add(str(tool_name))
@@ -1787,31 +2501,49 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
         if payload.get("missing"):
             lines.append("Не найдено: " + ", ".join(payload["missing"]))
         yield ev("tool_search", "ГМ", "\n".join(line for line in lines if line))
-        return _tool_result(_json_compact(payload), _json_compact(_compact_tool_search_payload(payload)))
+        return _tool_result(_json_compact(payload), _model_tool_search_text(payload))
+    if name == "ask_player":
+        payload, error = _player_options_payload(args)
+        if error:
+            yield ev("error", "ГМ", error)
+            return _tool_error(
+                "ask_player",
+                error,
+                code="not_enough_options",
+                count=len(args.get("options") or []) if isinstance(args.get("options"), list) else 0,
+            )
+        yield ev("player_options", "ГМ", payload)
+        model_text = _model_player_options_text(payload)
+        return _tool_result(model_text, model_text, terminal=True)
     if name == "roll_dice":
-        total, detail = world.roll_for_outcome(
+        payload = world.roll_outcome_payload(
             args.get("notation", "1d20"),
             target_number=args.get("target_number"),
             target_kind=args.get("target_kind", ""),
             roll_kind=args.get("roll_kind", ""),
         )
-        yield ev("dice", "ГМ", detail)
+        detail = str(payload.get("detail", ""))
+        # Stream the full structured roll (faces, kept dice, modifier, grade) so the
+        # UI can animate real dice; the text `detail` stays available on payload for
+        # older clients and is what we record into the public event log.
+        yield ev("dice", "ГМ", payload)
         session.record_public("gm", "dice", action=detail)
-        return _tool_result(detail)
+        return _tool_result(
+            detail,
+            _model_roll_text(payload),
+            reminder=_TOOL_REMINDERS["roll_dice"],
+        )
     if name == "get_world_fact":
         fact = world.fact(args.get("query", ""))
         payload = fact.as_tool_payload()
-        source_lines = []
-        for source in payload.get("sources") or []:
-            source_lines.append(
-                f"[{source.get('n')}] {source.get('kind')} · {source.get('status')} · "
-                f"{source.get('source')} · score {source.get('score')}"
-            )
-        debug_text = f"{payload['status']}: {payload['text']}"
-        if source_lines:
-            debug_text += "\n\nsources:\n" + "\n".join(source_lines)
-        yield ev("world_fact", "ГМ", debug_text)
-        return _tool_result(_json_compact(payload), _json_compact(_compact_world_fact_payload(payload)))
+        # Stream the structured fact (status, text, sources) plus the query so the UI
+        # can render a proper lookup-result card instead of a flat debug string.
+        yield ev("world_fact", "ГМ", {**payload, "query": args.get("query", "")})
+        return _tool_result(
+            _json_compact(payload),
+            _model_world_fact_text(payload),
+            reminder=_TOOL_REMINDERS["get_world_fact"],
+        )
     if name == "update_world_state":
         payload = _apply_world_state_batch(session, args)
         if payload.get("errors"):
@@ -1820,7 +2552,8 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
         yield ev("world_state_update", "ГМ", payload)
         return _tool_result(
             _json_compact(payload),
-            _json_compact(_compact_world_state_update_payload(payload)),
+            _model_world_state_update_text(payload),
+            reminder=_TOOL_REMINDERS["update_world_state"],
         )
     if name == "query_world_state":
         payload = _query_world_state(session, args)
@@ -1830,7 +2563,54 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             yield ev("world_query", "ГМ", payload)
         return _tool_result(
             _json_compact(payload),
-            _json_compact(_compact_world_query_payload(payload)),
+            _model_world_query_text(payload),
+            reminder=_TOOL_REMINDERS["query_world_state"],
+        )
+    if name == "get_npc_profile":
+        try:
+            payload = world.npc_profile(
+                args.get("npc_id", ""),
+                preset=args.get("preset", "visible"),
+                fields=args.get("fields", []),
+            )
+        except KeyError as e:
+            payload = {"status": "error", "error": str(e), "npc_id": args.get("npc_id", "")}
+            yield ev("error", "ГМ", str(e))
+        else:
+            yield ev("npc_profile", "ГМ", payload)
+        compact = _compact_npc_profile_payload(payload)
+        return _tool_result(
+            _json_compact(compact),
+            _model_npc_profile_text(payload),
+            reminder=_TOOL_REMINDERS["get_npc_profile"],
+        )
+    if name == "advance_time":
+        try:
+            payload = world.advance_time(args.get("minutes", 0), args.get("reason", ""))
+        except ValueError as e:
+            payload = {"ok": False, "error": str(e)}
+            yield ev("error", "ГМ", str(e))
+        else:
+            if payload.get("ok"):
+                session._turn_time_advances.append({
+                    "minutes": int(payload.get("elapsed_minutes") or 0),
+                    "reason": payload.get("reason", ""),
+                })
+            yield ev("time", "ГМ", payload)
+        return _tool_result(
+            _json_compact(payload),
+            _model_time_text(payload),
+        )
+    if name == "update_player_character":
+        payload = world.update_player_character(
+            args.get("fields", {}),
+            reason=args.get("reason", ""),
+        )
+        yield ev("player_character_update", "ГМ", payload)
+        return _tool_result(
+            _json_compact(payload),
+            _model_player_character_update_text(payload),
+            reminder=_TOOL_REMINDERS["update_player_character"],
         )
     if name == "set_npc_whereabouts":
         try:
@@ -1844,9 +2624,18 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             )
         except KeyError as e:
             yield ev("error", "ГМ", str(e))
-            return _tool_result(f"(tool error: {e})")
+            return _tool_error(
+                "set_npc_whereabouts",
+                str(e),
+                npc_id=args.get("npc_id", ""),
+                code="unknown_npc",
+            )
         yield ev("npc_whereabouts", "ГМ", payload)
-        return _tool_result(_json_compact(payload), _json_compact(_compact_whereabouts_payload(payload)))
+        return _tool_result(
+            _json_compact(payload),
+            _model_whereabouts_text(payload),
+            reminder=_TOOL_REMINDERS["set_npc_whereabouts"],
+        )
     if name in ("move_npc", "set_npc_presence"):
         try:
             payload = world.set_npc_presence(
@@ -1860,9 +2649,18 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             )
         except KeyError as e:
             yield ev("error", "ГМ", str(e))
-            return _tool_result(f"(tool error: {e})")
+            return _tool_error(
+                "move_npc",
+                str(e),
+                npc_id=args.get("npc_id", ""),
+                code="unknown_npc",
+            )
         yield ev("scene_update", "ГМ", payload)
-        return _tool_result(_json_compact(payload), _json_compact(_compact_presence_payload(payload)))
+        return _tool_result(
+            _json_compact(payload),
+            _model_presence_text(payload),
+            reminder=_TOOL_REMINDERS["move_npc"],
+        )
     if name == "set_scene":
         payload = world.set_scene(
             args.get("title", ""),
@@ -1877,7 +2675,11 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
         if payload.get("repair_hint"):
             yield ev("error", "ГМ", payload["repair_hint"])
         yield ev("scene_update", "ГМ", payload)
-        return _tool_result(_json_compact(payload), _json_compact(_compact_scene_payload(payload)))
+        return _tool_result(
+            _json_compact(payload),
+            _model_scene_text(payload),
+            reminder=_TOOL_REMINDERS["set_scene"],
+        )
     if name == "ask_npc":
         npc_id = args.get("npc_id", "")
         situation = (args.get("situation") or "").strip()
@@ -1885,13 +2687,18 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             msg = ("ask_npc requires a non-empty `situation`; call ask_npc again with "
                    "`npc_id` and a neutral third-person situation.")
             yield ev("error", "ГМ", msg)
-            return _tool_result(f"(tool error: {msg})")
+            return _tool_error(
+                "ask_npc",
+                msg,
+                npc_id=npc_id,
+                code="missing_situation",
+            )
         correction = args.get("correction")
         if correction and npc_id not in session.pending:
             correction = None
         line = yield from _ask_npc(session, npc_id, situation, correction, metas)
         return line
-    return _tool_result(f"(unknown tool: {name})")
+    return _tool_error(str(name or "unknown"), f"unknown tool: {name}", code="unknown_tool")
 
 
 def _ask_npc(session: Session, npc_id: str, situation: str,
@@ -1908,7 +2715,13 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
         npc = world.resolve(npc_id)
     except KeyError as e:
         yield ev("error", "ГМ", str(e))
-        return _tool_result(f"(no such NPC: {npc_id})")
+        return _tool_error(
+            "ask_npc",
+            f"no such NPC: {npc_id}",
+            full=f"(no such NPC: {npc_id})",
+            npc_id=npc_id,
+            code="unknown_npc",
+        )
     if not world.npc_can_react(npc.npc_id):
         whereabouts = world.npc_whereabouts_summary(npc.npc_id)
         msg = (
@@ -1920,7 +2733,14 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
         if whereabouts:
             msg += " Known whereabouts: " + whereabouts
         yield ev("error", "ГМ", msg)
-        return _tool_result(f"(tool error: {msg})")
+        return _tool_error(
+            "ask_npc",
+            msg,
+            npc_id=npc.npc_id,
+            npc_label=world.npc_player_label(npc.npc_id),
+            whereabouts=whereabouts,
+            code="npc_not_present",
+        )
 
     if correction:
         yield ev("gm_reject", npc.name, correction)
@@ -1936,7 +2756,14 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
     brief = (situation or "").strip()
     if not brief:
         yield ev("error", npc.name, "NPC was called without a situation.")
-        return _tool_result(f"({npc.name} has no situation to react to)")
+        return _tool_error(
+            "ask_npc",
+            "NPC was called without a situation.",
+            full=f"({npc.name} has no situation to react to)",
+            npc_id=npc.npc_id,
+            npc_label=world.npc_player_label(npc.npc_id),
+            code="missing_situation",
+        )
     npc_client = session.ensure_npc_client(npc.npc_id) or session.client
     _maybe_compact_npc(session, npc, npc_client)
     yield ev("npc_history", npc.name, {
@@ -1974,7 +2801,14 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
         if correction:                       # провал редрафта не воскрешает отвергнутый черновик
             session.pending.pop(npc.npc_id, None)
         yield ev("error", npc.name, f"Ошибка NPC: {e}")
-        return _tool_result(f"({npc.name} stays silent)")
+        return _tool_error(
+            "ask_npc",
+            f"NPC generation failed: {e}",
+            full=f"({npc.name} stays silent)",
+            npc_id=npc.npc_id,
+            npc_label=world.npc_player_label(npc.npc_id),
+            code="npc_generation_failed",
+        )
 
     yield ev("npc_thinking", npc.name, out["reasoning"], sid)
     yield ev("npc_speech", npc.name,
@@ -1994,6 +2828,7 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
     payload = {
         "npc_id": npc.npc_id,
         "npc_name": npc.name,
+        "npc_label": world.npc_player_label(npc.npc_id),
         "speech_ru": out["speech"],
         "action_ru": out["action"],
         "gm_instruction": (
@@ -2007,4 +2842,8 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
             "named NPC's reaction; call ask_npc for that NPC if you need it."
         ),
     }
-    return _tool_result(_json_compact(payload), _json_compact(_compact_ask_npc_payload(payload)))
+    return _tool_result(
+        _json_compact(payload),
+        _model_ask_npc_text(payload),
+        reminder=_TOOL_REMINDERS["ask_npc"],
+    )

@@ -12,7 +12,7 @@ import {
 // Custom hover/focus tooltip — replaces the native title="" popup.
 // `content` may be a string (newlines honored) or any React node.
 // `as` lets the trigger render as a block element (e.g. the meta line).
-export default function Tooltip({ content, children, className, tipClassName = "", as = "span" }) {
+export default function Tooltip({ content, children, className, tipClassName = "", as = "span", style }) {
   const [open, setOpen] = useState(false);
   const refEl = useRef(null);
   const floatEl = useRef(null);
@@ -56,6 +56,7 @@ export default function Tooltip({ content, children, className, tipClassName = "
     {
       ref: refEl,
       className,
+      style,
       onMouseEnter: show,
       onMouseLeave: hide,
       onFocus: show,

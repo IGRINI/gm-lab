@@ -2,6 +2,8 @@ import { useContext } from "react";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip from "./Tooltip.jsx";
+import { ToolResultBody } from "./ToolResultCard.jsx";
+import { DiceBody, gradeAccent } from "./DiceRoll.jsx";
 import { NpcRosterContext } from "../npcContext.js";
 import { StatusLabelsContext } from "../statusContext.js";
 
@@ -16,7 +18,44 @@ const ACCENT = {
   set_scene: "var(--gm)",
   roll_dice: "var(--md-strong)",
   get_world_fact: "var(--md-link)",
+  ask_player: "var(--player)",
+  query_world_state: "var(--md-link)",
+  update_world_state: "var(--entity-note)",
+  update_player_character: "var(--player)",
+  advance_time: "var(--md-em)",
+  get_npc_profile: "var(--acc)",
+  tool_search: "var(--mut)",
   _: "var(--entity-unknown)",
+};
+
+// World-state record namespaces (update_world_state / query_world_state items).
+// Russian labels + tone keyed by the backend type enum — presentation only.
+const WS_TYPE = {
+  fact: { label: "факт", tone: "ok" },
+  rumor: { label: "слух", tone: "warn" },
+  npc_memory: { label: "память NPC", tone: "" },
+  relationship: { label: "отношение", tone: "" },
+  goal: { label: "цель", tone: "" },
+  public_lookup: { label: "публичный факт", tone: "ok" },
+};
+const WS_OP = {
+  add: { label: "добавить", tone: "ok" },
+  update: { label: "изменить", tone: "warn" },
+  delete: { label: "удалить", tone: "redo" },
+};
+const WS_SCOPE = {
+  public: "публично",
+  gm: "ГМ",
+  npc: "только NPC",
+  shared: "общее",
+  player: "игрок",
+};
+const PROFILE_PRESET = {
+  visible: "видимое",
+  social: "социальное",
+  mechanics: "механика",
+  status: "состояние",
+  identity: "личность",
 };
 
 // Status LABELS come from the backend via StatusLabelsContext (single source).
@@ -38,6 +77,13 @@ const TOOL_HELP = {
   set_scene: "Заменяет текущую сцену, когда персонаж игрока реально пришёл в новое место.",
   roll_dice: "Бросок по D&D 5e для действия с неопределённым исходом.",
   get_world_fact: "Проверка памяти мира: факты, слухи, показания и уже установленные сведения.",
+  ask_player: "ГМ предлагает игроку быстрые варианты действий. Кнопки появляются над полем ввода; свободный ввод по-прежнему доступен.",
+  query_world_state: "Поиск по памяти мира в нужной области видимости (игрок / NPC / ГМ) перед записью или решением.",
+  update_world_state: "Запись долговременной памяти мира: факты, слухи, память NPC, отношения и цели.",
+  update_player_character: "Обновление листа персонажа игрока: HP, AC, навыки, инвентарь, состояние.",
+  advance_time: "Сдвигает скрытые часы мира на прошедшие минуты этого хода.",
+  get_npc_profile: "Запрос отдельных безопасных полей карточки NPC для броска, описания или социальной оценки.",
+  tool_search: "ГМ догружает скрытый инструмент по ключевым словам.",
 };
 const FIELD_HELP = {
   "Ситуация": "Коротко и нейтрально описывает, что персонаж видит/слышит и на что должен отреагировать.",
@@ -60,7 +106,7 @@ function toolHelp(name) {
   return TOOL_HELP[name] || "Служебный инструмент ГМ. Подробности видны в сыром JSON ниже.";
 }
 
-function useNpcResolver() {
+export function useNpcResolver() {
   const roster = useContext(NpcRosterContext);
   return (id) => {
     const n = (roster || []).find((x) => x.id === id);
@@ -69,7 +115,7 @@ function useNpcResolver() {
   };
 }
 
-function NpcRef({ id }) {
+export function NpcRef({ id }) {
   const resolve = useNpcResolver();
   const { name, c, role, pronouns } = resolve(id);
   return (
@@ -89,7 +135,7 @@ function NpcRef({ id }) {
   );
 }
 
-function Field({ label, tip, children }) {
+export function Field({ label, tip, children }) {
   const help = tip || FIELD_HELP[label] || "";
   return (
     <div className="tc-field">
@@ -105,7 +151,7 @@ function Field({ label, tip, children }) {
   );
 }
 
-function Badge({ tone, tip, children }) {
+export function Badge({ tone, tip, children }) {
   const hasTip = nonEmpty(tip);
   const className = "tc-badge" + (tone ? " " + tone : "") + (hasTip ? " has-tip" : "");
   if (!hasTip) return <span className={className}>{children}</span>;
@@ -117,7 +163,7 @@ function Badge({ tone, tip, children }) {
 }
 
 // A bordered text block for the "free-text" arguments (situation, reason, …).
-function TextBlock({ tone, children }) {
+export function TextBlock({ tone, children }) {
   return (
     <div className={"tc-text" + (tone ? " " + tone : "")}>
       <MarkdownText>{children}</MarkdownText>
@@ -125,7 +171,7 @@ function TextBlock({ tone, children }) {
   );
 }
 
-function nonEmpty(v) {
+export function nonEmpty(v) {
   return v != null && String(v).trim() !== "";
 }
 
@@ -388,6 +434,164 @@ function toolView(name, args, statusLabels) {
       };
     }
 
+    case "ask_player": {
+      const options = Array.isArray(args.options) ? args.options : [];
+      return {
+        icon: "🎯",
+        accent: ACCENT.ask_player,
+        title: "Варианты для игрока",
+        body: (
+          <>
+            {nonEmpty(args.question) && (
+              <Tooltip className="tc-ask-q" tipClassName="tool-tip" content="Вопрос-подсказка над кнопками быстрых ответов.">
+                <MarkdownInline>{args.question}</MarkdownInline>
+              </Tooltip>
+            )}
+            {options.length > 0 && (
+              <div className="tc-options">
+                {options.map((o, i) => (
+                  <div className="tc-option" key={i}>
+                    <span className="tc-option-label">{nonEmpty(o.label) ? o.label : `вариант ${i + 1}`}</span>
+                    {nonEmpty(o.message) && (
+                      <span className="tc-option-msg"><MarkdownInline>{o.message}</MarkdownInline></span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        ),
+      };
+    }
+
+    case "update_world_state": {
+      const items = Array.isArray(args.items) ? args.items : [];
+      return {
+        icon: "🧠",
+        accent: ACCENT.update_world_state,
+        title: "Запись в память мира",
+        body: items.length ? (
+          <div className="tc-ws-list">
+            {items.map((it, i) => {
+              const op = WS_OP[it.op || "add"] || WS_OP.add;
+              const typ = WS_TYPE[it.type] || { label: it.type || "запись", tone: "" };
+              return (
+                <div className="tc-ws-item" key={i}>
+                  <div className="tc-chips">
+                    <Badge tone={op.tone}>{op.label}</Badge>
+                    <Badge tone={typ.tone}>{typ.label}</Badge>
+                    {nonEmpty(it.scope) && <Badge tone="muted">{WS_SCOPE[it.scope] || it.scope}</Badge>}
+                    {nonEmpty(it.npc_id) && <NpcRef id={it.npc_id} />}
+                    {nonEmpty(it.target) && (
+                      <span className="tc-arrow-to">→ {it.target === "player" ? "игрок" : <NpcRef id={it.target} />}</span>
+                    )}
+                    {nonEmpty(it.importance) && <Badge tone="warn">{it.importance}</Badge>}
+                  </div>
+                  {nonEmpty(it.text) && <TextBlock>{it.text}</TextBlock>}
+                  {nonEmpty(it.known_name) && <Field label="Известное имя"><MarkdownInline>{it.known_name}</MarkdownInline></Field>}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="tc-text">нет записей</div>
+        ),
+      };
+    }
+
+    case "query_world_state": {
+      return {
+        icon: "🔍",
+        accent: ACCENT.query_world_state,
+        title: "Поиск в памяти мира",
+        body: (
+          <>
+            <div className="tc-chips">
+              {nonEmpty(args.scope) && <Badge tone="muted" tip="Область видимости, в которой ищет ГМ.">{WS_SCOPE[args.scope] || args.scope}</Badge>}
+              {nonEmpty(args.npc_id) && <NpcRef id={args.npc_id} />}
+            </div>
+            <Tooltip className="tc-query" tipClassName="tool-tip" content="Поисковый запрос ГМ к памяти мира.">
+              <MarkdownInline>{args.query || "—"}</MarkdownInline>
+            </Tooltip>
+          </>
+        ),
+      };
+    }
+
+    case "update_player_character": {
+      const fields = (args.fields && typeof args.fields === "object") ? args.fields : {};
+      const keys = Object.keys(fields);
+      return {
+        icon: "🛡",
+        accent: ACCENT.update_player_character,
+        title: "Лист персонажа игрока",
+        body: (
+          <>
+            {keys.length ? (
+              keys.map((k) => (
+                <Field key={k} label={k}>
+                  {typeof fields[k] === "object"
+                    ? <code>{JSON.stringify(fields[k])}</code>
+                    : <MarkdownInline>{String(fields[k])}</MarkdownInline>}
+                </Field>
+              ))
+            ) : (
+              <div className="tc-text">нет изменений</div>
+            )}
+            {nonEmpty(args.reason) && <Field label="Почему"><TextBlock>{args.reason}</TextBlock></Field>}
+          </>
+        ),
+      };
+    }
+
+    case "advance_time": {
+      return {
+        icon: "⏳",
+        accent: ACCENT.advance_time,
+        title: "Сдвиг времени",
+        body: (
+          <>
+            <div className="tc-chips">
+              <Badge tone="warn" tip="Сколько внутриигровых минут прошло за этот ход.">+{args.minutes ?? 0} мин</Badge>
+            </div>
+            {nonEmpty(args.reason) && <Field label="Почему"><TextBlock>{args.reason}</TextBlock></Field>}
+          </>
+        ),
+      };
+    }
+
+    case "get_npc_profile": {
+      const fields = Array.isArray(args.fields) ? args.fields : [];
+      return {
+        icon: "🪪",
+        accent: ACCENT.get_npc_profile,
+        title: (
+          <>
+            Карточка персонажа — <NpcRef id={args.npc_id} />
+          </>
+        ),
+        body: (
+          <div className="tc-chips">
+            <Badge tone="muted" tip="Группа полей карточки, которую запросил ГМ.">{PROFILE_PRESET[args.preset || "visible"] || args.preset}</Badge>
+            {fields.map((f) => <Badge key={f}>{f}</Badge>)}
+          </div>
+        ),
+      };
+    }
+
+    case "tool_search": {
+      return {
+        icon: "🧰",
+        accent: ACCENT.tool_search,
+        title: "Поиск инструмента ГМ",
+        body: (
+          <Tooltip className="tc-query" tipClassName="tool-tip" content="Запрос ГМ на загрузку скрытого инструмента.">
+            <MarkdownInline>{args.query || "—"}</MarkdownInline>
+          </Tooltip>
+        ),
+      };
+    }
+
     default: {
       const entries = Object.entries(args || {});
       return {
@@ -408,24 +612,45 @@ function toolView(name, args, statusLabels) {
   }
 }
 
-export default function ToolCard({ name, args = {} }) {
+// `result` is the tool's outcome payload (attached by the timeline once it arrives),
+// rendered under the request inside the SAME card so call+result read as one unit.
+// roll_dice gets the animated dice; everything else reuses the result-card body.
+export default function ToolCard({ name, args = {}, result, resultLive, rollId }) {
   const statusLabels = useContext(StatusLabelsContext);
-  const { icon, accent, title, body } = toolView(name, args || {}, statusLabels);
+  const view = toolView(name, args || {}, statusLabels);
+  const hasResult = result != null;
+  const isDice = name === "roll_dice" && hasResult;
+  const accent = isDice ? gradeAccent(result.grade) : view.accent;
   return (
-    <div className="tool-card" style={{ "--tc": accent }}>
+    <div className={"tool-card" + (hasResult ? " has-result" : "")} style={{ "--tc": accent }}>
       <div className="tc-hd">
         <Tooltip className="tc-ico" tipClassName="tool-tip" content={toolHelp(name)}>
-          {icon}
+          {view.icon}
         </Tooltip>
-        <span className="tc-title">{title}</span>
+        <span className="tc-title">{view.title}</span>
         <Tooltip className="tc-name" tipClassName="tool-tip" content={`Сырое имя инструмента модели: ${name}\n${toolHelp(name)}`}>
           {name}
         </Tooltip>
       </div>
-      <div className="tc-body">{body}</div>
+      <div className="tc-body">{view.body}</div>
       <Spoiler label="сырой вызов (JSON)">
         <MarkdownText>{"```json\n" + JSON.stringify(args, null, 2) + "\n```"}</MarkdownText>
       </Spoiler>
+      {hasResult && (
+        <div className="tc-result-sec">
+          <div className="tc-result-divider">результат</div>
+          {isDice ? (
+            <DiceBody roll={result} animate={resultLive} rollId={rollId} />
+          ) : (
+            <>
+              <div className="tc-body"><ToolResultBody name={name} payload={result} /></div>
+              <Spoiler label="сырой результат (JSON)">
+                <MarkdownText>{"```json\n" + JSON.stringify(result, null, 2) + "\n```"}</MarkdownText>
+              </Spoiler>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

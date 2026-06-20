@@ -18,6 +18,13 @@ export default function Scene({ scene, npcs }) {
       })
     : [];
   const statusText = (status) => statusLabels[status] || status || "неизвестно";
+  const npcLabel = (npc) => npc?.label || npc?.name || npc?.public_label || npc?.id || "персонаж";
+  const npcHint = (npc) => [
+    npc?.role,
+    npc?.physical_type,
+    npc?.distinctive_features,
+    npc?.condition,
+  ].filter(Boolean).join(" · ");
 
   return (
     <div className="scene">
@@ -27,9 +34,9 @@ export default function Scene({ scene, npcs }) {
       <div className="legend">
         <span className="legend-label">В сцене:</span>
         {present.length ? present.map((n) => (
-          <span key={n.id || n.name}>
+          <span key={n.id || npcLabel(n)} title={npcHint(n) || undefined}>
             <span className="dot" style={{ "--c": n.color || "var(--entity-unknown)" }} />
-            <span style={{ color: n.color || "var(--entity-unknown)" }}>{n.name}</span>
+            <span style={{ color: n.color || "var(--entity-unknown)" }}>{npcLabel(n)}</span>
           </span>
         )) : <span>нет именованных персонажей</span>}
       </div>
@@ -40,9 +47,9 @@ export default function Scene({ scene, npcs }) {
             const w = whereabouts[n.id] || {};
             const place = w.location_name || w.location_id || "место не установлено";
             return (
-              <div className="whereabouts-row" key={n.id || n.name}>
+              <div className="whereabouts-row" key={n.id || npcLabel(n)} title={npcHint(n) || undefined}>
                 <span className="dot" style={{ "--c": n.color || "var(--entity-unknown)" }} />
-                <b style={{ color: n.color || "var(--entity-unknown)" }}>{n.name}</b>
+                <b style={{ color: n.color || "var(--entity-unknown)" }}>{npcLabel(n)}</b>
                 <span>{statusText(w.status)} · {place}</span>
               </div>
             );

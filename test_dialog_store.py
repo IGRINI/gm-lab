@@ -31,6 +31,43 @@ def test_runtime_round_trip(tmp: str) -> None:
         details="её там ищут по делу Алдрика",
         source="test",
     )
+    dialog.session.world.advance_time(17, "проверка сохранения времени")
+    dialog.session.world.update_player_character({
+        "name": "Рин",
+        "class_role": "следопыт",
+        "condition": "ранен",
+        "gm_notes": "PLAYER_STORE_SENTINEL",
+        "abilities": {"DEX": 14, "WIS": 15},
+        "skills": {"Perception": 5},
+        "hp": {"current": 6, "max": 10},
+        "inventory": ["фонарь", "верёвка"],
+    }, "проверка сохранения карточки игрока")
+    dialog.session.world.update_npc("borin", {
+        "age": "Фактически 54 года; выглядит на 50-55.",
+        "physical_type": "крупный трактирщик",
+        "distinctive_features": "медное кольцо",
+        "abilities": {"STR": 13, "WIS": 14},
+        "passive_perception": 14,
+        "hp": {"current": 10, "max": 11},
+    })
+    added_state = dialog.session.world.add_state_records([{
+        "kind": "rumor",
+        "text": "ENTITY_ROUNDTRIP_SENTINEL Борин сказал игроку о Лизе.",
+        "scope": "shared",
+        "owner": "borin",
+        "subject": "player",
+        "entity_id": "lysa",
+        "source_npc": "borin",
+        "location_id": "turnvale_square",
+        "location_name": "Площадь Тёрнвейля",
+        "region_id": "turnvale",
+        "region_name": "Тёрнвейль",
+        "scene_id": "turnvale_square_gate",
+        "importance": "clue",
+        "aliases": ["Тёрнвейл", "Тёрнвейле", "Turnvale"],
+        "metadata": {"known_name": "Лиза"},
+    }])
+    assert added_state
     dialog.session.gm_messages.append({"role": "user", "content": "hello"})
     dialog.session.gm_summary = "summary"
     dialog.session.npc_messages["borin"] = [
@@ -94,6 +131,39 @@ def test_runtime_round_trip(tmp: str) -> None:
         reloaded.session.world.npc_whereabouts_export("mareth")["location_name"]
         == "караульная Тёрнвейла"
     )
+    assert reloaded.session.world.time_export()["absolute_minutes"] == 17
+    assert reloaded.session.world.time_export()["last_advance_minutes"] == 17
+    assert reloaded.session.world.time_export()["last_advance_reason"] == "проверка сохранения времени"
+    assert "Previous player turn elapsed: 17 minutes" in reloaded.session.world.time_context()
+    assert reloaded.session.world.player_character.name == "Рин"
+    assert reloaded.session.world.player_character.class_role == "следопыт"
+    assert reloaded.session.world.player_character.condition == "ранен"
+    assert reloaded.session.world.player_character.gm_notes == "PLAYER_STORE_SENTINEL"
+    assert reloaded.session.world.player_character.skills["Perception"] == 5
+    assert reloaded.session.world.player_character.hp["current"] == 6
+    assert reloaded.session.world.player_character.inventory == ["фонарь", "верёвка"]
+    assert reloaded.session.world.npc("borin").age.startswith("Фактически 54")
+    assert reloaded.session.world.npc("borin").physical_type == "крупный трактирщик"
+    assert reloaded.session.world.npc("borin").abilities["WIS"] == 14
+    assert reloaded.session.world.npc("borin").passive_perception == 14
+    assert reloaded.session.world.npc("borin").hp["current"] == 10
+    entity_rows = reloaded.session.world.state_records_for(
+        "player",
+        kinds=("rumor",),
+        entity_id="lysa",
+        source_npc="borin",
+    )
+    assert len(entity_rows) == 1
+    assert entity_rows[0].subject == "player"
+    assert entity_rows[0].location_id == "turnvale_square"
+    assert entity_rows[0].location_name == "Площадь Тёрнвейля"
+    assert entity_rows[0].region_id == "turnvale"
+    assert entity_rows[0].region_name == "Тёрнвейль"
+    assert entity_rows[0].scene_id == "turnvale_square_gate"
+    assert entity_rows[0].importance == "clue"
+    assert "Тёрнвейле" in entity_rows[0].aliases
+    assert entity_rows[0].metadata["known_name"] == "Лиза"
+    assert reloaded.session.world.npc_player_label("lysa") == "Лиза"
     assert reloaded.session.world.roll("1d20") == expected_next_roll
 
     # Pending LLM turn survived the round-trip...

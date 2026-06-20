@@ -595,6 +595,10 @@ def _world_to_payload(world: world_mod.World) -> dict:
         },
         "public": world.public,
         "canon": world.canon,
+        "time": _time_to_payload(getattr(world, "time", world_mod.WorldTime())),
+        "player_character": _player_character_to_payload(
+            getattr(world, "player_character", world_mod.PlayerCharacter())
+        ),
         "extra_proper_nouns": [str(name) for name in world.extra_proper_nouns],
         "scene": _scene_to_payload(world.scene),
         "npc_whereabouts": world.npc_whereabouts_export(),
@@ -631,6 +635,8 @@ def _world_from_payload(data: dict) -> world_mod.World:
     }
     world.public = str(data.get("public") or "")
     world.canon = str(data.get("canon") or "")
+    world.time = _time_from_payload(data.get("time"))
+    world.player_character = _player_character_from_payload(data.get("player_character"))
     world.extra_proper_nouns = [
         str(name) for name in _json_list(data.get("extra_proper_nouns"))
     ]
@@ -671,6 +677,105 @@ def _world_from_payload(data: dict) -> world_mod.World:
     return world
 
 
+def _player_character_to_payload(pc: world_mod.PlayerCharacter) -> dict:
+    return {
+        "name": pc.name,
+        "pronouns": pc.pronouns,
+        "class_role": pc.class_role,
+        "level": pc.level,
+        "background": pc.background,
+        "age": pc.age,
+        "physical_type": pc.physical_type,
+        "distinctive_features": pc.distinctive_features,
+        "life_status": pc.life_status,
+        "life_status_note": pc.life_status_note,
+        "condition": pc.condition,
+        "personality": pc.personality,
+        "values": pc.values,
+        "gm_notes": pc.gm_notes,
+        "abilities": _json_dict(getattr(pc, "abilities", {})),
+        "skills": _json_dict(getattr(pc, "skills", {})),
+        "saving_throws": _json_dict(getattr(pc, "saving_throws", {})),
+        "passive_perception": getattr(pc, "passive_perception", None),
+        "ac": _json_value(getattr(pc, "ac", None)),
+        "hp": _json_dict(getattr(pc, "hp", {})),
+        "speed": pc.speed,
+        "senses": pc.senses,
+        "languages": pc.languages,
+        "inventory": [str(item) for item in _json_list(getattr(pc, "inventory", []))],
+        "equipment": [str(item) for item in _json_list(getattr(pc, "equipment", []))],
+        "features": [str(item) for item in _json_list(getattr(pc, "features", []))],
+        "card_revision": int(getattr(pc, "card_revision", 0) or 0),
+    }
+
+
+def _player_character_from_payload(data: object) -> world_mod.PlayerCharacter:
+    if not isinstance(data, dict):
+        return world_mod.PlayerCharacter()
+    try:
+        card_revision = int(data.get("card_revision") or 0)
+    except (TypeError, ValueError):
+        card_revision = 0
+    return world_mod.PlayerCharacter(
+        name=str(data.get("name") or "Искатель"),
+        pronouns=str(data.get("pronouns") or "OTHER"),
+        class_role=str(data.get("class_role") or ""),
+        level=_int_or_none(data.get("level")),
+        background=str(data.get("background") or ""),
+        age=str(data.get("age") or ""),
+        physical_type=str(data.get("physical_type") or ""),
+        distinctive_features=str(data.get("distinctive_features") or ""),
+        life_status=str(data.get("life_status") or "alive"),
+        life_status_note=str(data.get("life_status_note") or ""),
+        condition=str(data.get("condition") or ""),
+        personality=str(data.get("personality") or ""),
+        values=str(data.get("values") or ""),
+        gm_notes=str(data.get("gm_notes") or ""),
+        abilities=_json_dict(data.get("abilities")),
+        skills=_json_dict(data.get("skills")),
+        saving_throws=_json_dict(data.get("saving_throws")),
+        passive_perception=_int_or_none(data.get("passive_perception")),
+        ac=_json_value(data.get("ac")),
+        hp=_json_dict(data.get("hp")),
+        speed=str(data.get("speed") or ""),
+        senses=str(data.get("senses") or ""),
+        languages=str(data.get("languages") or ""),
+        inventory=[str(item) for item in _json_list(data.get("inventory"))],
+        equipment=[str(item) for item in _json_list(data.get("equipment"))],
+        features=[str(item) for item in _json_list(data.get("features"))],
+        card_revision=card_revision,
+    )
+
+
+def _time_to_payload(time: world_mod.WorldTime) -> dict:
+    return {
+        "calendar_name": str(getattr(time, "calendar_name", "") or ""),
+        "absolute_minutes": int(getattr(time, "absolute_minutes", 0) or 0),
+        "current_date_label": str(getattr(time, "current_date_label", "") or ""),
+        "minutes_per_hour": int(getattr(time, "minutes_per_hour", 60) or 60),
+        "hours_per_day": int(getattr(time, "hours_per_day", 24) or 24),
+        "day_names": [str(item) for item in _json_list(getattr(time, "day_names", []))],
+        "month_names": [str(item) for item in _json_list(getattr(time, "month_names", []))],
+        "last_advance_minutes": int(getattr(time, "last_advance_minutes", 0) or 0),
+        "last_advance_reason": str(getattr(time, "last_advance_reason", "") or ""),
+    }
+
+
+def _time_from_payload(data: object) -> world_mod.WorldTime:
+    row = data if isinstance(data, dict) else {}
+    return world_mod.WorldTime(
+        calendar_name=str(row.get("calendar_name") or ""),
+        absolute_minutes=max(0, _int_or_none(row.get("absolute_minutes")) or 0),
+        current_date_label=str(row.get("current_date_label") or "День 1"),
+        minutes_per_hour=max(1, _int_or_none(row.get("minutes_per_hour")) or 60),
+        hours_per_day=max(1, _int_or_none(row.get("hours_per_day")) or 24),
+        day_names=[str(item) for item in _json_list(row.get("day_names"))],
+        month_names=[str(item) for item in _json_list(row.get("month_names"))],
+        last_advance_minutes=max(0, _int_or_none(row.get("last_advance_minutes")) or 0),
+        last_advance_reason=str(row.get("last_advance_reason") or ""),
+    )
+
+
 def _event_to_payload(event: world_mod.Event) -> dict:
     return {
         "seq": int(event.seq),
@@ -707,6 +812,27 @@ def _npc_to_payload(npc: world_mod.NPC) -> dict:
         "role": npc.role,
         "pronouns": npc.pronouns,
         "color": getattr(npc, "color", ""),
+        "public_label": getattr(npc, "public_label", ""),
+        "age": getattr(npc, "age", ""),
+        "physical_type": getattr(npc, "physical_type", ""),
+        "distinctive_features": getattr(npc, "distinctive_features", ""),
+        "life_status": getattr(npc, "life_status", "alive"),
+        "life_status_note": getattr(npc, "life_status_note", ""),
+        "condition": getattr(npc, "condition", ""),
+        "personality": getattr(npc, "personality", ""),
+        "values": getattr(npc, "values", ""),
+        "habits": getattr(npc, "habits", ""),
+        "pressure_response": getattr(npc, "pressure_response", ""),
+        "boundaries": getattr(npc, "boundaries", ""),
+        "abilities": _json_dict(getattr(npc, "abilities", {})),
+        "skills": _json_dict(getattr(npc, "skills", {})),
+        "saving_throws": _json_dict(getattr(npc, "saving_throws", {})),
+        "passive_perception": getattr(npc, "passive_perception", None),
+        "ac": _json_value(getattr(npc, "ac", None)),
+        "hp": _json_dict(getattr(npc, "hp", {})),
+        "speed": getattr(npc, "speed", ""),
+        "senses": getattr(npc, "senses", ""),
+        "languages": getattr(npc, "languages", ""),
         "default_whereabouts": getattr(npc, "default_whereabouts", None),
         "card_revision": int(getattr(npc, "card_revision", 0) or 0),
     }
@@ -732,6 +858,27 @@ def _npc_from_payload(data: dict) -> world_mod.NPC:
         role=str(data.get("role") or ""),
         pronouns=str(data.get("pronouns") or ""),
         color=color,
+        public_label=str(data.get("public_label") or ""),
+        age=str(data.get("age") or ""),
+        physical_type=str(data.get("physical_type") or ""),
+        distinctive_features=str(data.get("distinctive_features") or ""),
+        life_status=str(data.get("life_status") or "alive"),
+        life_status_note=str(data.get("life_status_note") or ""),
+        condition=str(data.get("condition") or ""),
+        personality=str(data.get("personality") or ""),
+        values=str(data.get("values") or ""),
+        habits=str(data.get("habits") or ""),
+        pressure_response=str(data.get("pressure_response") or ""),
+        boundaries=str(data.get("boundaries") or ""),
+        abilities=_json_dict(data.get("abilities")),
+        skills=_json_dict(data.get("skills")),
+        saving_throws=_json_dict(data.get("saving_throws")),
+        passive_perception=_int_or_none(data.get("passive_perception")),
+        ac=_json_value(data.get("ac")),
+        hp=_json_dict(data.get("hp")),
+        speed=str(data.get("speed") or ""),
+        senses=str(data.get("senses") or ""),
+        languages=str(data.get("languages") or ""),
         default_whereabouts=dw,
         card_revision=card_revision,
     )
@@ -888,6 +1035,15 @@ def _state_record_to_payload(record: world_mod.StateRecord) -> dict:
         "source": record.source,
         "status": record.status,
         "tags": [str(item) for item in record.tags],
+        "entity_id": getattr(record, "entity_id", ""),
+        "source_npc": getattr(record, "source_npc", ""),
+        "location_id": getattr(record, "location_id", ""),
+        "location_name": getattr(record, "location_name", ""),
+        "region_id": getattr(record, "region_id", ""),
+        "region_name": getattr(record, "region_name", ""),
+        "scene_id": getattr(record, "scene_id", ""),
+        "importance": getattr(record, "importance", ""),
+        "aliases": [str(item) for item in getattr(record, "aliases", ())],
         "metadata": metadata if isinstance(metadata, dict) else {},
     }
 
@@ -904,6 +1060,15 @@ def _state_record_from_payload(data: dict) -> world_mod.StateRecord:
         source=str(data.get("source") or ""),
         status=str(data.get("status") or "known"),
         tags=tuple(str(item) for item in _json_list(data.get("tags"))),
+        entity_id=str(data.get("entity_id") or data.get("entity") or data.get("about") or ""),
+        source_npc=str(data.get("source_npc") or data.get("source_npc_id") or ""),
+        location_id=str(data.get("location_id") or ""),
+        location_name=str(data.get("location_name") or ""),
+        region_id=str(data.get("region_id") or ""),
+        region_name=str(data.get("region_name") or ""),
+        scene_id=str(data.get("scene_id") or ""),
+        importance=str(data.get("importance") or ""),
+        aliases=tuple(str(item) for item in _json_list(data.get("aliases"))),
         metadata=_json_dict(data.get("metadata")),
     )
 
@@ -999,6 +1164,15 @@ def _json_value(value):
         return value
     except TypeError:
         return str(value)
+
+
+def _int_or_none(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _json_list(value: object) -> list:
