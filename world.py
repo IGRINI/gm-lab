@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import random
 import re
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,6 +106,38 @@ class Rumor:
 
 
 @dataclass
+class StateRecord:
+    record_id: str
+    kind: str
+    text: str
+    scope: str = "public"
+    active: bool = True
+    owner: str = ""
+    subject: str = ""
+    source: str = ""
+    status: str = "known"
+    tags: tuple[str, ...] = field(default_factory=tuple)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def state_record_hash(record: StateRecord) -> str:
+    payload = {
+        "id": record.record_id,
+        "kind": _state_record_kind(record.kind),
+        "text": _as_str(record.text),
+        "scope": _state_record_scope(record.scope),
+        "active": bool(record.active),
+        "owner": _as_str(record.owner),
+        "subject": _as_str(record.subject),
+        "status": _as_str(record.status) or "known",
+        "tags": list(record.tags or ()),
+        "metadata": record.metadata or {},
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@dataclass
 class SceneState:
     scene_id: str
     location_id: str
@@ -165,6 +199,52 @@ def _match_words(text: str) -> set[str]:
     return set(re.findall(r"[a-zа-яё0-9]+", _as_str(text).lower()))
 
 
+def _actor_key(value: object) -> str:
+    return _as_str(value).lower()
+
+
+def _state_record_kind(value: object) -> str:
+    raw = _safe_id(_as_str(value), "fact")
+    return raw if raw in STATE_RECORD_KINDS else "fact"
+
+
+def _state_record_scope(value: object) -> str:
+    raw = _safe_id(_as_str(value), "public")
+    raw = STATE_RECORD_SCOPE_ALIASES.get(raw, raw)
+    return raw if raw in STATE_RECORD_SCOPES else "public"
+
+
+def _state_record_tags(value: object) -> tuple[str, ...]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in _as_list(value):
+        tag = _as_str(item)
+        if tag and tag not in seen:
+            seen.add(tag)
+            out.append(tag)
+    return tuple(out)
+
+
+def _state_record_metadata(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): val for key, val in value.items() if key is not None}
+
+
+def _state_record_active(value: object, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        raw = value.strip().lower()
+        if raw in {"1", "true", "yes", "on", "active"}:
+            return True
+        if raw in {"0", "false", "no", "off", "inactive"}:
+            return False
+    return bool(value)
+
+
 ROLE_RU = {
     "innkeeper": "трактирщик",
     "serving girl": "служанка",
@@ -195,6 +275,17 @@ WHEREABOUTS_STATUS_LABELS = {
     "left_scene": "ушёл",
 }
 WHEREABOUTS_STATUSES = tuple(WHEREABOUTS_STATUS_LABELS)
+
+STATE_RECORD_KINDS = ("fact", "rumor", "npc_memory", "relationship", "goal")
+STATE_RECORD_SCOPES = ("public", "gm", "owner", "subject", "participants")
+STATE_RECORD_SCOPE_ALIASES = {
+    "private": "owner",
+    "npc": "owner",
+    "shared": "participants",
+    "participant": "participants",
+}
+STATE_DEBUG_ACTORS = {"debug", "system"}
+STATE_GM_ACTORS = {"gm", *STATE_DEBUG_ACTORS}
 
 # Machine source tags for whereabouts/facts. Named constants so the emit sites and
 # the SOURCE_RU label map below cannot drift apart.
@@ -348,6 +439,7 @@ def _normalize_seed(seed: dict) -> dict:
         "hidden_truth": _as_str(seed.get("hidden_truth") or seed.get("canon")),
         "proper_nouns": proper_nouns,
         "public_facts": public_facts,
+        "state_records": _as_list(seed.get("state_records") or src.get("state_records")),
         "npcs": npcs,
         "scene": {
             "id": _as_str(seed.get("scene_id") or seed.get("id")) or "start_scene",
@@ -414,6 +506,7 @@ class World:
         self.scene = self._seed_scene(seed)
         self.constraints = self.scene.constraints
         self.fact_records = self._seed_facts(seed)
+        self.state_records = self._seed_state_records(seed)
         self.npc_whereabouts = {}
         self._ensure_npc_whereabouts()
 
@@ -575,6 +668,278 @@ class World:
             ))
         return records
 
+    def _seed_state_records(self, seed: dict) -> list[StateRecord]:
+        records: list[StateRecord] = []
+        existing: set[str] = set()
+        for idx, raw in enumerate(_as_list(seed.get("state_records")), start=1):
+            record = self._coerce_state_record(raw, f"seed_state_{idx}", existing)
+            if record is not None:
+                records.append(record)
+                existing.add(record.record_id)
+        return records
+
+    def _coerce_state_record(
+        self,
+        raw: object,
+        fallback_id: str,
+        existing: set[str] | None = None,
+    ) -> StateRecord | None:
+        if isinstance(raw, StateRecord):
+            data = {
+                "id": raw.record_id,
+                "kind": raw.kind,
+                "text": raw.text,
+                "scope": raw.scope,
+                "active": raw.active,
+                "owner": raw.owner,
+                "subject": raw.subject,
+                "source": raw.source,
+                "status": raw.status,
+                "tags": raw.tags,
+                "metadata": raw.metadata,
+            }
+        elif isinstance(raw, dict):
+            data = raw
+        else:
+            return None
+
+        text = _as_str(data.get("text"))
+        if not text:
+            return None
+        kind = _state_record_kind(data.get("kind"))
+        preferred_id = _as_str(data.get("record_id") or data.get("id"))
+        record_id = self._unique_state_record_id(
+            preferred_id or fallback_id,
+            kind,
+            existing if existing is not None else {
+                r.record_id for r in getattr(self, "state_records", [])
+            },
+        )
+        return StateRecord(
+            record_id=record_id,
+            kind=kind,
+            text=text,
+            scope=_state_record_scope(data.get("scope")),
+            active=_state_record_active(data.get("active"), True),
+            owner=_as_str(data.get("owner") or data.get("owner_id")),
+            subject=_as_str(data.get("subject") or data.get("subject_id")),
+            source=_as_str(data.get("source")),
+            status=_as_str(data.get("status")) or "known",
+            tags=_state_record_tags(data.get("tags")),
+            metadata=_state_record_metadata(data.get("metadata")),
+        )
+
+    def _unique_state_record_id(
+        self,
+        preferred_id: str,
+        kind: str,
+        existing: set[str] | None = None,
+    ) -> str:
+        existing = existing if existing is not None else {
+            r.record_id for r in getattr(self, "state_records", [])
+        }
+        base = _safe_id(preferred_id, "") or f"{kind}_{len(existing) + 1}"
+        record_id = base
+        idx = 2
+        while record_id in existing:
+            record_id = f"{base}_{idx}"
+            idx += 1
+        return record_id
+
+    @staticmethod
+    def _state_record_visible_to(record: StateRecord, actor_id: str) -> bool:
+        actor = _actor_key(actor_id or "player")
+        scope = _state_record_scope(record.scope)
+        owner = _actor_key(record.owner)
+        subject = _actor_key(record.subject)
+        if scope == "public":
+            return True
+        if actor in STATE_GM_ACTORS:
+            return True
+        if scope == "gm":
+            return actor in STATE_GM_ACTORS
+        if scope == "owner":
+            return bool(owner and actor == owner)
+        if scope == "subject":
+            return bool(subject and actor == subject)
+        if scope == "participants":
+            return bool((owner and actor == owner) or (subject and actor == subject))
+        return False
+
+    def add_state_records(self, records) -> list[StateRecord]:
+        if not hasattr(self, "state_records"):
+            self.state_records = []
+        existing = {record.record_id for record in self.state_records}
+        added: list[StateRecord] = []
+        for idx, raw in enumerate(_as_list(records), start=1):
+            record = self._coerce_state_record(raw, f"state_{len(existing) + idx}", existing)
+            if record is None:
+                continue
+            self.state_records.append(record)
+            existing.add(record.record_id)
+            added.append(record)
+        return added
+
+    def update_state_records(self, updates) -> list[StateRecord]:
+        if not hasattr(self, "state_records"):
+            self.state_records = []
+        by_id = {record.record_id: record for record in self.state_records}
+        updated: list[StateRecord] = []
+        for raw in _as_list(updates):
+            if not isinstance(raw, dict):
+                continue
+            record_id = _as_str(raw.get("record_id") or raw.get("id"))
+            record = by_id.get(record_id)
+            if record is None:
+                continue
+            if "kind" in raw:
+                record.kind = _state_record_kind(raw.get("kind"))
+            if "text" in raw:
+                text = _as_str(raw.get("text"))
+                if text:
+                    record.text = text
+            if "scope" in raw:
+                record.scope = _state_record_scope(raw.get("scope"))
+            if "active" in raw:
+                record.active = _state_record_active(raw.get("active"), record.active)
+            if "owner" in raw or "owner_id" in raw:
+                record.owner = _as_str(raw.get("owner") or raw.get("owner_id"))
+            if "subject" in raw or "subject_id" in raw:
+                record.subject = _as_str(raw.get("subject") or raw.get("subject_id"))
+            if "source" in raw:
+                record.source = _as_str(raw.get("source"))
+            if "status" in raw:
+                record.status = _as_str(raw.get("status")) or "known"
+            if "tags" in raw:
+                record.tags = _state_record_tags(raw.get("tags"))
+            if "metadata" in raw:
+                record.metadata = _state_record_metadata(raw.get("metadata"))
+            updated.append(record)
+        return updated
+
+    def delete_state_records(self, record_ids, hard: bool = False) -> int:
+        if not hasattr(self, "state_records"):
+            self.state_records = []
+        ids = {_as_str(record_id) for record_id in _as_list(record_ids) if _as_str(record_id)}
+        if not ids:
+            return 0
+        if hard:
+            before = len(self.state_records)
+            self.state_records = [record for record in self.state_records if record.record_id not in ids]
+            return before - len(self.state_records)
+
+        count = 0
+        for record in getattr(self, "state_records", []):
+            if record.record_id in ids and record.active:
+                record.active = False
+                count += 1
+        return count
+
+    def apply_state_record_batch(
+        self,
+        *,
+        add=None,
+        update=None,
+        delete=None,
+        hard_delete: bool = False,
+    ) -> dict:
+        return {
+            "added": self.add_state_records(add or []),
+            "updated": self.update_state_records(update or []),
+            "deleted": self.delete_state_records(delete or [], hard=hard_delete),
+        }
+
+    def state_records_for(
+        self,
+        actor_id: str = "player",
+        *,
+        kinds=None,
+        active: bool | None = True,
+        owner: str = "",
+        subject: str = "",
+        scopes=None,
+    ) -> list[StateRecord]:
+        kind_filter = {_state_record_kind(kind) for kind in _as_list(kinds)} if kinds is not None else None
+        scope_filter = {_state_record_scope(scope) for scope in _as_list(scopes)} if scopes is not None else None
+        owner_filter = _actor_key(owner)
+        subject_filter = _actor_key(subject)
+
+        out: list[StateRecord] = []
+        for record in getattr(self, "state_records", []):
+            if active is not None and record.active is not active:
+                continue
+            if kind_filter is not None and _state_record_kind(record.kind) not in kind_filter:
+                continue
+            if scope_filter is not None and _state_record_scope(record.scope) not in scope_filter:
+                continue
+            if owner_filter and _actor_key(record.owner) != owner_filter:
+                continue
+            if subject_filter and _actor_key(record.subject) != subject_filter:
+                continue
+            if not self._state_record_visible_to(record, actor_id):
+                continue
+            out.append(record)
+        return out
+
+    def state_record_documents(self, actor_id: str = "player") -> list:
+        from rag import RagDocument
+
+        docs = []
+        for record in self.state_records_for(actor_id):
+            tags = tuple(
+                value for value in (
+                    _state_record_kind(record.kind),
+                    record.owner,
+                    record.subject,
+                    _state_record_scope(record.scope),
+                    *record.tags,
+                )
+                if value
+            )
+            docs.append(RagDocument(
+                doc_id=f"state:{record.record_id}",
+                kind=f"state_{_state_record_kind(record.kind)}",
+                text=record.text,
+                status=record.status,
+                source=record.source or record.record_id,
+                visibility=_state_record_scope(record.scope),
+                tags=tags,
+                metadata={
+                    **record.metadata,
+                    "record_id": record.record_id,
+                    "record_kind": _state_record_kind(record.kind),
+                    "scope": _state_record_scope(record.scope),
+                    "owner": record.owner,
+                    "subject": record.subject,
+                    "active": record.active,
+                },
+            ))
+        return docs
+
+    def state_records_export(
+        self,
+        actor_id: str = "player",
+        *,
+        kinds=None,
+        active: bool | None = True,
+        owner: str = "",
+        subject: str = "",
+        scopes=None,
+    ) -> list[dict]:
+        out = []
+        for record in self.state_records_for(
+            actor_id,
+            kinds=kinds,
+            active=active,
+            owner=owner,
+            subject=subject,
+            scopes=scopes,
+        ):
+            row = vars(record).copy()
+            row["hash"] = state_record_hash(record)
+            out.append(row)
+        return out
+
     def _ensure_npc_whereabouts(self) -> None:
         raw = getattr(self, "npc_whereabouts", {})
         raw = raw if isinstance(raw, dict) else {}
@@ -673,16 +1038,17 @@ class World:
             bits.append(f"details: {row.details}")
         return "; ".join(bits)
 
-    def retrieval_documents(self) -> list:
+    def retrieval_documents(self, actor_id: str = "player") -> list:
         """Actor-safe RAG corpus for the GM/player-facing world memory.
 
         Hidden canon and NPC secrets deliberately do not enter this corpus. Private NPC
-        beliefs need a separate actor-filtered retrieval path; this public path is for
+        beliefs need an actor-filtered retrieval path; default player retrieval is for
         get_world_fact and player-facing narration support.
         """
         from rag import RagDocument
 
         docs = []
+        docs.extend(self.state_record_documents(actor_id))
         for record in self.fact_records:
             if record.kind == "truth":
                 continue
@@ -1021,6 +1387,16 @@ class World:
         public_facts = [record.text for record in self.fact_records if record.kind == "public"]
         if public_facts:
             parts.append("Public facts you may know:\n" + "\n".join(f"- {fact}" for fact in public_facts[:8]))
+        memory_records = self.state_records_for(
+            npc_id,
+            kinds=("fact", "rumor", "npc_memory", "relationship", "goal"),
+        )
+        if memory_records:
+            lines = []
+            for record in memory_records[:12]:
+                subject = f" about {record.subject}" if record.subject else ""
+                lines.append(f"- {record.kind}{subject}: {record.text}")
+            parts.append("Actor-visible state memory:\n" + "\n".join(lines))
         if self.scene.constraints:
             parts.append("Physical limits:\n" + "\n".join(f"- {c}" for c in self.scene.constraints))
         parts.append("Entity refs for visible text:\n" + self.entity_reference_context())
@@ -1448,14 +1824,14 @@ class World:
         return len(self.fact_records) < before
 
     # --- World-fact tool (pull pattern) -----------------------------------
-    def fact(self, query: str) -> WorldFact:
-        """Honest public lookup. Hidden truth is stored, but not returned to the GM tool."""
+    def fact(self, query: str, actor_id: str = "player") -> WorldFact:
+        """Honest actor-safe lookup. Hidden truth is stored, but not returned to player lookup."""
         q = (query or "").lower()
         try:
             import config
             if config.RAG_ENABLED:
                 from rag import retrieve_world_fact
-                rag_payload = retrieve_world_fact(query, self.retrieval_documents())
+                rag_payload = retrieve_world_fact(query, self.retrieval_documents(actor_id))
                 if rag_payload:
                     return WorldFact(
                         str(rag_payload.get("status") or "unknown"),
@@ -1467,18 +1843,25 @@ class World:
             pass
 
         matches = []
+        q_words = _match_words(q)
         for record in self.fact_records:
             if record.kind == "truth":
                 continue
-            haystack = [record.text.lower(), *[kw.lower() for kw in record.keywords]]
-            if any(key and key in q for key in haystack):
+            haystack = " ".join([record.text, *record.keywords]).lower()
+            hay_words = _match_words(haystack)
+            if (q and q in haystack) or (q_words and q_words & hay_words):
                 label = "rumor" if record.kind == "rumor" or not record.confirmed else "known"
+                matches.append(f"{label}: {record.text}")
+        for record in self.state_records_for(actor_id, kinds=("fact", "rumor")):
+            haystack = " ".join([record.text, *record.tags, record.owner, record.subject]).lower()
+            hay_words = _match_words(haystack)
+            if (q and q in haystack) or (q_words and q_words & hay_words):
+                label = "rumor" if record.kind == "rumor" else record.status
                 matches.append(f"{label}: {record.text}")
         if matches:
             return WorldFact("known", " ".join(matches[:3]))
 
         rumor_matches = []
-        q_words = _match_words(q)
         for rumor in self.rumors:
             text_words = _match_words(rumor.text)
             if q_words and q_words & text_words:

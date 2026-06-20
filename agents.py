@@ -6,6 +6,7 @@ import re
 
 import config
 import prompts
+import tool_guidance
 import world as world_mod
 
 # --- GM tools (Ollama/OpenAI native function format) -----------------------
@@ -70,7 +71,7 @@ _ROLL_DICE_TOOL = {"type": "function", "function": {
                              "enum": ["trivial", "easy", "moderate", "hard", "very_hard", "nearly_impossible", "custom"],
                              "description": "Human label for target_number. Prefer easy=10, moderate=15, hard=20 when improvising."},
         "modifier_note": {"type": "string",
-                          "description": "Only include when notation contains a real known modifier or advantage/disadvantage source, e.g. '+3 known Perception' or 'advantage from help'. Omit otherwise."},
+                          "description": "Only include when notation itself contains +N/-N, kh1, or kl1 from a real known modifier or advantage/disadvantage source, e.g. '+3 known Perception' or 'advantage from help'. For plain unmodified rolls like 1d20, omit this field entirely. Do not use for leverage, stakes, difficulty, or placeholder text."},
         "stakes": {"type": "object", "properties": {
             "intent": {"type": "string",
                        "description": "Short English pre-roll goal the player is trying to achieve."},
@@ -104,13 +105,7 @@ _GET_FACT_TOOL = {"type": "function", "function": {
 
 _TOOL_SEARCH_TOOL = {"type": "function", "function": {
     "name": "tool_search",
-    "description": (
-        "Search and load GM tools that are not currently visible. Use this when you need "
-        "a tool such as ask_npc, move_npc, set_scene, get_world_fact, roll_dice, or "
-        "set_npc_whereabouts but that tool is not available in the current tool list. "
-        "Supports keyword queries and exact selection with select:tool_name or "
-        "select:tool_a,tool_b. Matching tools become available on the next GM step."
-    ),
+    "description": tool_guidance.TOOL_SEARCH_DESCRIPTION,
     "parameters": {"type": "object", "properties": {
         "query": {"type": "string",
                   "description": "Search query in Russian or English, or select:tool_name for exact loading."},
@@ -123,6 +118,8 @@ _INITIAL_GM_TOOL_NAMES = frozenset({
     "ask_npc",
     "roll_dice",
     "get_world_fact",
+    "query_world_state",
+    "update_world_state",
     "tool_search",
 })
 
@@ -150,6 +147,14 @@ _TOOL_SEARCH_HINTS = {
     "get_world_fact": (
         "факт память мир lore зацепка улика слух показание где кто что известно "
         "fact memory rag testimony rumor lead source provenance"
+    ),
+    "update_world_state": (
+        "batch пакет обновить записать удалить состояние мир факт слух память npc relationship "
+        "отношение цель goal goals npc_memory facts rumors world state compact scope id"
+    ),
+    "query_world_state": (
+        "query scoped scope область player gm npc спросить проверить состояние память "
+        "факт секрет цели отношения relationship goal npc_memory id target private public leak безопасный поиск"
     ),
 }
 
@@ -369,7 +374,109 @@ def build_gm_tools(world: world_mod.World) -> list:
                        "description": "Why the current scene changed, in Russian."},
         }, "required": ["title", "description", "reason"], "additionalProperties": False},
     }}
-    return [ask_npc, move_npc, set_npc_whereabouts, set_scene, _ROLL_DICE_TOOL, _GET_FACT_TOOL, _TOOL_SEARCH_TOOL]
+    update_world_state = {"type": "function", "function": {
+        "name": "update_world_state",
+        "description": (
+            "Apply a compact batch of GM-authored world-state updates after the fiction "
+            "establishes them. Accepts items[] for fact, rumor, npc_memory, relationship, "
+            "and goal records. One item is one atomic durable note; batch 1-5 important "
+            "changes instead of making repeated tool calls. Use op=add to create, op=update "
+            "to revise an existing id, and op=delete to remove an id from active memory/RAG. "
+            "For update/delete, include expected_hash when you have a fresh hash from "
+            "query_world_state or a just-returned update_world_state result. If you do not "
+            "have a fresh id/hash and an active record may already exist for the same "
+            "npc_id and target, call query_world_state first; then update/delete that id "
+            "instead of adding a duplicate. Use add only when lookup is unknown or the note "
+            "is genuinely new. "
+            f"{tool_guidance.WORLD_STATE_TYPE_GUIDE} "
+            f"{tool_guidance.WORLD_STATE_SCOPE_GUIDE} "
+            f"{tool_guidance.WORLD_STATE_SPLIT_GUIDE} "
+            f"{tool_guidance.WORLD_STATE_EXAMPLE_GUIDE} "
+            "Keep text short and in Russian. Omit optional fields when empty; do not send "
+            "empty strings, empty arrays, or nulls for optional fields. Private NPC "
+            "testimony, clues, promises, or leads told only to the player must use shared, "
+            "not public. Every shared item must include both "
+            "npc_id and target or it will be rejected. "
+            "Do not use for visible scene movement, current-scene presence, or NPC speech; "
+            "use set_scene, move_npc, or ask_npc for those."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "items": {"type": "array", "items": {"type": "object", "properties": {
+                "op": {"type": "string", "enum": ["add", "update", "delete"],
+                       "description": "Operation. Omit for add."},
+                "id": {"type": "string",
+                       "description": "Existing record id for update/delete, usually from query_world_state or a just-returned update result. Omit for add."},
+                "expected_hash": {"type": "string",
+                                  "description": "Optional concurrency precondition for update/delete: pass the record hash from query_world_state or a just-returned update result. If it mismatches, the change is not applied."},
+                "type": {"type": "string",
+                         "enum": ["fact", "rumor", "npc_memory", "relationship", "goal"],
+                         "description": (
+                             "What namespace this item updates. Required for add. fact is "
+                             "objective established truth/visible stable state; rumor is "
+                             "unverified testimony/claim/suspicion/lead; npc_memory is what "
+                             "one NPC remembers, saw, was told, promised, hid, or learned; "
+                             "relationship is ongoing attitude/trust/debt/leverage/fear/"
+                             "loyalty/hatred/love/suspicion toward target; goal is current "
+                             "want/plan/intent. Do not store NPC testimony as fact just "
+                             "because someone said it."
+                         )},
+                "text": {"type": "string",
+                         "description": (
+                             "Compact Russian durable meaning, not a transcript quote. "
+                             "Required for add/update unless deleting. For relationship, keep "
+                             "the full multi-layer attitude in one string and update that "
+                             "record as it changes."
+                         )},
+                "npc_id": {"type": "string",
+                           "description": "NPC id that owns/knows this npc_memory, relationship, or goal; for rumor, the speaker if known. Required for shared scope. For private NPC-player exchange use npc_id=<speaker>. Omit when empty."},
+                "target": {"type": "string",
+                           "description": "Relationship/shared target such as player, an npc_id, faction, or place. Required for relationship and shared scope. For private NPC-player exchange use target=player."},
+                "scope": {"type": "string",
+                          "enum": ["public", "gm", "npc", "shared"],
+                          "description": "Who may know this state. public is not private player knowledge; shared means only npc_id and target know; npc means only npc_id knows/thinks/remembers; gm means hidden author truth. Use shared for a private NPC-player exchange. shared requires npc_id and target. Omit to use the type default."},
+                "witnesses": {"type": "array", "items": {"type": "string"},
+                               "description": "For public rumors only: ids who heard it, plus player if relevant. Omit when empty."},
+                "mode": {"type": "string", "enum": ["replace"],
+                         "description": "Only for goal when replacing existing active goals. Omit for normal add/update and for all non-goal items."},
+            }, "required": [], "additionalProperties": False},
+                "description": "Compact updates. Omit optional item fields when empty."},
+        }, "required": ["items"], "additionalProperties": False},
+    }}
+    query_world_state = {"type": "function", "function": {
+        "name": "query_world_state",
+        "description": (
+            "Scoped world-state lookup. Use before update_world_state update/delete, and "
+            "before adding a relationship, goal, or npc_memory that may already exist. Results "
+            "include record ids and hashes for update/delete expected_hash. Use player scope for player-known safe memory "
+            "(public plus private notes shared with player); "
+            "player scope must never reveal GM truth, hidden events, NPC secrets, private NPC "
+            "memory, or private goals. Use npc scope with npc_id for what that NPC may know: "
+            "public memory plus that NPC's own private card/memory only. Use gm scope for "
+            "author-only truth, hidden events, all NPC private notes, and public memory. "
+            "Results are compact and include only matching scoped state."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "scope": {"type": "string", "enum": ["player", "gm", "npc"],
+                      "description": "Visibility namespace to query."},
+            "query": {"type": "string",
+                      "description": "What to look up, in Russian or English. Include kind and parties when useful, e.g. 'relationship borin player' or 'goal lysa'. Keep proper nouns exact."},
+            "npc_id": {"type": "string",
+                       "description": "Required for npc scope. Omit for player or gm scope."},
+            "max_results": {"type": "integer",
+                            "description": "Maximum matching rows to return. Omit for default 5."},
+        }, "required": ["scope", "query"], "additionalProperties": False},
+    }}
+    return [
+        ask_npc,
+        move_npc,
+        set_npc_whereabouts,
+        set_scene,
+        update_world_state,
+        query_world_state,
+        _ROLL_DICE_TOOL,
+        _GET_FACT_TOOL,
+        _TOOL_SEARCH_TOOL,
+    ]
 
 
 def gm_tool_catalog(world: world_mod.World) -> dict[str, dict]:
@@ -397,14 +504,19 @@ def search_gm_tools(
     already_loaded: set[str] | None = None,
 ) -> dict:
     catalog = gm_tool_catalog(world)
-    searchable = {name: tool for name, tool in catalog.items() if name != "tool_search"}
     already_loaded = set(already_loaded or set())
+    searchable = {
+        name: tool
+        for name, tool in catalog.items()
+        if name != "tool_search" and name not in already_loaded
+    }
     raw_query = (query or "").strip()
     if not raw_query:
         return {
             "query": raw_query,
             "matches": [],
             "loaded_tools": [],
+            "already_loaded": [],
             "total_searchable_tools": len(searchable),
             "message": "Запрос пустой. Используй keywords или select:tool_name.",
         }
@@ -415,19 +527,22 @@ def search_gm_tools(
 
     selected: list[str] = []
     missing: list[str] = []
+    known_loaded: list[str] = []
     if raw_query.lower().startswith("select:"):
         requested = [
             item.strip()
             for item in raw_query.split(":", 1)[1].split(",")
             if item.strip()
         ]
-        lower_to_name = {name.lower(): name for name in searchable}
+        all_tool_names = {name.lower(): name for name in catalog if name != "tool_search"}
         for item in requested:
-            name = lower_to_name.get(item.lower())
-            if name:
-                selected.append(name)
-            else:
+            name = all_tool_names.get(item.lower())
+            if not name:
                 missing.append(item)
+            elif name in already_loaded:
+                known_loaded.append(name)
+            else:
+                selected.append(name)
     else:
         terms = re.findall(r"[\wа-яА-ЯёЁ-]+", raw_query.lower())
         required = [term[1:] for term in terms if term.startswith("+") and len(term) > 1]
@@ -448,19 +563,25 @@ def search_gm_tools(
             "loaded": True,
             "already_loaded": name in already_loaded,
         })
+    already_loaded_result = sorted(set(known_loaded))
+    if matches:
+        message = (
+            "Найденные инструменты будут доступны в следующем шаге ГМ. "
+            "Вызови нужный инструмент после этого результата."
+        )
+    elif already_loaded_result:
+        message = "Запрошенные инструменты уже доступны в текущем шаге ГМ."
+    else:
+        message = "Подходящих инструментов не найдено. Попробуй select:tool_name или другие ключевые слова."
 
     return {
         "query": raw_query,
         "matches": matches,
         "loaded_tools": [row["name"] for row in matches],
+        "already_loaded": already_loaded_result,
         "missing": missing,
         "total_searchable_tools": len(searchable),
-        "message": (
-            "Найденные инструменты будут доступны в следующем шаге ГМ. "
-            "Вызови нужный инструмент после этого результата."
-            if matches else
-            "Подходящих инструментов не найдено. Попробуй select:tool_name или другие ключевые слова."
-        ),
+        "message": message,
     }
 
 # JSON-схема NPC — только для надёжного фолбэка в chat_json (грамматика без думалки).

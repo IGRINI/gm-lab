@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 import time
 
 import config
@@ -147,6 +148,748 @@ def _compact_ask_npc_payload(payload: dict) -> dict:
     return out
 
 
+def _clean_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _clean_list(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        text = _clean_text(item)
+        if text:
+            out.append(text)
+    return out
+
+
+def _is_empty_value(value) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _drop_empty(value):
+    if isinstance(value, dict):
+        out = {}
+        for key, child in value.items():
+            clean = _drop_empty(child)
+            if not _is_empty_value(clean):
+                out[key] = clean
+        return out
+    if isinstance(value, list):
+        out = []
+        for child in value:
+            clean = _drop_empty(child)
+            if not _is_empty_value(clean):
+                out.append(clean)
+        return out
+    return value
+
+
+def _normalize_update_world_state_args(value: dict) -> dict:
+    items = value.get("items")
+    if not isinstance(items, list):
+        return {}
+    clean_items = []
+    for item in items:
+        if not isinstance(item, dict):
+            clean_items.append(item)
+            continue
+        clean_item = {}
+        for key, child in item.items():
+            if key in {"type", "text"} or not _is_empty_value(child):
+                clean_item[key] = child
+        clean_items.append(clean_item)
+    return {"items": clean_items}
+
+
+def _clip_text(value, limit: int = 700) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _compact_world_state_update_payload(payload: dict) -> dict:
+    applied = []
+    for row in payload.get("applied") or []:
+        if not isinstance(row, dict):
+            continue
+        compact = {}
+        for source_key, target_key in (
+            ("index", "i"),
+            ("op", "op"),
+            ("type", "type"),
+            ("id", "id"),
+            ("npc_id", "npc_id"),
+            ("target", "target"),
+            ("scope", "scope"),
+            ("mode", "mode"),
+            ("hash", "hash"),
+            ("status", "status"),
+        ):
+            if source_key in row:
+                compact[target_key] = row[source_key]
+        applied.append(compact)
+    errors = []
+    for row in payload.get("errors") or []:
+        if not isinstance(row, dict):
+            continue
+        errors.append(_drop_empty({
+            "i": row.get("index"),
+            "op": row.get("op"),
+            "type": row.get("type"),
+            "id": row.get("id"),
+            "npc_id": row.get("npc_id"),
+            "target": row.get("target"),
+            "scope": row.get("scope"),
+            "existing_id": row.get("existing_id"),
+            "existing_hash": row.get("existing_hash"),
+            "expected_hash": row.get("expected_hash"),
+            "actual_hash": row.get("actual_hash"),
+            "status": row.get("status"),
+            "error": row.get("error"),
+        }))
+    return _drop_empty({
+        "ok": bool(payload.get("ok")),
+        "applied": applied,
+        "errors": errors,
+    })
+
+
+def _compact_world_query_payload(payload: dict) -> dict:
+    rows = []
+    for row in payload.get("results") or []:
+        if not isinstance(row, dict):
+            continue
+        rows.append(_drop_empty({
+            "kind": row.get("kind"),
+            "id": row.get("id"),
+            "npc_id": row.get("npc_id"),
+            "target": row.get("target"),
+            "scope": row.get("scope") or row.get("visibility"),
+            "status": row.get("status"),
+            "hash": row.get("hash"),
+            "text": _clip_text(row.get("text"), 500),
+        }))
+    out = {
+        "scope": payload.get("scope"),
+        "status": payload.get("status"),
+        "text": _clip_text(payload.get("text"), 500),
+        "results": rows,
+        "sources": _compact_sources(payload.get("sources") or []),
+        "error": payload.get("error"),
+    }
+    return _drop_empty(out)
+
+
+def _visibility(value, default: str) -> str:
+    raw = _clean_text(value).lower().replace("-", "_")
+    aliases = {
+        "public": "player",
+        "player_safe": "player",
+        "player_private": "shared",
+        "private_player": "shared",
+        "participants": "shared",
+        "participant": "shared",
+        "truth": "gm",
+        "gm_truth": "gm",
+        "private": "npc",
+        "npc_private": "npc",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in {"player", "gm", "npc", "shared"} else default
+
+
+def _resolve_npc_id(world: world_mod.World, raw: str) -> tuple[str, str]:
+    npc_ref = _clean_text(raw)
+    if not npc_ref:
+        return "", "npc_id is required"
+    try:
+        return world.resolve(npc_ref).npc_id, ""
+    except KeyError as e:
+        return "", str(e)
+
+
+def _append_npc_memory(session: "Session", npc_id: str, text: str) -> None:
+    session.commitments.setdefault(npc_id, []).append(text)
+    session.commitments[npc_id] = session.commitments[npc_id][-_COMMIT_BLOCKS:]
+
+
+def _append_source(text: str, source: str) -> str:
+    return f"{text} (источник: {source})" if source else text
+
+
+def _supports_state_records(world: world_mod.World) -> bool:
+    return callable(getattr(world, "add_state_records", None))
+
+
+def _state_record_kind(item_type: str) -> str:
+    return "goal" if item_type == "goals" else item_type
+
+
+def _state_record_scope(scope: str) -> str:
+    return {
+        "player": "public",
+        "gm": "gm",
+        "npc": "owner",
+        "shared": "participants",
+    }.get(scope, "public")
+
+
+def _state_visibility_from_scope(scope: str) -> str:
+    return {"public": "player", "gm": "gm", "participants": "shared"}.get(_clean_text(scope), "npc")
+
+
+def _state_record_by_id(world: world_mod.World, record_id: str):
+    wanted = _clean_text(record_id)
+    if not wanted:
+        return None
+    for record in getattr(world, "state_records", []) or []:
+        if getattr(record, "record_id", "") == wanted:
+            return record
+    return None
+
+
+def _state_record_hash(record) -> str:
+    hasher = getattr(world_mod, "state_record_hash", None)
+    if callable(hasher):
+        return hasher(record)
+    return ""
+
+
+def _expected_hash(item: dict) -> str:
+    return _clean_text(
+        item.get("expected_hash")
+        or item.get("expectedHash")
+        or item.get("record_hash")
+        or item.get("hash")
+    )
+
+
+def _hash_conflict_error(index: int, op: str, item_type: str, record, expected_hash: str) -> dict:
+    actual_hash = _state_record_hash(record)
+    return {
+        "index": index,
+        "op": op,
+        "type": item_type or getattr(record, "kind", "state"),
+        "id": getattr(record, "record_id", ""),
+        "npc_id": getattr(record, "owner", ""),
+        "target": getattr(record, "subject", ""),
+        "scope": _state_visibility_from_scope(getattr(record, "scope", "")),
+        "expected_hash": expected_hash,
+        "actual_hash": actual_hash,
+        "status": "conflict",
+        "error": "record changed; not applied. Re-query world state and retry with the current hash.",
+    }
+
+
+def _apply_state_record_item(
+    session: "Session",
+    index: int,
+    op: str,
+    item_type: str,
+    text: str,
+    scope: str,
+    source: str,
+    item: dict,
+) -> tuple[dict | None, dict | None]:
+    world = session.world
+    record_id = _clean_text(item.get("id") or item.get("record_id"))
+    if op == "delete":
+        if not record_id:
+            return None, {"index": index, "op": op, "type": item_type, "error": "id is required for delete"}
+        record = _state_record_by_id(world, record_id)
+        if record is not None:
+            expected_hash = _expected_hash(item)
+            if expected_hash and not expected_hash.lower() == _state_record_hash(record).lower():
+                return None, _hash_conflict_error(index, op, item_type, record, expected_hash)
+        deleted = world.delete_state_records([record_id], hard=False)
+        if not deleted:
+            return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": "record id not found or already inactive"}
+        return {
+            "index": index,
+            "op": op,
+            "type": item_type or "state",
+            "id": record_id,
+            "hash": _state_record_hash(record) if record is not None else "",
+            "status": "deleted",
+        }, None
+
+    if op == "update":
+        if not record_id:
+            return None, {"index": index, "op": op, "type": item_type, "error": "id is required for update"}
+        existing_record = _state_record_by_id(world, record_id)
+        if existing_record is None:
+            return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": "record id not found"}
+        expected_hash = _expected_hash(item)
+        if expected_hash and not expected_hash.lower() == _state_record_hash(existing_record).lower():
+            return None, _hash_conflict_error(index, op, item_type, existing_record, expected_hash)
+        update_payload = {"id": record_id}
+        if item_type:
+            update_payload["kind"] = _state_record_kind(item_type)
+        if text:
+            update_payload["text"] = text
+        if item.get("scope") or item.get("visibility"):
+            update_payload["scope"] = _state_record_scope(scope)
+            if scope == "npc" and not _clean_text(item.get("npc_id")):
+                return None, {
+                    "index": index,
+                    "op": op,
+                    "type": item_type,
+                    "id": record_id,
+                    "error": "npc_id is required when changing scope to npc",
+                }
+            if scope == "shared" and (
+                not _clean_text(item.get("npc_id")) or not _clean_text(item.get("target"))
+            ):
+                return None, {
+                    "index": index,
+                    "op": op,
+                    "type": item_type,
+                    "id": record_id,
+                    "error": "npc_id and target are required when changing scope to shared",
+                }
+        owner = ""
+        if item.get("npc_id"):
+            owner, error = _resolve_npc_id(world, item.get("npc_id", ""))
+            if error:
+                return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": error}
+        target = _clean_text(item.get("target"))
+        if owner:
+            update_payload["owner"] = owner
+        if target:
+            update_payload["subject"] = target
+        if source:
+            update_payload["source"] = source
+        if "active" in item:
+            update_payload["active"] = item.get("active")
+        records = world.update_state_records([update_payload])
+        if not records:
+            return None, {"index": index, "op": op, "type": item_type, "id": record_id, "error": "record id not found"}
+        record = records[0]
+        return {
+            "index": index,
+            "op": op,
+            "type": record.kind,
+            "id": record.record_id,
+            "npc_id": record.owner,
+            "target": record.subject,
+            "scope": _state_visibility_from_scope(record.scope),
+            "hash": _state_record_hash(record),
+            "status": "updated",
+        }, None
+
+    owner = ""
+    target = _clean_text(item.get("target"))
+    needs_npc = item_type in {"npc_memory", "relationship", "goal", "goals"} or scope in {"npc", "shared"}
+    if needs_npc:
+        owner, error = _resolve_npc_id(world, item.get("npc_id", ""))
+        if error:
+            return None, {"index": index, "op": op, "type": item_type, "error": error}
+    if item_type == "relationship" and not target:
+        return None, {
+            "index": index,
+            "op": op,
+            "type": item_type,
+            "npc_id": owner,
+            "error": "target is required for relationship",
+        }
+    if scope == "shared" and not target:
+        return None, {
+            "index": index,
+            "op": op,
+            "type": item_type,
+            "error": "target is required for shared scope",
+        }
+
+    if item_type == "relationship":
+        state_records_for = getattr(world, "state_records_for", None)
+        if callable(state_records_for):
+            existing = state_records_for(
+                "debug",
+                kinds=("relationship",),
+                owner=owner,
+                subject=target,
+                scopes=(_state_record_scope(scope),),
+            )
+            if existing:
+                return None, {
+                    "index": index,
+                    "op": op,
+                    "type": item_type,
+                    "npc_id": owner,
+                    "target": target,
+                    "scope": scope,
+                    "existing_id": existing[0].record_id,
+                    "existing_hash": _state_record_hash(existing[0]),
+                    "status": "not_added",
+                    "error": "not added: active relationship already exists; use op=update with existing_id and existing_hash",
+                }
+
+    mode = _clean_text(item.get("mode")).lower()
+    if item_type in {"goal", "goals"} and mode == "replace":
+        existing = []
+        state_records_for = getattr(world, "state_records_for", None)
+        if callable(state_records_for):
+            existing = state_records_for("debug", kinds=("goal",), owner=owner)
+        delete_state_records = getattr(world, "delete_state_records", None)
+        if callable(delete_state_records) and existing:
+            delete_state_records([record.record_id for record in existing], hard=False)
+
+    status = "unconfirmed" if item_type == "rumor" else "known"
+    record_payload = {
+        "kind": _state_record_kind(item_type),
+        "text": text,
+        "scope": _state_record_scope(scope),
+        "owner": owner,
+        "subject": target,
+        "source": source or "gm_tool",
+        "status": status,
+    }
+    records = world.add_state_records([record_payload])
+    if not records:
+        return None, {"index": index, "op": op, "type": item_type, "error": "state record was not stored"}
+    record = records[0]
+    return {
+        "index": index,
+        "op": op,
+        "type": item_type,
+        "id": record.record_id,
+        "npc_id": owner,
+        "target": target,
+        "scope": scope,
+        "mode": mode if item_type in {"goal", "goals"} and mode == "replace" else "",
+        "hash": _state_record_hash(record),
+        "status": "stored",
+        "text": record.text,
+    }, None
+
+
+def _apply_world_state_item(session: "Session", index: int, item: dict) -> tuple[dict | None, dict | None]:
+    world = session.world
+    op = _clean_text(item.get("op")).lower() or "add"
+    if op not in {"add", "update", "delete"}:
+        return None, {"index": index, "op": op, "error": "unsupported op"}
+    item_type = _clean_text(item.get("type")).lower()
+    text = _clean_text(item.get("text"))
+    source = _clean_text(item.get("source"))
+    if item_type == "goals":
+        item_type = "goal"
+    if op == "delete":
+        if _supports_state_records(world):
+            return _apply_state_record_item(session, index, op, item_type, text, "player", source, item)
+        return None, {"index": index, "op": op, "type": item_type, "error": "delete requires state-record support"}
+    if item_type and item_type not in {"fact", "rumor", "npc_memory", "relationship", "goal"}:
+        return None, {"index": index, "type": item_type, "error": "unsupported item type"}
+    if op == "add" and not item_type:
+        return None, {"index": index, "op": op, "error": "type is required for add"}
+    if op == "add" and not text:
+        return None, {"index": index, "op": op, "type": item_type, "error": "text is required"}
+
+    default_scope = "player" if item_type in {"fact", "rumor"} else "npc"
+    scope = _visibility(item.get("scope", item.get("visibility")), default_scope)
+    if _supports_state_records(world):
+        return _apply_state_record_item(session, index, op, item_type, text, scope, source, item)
+
+    if op != "add":
+        return None, {"index": index, "op": op, "type": item_type, "error": "update/delete requires state-record support"}
+
+    if item_type == "fact":
+        if scope == "npc":
+            npc_id, error = _resolve_npc_id(world, item.get("npc_id", ""))
+            if error:
+                return None, {"index": index, "type": item_type, "error": error}
+            _append_npc_memory(session, npc_id, _append_source(f"Факт: {text}", source))
+            return {
+                "index": index, "type": item_type, "npc_id": npc_id,
+                "scope": scope, "status": "stored",
+            }, None
+        record = world.add_fact(text, "truth" if scope == "gm" else "public")
+        if record is None:
+            return None, {"index": index, "type": item_type, "error": "fact was empty"}
+        if source:
+            record.source = source
+        return {
+            "index": index, "type": item_type, "id": record.fact_id,
+            "scope": scope, "status": "stored", "text": record.text,
+        }, None
+
+    if item_type == "rumor":
+        if scope == "player":
+            speaker_id = _clean_text(item.get("npc_id")) or source or "gm"
+            if speaker_id in world.npcs:
+                speaker_id = world.npcs[speaker_id].npc_id
+            elif item.get("npc_id"):
+                try:
+                    speaker_id = world.resolve(speaker_id).npc_id
+                except KeyError:
+                    speaker_id = _clean_text(item.get("npc_id")) or "gm"
+            witnesses = set(_clean_list(item.get("witnesses")) or ["player"])
+            if "player" not in witnesses:
+                witnesses.add("player")
+            seq = session._next_seq()
+            world.record_rumor(seq, session.turn, speaker_id, text, frozenset(witnesses))
+            return {
+                "index": index, "type": item_type, "id": f"rumor:{len(world.rumors)}",
+                "scope": scope, "status": "stored",
+            }, None
+        if scope == "npc":
+            npc_id, error = _resolve_npc_id(world, item.get("npc_id", ""))
+            if error:
+                return None, {"index": index, "type": item_type, "error": error}
+            _append_npc_memory(session, npc_id, _append_source(f"Слух: {text}", source))
+            return {
+                "index": index, "type": item_type, "npc_id": npc_id,
+                "scope": scope, "status": "stored",
+            }, None
+        world.hidden_events.append(_append_source(f"GM-only rumor: {text}", source))
+        return {
+            "index": index, "type": item_type, "id": f"hidden:{len(world.hidden_events)}",
+            "scope": scope, "status": "stored",
+        }, None
+
+    npc_id, error = _resolve_npc_id(world, item.get("npc_id", ""))
+    if error:
+        return None, {"index": index, "type": item_type, "error": error}
+
+    if item_type == "npc_memory":
+        _append_npc_memory(session, npc_id, _append_source(f"Память: {text}", source))
+        return {
+            "index": index, "type": item_type, "npc_id": npc_id,
+            "scope": "npc", "status": "stored",
+        }, None
+
+    if item_type == "relationship":
+        target = _clean_text(item.get("target")) or "unknown"
+        _append_npc_memory(session, npc_id, _append_source(f"Отношение к {target}: {text}", source))
+        return {
+            "index": index, "type": item_type, "npc_id": npc_id,
+            "target": target, "scope": "npc", "status": "stored",
+        }, None
+
+    mode = _clean_text(item.get("mode")).lower()
+    if mode not in {"replace", "append"}:
+        mode = "append"
+    npc = world.npc(npc_id)
+    current = _clean_text(npc.goals)
+    updated = text if mode == "replace" or not current else current + "\n" + text
+    world.update_npc(npc_id, {"goals": updated})
+    return {
+        "index": index, "type": item_type, "npc_id": npc_id,
+        "scope": "npc", "mode": mode, "status": "stored",
+    }, None
+
+
+def _apply_world_state_batch(session: "Session", args: dict) -> dict:
+    items = args.get("items")
+    if not isinstance(items, list):
+        return {"ok": False, "applied": [], "errors": [{"index": 0, "error": "items[] is required"}]}
+    applied = []
+    errors = []
+    for index, raw_item in enumerate(items, start=1):
+        if not isinstance(raw_item, dict):
+            errors.append({"index": index, "error": "item must be an object"})
+            continue
+        row, error = _apply_world_state_item(session, index, raw_item)
+        if row:
+            applied.append(row)
+        if error:
+            errors.append(error)
+    return _drop_empty({"ok": not errors, "applied": applied, "errors": errors})
+
+
+def _query_terms(query: str) -> list[str]:
+    return [
+        term for term in re.findall(r"[\wа-яА-ЯёЁ-]+", _clean_text(query).lower())
+        if len(term) > 1
+    ]
+
+
+def _score_query_text(query: str, terms: list[str], text: str) -> int:
+    haystack = _clean_text(text).lower()
+    if not haystack:
+        return 0
+    score = 0
+    clean_query = _clean_text(query).lower()
+    if clean_query and clean_query in haystack:
+        score += 100
+    for term in terms:
+        if term in haystack:
+            score += 10
+    return score
+
+
+def _query_row(kind: str, text: str, **extra) -> dict:
+    row = {"kind": kind, "text": _clip_text(text)}
+    row.update(extra)
+    return _drop_empty(row)
+
+
+def _scored_rows(query: str, rows: list[dict], limit: int) -> list[dict]:
+    terms = _query_terms(query)
+    scored = []
+    for row in rows:
+        search_text = " ".join(
+            _clean_text(row.get(key))
+            for key in ("kind", "id", "npc_id", "target", "scope", "visibility", "status", "text")
+            if _clean_text(row.get(key))
+        )
+        score = _score_query_text(query, terms, search_text)
+        if score > 0:
+            scored.append((score, row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [row for _score, row in scored[:limit]]
+
+
+def _player_query_payload(world: world_mod.World, query: str, limit: int = 5) -> dict:
+    fact = world.fact(query, actor_id="player")
+    payload = fact.as_tool_payload()
+    rows = _scored_rows(query, _state_record_rows(world, "player"), limit)
+    status = payload.get("status", "unknown")
+    if rows and status == "unknown":
+        status = "known"
+    out = {
+        "scope": "player",
+        "status": status,
+        "text": payload.get("text", ""),
+        "results": rows,
+        "sources": _compact_sources(payload.get("sources") or []),
+    }
+    return _drop_empty(out)
+
+
+def _state_record_rows(world: world_mod.World, actor_id: str) -> list[dict]:
+    state_records_for = getattr(world, "state_records_for", None)
+    if not callable(state_records_for):
+        return []
+    rows = []
+    for record in state_records_for(actor_id):
+        rows.append(_query_row(
+            f"state_{record.kind}",
+            record.text,
+            id=record.record_id,
+            npc_id=record.owner,
+            target=record.subject,
+            visibility=_state_visibility_from_scope(record.scope),
+            status=record.status,
+            hash=_state_record_hash(record),
+        ))
+    return rows
+
+
+def _gm_query_rows(session: "Session") -> list[dict]:
+    world = session.world
+    rows = [
+        _query_row("public_intro", world.public, visibility="player"),
+        _query_row("gm_canon", world.canon, visibility="gm"),
+    ]
+    rows.extend(_state_record_rows(world, "debug"))
+    for index, event_text in enumerate(getattr(world, "hidden_events", []) or [], start=1):
+        rows.append(_query_row("hidden_event", event_text, id=f"hidden:{index}", visibility="gm"))
+    for record in getattr(world, "fact_records", []) or []:
+        visibility = "gm" if record.kind == "truth" else "player"
+        rows.append(_query_row(
+            f"{record.kind}_fact",
+            record.text,
+            id=record.fact_id,
+            visibility=visibility,
+            status="known" if record.confirmed else "unconfirmed",
+        ))
+    for index, rumor in enumerate(getattr(world, "rumors", []) or [], start=1):
+        rows.append(_query_row(
+            "rumor",
+            rumor.text,
+            id=f"rumor:{index}",
+            npc_id=rumor.speaker,
+            visibility="player",
+            status="unconfirmed",
+        ))
+    for npc_id, npc in world.npcs.items():
+        rows.extend([
+            _query_row("npc_role", f"{npc.name}: {npc.role}", npc_id=npc_id, visibility="player"),
+            _query_row("npc_goals", npc.goals, npc_id=npc_id, visibility="npc"),
+            _query_row("npc_knowledge", npc.knowledge, npc_id=npc_id, visibility="npc"),
+            _query_row("npc_secret", npc.secret, npc_id=npc_id, visibility="npc"),
+        ])
+        if session.npc_summaries.get(npc_id):
+            rows.append(_query_row(
+                "npc_summary", session.npc_summaries[npc_id], npc_id=npc_id, visibility="npc"
+            ))
+        for index, block in enumerate(session.commitments.get(npc_id, [])[-_COMMIT_BLOCKS:], start=1):
+            rows.append(_query_row(
+                "npc_memory", block, id=f"{npc_id}:memory:{index}",
+                npc_id=npc_id, visibility="npc",
+            ))
+    if session.gm_summary.strip():
+        rows.append(_query_row("gm_summary", session.gm_summary, visibility="gm"))
+    return rows
+
+
+def _npc_query_rows(session: "Session", npc_id: str) -> list[dict]:
+    npc = session.world.npc(npc_id)
+    rows = _state_record_rows(session.world, npc_id)
+    rows.extend([
+        _query_row("npc_goals", npc.goals, npc_id=npc_id, visibility="npc"),
+        _query_row("npc_knowledge", npc.knowledge, npc_id=npc_id, visibility="npc"),
+        _query_row("npc_secret", npc.secret, npc_id=npc_id, visibility="npc"),
+    ])
+    if session.npc_summaries.get(npc_id):
+        rows.append(_query_row("npc_summary", session.npc_summaries[npc_id], npc_id=npc_id, visibility="npc"))
+    for index, block in enumerate(session.commitments.get(npc_id, [])[-_COMMIT_BLOCKS:], start=1):
+        rows.append(_query_row(
+            "npc_memory", block, id=f"{npc_id}:memory:{index}",
+            npc_id=npc_id, visibility="npc",
+        ))
+    return rows
+
+
+def _query_world_state(session: "Session", args: dict) -> dict:
+    scope = _visibility(args.get("scope"), "player")
+    query = _clean_text(args.get("query"))
+    if not query:
+        return {"scope": scope, "status": "error", "error": "query is required"}
+    try:
+        limit = max(1, min(int(args.get("max_results") or 5), 12))
+    except (TypeError, ValueError):
+        limit = 5
+
+    if scope == "player":
+        return _player_query_payload(session.world, query, limit)
+
+    if scope == "npc":
+        npc_id, error = _resolve_npc_id(session.world, args.get("npc_id", ""))
+        if error:
+            return {"scope": scope, "status": "error", "error": error}
+        rows = _scored_rows(query, _npc_query_rows(session, npc_id), limit)
+        public_payload = session.world.fact(query, actor_id="public").as_tool_payload()
+        public_text = _clean_text(public_payload.get("text"))
+        if public_payload.get("status") != "unknown" and public_text:
+            rows.insert(0, _query_row(
+                "public_lookup",
+                public_text,
+                visibility="player",
+                status=public_payload.get("status", ""),
+            ))
+        return _drop_empty({
+            "scope": scope,
+            "status": "known" if rows else "unknown",
+            "results": rows[:limit],
+            "text": "" if rows else "Nothing in this NPC scope matched the query.",
+        })
+
+    rows = _scored_rows(query, _gm_query_rows(session), limit)
+    return _drop_empty({
+        "scope": "gm",
+        "status": "known" if rows else "unknown",
+        "results": rows,
+        "text": "" if rows else "Nothing in GM scope matched the query.",
+    })
+
+
 def _schema_types(schema: dict) -> set[str]:
     typ = schema.get("type") if isinstance(schema, dict) else None
     if isinstance(typ, str):
@@ -210,6 +953,10 @@ def _normalize_tool_args(name: str, args: dict, parameters_schema: dict | None =
     if not isinstance(parameters_schema, dict):
         return dict(args)
     normalized = _compact_tool_value(parameters_schema, args, True)
+    if not isinstance(normalized, dict):
+        return {}
+    if name == "update_world_state":
+        normalized = _normalize_update_world_state_args(normalized)
     return normalized if isinstance(normalized, dict) else {}
 
 
@@ -1065,6 +1812,26 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             debug_text += "\n\nsources:\n" + "\n".join(source_lines)
         yield ev("world_fact", "ГМ", debug_text)
         return _tool_result(_json_compact(payload), _json_compact(_compact_world_fact_payload(payload)))
+    if name == "update_world_state":
+        payload = _apply_world_state_batch(session, args)
+        if payload.get("errors"):
+            for error in payload.get("errors") or []:
+                yield ev("error", "ГМ", error.get("error", "world-state update failed"))
+        yield ev("world_state_update", "ГМ", payload)
+        return _tool_result(
+            _json_compact(payload),
+            _json_compact(_compact_world_state_update_payload(payload)),
+        )
+    if name == "query_world_state":
+        payload = _query_world_state(session, args)
+        if payload.get("error"):
+            yield ev("error", "ГМ", payload["error"])
+        else:
+            yield ev("world_query", "ГМ", payload)
+        return _tool_result(
+            _json_compact(payload),
+            _json_compact(_compact_world_query_payload(payload)),
+        )
     if name == "set_npc_whereabouts":
         try:
             payload = world.set_npc_whereabouts(

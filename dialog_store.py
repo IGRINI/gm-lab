@@ -599,6 +599,10 @@ def _world_to_payload(world: world_mod.World) -> dict:
         "scene": _scene_to_payload(world.scene),
         "npc_whereabouts": world.npc_whereabouts_export(),
         "fact_records": [_fact_to_payload(record) for record in world.fact_records],
+        "state_records": [
+            _state_record_to_payload(record)
+            for record in getattr(world, "state_records", [])
+        ],
     }
 
 
@@ -645,6 +649,11 @@ def _world_from_payload(data: dict) -> world_mod.World:
     if not facts:
         raise ValueError("unsupported world payload: fact_records is required")
     world.fact_records = [_fact_from_payload(row) for row in facts]
+    world.state_records = [
+        _state_record_from_payload(row)
+        for row in _json_list(data.get("state_records"))
+        if isinstance(row, dict)
+    ]
     world._ensure_npc_whereabouts()
 
     if data.get("dice_seed") is None:
@@ -863,6 +872,39 @@ def _fact_from_payload(data: dict) -> world_mod.FactRecord:
         keywords=[str(item) for item in _json_list(data.get("keywords"))],
         source=str(data.get("source") or ""),
         confirmed=bool(data.get("confirmed", True)),
+    )
+
+
+def _state_record_to_payload(record: world_mod.StateRecord) -> dict:
+    metadata = _json_value(record.metadata)
+    return {
+        "record_id": record.record_id,
+        "kind": record.kind,
+        "text": record.text,
+        "scope": record.scope,
+        "active": bool(record.active),
+        "owner": record.owner,
+        "subject": record.subject,
+        "source": record.source,
+        "status": record.status,
+        "tags": [str(item) for item in record.tags],
+        "metadata": metadata if isinstance(metadata, dict) else {},
+    }
+
+
+def _state_record_from_payload(data: dict) -> world_mod.StateRecord:
+    return world_mod.StateRecord(
+        record_id=str(data.get("record_id") or data.get("id") or ""),
+        kind=str(data.get("kind") or "fact"),
+        text=str(data.get("text") or ""),
+        scope=str(data.get("scope") or "public"),
+        active=bool(data.get("active", True)),
+        owner=str(data.get("owner") or data.get("owner_id") or ""),
+        subject=str(data.get("subject") or data.get("subject_id") or ""),
+        source=str(data.get("source") or ""),
+        status=str(data.get("status") or "known"),
+        tags=tuple(str(item) for item in _json_list(data.get("tags"))),
+        metadata=_json_dict(data.get("metadata")),
     )
 
 

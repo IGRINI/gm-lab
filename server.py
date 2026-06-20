@@ -125,6 +125,7 @@ def export_data(dialog: DialogRuntime) -> dict:
             "constraints": w.constraints,
             "scene": w.scene_export(),
             "rumors": [vars(r) | {"witnesses": sorted(r.witnesses)} for r in w.rumors],
+            "state_records": _debug_state_records(w),
             "npc_commitments": session.commitments,
             "npc_summaries": session.npc_summaries,
             "npc_messages": session.npc_messages,
@@ -177,6 +178,12 @@ def _debug_pending(pending: dict) -> dict:
             "witnesses": sorted(row.get("witnesses") or []),
         }
     return out
+
+
+def _debug_state_records(world: world_mod.World) -> list[dict]:
+    if not hasattr(world, "state_records_export"):
+        return []
+    return world.state_records_export("gm", active=None)
 
 
 def debug_data(dialog: DialogRuntime) -> dict:
@@ -249,6 +256,7 @@ def debug_data(dialog: DialogRuntime) -> dict:
         },
         "status_labels": dict(world_mod.WHEREABOUTS_STATUS_LABELS),
         "facts": facts,
+        "state_records": _debug_state_records(w),
         "rumors": [_debug_rumor(rumor) for rumor in getattr(w, "rumors", [])],
         "npcs": npcs,
         "memory": {

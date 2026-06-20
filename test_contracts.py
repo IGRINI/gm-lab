@@ -6,6 +6,7 @@ os.environ.setdefault("GM_BACKEND", "mock")
 
 import agents
 import stories
+import tool_guidance
 import world as world_mod
 from llm_client import make_client
 from llm_client import _proper_nouns_line
@@ -97,6 +98,7 @@ assert "Actively call roll_dice for player-initiated attention" in gm_system
 assert "2d20kh1" in gm_system
 assert "Do not adjust the target after seeing the roll" in gm_system
 assert "roll_dice private notes compact and English" in gm_system
+assert "never use it for social leverage" in gm_system
 assert "do not block core clues behind one bad roll" in gm_system
 assert "CORE GM PRIORITY" in gm_system
 assert "not to print a sparse event log" in gm_system
@@ -108,6 +110,19 @@ assert "Never mention tools" in gm_system
 assert "there are no named-NPC words or personal actions" in gm_system
 assert "Do not invent hidden facts" in gm_system
 assert "Retrieved memory is source material, not automatic truth" in gm_system
+assert tool_guidance.GM_TOOL_CAPABILITY_OVERVIEW in gm_system
+assert "Always remember these tool capabilities exist" in gm_system
+assert "durable world/NPC memory writes (`update_world_state`)" in gm_system
+assert "scoped world/NPC memory lookup before memory writes (`query_world_state`)" in gm_system
+assert "Before changing durable memory" in gm_system
+assert "Mandatory update_world_state triggers" in gm_system
+assert "scope=shared with target=player" in gm_system
+assert "one active record per npc_id + target + scope" in gm_system
+assert tool_guidance.WORLD_STATE_TYPE_GUIDE in gm_system
+assert tool_guidance.WORLD_STATE_SCOPE_GUIDE in gm_system
+assert tool_guidance.WORLD_STATE_SPLIT_GUIDE in gm_system
+assert tool_guidance.WORLD_STATE_EXAMPLE_GUIDE in gm_system
+assert "Do not collapse these into\n  fact" in gm_system
 assert "call move_npc before final" in gm_system
 assert "set_scene before final narration" in gm_system
 assert "Known offscreen NPC whereabouts" in gm_system
@@ -203,13 +218,33 @@ assert all("CURRENT NPC CARD" not in m["content"] for m in npc_ordered[2:4])
 
 tools = agents.build_gm_tools(w)
 tool_names = {tool["function"]["name"] for tool in tools}
-assert {"ask_npc", "roll_dice", "get_world_fact", "tool_search"} <= tool_names
+assert {
+    "ask_npc",
+    "roll_dice",
+    "get_world_fact",
+    "tool_search",
+    "update_world_state",
+    "query_world_state",
+} <= tool_names
 initial_tools = agents.build_gm_tools_for_model(w, agents.initial_gm_tool_names())
 initial_tool_names = {tool["function"]["name"] for tool in initial_tools}
-assert initial_tool_names == {"ask_npc", "roll_dice", "get_world_fact", "tool_search"}
+assert initial_tool_names == {
+    "ask_npc",
+    "roll_dice",
+    "get_world_fact",
+    "query_world_state",
+    "update_world_state",
+    "tool_search",
+}
 assert "set_scene" not in initial_tool_names
 searched_scene = agents.search_gm_tools(w, "перейти новая сцена локация", 3, initial_tool_names)
 assert "set_scene" in searched_scene["loaded_tools"]
+searched_world_state = agents.search_gm_tools(w, "select:update_world_state", 5, initial_tool_names)
+assert searched_world_state["loaded_tools"] == []
+assert searched_world_state["already_loaded"] == ["update_world_state"]
+searched_scoped_query = agents.search_gm_tools(w, "select:query_world_state", 5, initial_tool_names)
+assert searched_scoped_query["loaded_tools"] == []
+assert searched_scoped_query["already_loaded"] == ["query_world_state"]
 searched_select = agents.search_gm_tools(w, "select:move_npc,set_npc_whereabouts", 5, initial_tool_names)
 assert searched_select["loaded_tools"] == ["move_npc", "set_npc_whereabouts"]
 ask_npc = tool_by_name(tools, "ask_npc")
@@ -251,6 +286,8 @@ assert roll_dice["parameters"]["properties"]["target_kind"]["enum"] == [
 assert "none" not in roll_dice["parameters"]["properties"]["difficulty_label"]["enum"]
 assert "Very short English reason" in roll_dice["parameters"]["properties"]["reason"]["description"]
 assert "modifier" in roll_dice["parameters"]["properties"]["modifier_note"]["description"]
+assert "placeholder text" in roll_dice["parameters"]["properties"]["modifier_note"]["description"]
+assert "Do not use for leverage" in roll_dice["parameters"]["properties"]["modifier_note"]["description"]
 assert "none/unknown" not in roll_dice["parameters"]["properties"]["modifier_note"]["description"]
 assert roll_dice["parameters"]["properties"]["stakes"]["additionalProperties"] is False
 normalized_roll = _normalize_tool_calls([{
@@ -306,9 +343,53 @@ assert "source/provenance" in get_world_fact["description"]
 assert "before asserting or summarizing" in get_world_fact["description"]
 assert "in Russian" in get_world_fact["parameters"]["properties"]["query"]["description"]
 
+update_world_state = tool_by_name(tools, "update_world_state")
+assert update_world_state["parameters"]["required"] == ["items"]
+assert update_world_state["parameters"]["additionalProperties"] is False
+state_item_schema = update_world_state["parameters"]["properties"]["items"]["items"]
+assert state_item_schema["additionalProperties"] is False
+assert state_item_schema["properties"]["type"]["enum"] == [
+    "fact", "rumor", "npc_memory", "relationship", "goal"
+]
+assert "Omit optional fields when empty" in update_world_state["description"]
+assert "Private NPC testimony" in update_world_state["description"]
+assert "expected_hash" in update_world_state["description"]
+assert "query_world_state" in update_world_state["description"]
+assert "Every shared item must include both npc_id and target" in update_world_state["description"]
+assert tool_guidance.WORLD_STATE_TYPE_GUIDE in update_world_state["description"]
+assert tool_guidance.WORLD_STATE_SCOPE_GUIDE in update_world_state["description"]
+assert tool_guidance.WORLD_STATE_SPLIT_GUIDE in update_world_state["description"]
+assert tool_guidance.WORLD_STATE_EXAMPLE_GUIDE in update_world_state["description"]
+assert state_item_schema["properties"]["op"]["enum"] == ["add", "update", "delete"]
+assert state_item_schema["properties"]["scope"]["enum"] == ["public", "gm", "npc", "shared"]
+assert "public is not private player knowledge" in state_item_schema["properties"]["scope"]["description"]
+assert "shared means only npc_id and target know" in state_item_schema["properties"]["scope"]["description"]
+assert "Required for shared scope" in state_item_schema["properties"]["npc_id"]["description"]
+assert "Required for relationship and shared scope" in state_item_schema["properties"]["target"]["description"]
+assert "Do not store NPC testimony as fact" in state_item_schema["properties"]["type"]["description"]
+assert "what one NPC remembers" in state_item_schema["properties"]["type"]["description"]
+assert "ongoing attitude" in state_item_schema["properties"]["type"]["description"]
+assert "full multi-layer attitude" in state_item_schema["properties"]["text"]["description"]
+assert "expected_hash" in state_item_schema["properties"]
+assert "not applied" in state_item_schema["properties"]["expected_hash"]["description"]
+assert state_item_schema["properties"]["mode"]["enum"] == ["replace"]
+assert "Omit for normal add/update" in state_item_schema["properties"]["mode"]["description"]
+assert "source" not in state_item_schema["properties"]
+
+query_world_state = tool_by_name(tools, "query_world_state")
+assert query_world_state["parameters"]["required"] == ["scope", "query"]
+assert query_world_state["parameters"]["additionalProperties"] is False
+assert query_world_state["parameters"]["properties"]["scope"]["enum"] == ["player", "gm", "npc"]
+assert "player scope must never reveal" in query_world_state["description"]
+assert "ids and hashes" in query_world_state["description"]
+assert "relationship borin player" in query_world_state["parameters"]["properties"]["query"]["description"]
+
 tool_search = tool_by_name(tools, "tool_search")
 assert tool_search["parameters"]["additionalProperties"] is False
 assert "select:tool_name" in tool_search["description"]
+assert "system tool capability map" in tool_search["description"]
+assert "scoped-memory" not in tool_search["description"]
+assert "update_world_state" not in tool_search["description"]
 
 def _drive(gen):
     try:
@@ -370,6 +451,16 @@ normalized_optional_args = {
             "reason": "тест",
         }},
         {"name": "tool_search", "arguments": {"query": "select:set_scene", "max_results": None}},
+        {"name": "update_world_state", "arguments": {"items": [{
+            "type": "relationship",
+            "text": "стал осторожнее",
+            "npc_id": "borin",
+            "target": "player",
+            "scope": None,
+            "source": "",
+            "witnesses": [],
+            "mode": None,
+        }]}},
     ], w)
 }
 assert normalized_optional_args["ask_npc"] == {"npc_id": "borin", "situation": "тест"}
@@ -387,6 +478,14 @@ assert normalized_optional_args["set_scene"] == {
     "reason": "тест",
 }
 assert normalized_optional_args["tool_search"] == {"query": "select:set_scene"}
+assert normalized_optional_args["update_world_state"] == {
+    "items": [{
+        "type": "relationship",
+        "text": "стал осторожнее",
+        "npc_id": "borin",
+        "target": "player",
+    }]
+}
 normalized_empty_scene_lists = _normalize_tool_calls([{"name": "set_scene", "arguments": {
     "title": "Пустой двор",
     "description": "Во дворе никого.",
@@ -477,6 +576,249 @@ where_args = _normalize_tool_calls([{"name": "set_npc_whereabouts", "arguments":
 }}], where_s.world)[0]["arguments"]
 _drive(_run_tool(where_s, "set_npc_whereabouts", where_args, []))
 assert where_s.world.npc_whereabouts_export("mareth")["source"] == "gm"
+
+batch_s = Session(None)
+batch_ret = _drive(_run_tool(batch_s, "update_world_state", {"items": [
+    {"type": "fact", "text": "На площади закрыли ворота.", "scope": "public"},
+    {"type": "fact", "text": "GM_SECRET_SENTINEL прячется под сценой.", "scope": "gm"},
+    {"type": "rumor", "text": "PUBLIC_RUMOR_SENTINEL видели у лавки.", "npc_id": "borin"},
+    {
+        "type": "rumor",
+        "text": "SHARED_RUMOR_SENTINEL сказала Лиза только игроку.",
+        "npc_id": "lysa",
+        "target": "player",
+        "scope": "shared",
+    },
+    {"type": "npc_memory", "text": "NPC_PRIVATE_SENTINEL хранить молчание.", "npc_id": "borin"},
+    {"type": "relationship", "text": "стал доверять осторожнее", "npc_id": "borin", "target": "player"},
+    {"type": "goal", "text": "GOAL_SENTINEL проверить кладовую.", "npc_id": "borin", "mode": "append"},
+]}, []))
+batch_payload = json.loads(_tool_full_text(batch_ret))
+batch_model_payload = json.loads(_tool_model_text(batch_ret))
+assert batch_payload["ok"] is True
+assert len(batch_payload["applied"]) == 7
+assert all("text" not in row for row in batch_model_payload["applied"])
+if hasattr(batch_s.world, "state_records"):
+    assert any(record.text == "На площади закрыли ворота." and record.kind == "fact"
+               and record.scope == "public" for record in batch_s.world.state_records)
+    assert any(record.text == "GM_SECRET_SENTINEL прячется под сценой." and record.kind == "fact"
+               and record.scope == "gm" for record in batch_s.world.state_records)
+    assert any(record.text == "NPC_PRIVATE_SENTINEL хранить молчание." and record.kind == "npc_memory"
+               and record.owner == "borin" for record in batch_s.world.state_records)
+    assert any(record.text == "SHARED_RUMOR_SENTINEL сказала Лиза только игроку."
+               and record.kind == "rumor" and record.scope == "participants"
+               and record.owner == "lysa" and record.subject == "player"
+               for record in batch_s.world.state_records)
+    assert any(record.kind == "goal" and "GOAL_SENTINEL" in record.text
+               and record.owner == "borin" for record in batch_s.world.state_records)
+else:
+    assert any(record.text == "На площади закрыли ворота." and record.kind == "public"
+               for record in batch_s.world.fact_records)
+    assert any(record.text == "GM_SECRET_SENTINEL прячется под сценой." and record.kind == "truth"
+               for record in batch_s.world.fact_records)
+    assert any("NPC_PRIVATE_SENTINEL" in block for block in batch_s.commitments["borin"])
+    assert "GOAL_SENTINEL" in batch_s.world.npc("borin").goals
+
+player_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "player",
+    "query": "GM_SECRET_SENTINEL NPC_PRIVATE_SENTINEL GOAL_SENTINEL",
+}, []))
+player_query = json.loads(_tool_full_text(player_query_ret))
+player_model_query = json.loads(_tool_model_text(player_query_ret))
+assert player_query["scope"] == "player"
+assert "GM_SECRET_SENTINEL" not in json.dumps(player_query, ensure_ascii=False)
+assert "NPC_PRIVATE_SENTINEL" not in json.dumps(player_query, ensure_ascii=False)
+assert "GOAL_SENTINEL" not in json.dumps(player_query, ensure_ascii=False)
+assert "GM_SECRET_SENTINEL" not in json.dumps(player_model_query, ensure_ascii=False)
+assert "NPC_PRIVATE_SENTINEL" not in json.dumps(player_model_query, ensure_ascii=False)
+
+player_shared_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "player",
+    "query": "SHARED_RUMOR_SENTINEL",
+}, []))
+player_shared_query = json.loads(_tool_model_text(player_shared_query_ret))
+assert "SHARED_RUMOR_SENTINEL" in json.dumps(player_shared_query, ensure_ascii=False)
+assert any(row.get("id") and row.get("target") == "player"
+           for row in player_shared_query.get("results", []))
+assert any(row.get("hash") for row in player_shared_query.get("results", []))
+
+gm_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "gm",
+    "query": "GM_SECRET_SENTINEL",
+}, []))
+gm_query = json.loads(_tool_model_text(gm_query_ret))
+assert gm_query["scope"] == "gm"
+assert "GM_SECRET_SENTINEL" in json.dumps(gm_query, ensure_ascii=False)
+
+npc_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "borin",
+    "query": "NPC_PRIVATE_SENTINEL GOAL_SENTINEL",
+}, []))
+npc_query = json.loads(_tool_model_text(npc_query_ret))
+assert npc_query["scope"] == "npc"
+assert "NPC_PRIVATE_SENTINEL" in json.dumps(npc_query, ensure_ascii=False)
+assert "GOAL_SENTINEL" in json.dumps(npc_query, ensure_ascii=False)
+assert batch_s.world.npc("lysa").secret not in json.dumps(npc_query, ensure_ascii=False)
+
+borin_shared_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "borin",
+    "query": "SHARED_RUMOR_SENTINEL",
+}, []))
+borin_shared_query = json.loads(_tool_model_text(borin_shared_query_ret))
+assert "SHARED_RUMOR_SENTINEL" not in json.dumps(borin_shared_query, ensure_ascii=False)
+
+lysa_shared_query_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "lysa",
+    "query": "SHARED_RUMOR_SENTINEL",
+}, []))
+lysa_shared_query = json.loads(_tool_model_text(lysa_shared_query_ret))
+assert "SHARED_RUMOR_SENTINEL" in json.dumps(lysa_shared_query, ensure_ascii=False)
+
+relation_lookup_ret = _drive(_run_tool(batch_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "borin",
+    "query": "relationship borin player",
+}, []))
+relation_lookup = json.loads(_tool_model_text(relation_lookup_ret))
+relation_rows = [
+    row for row in relation_lookup.get("results", [])
+    if row.get("kind") == "state_relationship" and row.get("npc_id") == "borin"
+]
+assert relation_rows
+assert relation_rows[0]["target"] == "player"
+assert relation_rows[0]["hash"]
+
+player_docs_text = json.dumps(
+    [doc.__dict__ for doc in batch_s.world.retrieval_documents("player")],
+    ensure_ascii=False,
+)
+borin_docs_text = json.dumps(
+    [doc.__dict__ for doc in batch_s.world.retrieval_documents("borin")],
+    ensure_ascii=False,
+)
+public_docs_text = json.dumps(
+    [doc.__dict__ for doc in batch_s.world.retrieval_documents("public")],
+    ensure_ascii=False,
+)
+assert "SHARED_RUMOR_SENTINEL" in player_docs_text
+assert "SHARED_RUMOR_SENTINEL" not in borin_docs_text
+assert "SHARED_RUMOR_SENTINEL" not in public_docs_text
+assert "NPC_PRIVATE_SENTINEL" in borin_docs_text
+assert "NPC_PRIVATE_SENTINEL" not in player_docs_text
+
+bad_batch_ret = _drive(_run_tool(batch_s, "update_world_state", {"items": [
+    {"type": "npc_memory", "text": "x", "npc_id": "ghost"},
+]}, []))
+bad_batch = json.loads(_tool_model_text(bad_batch_ret))
+assert bad_batch["ok"] is False
+assert bad_batch["errors"][0]["i"] == 1
+
+mutable_s = Session(None)
+mutable_add_ret = _drive(_run_tool(mutable_s, "update_world_state", {"items": [
+    {"op": "add", "type": "fact", "text": "MUTABLE_FACT_SENTINEL стоит у колодца.", "scope": "public"},
+]}, []))
+mutable_id = json.loads(_tool_full_text(mutable_add_ret))["applied"][0]["id"]
+mutable_update_ret = _drive(_run_tool(mutable_s, "update_world_state", {"items": [
+    {"op": "update", "id": mutable_id, "text": "MUTABLE_FACT_SENTINEL ушёл к воротам."},
+]}, []))
+mutable_update = json.loads(_tool_model_text(mutable_update_ret))
+assert mutable_update["applied"][0]["status"] == "updated"
+assert "ушёл к воротам" in mutable_s.world.fact("MUTABLE_FACT_SENTINEL").as_tool_payload()["text"]
+mutable_delete_ret = _drive(_run_tool(mutable_s, "update_world_state", {"items": [
+    {"op": "delete", "id": mutable_id},
+]}, []))
+mutable_delete = json.loads(_tool_model_text(mutable_delete_ret))
+assert mutable_delete["applied"][0]["status"] == "deleted"
+assert "MUTABLE_FACT_SENTINEL" not in mutable_s.world.fact("MUTABLE_FACT_SENTINEL").as_tool_payload()["text"]
+
+relation_s = Session(None)
+relation_add_ret = _drive(_run_tool(relation_s, "update_world_state", {"items": [{
+    "op": "add",
+    "type": "relationship",
+    "text": "RELATION_SENTINEL относится к игроку настороженно.",
+    "npc_id": "borin",
+    "target": "player",
+}]}, []))
+relation_add = json.loads(_tool_model_text(relation_add_ret))
+assert relation_add["applied"][0]["status"] == "stored"
+relation_query_ret = _drive(_run_tool(relation_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "borin",
+    "query": "relationship borin player",
+}, []))
+relation_query = json.loads(_tool_model_text(relation_query_ret))
+relation_row = next(
+    row for row in relation_query["results"]
+    if row.get("kind") == "state_relationship" and row.get("target") == "player"
+)
+relation_id = relation_row["id"]
+relation_hash = relation_row["hash"]
+relation_update_ret = _drive(_run_tool(relation_s, "update_world_state", {"items": [{
+    "op": "update",
+    "id": relation_id,
+    "expected_hash": relation_hash,
+    "type": "relationship",
+    "text": "RELATION_SENTINEL доверяет игроку, но скрывает тревогу.",
+    "npc_id": "borin",
+    "target": "player",
+}]}, []))
+relation_update = json.loads(_tool_model_text(relation_update_ret))
+assert relation_update["applied"][0]["status"] == "updated"
+assert relation_update["applied"][0]["hash"]
+updated_relation_hash = relation_update["applied"][0]["hash"]
+active_relations = relation_s.world.state_records_for(
+    "debug",
+    kinds=("relationship",),
+    owner="borin",
+    subject="player",
+)
+assert len(active_relations) == 1
+assert "доверяет игроку" in active_relations[0].text
+relation_conflict_ret = _drive(_run_tool(relation_s, "update_world_state", {"items": [{
+    "op": "update",
+    "id": relation_id,
+    "expected_hash": relation_hash,
+    "type": "relationship",
+    "text": "RELATION_SENTINEL конфликт не должен записаться.",
+    "npc_id": "borin",
+    "target": "player",
+}]}, []))
+relation_conflict = json.loads(_tool_model_text(relation_conflict_ret))
+assert relation_conflict["ok"] is False
+assert relation_conflict["errors"][0]["status"] == "conflict"
+assert relation_conflict["errors"][0]["expected_hash"] == relation_hash
+assert relation_conflict["errors"][0]["actual_hash"] == updated_relation_hash
+assert "конфликт не должен" not in active_relations[0].text
+relation_duplicate_ret = _drive(_run_tool(relation_s, "update_world_state", {"items": [{
+    "op": "add",
+    "type": "relationship",
+    "text": "RELATION_SENTINEL второй дубль.",
+    "npc_id": "borin",
+    "target": "player",
+}]}, []))
+relation_duplicate = json.loads(_tool_model_text(relation_duplicate_ret))
+assert relation_duplicate["ok"] is False
+assert relation_duplicate["errors"][0]["status"] == "not_added"
+assert relation_duplicate["errors"][0]["existing_id"] == relation_id
+assert relation_duplicate["errors"][0]["existing_hash"] == updated_relation_hash
+assert relation_duplicate["errors"][0]["target"] == "player"
+relation_delete_ret = _drive(_run_tool(relation_s, "update_world_state", {"items": [{
+    "op": "delete",
+    "id": relation_id,
+    "expected_hash": updated_relation_hash,
+}]}, []))
+relation_delete = json.loads(_tool_model_text(relation_delete_ret))
+assert relation_delete["applied"][0]["status"] == "deleted"
+relation_deleted_query_ret = _drive(_run_tool(relation_s, "query_world_state", {
+    "scope": "npc",
+    "npc_id": "borin",
+    "query": "RELATION_SENTINEL",
+}, []))
+relation_deleted_query = json.loads(_tool_model_text(relation_deleted_query_ret))
+assert "RELATION_SENTINEL" not in json.dumps(relation_deleted_query, ensure_ascii=False)
 
 unknown = w.fact("Who exactly forged the mayor's seal?").as_tool_payload()
 assert unknown["status"] == "unknown"
