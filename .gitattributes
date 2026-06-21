@@ -1,0 +1,17 @@
+# Golden reference fixtures must stay byte-identical to the Python source.
+# Never apply EOL conversion — GM_SYSTEM byte parity depends on it.
+tests/reference/** -text
+tests/reference/prompts/*.txt -text
+
+# Embedded verbatim prompt assets (added during the port) likewise stay raw.
+crates/gml-prompts/assets/** -text
+
+# Source files: normalize to LF in the repo.
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.css text eol=lf
+*.html text eol=lf
