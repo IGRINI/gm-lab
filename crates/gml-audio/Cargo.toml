@@ -1,10 +1,64 @@
 [package]
 name = "gml-audio"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# STT against ChatGPT's Cloudflare-fronted /backend-api/transcribe needs TLS/JA3
+# browser impersonation (PORT_PLAN §3.2 STT row, risk #2). That pulls in `wreq`
+# (the maintained successor to `rquest`) + BoringSSL via `boring-sys2`, whose
+# build script REQUIRES a working C/C++ toolchain (cl/clang + nasm) at compile
+# time. On this build host that toolchain is absent, so `boring-sys2` cannot
+# compile.
+#
+# Per the task's explicit fallback ("if rquest cannot be made to build cleanly
+# in reasonable effort, put the STT impl behind a cargo feature `stt` ... so
+# gml-audio ALWAYS builds"): the real STT impl lives behind the `stt` feature.
+# It is left OFF by default here so `cargo build`/`cargo test` are clean on a box
+# without a C toolchain; with the feature off, `stt::transcribe` returns the
+# typed `TranscribeError::Unavailable`. Re-enable the real impl once a C compiler
+# + nasm are installed:  `cargo build -p gml-audio --features stt`.
+# (If/when this is built where BoringSSL compiles, flip `default = ["stt"]`.)
+default = []
+stt = ["dep:wreq", "dep:wreq-util"]
 
 [dependencies]
-gml-types = { path = "../gml-types" }
-gml-config = { path = "../gml-config" }
-gml-codex = { path = "../gml-codex" }
+gml-types = { workspace = true }
+gml-config = { workspace = true }
+gml-codex = { workspace = true }
+
+tokio = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+once_cell = { workspace = true }
+
+# STT impersonating client (gated behind `stt`). `wreq` is the maintained
+# successor to `rquest` (the crate was renamed); Chrome emulation presets live in
+# `wreq-util`. See followups for the version note.
+wreq = { version = "5.3.0", features = ["json", "multipart"], optional = true }
+wreq-util = { version = "2.2.6", features = ["emulation"], optional = true }
+
+# Windows process-tree kill via Job Objects + CREATE_NO_WINDOW for spawned
+# children (PORT_PLAN §3.2 sidecar row).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+# Unix: process-group kill (setpgid + killpg) via libc.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
