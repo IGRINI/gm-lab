@@ -1,6 +1,22 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import Tooltip from "./Tooltip.jsx";
 import { fmtK } from "../util.js";
+import { transcribeAudio } from "../api.js";
+
+// Pick a MediaRecorder MIME the browser actually supports, preferring Opus.
+function pickRecorderMime() {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4",
+  ];
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported?.(mime)) return mime;
+  }
+  return "";
+}
 
 const PLACEHOLDER =
   "Действие игрока…  или /new ледяной порт, пропал корабль, рядом Ива и Рун\nEnter — отправить · Shift+Enter — новая строка";
@@ -226,6 +242,142 @@ export default function Composer({
     resize();
   }, [value, resize]);
 
+  // --- voice input (Codex OAuth speech-to-text) ---------------------------
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
+  const recRef = useRef(null); // MediaRecorder
+  const streamRef = useRef(null); // MediaStream
+  const chunksRef = useRef([]);
+  const blobRef = useRef(null); // last recording, kept so a failed transcription can be retried
+  const attemptRef = useRef(0); // bumped to invalidate stale / cancelled transcriptions
+  const micSupported =
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof MediaRecorder !== "undefined";
+
+  const stopStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
+
+  useEffect(
+    () => () => {
+      try {
+        if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop();
+      } catch {
+        /* ignore */
+      }
+      stopStream();
+    },
+    [stopStream]
+  );
+
+  const insertTranscript = useCallback(
+    (text) => {
+      const clean = String(text || "").trim();
+      if (!clean) return;
+      setValue((prev) => (prev.trim() ? prev.replace(/\s*$/, "") + " " + clean : clean));
+      requestAnimationFrame(() => {
+        resize();
+        ref.current?.focus();
+      });
+    },
+    [resize]
+  );
+
+  const sendVoice = useCallback(
+    async (blob) => {
+      if (!blob || !blob.size) return;
+      blobRef.current = blob;
+      const token = ++attemptRef.current;
+      setVoiceError("");
+      setTranscribing(true);
+      try {
+        const text = await transcribeAudio(blob);
+        if (token !== attemptRef.current) return; // cancelled or superseded
+        setTranscribing(false);
+        if (text.trim()) {
+          blobRef.current = null;
+          insertTranscript(text);
+        } else {
+          setVoiceError("Пустой ответ распознавания");
+        }
+      } catch (err) {
+        if (token !== attemptRef.current) return;
+        setTranscribing(false);
+        setVoiceError(err?.message || "Ошибка распознавания");
+      }
+    },
+    [insertTranscript]
+  );
+
+  const startRecording = useCallback(async () => {
+    if (recording || transcribing) return;
+    setVoiceError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mime = pickRecorderMime();
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size) chunksRef.current.push(e.data);
+      };
+      rec.onstop = () => {
+        const type = rec.mimeType || mime || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type });
+        chunksRef.current = [];
+        stopStream();
+        setRecording(false);
+        sendVoice(blob);
+      };
+      recRef.current = rec;
+      rec.start();
+      setRecording(true);
+    } catch {
+      stopStream();
+      setRecording(false);
+      setVoiceError("Нет доступа к микрофону");
+    }
+  }, [recording, transcribing, sendVoice, stopStream]);
+
+  const stopRecording = useCallback(() => {
+    const rec = recRef.current;
+    if (rec && rec.state !== "inactive") {
+      try {
+        rec.stop();
+      } catch {
+        stopStream();
+        setRecording(false);
+      }
+    }
+  }, [stopStream]);
+
+  const toggleRecord = useCallback(() => {
+    if (recording) stopRecording();
+    else startRecording();
+  }, [recording, startRecording, stopRecording]);
+
+  const retryVoice = useCallback(() => {
+    if (blobRef.current) sendVoice(blobRef.current);
+  }, [sendVoice]);
+
+  const cancelVoice = useCallback(() => {
+    attemptRef.current++; // drop any in-flight transcription result
+    try {
+      if (recRef.current && recRef.current.state !== "inactive") recRef.current.stop();
+    } catch {
+      /* ignore */
+    }
+    chunksRef.current = [];
+    blobRef.current = null;
+    stopStream();
+    setRecording(false);
+    setTranscribing(false);
+    setVoiceError("");
+  }, [stopStream]);
+
   const submit = () => {
     const t = value.trim();
     if (!t || busy) return;
@@ -255,12 +407,48 @@ export default function Composer({
     }
   };
 
+  const voiceState = recording
+    ? "recording"
+    : transcribing
+    ? "transcribing"
+    : voiceError
+    ? "error"
+    : "idle";
+  const showVoice = voiceState !== "idle";
+  const voiceLabel = recording
+    ? "Идёт запись… нажми ■, чтобы остановить"
+    : transcribing
+    ? "Распознаю…"
+    : voiceError;
+
   return (
     <footer>
       <div className="footer-main">
         <ContextUsage context={contextUsage} modelWindow={modelWindow} />
         <div className="composer-zone">
           <QuickReplies playerOptions={playerOptions} busy={busy} onPick={sendQuickReply} />
+          {showVoice ? (
+            <div className={"voice-pending voice-" + voiceState} role="status">
+              <span className="voice-ico" aria-hidden="true">
+                {recording ? "●" : transcribing ? "⏳" : "⚠"}
+              </span>
+              <span className="voice-text">{voiceLabel}</span>
+              {voiceState === "error" && blobRef.current ? (
+                <button type="button" className="voice-retry" onClick={retryVoice}>
+                  ↻ Повторить
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="voice-cancel"
+                onClick={cancelVoice}
+                aria-label={recording ? "Отменить запись" : "Отменить голосовое"}
+                title={recording ? "Отменить запись" : "Отменить голосовое"}
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
           <div className="composer">
             <div className="inp-wrap">
               <textarea
@@ -273,11 +461,32 @@ export default function Composer({
                 onChange={(e) => setValue(e.target.value)}
                 onKeyDown={onKeyDown}
               />
+              <div className="composer-actions">
+                {micSupported ? (
+                  <button
+                    type="button"
+                    className="mic-btn"
+                    data-recording={recording ? "true" : "false"}
+                    onClick={toggleRecord}
+                    disabled={transcribing}
+                    aria-label={recording ? "Остановить запись" : "Голосовой ввод"}
+                    title={recording ? "Остановить запись" : "Голосовой ввод"}
+                  >
+                    {recording ? "■" : "🎤"}
+                  </button>
+                ) : null}
+                <button
+                  id="send"
+                  className="send-btn"
+                  onClick={submit}
+                  disabled={busy || !value.trim()}
+                  aria-label="Отправить"
+                  title="Отправить"
+                >
+                  <span className="send-ico" aria-hidden="true">➤</span>
+                </button>
+              </div>
             </div>
-            <button id="send" onClick={submit} disabled={busy || !value.trim()} aria-label="Отправить">
-              <span className="send-label">Отправить</span>
-              <span className="send-ico" aria-hidden="true">➤</span>
-            </button>
           </div>
         </div>
         <RunUsage run={runUsage} />

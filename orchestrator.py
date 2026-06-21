@@ -627,89 +627,10 @@ def _model_player_options_text(payload: dict) -> str:
     options = payload.get("options") if isinstance(payload.get("options"), list) else []
     return _plain_lines(
         "PLAYER OPTIONS",
+        _kv("status", "buttons shown to player"),
         _kv("shown", len(options)),
+        "next: write the final player-facing narration now, then stop; do not call ask_player again.",
     )
-
-
-def _fallback_player_options_payload(world: world_mod.World) -> dict:
-    """Last-resort quick replies when the model ends a turn without ask_player.
-
-    Model-authored choices are still preferred. This fallback only keeps the UI contract
-    true for the setting: if suggestions are enabled, the player always has buttons.
-    It uses visible scene affordances only, so it cannot leak hidden facts.
-    """
-    options: list[dict] = []
-    seen: set[str] = set()
-
-    def add(label: object, message: object) -> None:
-        if len(options) >= 8:
-            return
-        clean_label = _clip_text(label, 80)
-        clean_message = _clip_text(message, 700)
-        if not clean_label or not clean_message:
-            return
-        key = re.sub(r"\s+", " ", f"{clean_label}\n{clean_message}").casefold()
-        if key in seen:
-            return
-        seen.add(key)
-        options.append({"label": clean_label, "message": clean_message})
-
-    scene = getattr(world, "scene", None)
-    present_npcs = sorted(getattr(scene, "present_npcs", set()) or set())
-    for npc_id in present_npcs:
-        if len(options) >= 3:
-            break
-        if not getattr(world, "npc_can_react", lambda _npc_id: False)(npc_id):
-            continue
-        label = world.npc_player_label(npc_id)
-        add(
-            f"Спросить: {label}",
-            f"Обращаюсь к персонажу ({label}) и задаю прямой вопрос о происходящем.",
-        )
-
-    visible_items = scene.visible_items() if scene is not None else []
-    for item in visible_items:
-        if len(options) >= 5:
-            break
-        add(
-            f"Осмотреть: {item.name}",
-            f"Внимательно осматриваю предмет: {item.name}, ищу важные детали и следы.",
-        )
-        if getattr(item, "portable", False):
-            add(
-                f"Взять: {item.name}",
-                f"Беру предмет: {item.name}, если это безопасно и возможно.",
-            )
-
-    visible_exits = scene.visible_exits() if scene is not None else []
-    for exit_ in visible_exits:
-        if len(options) >= 7:
-            break
-        destination = _clean_text(getattr(exit_, "destination", ""))
-        destination_note = f" в сторону: {destination}" if destination and destination != "unknown destination" else ""
-        add(
-            f"Идти: {exit_.name}",
-            f"Иду через {exit_.name}{destination_note}, внимательно следя за реакцией вокруг.",
-        )
-
-    add(
-        "Осмотреться",
-        "Осматриваюсь внимательнее: люди, предметы, выходы и то, что могло измениться.",
-    )
-    add(
-        "Прислушаться",
-        "Замираю на мгновение и прислушиваюсь к разговорам, шагам и реакции вокруг.",
-    )
-    add(
-        "Давить дальше",
-        "Сохраняю напор и пытаюсь получить ответ здесь и сейчас.",
-    )
-    add(
-        "Сменить подход",
-        "Сбавляю давление и пробую зайти с другой стороны.",
-    )
-
-    return {"question": "Что ты делаешь дальше?", "options": options[:8]}
 
 
 def _model_tool_search_text(payload: dict) -> str:
@@ -2929,10 +2850,6 @@ def _drive(session: Session, player_text: str, metas: list):
                     yield ev("delta", "ГМ", {"channel": "gm_narration", "text": final_text}, sid)
                 yield ev("gm_narration", "ГМ", final_text, sid)
                 yield from _sync_scene_delta(session, final_text, metas)
-                if include_player_options_tool and not player_options_shown:
-                    player_options_shown = yield from _repair_missing_player_options(
-                        session, world, final_text, metas
-                    )
             fell_through = False
             break
 
@@ -2968,15 +2885,16 @@ def _drive(session: Session, player_text: str, metas: list):
             if show_tool_event:
                 yield ev("tool_result", name, _tool_full_text(result))
             tool_visible_output = _tool_emits_visible_output(name, result)
-            if turn_visible_output_seen or tool_visible_output:
+            terminal_result = isinstance(result, ToolExecutionResult) and result.terminal
+            if (turn_visible_output_seen or tool_visible_output) and not terminal_result:
                 result = _with_model_reminder(result, _VISIBLE_CONTINUATION_REMINDER)
             session.gm_messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                                         "content": _tool_model_text(result)})
             if tool_visible_output:
                 turn_visible_output_seen = True
-            if name == "ask_player" and isinstance(result, ToolExecutionResult) and result.terminal:
+            if name == "ask_player" and _tool_full_text(result).startswith("PLAYER OPTIONS"):
                 player_options_shown = True
-            if isinstance(result, ToolExecutionResult) and result.terminal:
+            if terminal_result:
                 terminal_after_tools = True
         if terminal_after_tools:
             fell_through = False
@@ -2985,7 +2903,7 @@ def _drive(session: Session, player_text: str, metas: list):
     if fell_through:
         yield ev("error", "ГМ", f"Превышен лимит вызовов инструментов за ход: {max_tool_hops}.")
     elif include_player_options_tool and not player_options_shown:
-        yield ev("player_options", "ГМ", _fallback_player_options_payload(world))
+        yield ev("error", "ГМ", "Модель завершила ход без ask_player, хотя варианты игрока включены.")
 
     if session._turn_player_event is None:
         session.record_public("player", "speech", speech=player_text)
@@ -3043,56 +2961,6 @@ def _generate_pre_tool_prelude(
     return content.strip()
 
 
-def _repair_missing_player_options(
-    session: Session,
-    world: world_mod.World,
-    final_narration: str,
-    metas: list,
-) -> bool:
-    sid = session.next_sid()
-    gen = agents.gm_player_options_stream(
-        session.client,
-        world,
-        session.gm_messages,
-        session.gm_summary,
-        final_narration,
-    )
-    try:
-        while True:
-            ch, text = next(gen)
-            if ch == "thinking":
-                yield ev("delta", "ГМ", {"channel": "gm_thinking", "text": text}, sid)
-    except StopIteration as e:
-        thinking, content, calls, assistant_msg, stats = e.value
-    except Exception as e:
-        yield ev("error", "ГМ", f"Ошибка запроса вариантов игрока: {e}")
-        return False
-
-    if thinking.strip():
-        yield ev("gm_thinking", "ГМ", thinking.strip(), sid)
-    metas.append(_meta("ГМ — варианты", stats, scope="gm"))
-
-    calls = [
-        call for call in _normalize_tool_calls(calls, world, id_prefix=f"gm_{sid}")
-        if call.get("name") == "ask_player"
-    ]
-    if not calls:
-        return False
-
-    assistant_msg = _assistant_with_tool_calls(assistant_msg, calls[:1])
-    session.gm_messages.append(assistant_msg)
-    call = calls[0]
-    result = yield from _run_tool(session, call["name"], call["arguments"], metas)
-    if not isinstance(result, ToolExecutionResult) or not result.terminal:
-        return False
-    session.gm_messages.append({
-        "role": "tool",
-        "tool_call_id": call.get("id", ""),
-        "content": _tool_model_text(result),
-    })
-    return True
-
-
 def _run_tool(session: Session, name: str, args: dict, metas: list):
     """Исполнение инструмента. Yield events for UI/debug; return full + model-history text."""
     world = session.world
@@ -3128,7 +2996,7 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             )
         yield ev("player_options", "ГМ", payload)
         model_text = _model_player_options_text(payload)
-        return _tool_result(model_text, model_text, terminal=True)
+        return _tool_result(model_text, model_text)
     if name == "roll_dice":
         payload = world.roll_outcome_payload(
             args.get("notation", "1d20"),

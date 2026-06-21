@@ -36,6 +36,9 @@ pip-wheel-metadata/
 logs/
 scene_trial_last.json
 
+# Local Hugging Face model weights and runtime checkouts
+hf_models/
+
 # Node/Vite frontend artifacts
 node_modules/
 .vite/

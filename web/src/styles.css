@@ -540,20 +540,45 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
 .quick-reply span{font-size:13px;font-weight:750;line-height:1.2;color:var(--tx)}
 .quick-reply small{min-width:0;color:var(--mut);font-size:11.5px;line-height:1.25;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.composer{display:flex;gap:10px;align-items:flex-end;width:100%;min-width:0}
-.inp-wrap{flex:1;display:flex}
+.composer{display:flex;width:100%;min-width:0}
+.inp-wrap{flex:1;display:flex;position:relative;min-width:0}
 #inp{flex:1;background:var(--bg);color:var(--tx);border:1px solid var(--line);
-  border-radius:12px;padding:11px 14px;font-size:16px;outline:none;
+  border-radius:12px;padding:11px 88px 11px 14px;font-size:16px;outline:none;
   resize:none;line-height:1.45;max-height:var(--composer-max);overflow-y:auto;
   font-family:inherit;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
 #inp:focus{border-color:var(--acc)}
 #inp::-webkit-scrollbar{width:8px}
 #inp::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
-#send{flex:none;background:var(--acc);color:#11111b;border:0;border-radius:12px;
-  padding:0 18px;height:46px;font-size:16px;font-weight:600;cursor:pointer;
+/* compact mic + send cluster docked inside the input's bottom-right corner */
+.composer-actions{position:absolute;right:7px;bottom:7px;display:flex;gap:6px;align-items:center}
+#send{flex:none;background:var(--acc);color:#11111b;border:0;border-radius:9px;
+  width:36px;height:36px;padding:0;font-size:15px;cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center}
-#send:disabled{opacity:.5;cursor:default}
-.send-ico{display:none}              /* arrow glyph; shown only on narrow screens */
+#send:disabled{opacity:.45;cursor:default}
+.send-ico{display:inline;line-height:1}
+.mic-btn{flex:none;width:36px;height:36px;padding:0;border-radius:9px;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;font-size:15px;
+  background:var(--bg3);color:var(--tx);border:1px solid var(--line);
+  transition:background .15s,border-color .15s}
+.mic-btn:hover:not(:disabled){border-color:var(--acc)}
+.mic-btn:disabled{opacity:.5;cursor:default}
+.mic-btn[data-recording="true"]{background:#e5484d;color:#fff;border-color:#e5484d;animation:p 1s infinite}
+/* pending voice message: recording / transcribing / failed-with-retry */
+.voice-pending{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:10px;
+  font-size:12.5px;border:1px solid var(--line);background:rgba(31,31,46,.7);color:var(--tx)}
+.voice-pending .voice-ico{flex:none;font-size:13px}
+.voice-pending .voice-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.voice-recording{border-color:rgba(229,72,77,.55);background:rgba(229,72,77,.12)}
+.voice-recording .voice-ico{color:#e5484d;animation:p 1s infinite}
+.voice-transcribing{border-color:rgba(156,207,216,.45)}
+.voice-error{border-color:rgba(224,168,160,.5);background:rgba(224,168,160,.1)}
+.voice-retry{flex:none;cursor:pointer;font:inherit;font-size:12px;font-weight:650;
+  background:var(--acc);color:#11111b;border:0;border-radius:7px;padding:5px 9px}
+.voice-retry:hover{filter:brightness(1.06)}
+.voice-cancel{flex:none;cursor:pointer;width:26px;height:26px;border-radius:7px;
+  display:inline-flex;align-items:center;justify-content:center;font-size:13px;
+  background:transparent;color:var(--mut);border:1px solid var(--line)}
+.voice-cancel:hover{color:var(--tx);border-color:var(--acc)}
 .context-usage,.run-usage{width:190px;min-height:64px;
   border:1px solid var(--line);border-left:3px solid var(--acc);
   background:linear-gradient(180deg,var(--bg3),var(--bg2));border-radius:10px;
@@ -792,7 +817,6 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
 
 @media(max-width:520px){
   footer{padding:10px}
-  #send{padding:0 12px}
   .context-usage,.run-usage{grid-template-columns:1fr auto;gap:4px 10px}
   .context-usage-main,.run-usage-main{justify-self:end}
   .context-usage-grid,.run-usage-grid{grid-column:1 / -1}
@@ -859,10 +883,9 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
   .composer{gap:8px}
   .quick-replies{max-height:132px;padding:8px}
   .quick-reply{flex-basis:calc(50% - 4px)}
-  #inp{font-size:16px;padding:10px 12px}  /* 16px keeps iOS from zooming on focus */
-  #send{width:50px;height:46px;padding:0;font-size:20px;border-radius:12px}
-  .send-label{display:none}
-  .send-ico{display:inline}
+  #inp{font-size:16px;padding:10px 86px 10px 12px}  /* 16px keeps iOS from zooming on focus */
+  .composer-actions{right:6px;bottom:6px;gap:6px}
+  #send,.mic-btn{width:38px;height:38px;font-size:16px;border-radius:10px}
   .composer-hint,#status{margin-top:5px}
 
   /* --- debug entry: pinned to the right edge, clear of the composer --- */

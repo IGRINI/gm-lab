@@ -282,7 +282,7 @@ assert "ask_npc output is already player-facing NPC" in gm_system
 assert "Avoid sterile recaps and bland static" in gm_system
 assert "PLAYER OPTION SUGGESTIONS" in gm_system
 assert "quick-reply layer above the player's free input" in gm_system
-assert "your turn must end by calling ask_player" in gm_system
+assert "call ask_player as the last tool before final player-facing narration" in gm_system
 assert "The buttons are the menu" in gm_system
 assert "Do not append a menu of suggested actions in final narration" in gm_system
 assert "when a textual list is useful, keep it to 2-4 concrete" in gm_system
@@ -327,9 +327,10 @@ assert "CURRENT NAMED NPC ROSTER" not in gm_context
 assert "id=borin; internal_name=Борин; player_label=Борин" in gm_context
 assert "id=lysa; internal_name=Лиза; player_label=служанка" in gm_context
 gm_context_with_options = agents._gm_turn_context(w, "Жду.", include_player_options_tool=True)
-assert "enabled. After the final player-facing narration" in gm_context_with_options
+assert "last tool before final narration" in gm_context_with_options
 assert "call ask_player" in gm_context_with_options
 assert "4-8 useful Russian quick replies" in gm_context_with_options
+assert "does not create fallback buttons" in gm_context_with_options
 scene_context = w.scene_context()
 assert "служанка (lysa" in scene_context
 assert "Лиза (" not in scene_context
@@ -531,7 +532,7 @@ assert "compact structured text" in advance_time["description"]
 ask_player = tool_by_name(tools, "ask_player")
 assert ask_player["parameters"]["required"] == ["question", "options"]
 assert ask_player["parameters"]["additionalProperties"] is False
-assert "terminal end-of-turn tool" in ask_player["description"]
+assert "last tool before final narration" in ask_player["description"]
 assert "at least 4" in ask_player["description"]
 assert "free text input" in ask_player["description"]
 assert ask_player["parameters"]["properties"]["options"]["minItems"] == 4
@@ -978,9 +979,14 @@ _options_ret = _drive(_run_tool(_s, "ask_player", {
     ],
 }, []))
 _assert_model_result_is_structured_text(_options_ret)
-assert getattr(_options_ret, "terminal", False) is True
-assert _tool_full_text(_options_ret) == "PLAYER OPTIONS\nshown: 4"
-assert _tool_model_plain(_options_ret) == "PLAYER OPTIONS\nshown: 4"
+assert getattr(_options_ret, "terminal", False) is False
+assert _tool_full_text(_options_ret) == (
+    "PLAYER OPTIONS\n"
+    "status: buttons shown to player\n"
+    "shown: 4\n"
+    "next: write the final player-facing narration now, then stop; do not call ask_player again."
+)
+assert _tool_model_plain(_options_ret) == _tool_full_text(_options_ret)
 _bad_options_ret = _drive(_run_tool(_s, "ask_player", {
     "question": "Что дальше?",
     "options": [{"label": "Спросить", "message": "Спросить Борина."}],
@@ -2177,38 +2183,28 @@ class MissingAskPlayerClient:
     def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
         self.calls += 1
         self.tool_names_by_call.append([tool["function"]["name"] for tool in (tools or [])])
-        if self.calls == 1:
-            final = "Ты оставляешь себе секунду на выбор следующего шага."
-            yield ("content", final)
-            return "", final, [], {"role": "assistant", "content": final}, {}
-        args = {
-            "question": "Что дальше?",
-            "options": [
-                {"label": "Ремонтный вопрос", "message": "Выбираю действие из ремонтного вызова."},
-                {"label": "Спросить", "message": "Спрашиваю ближайшего свидетеля."},
-                {"label": "Осмотреть", "message": "Осматриваю место вокруг себя."},
-                {"label": "Подождать", "message": "Замираю и смотрю, кто первым отреагирует."},
-            ],
-        }
-        raw_tool_calls = [{
-            "id": "repaired_player_options",
-            "type": "function",
-            "function": {
-                "name": "ask_player",
-                "arguments": json.dumps(args, ensure_ascii=False),
-            },
-        }]
-        return (
-            "",
-            "",
-            [{"id": "repaired_player_options", "name": "ask_player", "arguments": args}],
-            {"role": "assistant", "content": "", "tool_calls": raw_tool_calls},
-            {},
-        )
+        if self.calls > 1:
+            raise AssertionError("missing ask_player must not trigger a repair call")
+        final = "Ты оставляешь себе секунду на выбор следующего шага."
+        yield ("content", final)
+        return "", final, [], {"role": "assistant", "content": final}, {}
 
 
 class AskPlayerToolClient:
+    def __init__(self):
+        self.calls = 0
+        self.second_request_saw_options_result = False
+
     def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
+        self.calls += 1
+        if self.calls == 2:
+            self.second_request_saw_options_result = any(
+                msg.get("role") == "tool" and "PLAYER OPTIONS" in str(msg.get("content", ""))
+                for msg in messages
+            )
+            final = "Кнопки уже появились над вводом; сцена закрывается на твоём следующем выборе."
+            yield ("content", final)
+            return "", final, [], {"role": "assistant", "content": final}, {}
         prelude = "Перед тобой остаются несколько явных ходов."
         yield ("content", prelude)
         args = {
@@ -2240,6 +2236,7 @@ class AskPlayerToolClient:
 class AskPlayerWithoutNarrationClient:
     def __init__(self):
         self.calls = 0
+        self.main_calls = 0
 
     def chat_stream(self, messages, tools=None, think=False, reasoning_role="gm"):
         self.calls += 1
@@ -2247,6 +2244,11 @@ class AskPlayerWithoutNarrationClient:
             prelude = "Ты задерживаешь взгляд на сцене и видишь несколько безопасных ходов."
             yield ("content", prelude)
             return "", prelude, [], {"role": "assistant", "content": prelude}, {}
+        self.main_calls += 1
+        if self.main_calls == 2:
+            final = "После короткой паузы остаётся только выбрать следующий ход."
+            yield ("content", final)
+            return "", final, [], {"role": "assistant", "content": final}, {}
         args = {
             "question": "Что дальше?",
             "options": [
@@ -2281,18 +2283,28 @@ try:
     missing_options_payloads = [
         e["data"] for e in missing_options_events if e["kind"] == "player_options"
     ]
-    assert missing_options_client.calls == 2
+    missing_options_errors = [
+        e["data"] for e in missing_options_events if e["kind"] == "error"
+    ]
+    assert missing_options_client.calls == 1
     assert "ask_player" in missing_options_client.tool_names_by_call[0]
-    assert missing_options_client.tool_names_by_call[1] == ["ask_player"]
-    assert len(missing_options_payloads) == 1
-    assert missing_options_payloads[0]["options"][0]["label"] == "Ремонтный вопрос"
+    assert not missing_options_payloads
+    assert any("без ask_player" in str(error) for error in missing_options_errors)
     assert not any(
         e["kind"] == "gm_tool_call" and e["data"]["name"] == "ask_player"
         for e in missing_options_events
     )
 
-    ask_player_events = list(run_turn(Session(AskPlayerToolClient()), "Что можно сделать?"))
-    assert any(e["kind"] == "player_options" for e in ask_player_events)
+    ask_player_session = Session(AskPlayerToolClient())
+    ask_player_events = list(run_turn(ask_player_session, "Что можно сделать?"))
+    ask_player_options_idx = next(i for i, e in enumerate(ask_player_events) if e["kind"] == "player_options")
+    ask_player_final_idx = next(
+        i for i, e in enumerate(ask_player_events)
+        if e["kind"] == "gm_narration" and "сцена закрывается" in str(e["data"])
+    )
+    assert ask_player_options_idx < ask_player_final_idx
+    assert ask_player_session.client.calls == 2
+    assert ask_player_session.client.second_request_saw_options_result
     assert not any(
         e["kind"] == "gm_tool_call" and e["data"]["name"] == "ask_player"
         for e in ask_player_events
@@ -2301,6 +2313,13 @@ try:
         e["kind"] == "tool_result" and e["agent"] == "ask_player"
         for e in ask_player_events
     )
+    ask_player_tool_messages = [
+        msg for msg in ask_player_session.gm_messages
+        if msg.get("role") == "tool"
+    ]
+    assert len(ask_player_tool_messages) == 1
+    assert "write the final player-facing narration now" in ask_player_tool_messages[0]["content"]
+    assert "do not call ask_player again" in ask_player_tool_messages[0]["content"]
 
     bare_options_client = AskPlayerWithoutNarrationClient()
     bare_options_events = list(run_turn(Session(bare_options_client), "Что можно сделать?"))
@@ -2309,7 +2328,12 @@ try:
         if e["kind"] == "gm_narration" and "несколько безопасных ходов" in str(e["data"])
     )
     bare_options_idx = next(i for i, e in enumerate(bare_options_events) if e["kind"] == "player_options")
-    assert bare_options_client.calls == 2
+    bare_final_idx = next(
+        i for i, e in enumerate(bare_options_events)
+        if e["kind"] == "gm_narration" and "выбрать следующий ход" in str(e["data"])
+    )
+    assert bare_options_idx < bare_final_idx
+    assert bare_options_client.calls == 3
     assert bare_narration_idx < bare_options_idx
 finally:
     runtime_settings.gm_suggest_options_enabled = _old_gm_suggest_options_enabled

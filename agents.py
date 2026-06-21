@@ -496,15 +496,19 @@ def build_gm_tools(world: world_mod.World) -> list:
         "name": _PLAYER_OPTIONS_TOOL_NAME,
         "description": (
             "Show quick-reply buttons above the player's input when CURRENT TURN CONTEXT says "
-            "PLAYER OPTION SUGGESTIONS are enabled. This is a terminal end-of-turn tool: when "
-            "enabled, every completed GM turn must end by calling it exactly once after the "
-            "final player-facing narration. Do not continue narrating after it. Provide at "
-            "least 4 current, concrete actions or dialogue lines that fit the situation "
-            "without replacing free text input. Each option has a short Russian label "
-            "displayed on the button and a fuller Russian message that will be sent as the "
-            "player's next message if clicked. Do not use this tool for hidden facts, "
-            "spoilers, GM-only reasoning, NPC stats, or commands to the player. "
-            "The result is compact structured text confirming that the options were shown."
+            "PLAYER OPTION SUGGESTIONS are enabled. This is the last tool before final "
+            "narration: after all other required tools are resolved, call it exactly once, "
+            "then use its tool result to write the closing player-facing narration and stop. "
+            "Do not finish with narration only, do not call ask_player after final narration, "
+            "and do not continue with more tools after ask_player unless its arguments were "
+            "invalid. The engine will not synthesize fallback buttons if you skip this call. "
+            "Provide at least 4 current, concrete actions or dialogue lines that fit the "
+            "situation without replacing free text input. Each option has a short Russian "
+            "label displayed on the button and a fuller Russian message that will be sent as "
+            "the player's next message if clicked. Do not use this tool for hidden facts, "
+            "spoilers, GM-only reasoning, NPC stats, or commands to the player. The result is "
+            "compact structured text confirming that the buttons were shown; after receiving "
+            "it, write the final narration for this turn."
         ),
         "parameters": {"type": "object", "properties": {
             "question": {"type": "string",
@@ -1139,14 +1143,16 @@ def _gm_turn_context(
     if include_player_options_tool:
         system += (
             "\n\nPLAYER OPTION SUGGESTIONS:\n"
-            "enabled. After the final player-facing narration for this turn, call ask_player "
-            "as the last tool of the turn with 4-8 useful Russian quick replies. This is "
-            "mandatory for every completed turn while the feature is enabled: do not finish "
-            "with narration only. Do not put "
-            "a textual choice menu in final narration; the quick-reply buttons handle it. "
-            "Each option needs a short label and a fuller message that can be sent as the "
-            "player's next action. Keep free text input available by offering suggestions, "
-            "not commands."
+            "enabled. After resolving all needed tools for this player action, call ask_player "
+            "as the last tool before final narration with 4-8 useful Russian quick replies. "
+            "This is mandatory for every completed turn while the feature is enabled: do not "
+            "finish with narration only. Do not call more tools after ask_player unless the "
+            "ask_player result reports invalid arguments. After the ask_player tool result "
+            "confirms the buttons were shown, write the final player-facing narration and "
+            "stop. The engine does not create fallback buttons. Do not put a textual choice "
+            "menu in final narration; the quick-reply buttons handle it. Each option needs a "
+            "short label and a fuller message that can be sent as the player's next action. "
+            "Keep free text input available by offering suggestions, not commands."
         )
     else:
         system += (
@@ -1263,41 +1269,6 @@ MARKUP, use refs in the same shape, with the current player-facing label.
     return client.chat_stream(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         tools=None,
-        think=False,
-        reasoning_role=config.ROLE_GM,
-    )
-
-
-def gm_player_options_stream(
-    client,
-    world: world_mod.World,
-    gm_messages: list,
-    summary: str = "",
-    final_narration: str = "",
-):
-    """Repair request for a completed turn that ended without ask_player.
-
-    The visible GM narration is already done. This request exposes only ask_player and
-    asks for the missing quick replies, so the UI gets model-authored buttons instead
-    of jumping straight to deterministic fallback options.
-    """
-    messages = _gm_request_messages(world, gm_messages, summary)
-    messages.append({
-        "role": "user",
-        "content": (
-            "PLAYER OPTION SUGGESTIONS REPAIR:\n"
-            "The previous assistant message already gave the final player-facing narration "
-            "for this turn, but ask_player was not called. Do not write more narration. "
-            "Call ask_player now exactly once with 4-8 useful Russian quick replies for "
-            "the current situation. Keep them spoiler-free and compatible with free text "
-            "input.\n\n"
-            "FINAL NARRATION ALREADY SHOWN TO PLAYER:\n"
-            f"{final_narration.strip()}"
-        ),
-    })
-    return client.chat_stream(
-        messages,
-        tools=[gm_tool_catalog(world)[_PLAYER_OPTIONS_TOOL_NAME]],
         think=False,
         reasoning_role=config.ROLE_GM,
     )

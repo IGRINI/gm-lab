@@ -81,6 +81,26 @@ export const api = {
   },
 };
 
+// Send a recorded audio blob to the backend for speech-to-text (Codex OAuth).
+// Resolves to the transcribed text; throws on failure so the caller can retry.
+export async function transcribeAudio(blob) {
+  const resp = await fetch("/transcribe", {
+    method: "POST",
+    headers: { "Content-Type": blob.type || "audio/webm" },
+    body: blob,
+  });
+  let data = {};
+  try {
+    data = await resp.json();
+  } catch {
+    /* fall through to the generic error below */
+  }
+  if (!resp.ok || !data.ok) {
+    throw new Error(data.error || `Ошибка распознавания (${resp.status})`);
+  }
+  return String(data.text || "");
+}
+
 // Stream a player turn. `onEvent` is called for every SSE event object.
 // Returns when the stream ends. Throws on network error.
 export async function streamTurn(text, onEvent) {

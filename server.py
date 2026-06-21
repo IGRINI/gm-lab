@@ -9,6 +9,7 @@ GET  /stories    -> selectable story catalog
 POST /chats      -> create a chat
 POST /chats/{id}/activate -> switch active chat
 POST /turn       -> SSE turn stream
+POST /transcribe -> speech-to-text via Codex OAuth (raw audio body -> {ok,text})
 POST /cmd        -> reset / new <brief> / constraint <txt> / event <txt>
 
 Run:  python server.py
@@ -460,6 +461,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _raw_body(self) -> bytes:
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        if not n:
+            return b""
+        return self.rfile.read(n)
+
     def _activate_chat_response(self, chat_scope_id: str, chat_id: str) -> None:
         dialog = dialog_store.activate_chat(chat_scope_id, chat_id)
         if dialog is None:
@@ -678,6 +685,25 @@ class Handler(BaseHTTPRequestHandler):
                     "embeddings_purged": int(result.get("embeddings_purged") or 0),
                 }
             self._json(response)
+            return
+
+        if path == "/transcribe":
+            if config.BACKEND != "codex":
+                self._json({"ok": False, "error": "транскрипция доступна только при GM_BACKEND=codex"}, 400)
+                return
+            audio = self._raw_body()
+            if not audio:
+                self._json({"ok": False, "error": "пустое аудио"}, 400)
+                return
+            content_type = self.headers.get("Content-Type") or "audio/webm"
+            try:
+                import codex_transcribe
+
+                text = codex_transcribe.transcribe(audio, content_type=content_type)
+                self._json({"ok": True, "text": text})
+            except Exception as ex:
+                status = getattr(ex, "status", None)
+                self._json({"ok": False, "error": str(ex), "status": status})
             return
 
         dialog = self._dialog()

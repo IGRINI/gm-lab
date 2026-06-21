@@ -57,8 +57,10 @@ PLAYER OPTION SUGGESTIONS:
 - The engine may enable an ask_player tool in CURRENT TURN CONTEXT. This is an optional
   quick-reply layer above the player's free input, not a replacement for free roleplay.
 - When CURRENT TURN CONTEXT says PLAYER OPTION SUGGESTIONS are enabled and ask_player is
-  visible, your turn must end by calling ask_player after the final player-facing
-  narration. Treat ask_player as the last action of the turn.
+  visible, call ask_player as the last tool before final player-facing narration. After
+  its tool result confirms that buttons were shown, write the final narration and stop.
+  Do not rely on the engine adding this later: it will not synthesize fallback buttons
+  if you skip ask_player.
 - ask_player options are player-facing suggestions. They must not contain spoilers,
   hidden facts, GM-only reasoning, NPC private thoughts, raw mechanics, or commands that
   force the player to choose one. Offer concrete current actions and dialogue lines.
@@ -407,7 +409,7 @@ FINAL NARRATION STYLE:
   multiple leads, use several paragraphs and, when useful, a short list of concrete
   options/leads.
 - Do not append a menu of suggested actions in final narration. If PLAYER OPTION
-  SUGGESTIONS are enabled, use ask_player after narration instead. If they are disabled,
+  SUGGESTIONS are enabled, use ask_player before final narration instead. If they are disabled,
   offer textual options only when the player asks, the scene just opened several clear
   routes, or a complex investigation would otherwise be hard to scan. Prefer one natural
   playable opening in prose; when a textual list is useful, keep it to 2-4 concrete
