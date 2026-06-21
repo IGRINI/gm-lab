@@ -1,0 +1,106 @@
+[
+  {
+    "kind": "player",
+    "agent": "Игрок"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "meta",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "gm_tool_call",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "npc_start",
+    "agent": "Борин"
+  },
+  {
+    "kind": "npc_history",
+    "agent": "Борин"
+  },
+  {
+    "kind": "npc_thinking",
+    "agent": "Борин"
+  },
+  {
+    "kind": "npc_speech",
+    "agent": "Борин"
+  },
+  {
+    "kind": "meta",
+    "agent": "Борин"
+  },
+  {
+    "kind": "tool_result",
+    "agent": "ask_npc"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "meta",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "gm_tool_call",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "gm_reject",
+    "agent": "Борин"
+  },
+  {
+    "kind": "npc_start",
+    "agent": "Борин"
+  },
+  {
+    "kind": "npc_history",
+    "agent": "Борин"
+  },
+  {
+    "kind": "npc_thinking",
+    "agent": "Борин"
+  },
+  {
+    "kind": "npc_speech",
+    "agent": "Борин"
+  },
+  {
+    "kind": "meta",
+    "agent": "Борин"
+  },
+  {
+    "kind": "tool_result",
+    "agent": "ask_npc"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "meta",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "gm_narration",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "error",
+    "agent": "ГМ"
+  },
+  {
+    "kind": "meta_total",
+    "agent": null
+  }
+]

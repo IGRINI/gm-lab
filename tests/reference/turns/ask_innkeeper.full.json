@@ -1,0 +1,930 @@
+[
+  {
+    "kind": "player",
+    "agent": "Игрок",
+    "data": "Подхожу к стойке и тихо спрашиваю трактирщика, что он видел прошлой ночью.",
+    "sid": null
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "Нужен "
+    },
+    "sid": "s1"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "Борин "
+    },
+    "sid": "s1"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "— "
+    },
+    "sid": "s1"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "зову "
+    },
+    "sid": "s1"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "ask_npc. "
+    },
+    "sid": "s1"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ",
+    "data": "Нужен Борин — зову ask_npc.",
+    "sid": "s1"
+  },
+  {
+    "kind": "meta",
+    "agent": "ГМ",
+    "data": {
+      "label": "ГМ — решение",
+      "scope": "gm",
+      "in": 760,
+      "out": 120,
+      "secs": 0.73,
+      "cached": 0,
+      "tps": 188,
+      "prompt_secs": 0.08,
+      "eval_secs": 0.64,
+      "load_secs": 0.0
+    },
+    "sid": "s1"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "Нужен "
+    },
+    "sid": "s2"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "Борин "
+    },
+    "sid": "s2"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "— "
+    },
+    "sid": "s2"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "зову "
+    },
+    "sid": "s2"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "ask_npc. "
+    },
+    "sid": "s2"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ",
+    "data": "Нужен Борин — зову ask_npc.",
+    "sid": "s2"
+  },
+  {
+    "kind": "gm_tool_call",
+    "agent": "ГМ",
+    "data": {
+      "name": "ask_npc",
+      "arguments": {
+        "npc_id": "borin",
+        "situation": "Игрок громко обвиняет Борина в убийстве."
+      }
+    },
+    "sid": null
+  },
+  {
+    "kind": "npc_start",
+    "agent": "Борин",
+    "data": {
+      "npc_id": "borin"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "npc_history",
+    "agent": "Борин",
+    "data": {
+      "npc_id": "borin",
+      "messages": 0,
+      "has_summary": false,
+      "text": "История NPC пока пустая."
+    },
+    "sid": null
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "Я.."
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": ". э-э,"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": " мне н"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "а кухн"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "ю надо"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": ", отой"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "ду на "
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "минутк"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "у."
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "npc_thinking",
+    "agent": "Борин",
+    "data": "Надо предупредить своих, пока не поздно.",
+    "sid": "s3"
+  },
+  {
+    "kind": "npc_speech",
+    "agent": "Борин",
+    "data": {
+      "speech": "Я... э-э, мне на кухню надо, отойду на минутку.",
+      "action": "пытается незаметно выскользнуть через заднюю дверь трактира",
+      "claims": [
+        "В трактире есть задняя дверь"
+      ],
+      "npc_id": "borin"
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "meta",
+    "agent": "Борин",
+    "data": {
+      "label": "Борин",
+      "scope": "npc",
+      "in": 760,
+      "out": 120,
+      "secs": 0.73,
+      "cached": 0,
+      "tps": 188,
+      "prompt_secs": 0.08,
+      "eval_secs": 0.64,
+      "load_secs": 0.0
+    },
+    "sid": "s3"
+  },
+  {
+    "kind": "tool_result",
+    "agent": "ask_npc",
+    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"speech_ru\":\"Я... э-э, мне на кухню надо, отойду на минутку.\",\"action_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
+    "sid": null
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "Борин "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "рвётся "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "в "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "несуществующую "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "заднюю "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "дверь "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "— "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "возвращаю "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "на "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "переделку. "
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ",
+    "data": "Борин рвётся в несуществующую заднюю дверь — возвращаю на переделку.",
+    "sid": "s4"
+  },
+  {
+    "kind": "meta",
+    "agent": "ГМ",
+    "data": {
+      "label": "ГМ — решение",
+      "scope": "gm",
+      "in": 760,
+      "out": 120,
+      "secs": 0.73,
+      "cached": 0,
+      "tps": 188,
+      "prompt_secs": 0.08,
+      "eval_secs": 0.64,
+      "load_secs": 0.0
+    },
+    "sid": "s4"
+  },
+  {
+    "kind": "gm_tool_call",
+    "agent": "ГМ",
+    "data": {
+      "name": "ask_npc",
+      "arguments": {
+        "npc_id": "borin",
+        "situation": "Игрок громко обвиняет Борина в убийстве.",
+        "correction": "Задней двери у «Грифона» нет — выход только через зал, на виду. Так не улизнёшь, отыграй иначе."
+      }
+    },
+    "sid": null
+  },
+  {
+    "kind": "gm_reject",
+    "agent": "Борин",
+    "data": "Задней двери у «Грифона» нет — выход только через зал, на виду. Так не улизнёшь, отыграй иначе.",
+    "sid": null
+  },
+  {
+    "kind": "npc_start",
+    "agent": "Борин",
+    "data": {
+      "npc_id": "borin"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "npc_history",
+    "agent": "Борин",
+    "data": {
+      "npc_id": "borin",
+      "messages": 0,
+      "has_summary": false,
+      "text": "История NPC пока пустая."
+    },
+    "sid": null
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "С"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "ейчас,"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": " дружи"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "ще, эл"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "ь прин"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "есу, о"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "божди-"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "delta",
+    "agent": "Борин",
+    "data": {
+      "channel": "npc_speech",
+      "text": "ка."
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "npc_thinking",
+    "agent": "Борин",
+    "data": "Чёрт, незаметно не выйти. Придётся тянуть время.",
+    "sid": "s5"
+  },
+  {
+    "kind": "npc_speech",
+    "agent": "Борин",
+    "data": {
+      "speech": "Сейчас, дружище, эль принесу, обожди-ка.",
+      "action": "медленно бредёт к бочкам, не сводя глаз с гостя",
+      "claims": [],
+      "npc_id": "borin"
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "meta",
+    "agent": "Борин",
+    "data": {
+      "label": "Борин",
+      "scope": "npc",
+      "in": 760,
+      "out": 120,
+      "secs": 0.73,
+      "cached": 0,
+      "tps": 188,
+      "prompt_secs": 0.08,
+      "eval_secs": 0.64,
+      "load_secs": 0.0
+    },
+    "sid": "s5"
+  },
+  {
+    "kind": "tool_result",
+    "agent": "ask_npc",
+    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"speech_ru\":\"Сейчас, дружище, эль принесу, обожди-ка.\",\"action_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
+    "sid": null
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "NPC "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "отыграл, "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "завершаю "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_thinking",
+      "text": "сцену. "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "Борин "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "мнётся "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "за "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "стойкой, "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "так "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "и "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "не "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "сумев "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "улизнуть. "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "Зал "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "притих "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "и "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "смотрит "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "на "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "delta",
+    "agent": "ГМ",
+    "data": {
+      "channel": "gm_narration",
+      "text": "вас. "
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "gm_thinking",
+    "agent": "ГМ",
+    "data": "NPC отыграл, завершаю сцену.",
+    "sid": "s6"
+  },
+  {
+    "kind": "meta",
+    "agent": "ГМ",
+    "data": {
+      "label": "ГМ — нарратив",
+      "scope": "gm",
+      "in": 760,
+      "out": 120,
+      "secs": 0.73,
+      "cached": 0,
+      "tps": 188,
+      "prompt_secs": 0.08,
+      "eval_secs": 0.64,
+      "load_secs": 0.0
+    },
+    "sid": "s6"
+  },
+  {
+    "kind": "gm_narration",
+    "agent": "ГМ",
+    "data": "Борин мнётся за стойкой, так и не сумев улизнуть. Зал притих и смотрит на вас.",
+    "sid": "s6"
+  },
+  {
+    "kind": "error",
+    "agent": "ГМ",
+    "data": "Модель завершила ход без ask_player, хотя варианты игрока включены.",
+    "sid": null
+  },
+  {
+    "kind": "meta_total",
+    "agent": null,
+    "data": {
+      "calls": [
+        {
+          "label": "ГМ — решение",
+          "scope": "gm",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "ГМ — прелюдия",
+          "scope": "gm",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "Борин",
+          "scope": "npc",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "ГМ — решение",
+          "scope": "gm",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "Борин",
+          "scope": "npc",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "ГМ — нарратив",
+          "scope": "gm",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "scene sync",
+          "scope": "other",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        }
+      ],
+      "in": 5320,
+      "out": 840,
+      "cached": 0,
+      "tokens": 6160,
+      "peak_context": 760,
+      "secs": 0.0,
+      "sys_estimate": 12106,
+      "context": {
+        "current": 18748,
+        "world": 2485,
+        "next_compact": {
+          "scope": "npc",
+          "label": "Борин",
+          "used": 1910,
+          "limit": 64000,
+          "remaining": 62090
+        },
+        "gm": {
+          "active": 18748,
+          "history": 4157,
+          "summary": 0,
+          "limit": 100000,
+          "remaining": 95843
+        },
+        "npc": {
+          "id": "borin",
+          "name": "Борин",
+          "color": "#e6c08a",
+          "has_session": true,
+          "active": 4711,
+          "history": 1910,
+          "summary": 0,
+          "limit": 64000,
+          "remaining": 62090
+        },
+        "npcs": [
+          {
+            "id": "borin",
+            "name": "Борин",
+            "color": "#e6c08a",
+            "has_session": true,
+            "active": 4711,
+            "history": 1910,
+            "summary": 0,
+            "limit": 64000,
+            "remaining": 62090
+          },
+          {
+            "id": "mareth",
+            "name": "Капитан Марет",
+            "color": "#9ccfd8",
+            "has_session": false,
+            "active": 2741,
+            "history": 0,
+            "summary": 0,
+            "limit": 64000,
+            "remaining": 64000
+          },
+          {
+            "id": "lysa",
+            "name": "Лиза",
+            "color": "#c4a7e7",
+            "has_session": false,
+            "active": 2738,
+            "history": 0,
+            "summary": 0,
+            "limit": 64000,
+            "remaining": 64000
+          }
+        ]
+      },
+      "run": {
+        "turns": 1,
+        "calls": 7,
+        "in": 5320,
+        "out": 840,
+        "cached": 0,
+        "tokens": 6160,
+        "secs": 0.0,
+        "peak_context": 760,
+        "gm_calls": 4,
+        "gm_tokens": 3520,
+        "npc_calls": 2,
+        "npc_tokens": 1760,
+        "other_calls": 1,
+        "other_tokens": 880
+      }
+    },
+    "sid": null
+  }
+]
