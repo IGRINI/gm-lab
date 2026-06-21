@@ -8,3 +8,16 @@ license = "MIT"
 gml-types = { path = "../gml-types" }
 gml-config = { path = "../gml-config" }
 gml-prompts = { path = "../gml-prompts" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+regex = { workspace = true }
+uuid = { workspace = true }
+once_cell = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+futures-util = "0.3"
+
+[dev-dependencies]
+tokio = { workspace = true }

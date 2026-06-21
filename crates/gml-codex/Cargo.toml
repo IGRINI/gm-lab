@@ -9,3 +9,22 @@ gml-types = { path = "../gml-types" }
 gml-config = { path = "../gml-config" }
 gml-prompts = { path = "../gml-prompts" }
 gml-llm = { path = "../gml-llm" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+regex = { workspace = true }
+uuid = { workspace = true }
+once_cell = { workspace = true }
+thiserror = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+directories = { workspace = true }
+open = { workspace = true }
+async-trait = "0.1"
+futures-util = "0.3"
+tiny_http = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }

@@ -7,3 +7,5 @@ license = "MIT"
 [dependencies]
 gml-types = { path = "../gml-types" }
 gml-world = { path = "../gml-world" }
+serde_json = { workspace = true }
+once_cell = { workspace = true }

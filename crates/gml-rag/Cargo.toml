@@ -5,5 +5,18 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-gml-types = { path = "../gml-types" }
-gml-config = { path = "../gml-config" }
+gml-types = { workspace = true }
+gml-config = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+thiserror = { workspace = true }
+# blake2b deterministic hash embedder (HashEmbeddingClient). Not yet in
+# [workspace.dependencies]; pinned here with an explicit version (see followups).
+blake2 = "0.10"
