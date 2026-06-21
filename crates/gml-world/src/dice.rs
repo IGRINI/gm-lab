@@ -48,7 +48,7 @@ pub fn grade_from_margin(margin: i64) -> &'static str {
 
 /// `_roll_kind(value)` — normalize and apply aliases.
 pub fn roll_kind(value: &str) -> String {
-    let raw = value.trim().to_lowercase().replace('-', "_").replace(' ', "_");
+    let raw = value.trim().to_lowercase().replace(['-', ' '], "_");
     match raw.as_str() {
         "ability_check" => "check".to_string(),
         "saving_throw" => "save".to_string(),

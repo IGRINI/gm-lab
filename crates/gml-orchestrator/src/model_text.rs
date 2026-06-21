@@ -757,7 +757,7 @@ fn is_omit(v: &Value) -> bool {
 fn schema_types(schema: &Value) -> Vec<String> {
     match schema.get("type") {
         Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(a)) => a.iter().map(|v| scalar_text(v)).collect(),
+        Some(Value::Array(a)) => a.iter().map(scalar_text).collect(),
         _ => Vec::new(),
     }
 }
@@ -961,8 +961,5 @@ pub fn apply_scene_move(world: &mut World, move_: &Value) -> Option<Value> {
     let can_hear = m.get("can_hear").map(crate::truthy).unwrap_or(true);
     let activity = m.get("activity").and_then(Value::as_str).unwrap_or("");
     let attitude = m.get("attitude").and_then(Value::as_str).unwrap_or("");
-    match world.set_npc_presence(npc_id, present, location, visible, can_hear, activity, attitude) {
-        Ok(payload) => Some(payload),
-        Err(_) => None,
-    }
+    world.set_npc_presence(npc_id, present, location, visible, can_hear, activity, attitude).ok()
 }

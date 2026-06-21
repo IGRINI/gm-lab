@@ -313,7 +313,7 @@ async fn get_debug(State(state): State<AppState>) -> Response {
 }
 
 async fn get_transcript(State(state): State<AppState>) -> Response {
-    match with_active(&state, move |rt| payload::replay_events(rt)).await {
+    match with_active(&state, payload::replay_events).await {
         Ok(events) => ok_json(&json!({"events": events})),
         Err(resp) => resp,
     }
@@ -1523,13 +1523,13 @@ pub async fn run_https(
     use tokio_rustls::TlsAcceptor;
 
     let (cert_path, key_path) = tls::ensure_self_signed(cert_dir)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     let certs = load_certs(&cert_path)?;
     let key = load_key(&key_path)?;
     let mut tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 

@@ -674,12 +674,7 @@ fn clean_int(value: Option<&Value>) -> Option<i64> {
         Some(Value::Number(n)) => {
             if let Some(i) = n.as_i64() {
                 Some(i)
-            } else if let Some(f) = n.as_f64() {
-                // int(float) truncates toward zero
-                Some(f.trunc() as i64)
-            } else {
-                None
-            }
+            } else { n.as_f64().map(|f| f.trunc() as i64) }
         }
         Some(Value::String(s)) => {
             let t = s.trim();
@@ -815,7 +810,7 @@ fn compute_defaults(cfg: &Config) -> (SettingsMap, String) {
     // max_output_tokens = int(config.MAX_TOKENS or 0)
     defaults.insert(
         "max_output_tokens".into(),
-        Value::from(cfg.max_tokens.max(0).min(i64::MAX)), // int(MAX_TOKENS or 0)
+        Value::from(cfg.max_tokens.max(0)), // int(MAX_TOKENS or 0)
     );
 
     (defaults, base_summary)

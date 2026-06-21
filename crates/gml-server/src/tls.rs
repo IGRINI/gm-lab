@@ -65,7 +65,7 @@ pub fn ensure_self_signed(cert_dir: &Path) -> Result<(PathBuf, PathBuf), TlsErro
     dn.push(DnType::CommonName, "gm-lab.local");
     params.distinguished_name = dn;
 
-    let mut sans = vec![SanType::DnsName("localhost".try_into().map_err(rcgen::Error::from)?)];
+    let mut sans = vec![SanType::DnsName("localhost".try_into()?)];
     for ip in local_ips() {
         sans.push(SanType::IpAddress(ip));
     }

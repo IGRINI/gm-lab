@@ -694,7 +694,7 @@ fn int_or_none(value: Option<&Value>) -> Option<i64> {
             if s.is_empty() {
                 None
             } else {
-                s.trim().parse::<i64>().ok().or_else(|| {
+                s.trim().parse::<i64>().ok().or({
                     // Python int() does not parse "1.0"; mimic by failing.
                     None
                 })

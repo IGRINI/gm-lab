@@ -66,12 +66,12 @@ impl CodexClient {
 
         let model = {
             // self._model = config.CODEX_MODEL or config.MODEL
-            let m = if !cfg.codex_model.is_empty() {
+            
+            if !cfg.codex_model.is_empty() {
                 cfg.codex_model.clone()
             } else {
                 cfg.model.clone()
-            };
-            m
+            }
         };
 
         // SessionIdentity generates fresh session/thread/installation uuids; we
@@ -205,7 +205,7 @@ impl CodexClient {
     async fn auth_headers(&self, accept_sse: bool) -> Result<reqwest::header::HeaderMap, BackendError> {
         let credential = oauth::ensure_fresh_credential(&self.http, &self.cfg)
             .await
-            .map_err(|e| BackendError::new(e))?;
+            .map_err(BackendError::new)?;
 
         let mut headers = reqwest::header::HeaderMap::new();
         let mut put = |name: &'static str, value: String| {

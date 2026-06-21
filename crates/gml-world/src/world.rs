@@ -677,7 +677,7 @@ impl World {
                     let source = get_str(m, "source");
                     let confirmed = m
                         .get("confirmed")
-                        .map(|v| as_bool_pyish(v))
+                        .map(as_bool_pyish)
                         .unwrap_or(true);
                     (text, fid, kind, kw, source, confirmed)
                 }
