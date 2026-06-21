@@ -10,3 +10,10 @@ gml-config = { path = "../gml-config" }
 gml-prompts = { path = "../gml-prompts" }
 gml-world = { path = "../gml-world" }
 gml-llm = { path = "../gml-llm" }
+serde_json = { workspace = true }
+regex = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+gml-stories = { path = "../gml-stories" }
+serde = { workspace = true }

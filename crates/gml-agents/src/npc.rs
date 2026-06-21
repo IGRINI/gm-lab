@@ -1,0 +1,266 @@
+//! NPC sub-agent contract — faithful port of the NPC-side functions in `agents.py`.
+//!
+//! The NPC system prompt is fully STATIC (`NPC_SYSTEM_STATIC`); the concrete
+//! character is delivered late via [`npc_card_block`], prepended to a COPY of
+//! the final user turn so recorded history stays card-free (PORT_PLAN §4.1).
+
+use serde_json::{json, Map, Value};
+
+use gml_prompts::{render_npc_card, NpcCardFields};
+use gml_world::Npc;
+
+/// NPC JSON-output schema — `NPC_SCHEMA` (used for the grammar fallback).
+pub fn npc_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "reasoning": {"type": "string"},
+            "speech": {"type": "string"},
+            "action": {"type": "string"},
+            "claims": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["reasoning", "speech", "action", "claims"],
+    })
+}
+
+/// `_NPC_PERCEPTION_BRIEF_RULES` — verbatim.
+pub const NPC_PERCEPTION_BRIEF_RULES: &str = "NPC PERCEPTION BRIEF RULES:
+- CURRENT SITUATION is what this NPC can see/hear/know or plausibly infer right now, not
+  a GM truth dump.
+- If CURRENT SITUATION contains author certainty about hidden truth, player sheet
+  validation, whether the player is bluffing/lying, lacks proof, lacks a spell/item/weapon,
+  or whether a threat is truly impossible, treat that certainty as unknown unless it is
+  directly observable in YOUR CURRENT SCENE SLICE or already in your memory/card.
+- Roll/check outcomes sent by the GM are authoritative for how strongly the attempt lands
+  on you. Follow the grade, margin, and stakes as your social pressure, fear, doubt,
+  credibility, confidence, or apparent danger. A strong intimidation/deception result can
+  make a threat or claim feel credible even when you cannot verify the truth.
+";
+
+/// `_constraints_text(constraints)`.
+fn constraints_text(constraints: &[String]) -> String {
+    constraints
+        .iter()
+        .map(|c| format!("- {c}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `npc_system_message()` — fully static; `npc` is ignored.
+pub fn npc_system_message() -> Value {
+    json!({"role": "system", "content": gml_prompts::NPC_SYSTEM_STATIC})
+}
+
+/// Python default helper: `value or default` where empty string falls back.
+fn or_default<'a>(value: &'a str, default: &'a str) -> &'a str {
+    if value.is_empty() {
+        default
+    } else {
+        value
+    }
+}
+
+/// `npc_card_block(npc)` — the late CURRENT NPC CARD block.
+pub fn npc_card_block(npc: &Npc) -> String {
+    // mechanics dict, then drop None/""/{}/[] entries, then compact-json.
+    let mut mechanics: Map<String, Value> = Map::new();
+    mechanics.insert("abilities".to_string(), Value::Object(npc.abilities.clone()));
+    mechanics.insert("skills".to_string(), Value::Object(npc.skills.clone()));
+    mechanics.insert(
+        "saving_throws".to_string(),
+        Value::Object(npc.saving_throws.clone()),
+    );
+    mechanics.insert(
+        "passive_perception".to_string(),
+        match npc.passive_perception {
+            Some(n) => Value::from(n),
+            None => Value::Null,
+        },
+    );
+    mechanics.insert("ac".to_string(), npc.ac.clone());
+    mechanics.insert("hp".to_string(), Value::Object(npc.hp.clone()));
+    mechanics.insert("speed".to_string(), Value::String(npc.speed.clone()));
+    mechanics.insert("senses".to_string(), Value::String(npc.senses.clone()));
+    mechanics.insert("languages".to_string(), Value::String(npc.languages.clone()));
+    // Drop values in (None, "", {}, []).
+    let filtered: Map<String, Value> = mechanics
+        .into_iter()
+        .filter(|(_, v)| !is_droppable(v))
+        .collect();
+    let mechanics_json =
+        serde_json::to_string(&Value::Object(filtered)).expect("mechanics compact json");
+
+    let revision = npc.card_revision.to_string();
+    let fields = NpcCardFields {
+        revision: &revision,
+        name: &npc.name,
+        role: or_default(&npc.role, "(не указана)"),
+        gender: or_default(&npc.pronouns, "OTHER"),
+        public_label: or_default(&npc.public_label, "(не указан)"),
+        age: or_default(&npc.age, "(не указан)"),
+        physical_type: or_default(&npc.physical_type, "(не указан)"),
+        distinctive_features: or_default(&npc.distinctive_features, "(не указаны)"),
+        life_status: or_default(&npc.life_status, "alive"),
+        condition: or_default(&npc.condition, "(не указано)"),
+        persona: &npc.persona,
+        personality: or_default(&npc.personality, "(не указано)"),
+        values: or_default(&npc.values, "(не указаны)"),
+        habits: or_default(&npc.habits, "(не указаны)"),
+        pressure_response: or_default(&npc.pressure_response, "(не указано)"),
+        boundaries: or_default(&npc.boundaries, "(не указаны)"),
+        voice: &npc.voice,
+        goals: &npc.goals,
+        knowledge: &npc.knowledge,
+        mechanics: &mechanics_json,
+        secret: &npc.secret,
+    };
+    render_npc_card(&fields)
+}
+
+/// Python `value not in (None, "", {}, [])`.
+fn is_droppable(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Object(m) => m.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        _ => false,
+    }
+}
+
+/// `npc_user_message(npc, situation, observations, commitments, feedback, constraints, scene_slice)`.
+#[allow(clippy::too_many_arguments)]
+pub fn npc_user_message(
+    situation: &str,
+    observations: &str,
+    commitments: &str,
+    feedback: Option<&str>,
+    constraints: &[String],
+    scene_slice: &str,
+) -> Value {
+    let mut parts: Vec<String> = vec![
+        NPC_PERCEPTION_BRIEF_RULES.to_string(),
+        format!(
+            "CURRENT SITUATION (what's happening now, what you react to): {situation}"
+        ),
+    ];
+    if !scene_slice.is_empty() {
+        parts.push(format!(
+            "YOUR CURRENT SCENE SLICE (what is actually around you):\n{scene_slice}"
+        ));
+    }
+    if !constraints.is_empty() {
+        parts.push(format!(
+            "VISIBLE SCENE LIMITS (physical facts you must obey):\n{}",
+            constraints_text(constraints)
+        ));
+    }
+    parts.push(format!(
+        "YOUR MEMORY (what you've already said/done — stay consistent):\n{}",
+        if commitments.is_empty() {
+            "(nothing yet)"
+        } else {
+            commitments
+        }
+    ));
+    parts.push(format!(
+        "WHAT YOU SAW/HEARD EARLIER:\n{}",
+        if observations.is_empty() {
+            "(nothing)"
+        } else {
+            observations
+        }
+    ));
+    let mut user = parts.join("\n\n");
+    if let Some(fb) = feedback {
+        if !fb.is_empty() {
+            user.push_str(&format!(
+                "\n\nGM NOTE — your previous action did not pass: {fb}\n\
+REDO: give a new reaction that takes the note into account."
+            ));
+        }
+    }
+    json!({"role": "user", "content": user})
+}
+
+/// `_historical_npc_message(message)` — rewrite CURRENT->PREVIOUS so old
+/// situation blocks cannot win, and prefix the historical marker.
+pub fn historical_npc_message(message: &Value) -> Value {
+    let obj = match message.as_object() {
+        Some(o) => o,
+        None => return message.clone(),
+    };
+    let mut out = obj.clone();
+    if out.get("role").and_then(Value::as_str) != Some("user") {
+        return Value::Object(out);
+    }
+    let mut content = out
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    // Python str.replace with count=1 for the first, default (all) for the second.
+    content = replace_first(
+        &content,
+        "CURRENT SITUATION (what's happening now, what you react to):",
+        "PREVIOUS NPC SITUATION (historical; do not treat as current):",
+    );
+    content = content.replace(
+        "YOUR CURRENT SCENE SLICE (what is actually around you):",
+        "PREVIOUS SCENE SLICE (historical; current slice is in the latest user message):",
+    );
+    out.insert(
+        "content".to_string(),
+        Value::String(format!(
+            "HISTORICAL NPC EXCHANGE (not the current scene):\n{content}"
+        )),
+    );
+    Value::Object(out)
+}
+
+/// Python `str.replace(old, new, 1)`.
+fn replace_first(haystack: &str, old: &str, new: &str) -> String {
+    match haystack.find(old) {
+        Some(idx) => {
+            let mut s = String::with_capacity(haystack.len());
+            s.push_str(&haystack[..idx]);
+            s.push_str(new);
+            s.push_str(&haystack[idx + old.len()..]);
+            s
+        }
+        None => haystack.to_string(),
+    }
+}
+
+/// `npc_request_messages(npc, history, summary, user_message)`.
+pub fn npc_request_messages(
+    npc: &Npc,
+    history: &[Value],
+    summary: &str,
+    user_message: &Value,
+) -> Vec<Value> {
+    let mut messages = vec![npc_system_message()];
+    if !summary.is_empty() {
+        messages.push(json!({
+            "role": "system",
+            "content": format!("YOUR PRIVATE MEMORY SO FAR (compact):\n{summary}"),
+        }));
+    }
+    messages.extend(history.iter().map(historical_npc_message));
+    // Late dynamic block: CURRENT NPC CARD prepended to a COPY of the final turn.
+    let mut final_turn = user_message
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let existing = final_turn
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    final_turn.insert(
+        "content".to_string(),
+        Value::String(format!("{}\n\n{}", npc_card_block(npc), existing)),
+    );
+    messages.push(Value::Object(final_turn));
+    messages
+}

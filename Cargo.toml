@@ -74,6 +74,7 @@ thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 regex = "1"
+indexmap = "2"
 once_cell = "1"
 urlencoding = "2"
 tracing = "0.1"

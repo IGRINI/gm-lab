@@ -343,8 +343,13 @@ dependencies = [
  "gml-config",
  "gml-llm",
  "gml-prompts",
+ "gml-stories",
  "gml-types",
  "gml-world",
+ "indexmap",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
