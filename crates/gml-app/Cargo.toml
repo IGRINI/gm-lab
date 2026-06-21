@@ -3,8 +3,55 @@ name = "gml-app"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "GM-Lab shipped binary: Tauri desktop app (default) + headless --server mode."
+# The Tauri build script (tauri_build::build) only runs when the `gui` feature
+# is on; under --no-default-features the build script is a no-op so the headless
+# server binary builds without any Tauri system dependency.
+build = "build.rs"
+
+[[bin]]
+name = "gml-app"
+path = "src/main.rs"
+
+[features]
+# `gui` (default ON) compiles the Tauri desktop window path. Disable it
+# (`cargo build -p gml-app --no-default-features`) to build the headless
+# `--server` binary on hosts where the Tauri webview system deps are absent.
+default = ["gui"]
+gui = ["dep:tauri", "dep:tauri-build"]
 
 [dependencies]
-gml-server = { path = "../gml-server" }
-gml-audio = { path = "../gml-audio" }
-gml-config = { path = "../gml-config" }
+# internal crates — server library + audio sidecar + config + persistence paths
+gml-server = { workspace = true }
+gml-audio = { workspace = true }
+gml-config = { workspace = true }
+gml-persistence = { workspace = true }
+gml-codex = { workspace = true }
+gml-llm = { workspace = true }
+gml-stories = { workspace = true }
+gml-orchestrator = { workspace = true }
+
+# async + http (the same axum/tokio/reqwest the server library uses)
+tokio = { workspace = true }
+axum = { workspace = true }
+reqwest = { workspace = true }
+
+# app-data dirs (ProjectDirs "gm-lab") — read-only-bundle-safe paths on macOS
+directories = { workspace = true }
+
+# logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# browser-open for the headless URL when GM_OPEN_BROWSER=1
+open = { workspace = true }
+
+# Tauri v2 desktop window (gui feature only). Webview backends per OS:
+#   Windows -> WebView2 (Edge runtime, present on Win10+/Win11)
+#   macOS   -> WKWebView (system)
+#   Linux   -> webkit2gtk-4.1 + libsoup-3.0 + (build) libgtk-3-dev, librsvg2
+tauri = { version = "2", optional = true }
+
+[build-dependencies]
+# Runs only with the `gui` feature (build.rs guards on the cfg).
+tauri-build = { version = "2", optional = true }

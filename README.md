@@ -51,6 +51,45 @@ cargo build --workspace
 # run
 cargo run -p gml-app                 # desktop (Tauri)
 cargo run -p gml-app -- --server     # headless server on 127.0.0.1:8000
+cargo run -p gml-app -- --help       # usage + environment variables
+```
+
+### Run modes (`gml-app`)
+
+- **Desktop (default):** opens a native window whose webview points at an
+  embedded loopback HTTP server (ephemeral port, or `GM_PORT` if set). The React
+  app runs unchanged with real HTTP/SSE/binary semantics. The TTS sidecar and
+  embedded server are killed on window close.
+- **Headless (`--server` or `GM_HEADLESS=1`):** serves on `GM_HOST:GM_PORT`
+  (default `127.0.0.1:8000`). Set `GM_HOST=0.0.0.0` to expose on the LAN — this
+  auto-enables a second HTTPS listener on `GM_HTTPS_PORT` (default `8443`) so a
+  phone/tablet gets the secure context its mic needs (`GM_HTTPS=1`/`0` forces
+  on/off). `GM_OPEN_BROWSER=1` opens the URL.
+
+App-data lives in per-OS dirs (`directories` → `ProjectDirs "gm-lab"`):
+`%APPDATA%/gm-lab` (Windows), `~/Library/Application Support/gm-lab` (macOS),
+`~/.config/gm-lab` + `~/.local/share/gm-lab` (Linux). Each `GM_*` path env var
+(`GM_SETTINGS_PATH`, `GM_DIALOG_DB`, `GM_RAG_CACHE_PATH`, `GM_TTS_CACHE_DIR`,
+`GM_CODEX_CREDENTIAL_PATH`) overrides its default. macOS bundles are read-only,
+so nothing is ever written next to the binary.
+
+### Cross-platform system dependencies (Tauri GUI)
+
+The default `gui` feature pulls in a native webview per OS:
+
+- **Windows:** WebView2 (the Edge WebView2 runtime ships with Win10/Win11 — no
+  extra install). MSVC build tools.
+- **macOS:** WKWebView (system; nothing to install). Xcode command-line tools.
+- **Linux:** `webkit2gtk-4.1` + `libsoup-3.0` at runtime; build deps
+  `libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev
+  build-essential pkg-config` (Debian/Ubuntu names; see the Tauri v2 prereqs for
+  other distros).
+
+If the webview deps are unavailable, build the headless-only binary — the
+`--server` mode never needs them:
+
+```bash
+cargo build -p gml-app --no-default-features   # headless server only
 ```
 
 See `docs/PORT_PLAN.md` for the full architecture and the invariants this port

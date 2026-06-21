@@ -4,7 +4,30 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+# Test/dev infra only — a standalone deterministic HTTP+SSE fake that lets the
+# React frontend (web/src) run without real models. Never shipped. Faithful port
+# of gm-lab/mock_server.py (a hand-written fake, NOT a wrapper around the real
+# server). Run: `cargo run -p gml-mock-server` (listens on 127.0.0.1:8000).
+
+[[bin]]
+name = "gml-mock-server"
+path = "src/main.rs"
+
 [dependencies]
-gml-types = { path = "../gml-types" }
-gml-config = { path = "../gml-config" }
-gml-world = { path = "../gml-world" }
+# Mirror the real app's single source of truth for settings + status labels so
+# the frontend smoke test never drifts from the real backend.
+gml-config = { workspace = true }
+gml-world = { workspace = true }
+
+# async + http (same stack as gml-server)
+tokio = { workspace = true }
+axum = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+
+# serialization — preserve_order so JSON object key order matches the Python dict
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

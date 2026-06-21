@@ -5,15 +5,51 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-gml-types = { path = "../gml-types" }
-gml-config = { path = "../gml-config" }
-gml-prompts = { path = "../gml-prompts" }
-gml-world = { path = "../gml-world" }
-gml-stories = { path = "../gml-stories" }
-gml-rag = { path = "../gml-rag" }
-gml-llm = { path = "../gml-llm" }
-gml-codex = { path = "../gml-codex" }
-gml-agents = { path = "../gml-agents" }
-gml-orchestrator = { path = "../gml-orchestrator" }
-gml-persistence = { path = "../gml-persistence" }
-gml-audio = { path = "../gml-audio" }
+gml-types = { workspace = true }
+gml-config = { workspace = true }
+gml-prompts = { workspace = true }
+gml-world = { workspace = true }
+gml-stories = { workspace = true }
+gml-rag = { workspace = true }
+gml-llm = { workspace = true }
+gml-codex = { workspace = true }
+gml-agents = { workspace = true }
+gml-orchestrator = { workspace = true }
+gml-persistence = { workspace = true }
+gml-audio = { workspace = true }
+
+# async + http
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+bytes = { workspace = true }
+rustls-pemfile = { workspace = true }
+
+# http client (TTS proxy)
+reqwest = { workspace = true }
+
+# serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# tls (self-signed LAN serving)
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+local-ip-address = { workspace = true }
+
+# utilities
+thiserror = { workspace = true }
+urlencoding = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

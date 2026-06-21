@@ -27,9 +27,9 @@ pub use model::{
 pub use rng::{MersenneTwister, RngState};
 pub use state_record::{state_record_hash, RagDocument};
 pub use world::{
-    RagRetriever, RetrievedFact, StateRecordQuery, World, SOURCE_CURRENT_SCENE,
-    SOURCE_DEFAULT_LORE, SOURCE_GM, SOURCE_MOVE_NPC, SOURCE_NPC_ROSTER, SOURCE_PREVIOUS_SCENE,
-    SOURCE_SEED, WHEREABOUTS_STATUS_LABELS,
+    public_gender, public_role, RagRetriever, RetrievedFact, StateRecordQuery, World,
+    SOURCE_CURRENT_SCENE, SOURCE_DEFAULT_LORE, SOURCE_GM, SOURCE_MOVE_NPC, SOURCE_NPC_ROSTER,
+    SOURCE_PREVIOUS_SCENE, SOURCE_SEED, WHEREABOUTS_STATUS_LABELS,
 };
 
 /// `StateRecordQuery` lives in the `world` module; this alias mirrors the

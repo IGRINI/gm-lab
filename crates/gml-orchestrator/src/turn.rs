@@ -66,6 +66,31 @@ pub async fn run_turn(
     player_text: &str,
 ) -> Vec<Event> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+    run_turn_into(session, settings, player_text, tx).await;
+    let mut out = Vec::new();
+    while let Some(e) = rx.recv().await {
+        out.push(e);
+    }
+    out
+}
+
+/// `run_turn_into(session, settings, player_text, tx)` — the streaming variant.
+///
+/// Drives the whole turn, sending each [`Event`] into the caller-supplied
+/// channel **as it is produced** (no buffering of the whole turn), then sends
+/// the terminal `meta_total`. The event sequence is byte-for-byte identical to
+/// [`run_turn`] — this is purely the "expose streaming" half of the same driver
+/// (PORT_PLAN §5.2). The server (`gml-server`) drains the receiver and frames
+/// each event as `data: {json}\n\n`, appending its own terminal `done` frame.
+///
+/// The channel is dropped when the turn ends, so the receiver sees `None` after
+/// the final `meta_total`.
+pub async fn run_turn_into(
+    session: &mut Session,
+    settings: &RuntimeSettings,
+    player_text: &str,
+    tx: mpsc::UnboundedSender<Event>,
+) {
     let sink = Sink { tx };
 
     let t0 = Instant::now();
@@ -79,13 +104,6 @@ pub async fn run_turn(
         m.insert("run".to_string(), run);
     }
     sink.emit(ev(event_kind::META_TOTAL, None, total, None));
-
-    drop(sink);
-    let mut out = Vec::new();
-    while let Some(e) = rx.recv().await {
-        out.push(e);
-    }
-    out
 }
 
 // =========================================================================

@@ -1,4 +1,643 @@
-//! gml-app: stub binary.
+//! gml-app — the SHIPPED GM-Lab binary.
+//!
+//! One binary, two modes (PORT_PLAN §3.1):
+//!
+//!   * **Default** (no flag): launch the Tauri desktop window. An embedded axum
+//!     server is bound on `127.0.0.1:<ephemeral-or-GM_PORT>`, then a
+//!     `WebviewWindow` opens pointing at that loopback origin so the UNCHANGED
+//!     React app (`web/src`) runs with real HTTP / SSE / binary semantics.
+//!   * **`--server` / `GM_HEADLESS=1`**: skip Tauri, run the axum server on
+//!     `GM_HOST:GM_PORT` (default `127.0.0.1:8000`), enabling the LAN HTTPS
+//!     listener when exposed on `0.0.0.0` (phone-mic secure-context, mirroring
+//!     `server.py main()`). People play via browser.
+//!
+//! App-data lives in per-OS dirs via the `directories` crate (`ProjectDirs
+//! "gm-lab"`): settings.json, dialogs.sqlite3, embeddings.sqlite3, tts_cache,
+//! `.tls`, codex creds. macOS bundle dirs are read-only, so we NEVER write next
+//! to the binary. Existing `GM_*` path env overrides are honored by the
+//! downstream crates' default-path helpers, so we only set those env vars when
+//! the caller hasn't.
+//!
+//! TTS is optional: the sidecar is started best-effort at boot (no-op when
+//! `tts_enabled` is false or it can't launch) and shut down on exit. The app
+//! runs fully without it.
+//!
+//! The Tauri GUI path is behind the default-on `gui` feature. Build the
+//! headless-only binary on hosts without the webview system deps with
+//! `cargo build -p gml-app --no-default-features` — the `--server` mode always
+//! builds and runs.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use gml_audio::Sidecar;
+use gml_config::{Config, RuntimeSettings};
+use gml_llm::{make_client, Backend, BackendError, CodexHook};
+use gml_persistence::DialogStore;
+use gml_server::{build_router, AppState, MakeClient};
+
+const DEFAULT_HOST: &str = "127.0.0.1";
+const DEFAULT_PORT: u16 = 8000;
+const DEFAULT_HTTPS_PORT: u16 = 8443;
+
 fn main() {
-    println!("gml-app stub");
+    init_tracing();
+    let args = Args::parse(std::env::args().skip(1));
+
+    match args.mode {
+        Mode::Help => {
+            print_help();
+        }
+        Mode::Version => {
+            println!("gml-app {}", env!("CARGO_PKG_VERSION"));
+        }
+        Mode::Server => {
+            run_with_runtime(run_server());
+        }
+        Mode::Desktop => {
+            // The desktop window path is feature-gated. When the GUI feature is
+            // off (headless-only build), fall back to the server mode so the
+            // binary is still useful.
+            #[cfg(feature = "gui")]
+            {
+                run_desktop();
+            }
+            #[cfg(not(feature = "gui"))]
+            {
+                eprintln!(
+                    "gml-app was built without the `gui` feature; falling back to --server mode. \
+                     Rebuild with default features for the desktop window."
+                );
+                run_with_runtime(run_server());
+            }
+        }
+    }
+}
+
+// =========================================================================
+// argument parsing
+// =========================================================================
+
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Desktop,
+    Server,
+    Help,
+    Version,
+}
+
+struct Args {
+    mode: Mode,
+}
+
+impl Args {
+    fn parse<I: IntoIterator<Item = String>>(argv: I) -> Self {
+        let mut mode = if env_flag("GM_HEADLESS") {
+            Mode::Server
+        } else {
+            Mode::Desktop
+        };
+        for arg in argv {
+            match arg.as_str() {
+                "--server" | "--headless" | "serve" => mode = Mode::Server,
+                "-h" | "--help" => return Args { mode: Mode::Help },
+                "-V" | "--version" => return Args { mode: Mode::Version },
+                _ => { /* ignore unknown args (Tauri/OS may pass extras) */ }
+            }
+        }
+        Args { mode }
+    }
+}
+
+fn print_help() {
+    println!(
+        "gml-app {ver} — GM-Lab desktop app + headless server\n\
+\n\
+USAGE:\n\
+    gml-app [OPTIONS]\n\
+\n\
+OPTIONS:\n\
+    (no flag)       Launch the Tauri desktop window (default).\n\
+    --server        Run the headless HTTP/SSE server; play in a browser.\n\
+    -h, --help      Print this help.\n\
+    -V, --version   Print the version.\n\
+\n\
+ENVIRONMENT (headless --server):\n\
+    GM_HEADLESS=1       Force --server mode.\n\
+    GM_HOST             Bind host (default 127.0.0.1). Use 0.0.0.0 for LAN.\n\
+    GM_PORT             HTTP port (default 8000).\n\
+    GM_HTTPS            1=force HTTPS on, 0=force off (auto-on when GM_HOST=0.0.0.0).\n\
+    GM_HTTPS_PORT       HTTPS port (default 8443).\n\
+    GM_OPEN_BROWSER=1   Open the URL in the default browser.\n\
+\n\
+ENVIRONMENT (paths, both modes — default to per-OS app-data dirs):\n\
+    GM_SETTINGS_PATH, GM_DIALOG_DB, GM_RAG_CACHE_PATH,\n\
+    GM_TTS_CACHE_DIR, GM_CODEX_CREDENTIAL_PATH, GM_BACKEND, GM_MODEL\n",
+        ver = env!("CARGO_PKG_VERSION"),
+    );
+}
+
+// =========================================================================
+// shared setup: app-data dirs, config, settings, store, make_client
+// =========================================================================
+
+/// Per-OS app-data directories (PORT_PLAN §3.2). macOS bundle dirs are
+/// read-only, so all mutable state lives here — never next to the binary.
+struct AppDirs {
+    config_dir: PathBuf,
+    data_dir: PathBuf,
+    cache_dir: PathBuf,
+}
+
+impl AppDirs {
+    fn resolve() -> Self {
+        if let Some(dirs) = directories::ProjectDirs::from("", "", "gm-lab") {
+            return AppDirs {
+                config_dir: dirs.config_dir().to_path_buf(),
+                data_dir: dirs.data_dir().to_path_buf(),
+                cache_dir: dirs.cache_dir().to_path_buf(),
+            };
+        }
+        // Last-resort fallback (no HOME / unusual env): a `gm-lab` dir in CWD.
+        let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let base = base.join("gm-lab-data");
+        AppDirs {
+            config_dir: base.clone(),
+            data_dir: base.clone(),
+            cache_dir: base,
+        }
+    }
+
+    /// Best-effort: ensure the dirs exist (ignore errors — downstream writes
+    /// surface real problems with context).
+    fn ensure(&self) {
+        let _ = std::fs::create_dir_all(&self.config_dir);
+        let _ = std::fs::create_dir_all(&self.data_dir);
+        let _ = std::fs::create_dir_all(&self.cache_dir);
+    }
+
+    /// The `.tls` cert dir for the LAN HTTPS listener.
+    fn tls_dir(&self) -> PathBuf {
+        self.data_dir.join(".tls")
+    }
+}
+
+/// Pre-seed the `GM_*` path env vars from the per-OS app-data dirs when the
+/// caller hasn't set them, BEFORE `Config::from_env()` reads them. Downstream
+/// crates honor these exact env names (see each crate's default-path helper),
+/// so this is how we route their default paths into the app-data dirs while
+/// still letting an explicit override win.
+fn seed_path_env(dirs: &AppDirs) {
+    set_if_unset(
+        "GM_SETTINGS_PATH",
+        dirs.config_dir.join("gm_lab_settings.json"),
+    );
+    set_if_unset("GM_DIALOG_DB", dirs.data_dir.join("gm_lab_dialogs.sqlite3"));
+    set_if_unset(
+        "GM_RAG_CACHE_PATH",
+        dirs.data_dir.join("gm_lab_embeddings.sqlite3"),
+    );
+    set_if_unset("GM_TTS_CACHE_DIR", dirs.cache_dir.join("tts_cache"));
+    set_if_unset(
+        "GM_CODEX_CREDENTIAL_PATH",
+        dirs.config_dir.join("codex_credential.json"),
+    );
+}
+
+fn set_if_unset(key: &str, value: PathBuf) {
+    let already = std::env::var(key).map(|v| !v.trim().is_empty()).unwrap_or(false);
+    if !already {
+        std::env::set_var(key, value);
+    }
+}
+
+/// Everything the running server needs, plus the handles we shut down on exit.
+struct App {
+    state: AppState,
+    sidecar: Arc<Sidecar>,
+}
+
+/// Build the full [`AppState`] from per-OS dirs + config + the codex-wired
+/// client factory. This is the single construction site for both modes.
+async fn build_app() -> Result<App, String> {
+    let dirs = AppDirs::resolve();
+    dirs.ensure();
+    seed_path_env(&dirs);
+
+    // Honor `.env` files like `config.py`'s module-init `_load_dotenv()`.
+    gml_config::load_dotenv();
+
+    let config = Arc::new(Config::from_env());
+    let settings = Arc::new(RuntimeSettings::new(
+        &config,
+        gml_config::default_settings_path(),
+    ));
+
+    // --- make_client (the synchronous server factory) ---------------------
+    // The server's `MakeClient` is `Fn() -> Arc<dyn Backend>` (sync). The
+    // gml-llm `make_client` is async (the OpenAI-compat branch probes
+    // GET /v1/models). We bridge by running the async factory on the current
+    // tokio runtime via `Handle::block_in_place` + `block_on` so callers in
+    // sync `spawn_blocking` contexts (DialogStore / Session) work too.
+    let make_client = build_make_client(config.clone(), settings.clone());
+
+    // ClientFactory for the DialogStore (recreates NPC/GM clients on load).
+    let factory: gml_orchestrator::ClientFactory = {
+        let mc = make_client.clone();
+        Arc::new(move || (mc)())
+    };
+
+    let store = Arc::new(
+        DialogStore::new(
+            DialogStore::default_db_path(),
+            factory,
+            config.clone(),
+        )
+        .map_err(|e| format!("open dialog store: {e}"))?,
+    );
+
+    // Fold any legacy per-guest chats into the single shared scope (server.py
+    // main(): `merge_all_chats_into_scope(CHAT_SCOPE_ID)`).
+    let scope = gml_server::chat_scope_id();
+    match store.merge_all_chats_into_scope(&scope) {
+        Ok(n) if n > 0 => tracing::info!("merged {n} legacy dialogs into shared scope"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("merge_all_chats_into_scope failed (continuing): {e}"),
+    }
+
+    let state = AppState {
+        store,
+        make_client,
+        config,
+        settings,
+        http: reqwest::Client::new(),
+        locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        index_html: Arc::new(resolve_index_html(&dirs)),
+    };
+
+    let sidecar = Arc::new(Sidecar::from_env());
+
+    Ok(App { state, sidecar })
+}
+
+/// Build the synchronous `MakeClient` the server expects, wiring the gml-codex
+/// constructor as the codex hook so `GM_BACKEND=codex` works without
+/// `gml-llm -> gml-codex` (which would be a dependency cycle).
+fn build_make_client(config: Arc<Config>, settings: Arc<RuntimeSettings>) -> MakeClient {
+    Arc::new(move || -> Arc<dyn Backend> {
+        let cfg = config.clone();
+        let set = settings.clone();
+        // Codex hook: build a `CodexClient` (implements `Backend`).
+        let hook: Box<CodexHook> = Box::new(|c: Arc<Config>, s: Arc<RuntimeSettings>| {
+            Ok(Arc::new(gml_codex::CodexClient::new(c, s)) as Arc<dyn Backend>)
+        });
+        // Run the async factory to completion on the current runtime. We are
+        // always inside a tokio runtime (both modes start one); use
+        // block_in_place so we don't stall the reactor if called from a worker.
+        let result: Result<Arc<dyn Backend>, BackendError> =
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => tokio::task::block_in_place(|| {
+                    handle.block_on(make_client(cfg, set, Some(hook.as_ref())))
+                }),
+                Err(_) => {
+                    // No runtime (shouldn't happen) — spin a tiny one.
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("build fallback runtime");
+                    rt.block_on(make_client(cfg, set, Some(hook.as_ref())))
+                }
+            };
+        match result {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("make_client failed ({e}); falling back to MockClient");
+                Arc::new(gml_llm::MockClient::new())
+            }
+        }
+    })
+}
+
+/// Resolve the built SPA `index.html`. Search, in order: exe-relative
+/// `web/dist/index.html` (release layout), the workspace `web/dist` (dev), and
+/// a copy staged under the app-data dir. Returns `None` if not found (the
+/// server serves a "build the frontend" placeholder).
+fn resolve_index_html(dirs: &AppDirs) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("web/dist/index.html"));
+            candidates.push(exe_dir.join("../web/dist/index.html"));
+            // cargo run layout: target/<profile>/gml-app -> workspace/web/dist
+            candidates.push(exe_dir.join("../../web/dist/index.html"));
+            candidates.push(exe_dir.join("../../../web/dist/index.html"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("web/dist/index.html"));
+        candidates.push(cwd.join("../web/dist/index.html"));
+    }
+    candidates.push(dirs.data_dir.join("web/dist/index.html"));
+
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+// =========================================================================
+// headless --server mode
+// =========================================================================
+
+async fn run_server() {
+    let app = match build_app().await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("gml-app: failed to start: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Best-effort TTS sidecar (no-op when disabled / can't launch).
+    start_sidecar(&app).await;
+
+    let host = env_str("GM_HOST", DEFAULT_HOST);
+    let port = env_u16("GM_PORT", DEFAULT_PORT);
+    let lan_exposed = host.is_empty() || host == "0.0.0.0";
+    let shown_host = if lan_exposed { "localhost" } else { host.as_str() };
+
+    let backend = app.state.config.backend.clone();
+    let url = format!("http://{shown_host}:{port}");
+    println!("GM-Lab web UI: {url}  (backend {backend})");
+    println!("SQLite dialogs: {}", app.state.store.db_path());
+    println!("Shared chat scope: {}", gml_server::chat_scope_id());
+
+    // HTTPS auto-enable rules (server.py main()): GM_HTTPS=1 forces on,
+    // GM_HTTPS=0 forces off, otherwise on iff LAN-exposed (0.0.0.0).
+    let https_flag = std::env::var("GM_HTTPS").ok();
+    let want_https = match https_flag.as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => lan_exposed,
+    };
+
+    let bind_host: std::net::IpAddr = if lan_exposed {
+        std::net::IpAddr::from([0, 0, 0, 0])
+    } else {
+        host.parse().unwrap_or_else(|_| std::net::IpAddr::from([127, 0, 0, 1]))
+    };
+
+    // Optional LAN HTTPS listener (own port) — never touches the HTTP port.
+    if want_https {
+        let https_port = env_u16("GM_HTTPS_PORT", DEFAULT_HTTPS_PORT);
+        let addr = std::net::SocketAddr::new(bind_host, https_port);
+        let router = build_router(app.state.clone());
+        let dirs = AppDirs::resolve();
+        let cert_dir = dirs.tls_dir();
+        println!("HTTPS (phone mic): https://{shown_host}:{https_port}");
+        if lan_exposed {
+            for ip in gml_server::tls::lan_ipv4() {
+                println!("  from phone/tablet: https://{ip}:{https_port}  (accept the self-signed cert once)");
+            }
+        }
+        tokio::spawn(async move {
+            if let Err(e) = gml_server::run_https(addr, router, &cert_dir).await {
+                eprintln!("HTTPS listener stopped: {e}");
+            }
+        });
+    }
+
+    if env_flag("GM_OPEN_BROWSER") {
+        let _ = open::that(&url);
+    }
+
+    println!("Ctrl+C to stop.");
+
+    // Graceful shutdown: kill the sidecar on Ctrl+C.
+    let sidecar = app.sidecar.clone();
+    let http_addr = std::net::SocketAddr::new(bind_host, port);
+    let router = build_router(app.state.clone());
+
+    tokio::select! {
+        res = gml_server::run_http(http_addr, router) => {
+            if let Err(e) = res {
+                eprintln!("HTTP listener stopped: {e}");
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\nstopping…");
+        }
+    }
+    sidecar.shutdown().await;
+}
+
+// =========================================================================
+// desktop (Tauri) mode — feature-gated
+// =========================================================================
+
+#[cfg(feature = "gui")]
+fn run_desktop() {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    // Tauri owns the runtime/event loop; we build our own multi-thread tokio
+    // runtime for the embedded server and share it via a Handle.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    let handle = runtime.handle().clone();
+
+    // Build the app + bind the embedded server on a loopback port BEFORE the
+    // window opens, so the React app has a live origin to talk to.
+    let app = handle
+        .block_on(build_app())
+        .unwrap_or_else(|e| {
+            eprintln!("gml-app: failed to start embedded server: {e}");
+            std::process::exit(1);
+        });
+
+    // Loopback bind: fixed GM_PORT if set, else an ephemeral port.
+    let requested_port = env_u16_opt("GM_PORT");
+    let listener = handle
+        .block_on(async move {
+            let port = requested_port.unwrap_or(0);
+            tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("gml-app: failed to bind loopback server: {e}");
+            std::process::exit(1);
+        });
+    let local_addr = listener.local_addr().expect("loopback addr");
+    let origin = format!("http://127.0.0.1:{}", local_addr.port());
+    tracing::info!("embedded server on {origin}");
+
+    // Start the TTS sidecar (best-effort) and the axum server on our runtime.
+    let state = app.state.clone();
+    let sidecar = app.sidecar.clone();
+    handle.spawn(async move {
+        let _ = sidecar
+            .ensure_started(state.settings.tts_enabled(None))
+            .await;
+    });
+    let router = build_router(app.state.clone());
+    handle.spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    });
+
+    // Keep the runtime + sidecar alive for the lifetime of the app, and shut
+    // them down when the window closes.
+    let sidecar_for_exit = app.sidecar.clone();
+    let handle_for_exit = handle.clone();
+    let origin_for_setup = origin.clone();
+
+    let builder = tauri::Builder::default().setup(move |tauri_app| {
+        let url = WebviewUrl::External(
+            origin_for_setup
+                .parse()
+                .expect("parse loopback origin url"),
+        );
+        WebviewWindowBuilder::new(tauri_app, "main", url)
+            .title("GM-Lab")
+            .inner_size(1280.0, 860.0)
+            .min_inner_size(900.0, 600.0)
+            .build()?;
+        Ok(())
+    });
+
+    // Hold the runtime so its worker threads stay alive while Tauri runs.
+    let _runtime_guard = runtime;
+
+    builder
+        .build(tauri::generate_context!())
+        .expect("build tauri app")
+        .run(move |_app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                // Kill the TTS sidecar (process tree) on exit. The embedded
+                // server tasks die with the runtime when the process exits.
+                let sidecar = sidecar_for_exit.clone();
+                handle_for_exit.block_on(async move {
+                    sidecar.shutdown().await;
+                });
+            }
+        });
+}
+
+// =========================================================================
+// helpers
+// =========================================================================
+
+/// Start the TTS sidecar best-effort (PORT_PLAN: non-fatal when disabled or it
+/// can't launch). Honors `runtime_settings.tts_enabled`.
+async fn start_sidecar(app: &App) {
+    let enabled = app.state.settings.tts_enabled(None);
+    if !enabled {
+        tracing::info!("TTS disabled in settings; sidecar not started");
+        return;
+    }
+    match app.sidecar.ensure_started(true).await {
+        Ok(()) => tracing::info!("TTS sidecar ready"),
+        Err(e) => tracing::warn!("TTS sidecar not started ({e}); continuing without TTS"),
+    }
+}
+
+fn init_tracing() {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = fmt().with_env_filter(filter).with_target(false).try_init();
+}
+
+/// Run an async future on a fresh multi-thread tokio runtime (headless mode).
+fn run_with_runtime<F: std::future::Future>(fut: F) -> F::Output {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(fut)
+}
+
+fn env_str(key: &str, default: &str) -> String {
+    match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => default.to_string(),
+    }
+}
+
+fn env_u16(key: &str, default: u16) -> u16 {
+    env_u16_opt(key).unwrap_or(default)
+}
+
+fn env_u16_opt(key: &str) -> Option<u16> {
+    std::env::var(key).ok().and_then(|v| v.trim().parse::<u16>().ok())
+}
+
+/// Truthy env flag: set and not in the falsey set.
+fn env_flag(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(v) => !matches!(v.trim().to_lowercase().as_str(), "" | "0" | "false" | "no" | "off"),
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn args_default_is_desktop() {
+        std::env::remove_var("GM_HEADLESS");
+        let a = Args::parse(Vec::<String>::new());
+        assert_eq!(a.mode, Mode::Desktop);
+    }
+
+    #[test]
+    fn args_server_flag() {
+        let a = Args::parse(vec!["--server".to_string()]);
+        assert_eq!(a.mode, Mode::Server);
+    }
+
+    #[test]
+    fn args_help_and_version() {
+        assert_eq!(Args::parse(vec!["--help".to_string()]).mode, Mode::Help);
+        assert_eq!(Args::parse(vec!["-h".to_string()]).mode, Mode::Help);
+        assert_eq!(Args::parse(vec!["--version".to_string()]).mode, Mode::Version);
+        assert_eq!(Args::parse(vec!["-V".to_string()]).mode, Mode::Version);
+    }
+
+    #[test]
+    fn args_unknown_ignored() {
+        let a = Args::parse(vec!["--frobnicate".to_string(), "foo".to_string()]);
+        assert_eq!(a.mode, Mode::Desktop);
+    }
+
+    #[test]
+    fn env_flag_truthiness() {
+        std::env::set_var("GML_APP_TEST_FLAG", "1");
+        assert!(env_flag("GML_APP_TEST_FLAG"));
+        std::env::set_var("GML_APP_TEST_FLAG", "0");
+        assert!(!env_flag("GML_APP_TEST_FLAG"));
+        std::env::set_var("GML_APP_TEST_FLAG", "false");
+        assert!(!env_flag("GML_APP_TEST_FLAG"));
+        std::env::remove_var("GML_APP_TEST_FLAG");
+        assert!(!env_flag("GML_APP_TEST_FLAG"));
+    }
+
+    #[test]
+    fn env_u16_parsing() {
+        std::env::set_var("GML_APP_TEST_PORT", "12345");
+        assert_eq!(env_u16("GML_APP_TEST_PORT", 8000), 12345);
+        std::env::set_var("GML_APP_TEST_PORT", "notaport");
+        assert_eq!(env_u16("GML_APP_TEST_PORT", 8000), 8000);
+        std::env::remove_var("GML_APP_TEST_PORT");
+        assert_eq!(env_u16("GML_APP_TEST_PORT", 8000), 8000);
+    }
+
+    #[test]
+    fn app_dirs_resolve_and_tls() {
+        let dirs = AppDirs::resolve();
+        // tls_dir is under data_dir
+        assert!(dirs.tls_dir().starts_with(&dirs.data_dir));
+    }
 }

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GM-Lab",
+  "version": "0.1.0",
+  "identifier": "com.gmlab.app",
+  "build": {
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "security": {
+      "csp": null
+    },
+    "windows": []
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "category": "Game",
+    "shortDescription": "GM-Lab — LLM game-master orchestrator",
+    "longDescription": "GM-Lab: an LLM game master that calls NPC sub-agent LLMs as tools, with prompt-caching, history compaction, RAG, SQLite persistence and a React/SSE UI."
+  }
+}

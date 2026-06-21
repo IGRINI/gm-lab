@@ -92,13 +92,13 @@ fn source_ru(source: &str) -> Option<&'static str> {
 }
 
 /// `_public_role(role)`.
-fn public_role(role: &str) -> String {
+pub fn public_role(role: &str) -> String {
     let raw = as_str(&Value::String(role.to_string()));
     role_ru(&raw.to_lowercase()).map(|s| s.to_string()).unwrap_or(raw)
 }
 
 /// `_public_gender(value)`.
-fn public_gender(value: &str) -> String {
+pub fn public_gender(value: &str) -> String {
     let raw = value.trim().to_string();
     gender_label_ru(&raw.to_lowercase())
         .map(|s| s.to_string())
