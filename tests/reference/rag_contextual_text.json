@@ -1,0 +1,8 @@
+{
+  "d_gate": "RPG world memory block.\nKind: public.\nStatus: known.\nSource: scene.\nTags: ворота, город.\nText: Городские ворота открыты на рассвете и закрываются в полночь.",
+  "d_capt": "RPG world memory block.\nKind: public.\nStatus: known.\nSource: fact.\nTags: капитан, стража.\nText: Капитан стражи патрулирует рыночную площадь днём.",
+  "d_gold": "RPG world memory block.\nKind: rumor.\nStatus: rumored.\nSource: rumor.\nTags: золото, таверна.\nText: Говорят, в подвале таверны прячут золото.",
+  "d_inn": "RPG world memory block.\nKind: public.\nStatus: known.\nSource: scene.\nTags: таверна, ворота.\nText: Таверна «Старый дуб» стоит у северных ворот.",
+  "d_market": "RPG world memory block.\nKind: public.\nStatus: current.\nSource: fact.\nTags: рынок.\nText: На рынке продают specii, ткани и оружие.",
+  "d_unknown": "RPG world memory block.\nKind: rumor.\nStatus: unknown.\nSource: rumor.\nTags: тень, река.\nText: Кто-то видел странную тень у реки ночью."
+}

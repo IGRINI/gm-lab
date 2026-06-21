@@ -1,0 +1,199 @@
+{
+  "config": {
+    "RRF_K": 60,
+    "TOP_K": 6,
+    "MIN_DENSE_SCORE": 0.6,
+    "KEYWORD_TIEBREAK": 0.002,
+    "DENSE_TIEBREAK": 0.001,
+    "STATUS_BOOST": 1.04,
+    "FACT_SELECT_K": 4
+  },
+  "documents": [
+    {
+      "doc_id": "d_gate",
+      "kind": "public",
+      "text": "Городские ворота открыты на рассвете и закрываются в полночь.",
+      "status": "known",
+      "source": "scene",
+      "visibility": "player",
+      "tags": [
+        "ворота",
+        "город"
+      ]
+    },
+    {
+      "doc_id": "d_capt",
+      "kind": "public",
+      "text": "Капитан стражи патрулирует рыночную площадь днём.",
+      "status": "known",
+      "source": "fact",
+      "visibility": "player",
+      "tags": [
+        "капитан",
+        "стража"
+      ]
+    },
+    {
+      "doc_id": "d_gold",
+      "kind": "rumor",
+      "text": "Говорят, в подвале таверны прячут золото.",
+      "status": "rumored",
+      "source": "rumor",
+      "visibility": "player",
+      "tags": [
+        "золото",
+        "таверна"
+      ]
+    },
+    {
+      "doc_id": "d_inn",
+      "kind": "public",
+      "text": "Таверна «Старый дуб» стоит у северных ворот.",
+      "status": "known",
+      "source": "scene",
+      "visibility": "player",
+      "tags": [
+        "таверна",
+        "ворота"
+      ]
+    },
+    {
+      "doc_id": "d_market",
+      "kind": "public",
+      "text": "На рынке продают specii, ткани и оружие.",
+      "status": "current",
+      "source": "fact",
+      "visibility": "player",
+      "tags": [
+        "рынок"
+      ]
+    },
+    {
+      "doc_id": "d_unknown",
+      "kind": "rumor",
+      "text": "Кто-то видел странную тень у реки ночью.",
+      "status": "unknown",
+      "source": "rumor",
+      "visibility": "player",
+      "tags": [
+        "тень",
+        "река"
+      ]
+    }
+  ],
+  "rankings": {
+    "где ворота города": [
+      {
+        "doc_id": "d_gate",
+        "score": 0.035559026,
+        "dense": 0.172928616,
+        "keyword": 1.4588613
+      },
+      {
+        "doc_id": "d_inn",
+        "score": 0.034940012,
+        "dense": 0.198679854,
+        "keyword": 1.017874709
+      }
+    ],
+    "что говорят про золото в таверне": [
+      {
+        "doc_id": "d_gold",
+        "score": 0.033938186,
+        "dense": 0.160128154,
+        "keyword": 3.777350494
+      }
+    ],
+    "капитан стражи рынок": [
+      {
+        "doc_id": "d_capt",
+        "score": 0.036570279,
+        "dense": 0.376844576,
+        "keyword": 3.705520349
+      },
+      {
+        "doc_id": "d_market",
+        "score": 0.034716029,
+        "dense": 0.26148818,
+        "keyword": 1.595680122
+      }
+    ],
+    "noon patrol captain": []
+  },
+  "retrieve_world_fact": {
+    "где ворота города": {
+      "status": "known",
+      "text": "[1] known: Городские ворота открыты на рассвете и закрываются в полночь. [2] known: Таверна «Старый дуб» стоит у северных ворот.",
+      "sources": [
+        {
+          "n": 1,
+          "doc_id": "d_gate",
+          "kind": "public",
+          "status": "known",
+          "source": "scene",
+          "score": 0.03556,
+          "dense": 0.17293,
+          "keyword": 1.45886,
+          "metadata": {}
+        },
+        {
+          "n": 2,
+          "doc_id": "d_inn",
+          "kind": "public",
+          "status": "known",
+          "source": "scene",
+          "score": 0.03494,
+          "dense": 0.19868,
+          "keyword": 1.01787,
+          "metadata": {}
+        }
+      ]
+    },
+    "что говорят про золото в таверне": {
+      "status": "unknown",
+      "text": "[1] unconfirmed: Говорят, в подвале таверны прячут золото.",
+      "sources": [
+        {
+          "n": 1,
+          "doc_id": "d_gold",
+          "kind": "rumor",
+          "status": "rumored",
+          "source": "rumor",
+          "score": 0.03394,
+          "dense": 0.16013,
+          "keyword": 3.77735,
+          "metadata": {}
+        }
+      ]
+    },
+    "капитан стражи рынок": {
+      "status": "known",
+      "text": "[1] known: Капитан стражи патрулирует рыночную площадь днём. [2] known: На рынке продают specii, ткани и оружие.",
+      "sources": [
+        {
+          "n": 1,
+          "doc_id": "d_capt",
+          "kind": "public",
+          "status": "known",
+          "source": "fact",
+          "score": 0.03657,
+          "dense": 0.37684,
+          "keyword": 3.70552,
+          "metadata": {}
+        },
+        {
+          "n": 2,
+          "doc_id": "d_market",
+          "kind": "public",
+          "status": "current",
+          "source": "fact",
+          "score": 0.03472,
+          "dense": 0.26149,
+          "keyword": 1.59568,
+          "metadata": {}
+        }
+      ]
+    },
+    "noon patrol captain": null
+  }
+}

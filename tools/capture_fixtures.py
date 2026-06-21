@@ -233,6 +233,93 @@ def capture_snapshot() -> None:
         print(f"  SKIP snapshot build: {ex}")
 
 
+def capture_rag() -> None:
+    print("[rag]")
+    try:
+        import rag
+        import config
+    except Exception as ex:
+        print(f"  SKIP rag import: {ex}")
+        return
+
+    # Deterministic embedder (blake2b-based) — the Rust port must reproduce it bit-exact.
+    emb = rag.HashEmbeddingClient(dims=128)
+
+    # 1) raw hash-embedding vectors for sample texts (validates the embedder port).
+    sample_texts = [
+        "Городские ворота открыты на рассвете.",
+        "The captain of the guard patrols the market square at noon.",
+        "Слух: в подвале таверны прячут золото.",
+        "",  # empty -> zero vector path
+        "d20 d20 d20 unique-token-xyz",
+    ]
+    raw_vecs = {t: emb.embed([t])[0] for t in sample_texts}
+    _write(OUT / "rag_hash_embeddings.json", {
+        "dims": 128,
+        "vectors": {t: [round(v, 9) for v in vec] for t, vec in raw_vecs.items()},
+    })
+
+    # 2) tokenizer output (regex + stopwords + 3-char min).
+    tok_samples = [
+        "The captain, who is а werewolf, hides «золото» under-the-floor.",
+        "Привет! Это слух про золото? Да, в подвале.",
+        "a an is — d4 d20 ok longword",
+    ]
+    _write(OUT / "rag_tokens.json", {s: rag._tokens(s) for s in tok_samples})
+
+    # 3) full search ranking with the deterministic embedder.
+    docs = [
+        rag.RagDocument(doc_id="d_gate", kind="public", text="Городские ворота открыты на рассвете и закрываются в полночь.", status="known", source="scene", visibility="player", tags=("ворота", "город")),
+        rag.RagDocument(doc_id="d_capt", kind="public", text="Капитан стражи патрулирует рыночную площадь днём.", status="known", source="fact", visibility="player", tags=("капитан", "стража")),
+        rag.RagDocument(doc_id="d_gold", kind="rumor", text="Говорят, в подвале таверны прячут золото.", status="rumored", source="rumor", visibility="player", tags=("золото", "таверна")),
+        rag.RagDocument(doc_id="d_inn", kind="public", text="Таверна «Старый дуб» стоит у северных ворот.", status="known", source="scene", visibility="player", tags=("таверна", "ворота")),
+        rag.RagDocument(doc_id="d_market", kind="public", text="На рынке продают specii, ткани и оружие.", status="current", source="fact", visibility="player", tags=("рынок",)),
+        rag.RagDocument(doc_id="d_unknown", kind="rumor", text="Кто-то видел странную тень у реки ночью.", status="unknown", source="rumor", visibility="player", tags=("тень", "река")),
+    ]
+    queries = [
+        "где ворота города",
+        "что говорят про золото в таверне",
+        "капитан стражи рынок",
+        "noon patrol captain",
+    ]
+    rag.set_default_engine(rag.RagEngine(embedder=emb))
+    search_out = {}
+    fact_out = {}
+    for q in queries:
+        hits = rag.RagEngine(embedder=emb).search(q, docs, config.RAG_TOP_K)
+        search_out[q] = [
+            {
+                "doc_id": h.document.doc_id,
+                "score": round(h.score, 9),
+                "dense": round(h.dense_score, 9),
+                "keyword": round(h.keyword_score, 9),
+            }
+            for h in hits
+        ]
+        # retrieve_world_fact uses the default engine (set above) + RAG_ENABLED.
+        fact_out[q] = rag.retrieve_world_fact(q, docs)
+    _write(OUT / "rag_search.json", {
+        "config": {
+            "RRF_K": config.RAG_RRF_K, "TOP_K": config.RAG_TOP_K,
+            "MIN_DENSE_SCORE": config.RAG_MIN_DENSE_SCORE,
+            "KEYWORD_TIEBREAK": config.RAG_KEYWORD_TIEBREAK,
+            "DENSE_TIEBREAK": config.RAG_DENSE_TIEBREAK,
+            "STATUS_BOOST": config.RAG_STATUS_BOOST,
+            "FACT_SELECT_K": config.RAG_FACT_SELECT_K,
+        },
+        "documents": [
+            {"doc_id": d.doc_id, "kind": d.kind, "text": d.text, "status": d.status,
+             "source": d.source, "visibility": d.visibility, "tags": list(d.tags)}
+            for d in docs
+        ],
+        "rankings": search_out,
+        "retrieve_world_fact": fact_out,
+    })
+
+    # 4) contextual_text byte format (dense input string per doc).
+    _write(OUT / "rag_contextual_text.json", {d.doc_id: d.contextual_text() for d in docs})
+
+
 def _default_story_id(stories):
     for name in ("DEFAULT_STORY_ID", "DEFAULT_STORY", "default_story_id"):
         val = getattr(stories, name, None)
@@ -257,6 +344,7 @@ def main() -> None:
     capture_rng()
     capture_state_record_hash()
     capture_dice()
+    capture_rag()
     capture_snapshot()
     print("Done.")
 
