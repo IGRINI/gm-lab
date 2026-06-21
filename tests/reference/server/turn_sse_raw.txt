@@ -1,0 +1,52 @@
+data: {"kind": "player", "agent": "Игрок", "data": "", "sid": null}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_thinking", "text": "NPC "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_thinking", "text": "отыграл, "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_thinking", "text": "завершаю "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_thinking", "text": "сцену. "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "Борин "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "мнётся "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "за "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "стойкой, "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "так "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "и "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "не "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "сумев "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "улизнуть. "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "Зал "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "притих "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "и "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "смотрит "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "на "}, "sid": "s103"}
+
+data: {"kind": "delta", "agent": "ГМ", "data": {"channel": "gm_narration", "text": "вас. "}, "sid": "s103"}
+
+data: {"kind": "gm_thinking", "agent": "ГМ", "data": "NPC отыграл, завершаю сцену.", "sid": "s103"}
+
+data: {"kind": "meta", "agent": "ГМ", "data": {"label": "ГМ — нарратив", "scope": "gm", "in": 760, "out": 120, "secs": 0.73, "cached": 0, "tps": 188, "prompt_secs": 0.08, "eval_secs": 0.64, "load_secs": 0.0}, "sid": "s103"}
+
+data: {"kind": "gm_narration", "agent": "ГМ", "data": "Борин мнётся за стойкой, так и не сумев улизнуть. Зал притих и смотрит на вас.", "sid": "s103"}
+
+data: {"kind": "error", "agent": "ГМ", "data": "Модель завершила ход без ask_player, хотя варианты игрока включены.", "sid": null}
+
+data: {"kind": "meta_total", "agent": null, "data": {"calls": [{"label": "ГМ — нарратив", "scope": "gm", "in": 760, "out": 120, "secs": 0.73, "cached": 0, "tps": 188, "prompt_secs": 0.08, "eval_secs": 0.64, "load_secs": 0.0}], "in": 760, "out": 120, "cached": 0, "tokens": 880, "peak_context": 760, "secs": 0.0, "sys_estimate": 12106, "context": {"current": 111319, "world": 1789, "next_compact": {"scope": "gm", "label": "ГМ", "used": 97424, "limit": 100000, "remaining": 2576}, "gm": {"active": 111319, "history": 97424, "summary": 0, "limit": 100000, "remaining": 2576}, "npc": {"id": "run", "name": "Рун", "color": "#ebbcba", "has_session": true, "active": 12125, "history": 10108, "summary": 0, "limit": 64000, "remaining": 53892}, "npcs": [{"id": "run", "name": "Рун", "color": "#ebbcba", "has_session": true, "active": 12125, "history": 10108, "summary": 0, "limit": 64000, "remaining": 53892}, {"id": "iva", "name": "Ива", "color": "#f6c177", "has_session": true, "active": 7103, "history": 5069, "summary": 0, "limit": 64000, "remaining": 58931}, {"id": "veik", "name": "Вейк", "color": "#c4a7e7", "has_session": false, "active": 2012, "history": 0, "summary": 0, "limit": 64000, "remaining": 64000}, {"id": "sana", "name": "Сана Рей", "color": "#9ccfd8", "has_session": false, "active": 2013, "history": 0, "summary": 0, "limit": 64000, "remaining": 64000}]}, "run": {"turns": 19, "calls": 108, "in": 5724180, "out": 28367, "cached": 5407744, "tokens": 5752547, "secs": 908.24, "peak_context": 102116, "gm_calls": 96, "gm_tokens": 5703292, "npc_calls": 6, "npc_tokens": 42386, "other_calls": 6, "other_tokens": 6869}}, "sid": null}
+
+data: {"kind": "done"}
+
