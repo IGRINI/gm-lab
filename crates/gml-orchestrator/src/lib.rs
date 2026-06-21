@@ -25,6 +25,7 @@ pub mod model_text;
 pub mod query_dedup;
 pub mod rag;
 pub mod session;
+pub mod session_payload;
 pub mod turn;
 pub mod worldstate;
 

@@ -1,0 +1,298 @@
+//! Validation suite for gml-persistence.
+//!
+//! 1. Byte-identical golden round-trip of the on-disk payload.
+//! 2. DialogStore CRUD over a temp sqlite file.
+//! 3. `card_revision` defaults to 0 on an old snapshot missing the field.
+//! 4. RNG state round-trips (getstate == setstate) through the world payload.
+
+use std::sync::Arc;
+
+use serde_json::{json, Map, Value};
+
+use gml_config::Config;
+use gml_llm::{Backend, MockClient};
+use gml_orchestrator::{ClientFactory, Session};
+use gml_persistence::{DialogRuntime, DialogStore, SCHEMA_VERSION};
+
+fn factory() -> ClientFactory {
+    Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>)
+}
+
+fn client() -> Arc<dyn Backend> {
+    Arc::new(MockClient::new())
+}
+
+fn fixture_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("reference")
+        .join("persistence")
+}
+
+fn read_compact() -> String {
+    let path = fixture_dir().join("chat_payload.compact.json");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Build a DialogRuntime from a parsed full-payload Value.
+fn runtime_from_payload_value(payload: &Value) -> DialogRuntime {
+    let session = Session::from_payload(
+        payload.get("session").unwrap_or(&Value::Null),
+        client(),
+        factory(),
+    )
+    .expect("session from payload");
+    let transcript = match payload.get("transcript") {
+        Some(Value::Array(a)) => a.clone(),
+        _ => Vec::new(),
+    };
+    let turn_count = payload.get("turn_count").and_then(|v| v.as_i64()).unwrap_or(0);
+    DialogRuntime {
+        guest_id: "g".to_string(),
+        chat_id: "c".to_string(),
+        session,
+        transcript,
+        turn_count,
+        title: String::new(),
+        preview: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+// =========================================================================
+// 1. byte-identical golden round-trip
+// =========================================================================
+
+#[test]
+fn golden_payload_roundtrip_is_byte_identical() {
+    let input = read_compact();
+    let parsed: Value = serde_json::from_str(&input).expect("parse compact fixture");
+
+    let runtime = runtime_from_payload_value(&parsed);
+    let output = runtime.payload_json();
+
+    if output != input {
+        // Find first divergence for a useful failure message.
+        let a = input.as_bytes();
+        let b = output.as_bytes();
+        let mut i = 0;
+        while i < a.len() && i < b.len() && a[i] == b[i] {
+            i += 1;
+        }
+        let lo = i.saturating_sub(80);
+        let in_ctx = &input[lo..(i + 80).min(input.len())];
+        let out_ctx = &output[lo..(i + 80).min(output.len())];
+        panic!(
+            "payload not byte-identical at byte {i}\n--- expected (input) ---\n{in_ctx}\n--- got (output) ---\n{out_ctx}\n(input len {}, output len {})",
+            input.len(),
+            output.len()
+        );
+    }
+    assert_eq!(output, input);
+}
+
+// =========================================================================
+// 2. DialogStore CRUD over a temp sqlite file
+// =========================================================================
+
+fn temp_store() -> (DialogStore, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("dialogs.sqlite3");
+    let mut cfg = Config::from_env();
+    cfg.rag_enabled = false; // keep delete's embeddings purge a no-op in tests
+    let store = DialogStore::new(
+        db.to_string_lossy().into_owned(),
+        factory(),
+        Arc::new(cfg),
+    )
+    .expect("create store");
+    (store, dir)
+}
+
+#[test]
+fn crud_create_save_load_list_delete() {
+    let (store, _dir) = temp_store();
+    let guest = "guest1";
+
+    // create
+    let chat_id = store
+        .create_chat(guest, None, None, 0, Some("Моя игра"), None, true)
+        .expect("create_chat");
+    assert!(!chat_id.is_empty());
+
+    // active pointer points at the new chat
+    assert_eq!(store.active_chat_id(guest).unwrap().as_deref(), Some(chat_id.as_str()));
+
+    // list shows it, marked active
+    let chats = store.list_chats(guest).expect("list");
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0]["id"], json!(chat_id));
+    assert_eq!(chats[0]["title"], json!("Моя игра"));
+    assert_eq!(chats[0]["active"], json!(true));
+
+    // mutate via with_runtime + save
+    store
+        .with_runtime(guest, &chat_id, |rt| {
+            rt.turn_count = 5;
+            rt.session.last_player_action = "сделал ход".to_string();
+        })
+        .expect("with_runtime")
+        .expect("runtime present");
+    // persist the change
+    store
+        .with_runtime(guest, &chat_id, |_rt| {})
+        .unwrap();
+    // Re-save explicitly through load+save to exercise the DB write path.
+    let mut loaded = store.load_chat(guest, &chat_id).expect("load_chat");
+    loaded.turn_count = 7;
+    store.save(&mut loaded).expect("save");
+    assert!(!loaded.created_at.is_empty());
+    assert!(!loaded.updated_at.is_empty());
+
+    // load reflects the saved turn_count
+    let reloaded = store.load_chat(guest, &chat_id).expect("reload");
+    assert_eq!(reloaded.turn_count, 7);
+
+    // create a second chat, list ordering = newest first
+    let chat2 = store
+        .create_chat(guest, None, None, 0, Some("Вторая"), None, true)
+        .expect("create_chat 2");
+    let chats = store.list_chats(guest).expect("list2");
+    assert_eq!(chats.len(), 2);
+    assert_eq!(chats[0]["id"], json!(chat2)); // most-recent updated_at first
+
+    // activate the first again
+    assert!(store.activate_chat(guest, &chat_id).expect("activate"));
+    assert_eq!(store.active_chat_id(guest).unwrap().as_deref(), Some(chat_id.as_str()));
+
+    // delete the active chat -> active pointer self-heals to the remaining one
+    let res = store.delete_chat(guest, &chat_id).expect("delete");
+    assert_eq!(res["deleted"], json!(true));
+    assert_eq!(res["active_chat_id"], json!(chat2));
+    let chats = store.list_chats(guest).expect("list3");
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0]["id"], json!(chat2));
+
+    // delete a missing chat
+    let res = store.delete_chat(guest, "nope").expect("delete missing");
+    assert_eq!(res["deleted"], json!(false));
+}
+
+#[test]
+fn get_active_creates_when_empty() {
+    let (store, _dir) = temp_store();
+    let guest = "fresh";
+    // no chats yet -> get_active creates one and activates it
+    let active = store.get_active(guest).expect("get_active");
+    assert!(!active.is_empty());
+    let chats = store.list_chats(guest).expect("list");
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0]["id"], json!(active));
+    assert_eq!(chats[0]["active"], json!(true));
+}
+
+// =========================================================================
+// 3. card_revision defaults to 0 on an old snapshot missing the field
+// =========================================================================
+
+#[test]
+fn card_revision_defaults_zero_when_missing() {
+    // Take the golden payload and strip card_revision from the player_character
+    // and every npc, then ensure load defaults them to 0 and re-save succeeds.
+    let input = read_compact();
+    let mut parsed: Value = serde_json::from_str(&input).expect("parse");
+
+    if let Some(world) = parsed
+        .get_mut("session")
+        .and_then(|s| s.get_mut("world"))
+    {
+        if let Some(Value::Object(pc)) = world.get_mut("player_character") {
+            pc.remove("card_revision");
+        }
+        if let Some(Value::Object(npcs)) = world.get_mut("npcs") {
+            for (_id, npc) in npcs.iter_mut() {
+                if let Value::Object(m) = npc {
+                    m.remove("card_revision");
+                }
+            }
+        }
+    }
+
+    let session = Session::from_payload(
+        parsed.get("session").unwrap_or(&Value::Null),
+        client(),
+        factory(),
+    )
+    .expect("session from old snapshot");
+
+    assert_eq!(session.world.player_character.card_revision, 0);
+    for npc in session.world.npcs.values() {
+        assert_eq!(npc.card_revision, 0, "npc {} card_revision should default 0", npc.npc_id);
+    }
+}
+
+// =========================================================================
+// 4. RNG state round-trips (getstate == setstate)
+// =========================================================================
+
+#[test]
+fn rng_state_round_trips_through_world_payload() {
+    let input = read_compact();
+    let parsed: Value = serde_json::from_str(&input).expect("parse");
+
+    // The RNG state from the fixture.
+    let expected_state = parsed["session"]["world"]["rng_state"].clone();
+
+    let session = Session::from_payload(
+        parsed.get("session").unwrap_or(&Value::Null),
+        client(),
+        factory(),
+    )
+    .expect("session");
+
+    // Re-serialize and confirm the rng_state survives unchanged.
+    let out = session.to_payload();
+    let got_state = out["world"]["rng_state"].clone();
+    assert_eq!(got_state, expected_state, "rng_state must round-trip exactly");
+
+    // And the internal vector is the full 625-int CPython layout (624 + index).
+    let internal_len = got_state["internal"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert_eq!(internal_len, 625, "internal must have 624 state words + index");
+}
+
+// =========================================================================
+// 5. schema version is hard-checked on load
+// =========================================================================
+
+#[test]
+fn unsupported_schema_version_is_rejected() {
+    let (store, _dir) = temp_store();
+    let guest = "g";
+    let chat_id = store
+        .create_chat(guest, None, None, 0, None, None, true)
+        .expect("create");
+
+    // Hand-write a payload with schema_version=2 directly into the DB.
+    let con = rusqlite::Connection::open(store.db_path()).expect("open");
+    let bad = json!({"schema_version": 2, "turn_count": 0, "session": {}, "transcript": []});
+    con.execute(
+        "UPDATE dialog_chats SET payload = ?1 WHERE guest_id = ?2 AND chat_id = ?3",
+        rusqlite::params![bad.to_string(), guest, chat_id],
+    )
+    .expect("update");
+    drop(con);
+
+    match store.load_chat(guest, &chat_id) {
+        Ok(_) => panic!("expected schema-version error"),
+        Err(err) => assert!(
+            format!("{err}").contains("schema version"),
+            "expected schema-version error, got: {err}"
+        ),
+    }
+    assert_eq!(SCHEMA_VERSION, 1);
+    let _: Map<String, Value> = Map::new();
+}

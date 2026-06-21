@@ -755,12 +755,20 @@ dependencies = [
 name = "gml-persistence"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "getrandom 0.2.17",
  "gml-config",
  "gml-llm",
  "gml-orchestrator",
  "gml-rag",
+ "gml-stories",
  "gml-types",
  "gml-world",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

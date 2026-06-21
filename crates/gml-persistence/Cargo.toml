@@ -11,3 +11,14 @@ gml-world = { path = "../gml-world" }
 gml-orchestrator = { path = "../gml-orchestrator" }
 gml-rag = { path = "../gml-rag" }
 gml-llm = { path = "../gml-llm" }
+
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+getrandom = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+gml-stories = { path = "../gml-stories" }
+tempfile = { workspace = true }
