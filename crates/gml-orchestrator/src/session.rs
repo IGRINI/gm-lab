@@ -35,6 +35,43 @@ pub const EVENTS_CAP: usize = 400;
 /// `config.GM_RUMORS_CAP = 80`.
 pub const RUMORS_CAP: usize = 80;
 
+/// Compaction thresholds — the Rust home for the `config.GM_HISTORY_TOKENS` /
+/// `config.GM_KEEP_TURNS` / `config.NPC_HISTORY_TOKENS` /
+/// `config.NPC_KEEP_EXCHANGES` / `config.GM_COMPACT_INPUT_CHARS` globals that
+/// `orchestrator.py` reads **at call time** inside `_maybe_compact`,
+/// `_maybe_compact_npc`, `_summarize_npc_history`, and `context_usage`.
+///
+/// Python keeps these on the `config` module and contract tests monkeypatch them
+/// to force compaction without touching production defaults. We mirror that by
+/// holding them on the [`Session`] (default = production defaults), so tests can
+/// lower them on a session exactly like the Python tests lower `config.*` — the
+/// production `Config` defaults are never mutated.
+#[derive(Clone, Copy, Debug)]
+pub struct CompactionThresholds {
+    /// `config.GM_HISTORY_TOKENS` (default 100000).
+    pub gm_history_tokens: i64,
+    /// `config.GM_KEEP_TURNS` (default 3).
+    pub gm_keep_turns: i64,
+    /// `config.NPC_HISTORY_TOKENS` (default 64000).
+    pub npc_history_tokens: i64,
+    /// `config.NPC_KEEP_EXCHANGES` (default 6).
+    pub npc_keep_exchanges: i64,
+    /// `config.GM_COMPACT_INPUT_CHARS` (default 12000).
+    pub compact_input_chars: i64,
+}
+
+impl Default for CompactionThresholds {
+    fn default() -> Self {
+        CompactionThresholds {
+            gm_history_tokens: 100_000,
+            gm_keep_turns: 3,
+            npc_history_tokens: 64_000,
+            npc_keep_exchanges: 6,
+            compact_input_chars: 12_000,
+        }
+    }
+}
+
 /// Serializable per-NPC client identity (`npc_client_state[id]`).
 #[derive(Clone, Debug, Default)]
 pub struct NpcClientState {
@@ -90,6 +127,10 @@ pub struct Session {
     pub pending: BTreeMap<String, PendingDraft>,
     pub commitments: BTreeMap<String, Vec<String>>,
     pub turn_player_event: Option<usize>, // index into `events`
+
+    /// Compaction thresholds (the Rust home for the `config.*` globals Python
+    /// reads at call time in `_maybe_compact*` / `context_usage`). Not persisted.
+    pub compaction: CompactionThresholds,
 }
 
 impl Session {
@@ -135,6 +176,7 @@ impl Session {
             pending: BTreeMap::new(),
             commitments: BTreeMap::new(),
             turn_player_event: None,
+            compaction: CompactionThresholds::default(),
         }
     }
 

@@ -29,8 +29,10 @@ pub mod session_payload;
 pub mod turn;
 pub mod worldstate;
 
-pub use session::{ClientFactory, NpcClientState, PendingDraft, Session};
-pub use turn::{run_turn, run_turn_into};
+pub use session::{
+    ClientFactory, CompactionThresholds, NpcClientState, PendingDraft, Session,
+};
+pub use turn::{run_tool_collect, run_turn, run_turn_into};
 
 use serde_json::Value;
 

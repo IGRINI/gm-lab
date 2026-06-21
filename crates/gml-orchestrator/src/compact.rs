@@ -240,9 +240,14 @@ pub fn usage_from_payload(value: &Value) -> Map<String, Value> {
 // =========================================================================
 
 /// `_maybe_compact(session)` (async because of client.summarize).
+///
+/// Thresholds (`GM_HISTORY_TOKENS` / `GM_KEEP_TURNS` / `GM_COMPACT_INPUT_CHARS`)
+/// are read from `session.compaction` — the Rust home for the `config.*` globals
+/// Python reads at call time. Production defaults match `config`; tests lower
+/// them on the session exactly like the Python tests monkeypatch `config.*`.
 pub async fn maybe_compact(session: &mut Session, client: &dyn Backend) {
-    let gm_history_tokens = 100_000;
-    let gm_keep_turns = 3;
+    let gm_history_tokens = session.compaction.gm_history_tokens;
+    let gm_keep_turns = session.compaction.gm_keep_turns;
     if messages_tokens(&session.gm_messages) < gm_history_tokens {
         return;
     }
@@ -253,10 +258,11 @@ pub async fn maybe_compact(session: &mut Session, client: &dyn Backend) {
         .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
         .map(|(i, _)| i)
         .collect();
-    if starts.len() <= gm_keep_turns {
+    if (starts.len() as i64) <= gm_keep_turns {
         return;
     }
-    let cut = starts[starts.len() - gm_keep_turns];
+    // Python: `cut = starts[-config.GM_KEEP_TURNS]`.
+    let cut = starts[starts.len() - gm_keep_turns.max(0) as usize];
     let old: Vec<Value> = session.gm_messages[..cut].to_vec();
     let recent: Vec<Value> = session.gm_messages[cut..].to_vec();
     let old_text = old
@@ -267,7 +273,8 @@ pub async fn maybe_compact(session: &mut Session, client: &dyn Backend) {
         .join("\n");
     let base = format!("{}\n{}", session.gm_summary, old_text).trim().to_string();
     let proper_nouns = session.world.proper_nouns();
-    let clipped: String = base.chars().take(12_000).collect();
+    let clip = session.compaction.compact_input_chars.max(0) as usize;
+    let clipped: String = base.chars().take(clip).collect();
     let summary = client.summarize(&clipped, &proper_nouns).await.unwrap_or_default();
     session.gm_summary = summary;
     session.gm_messages = recent;
@@ -276,8 +283,8 @@ pub async fn maybe_compact(session: &mut Session, client: &dyn Backend) {
 
 /// `_maybe_compact_npc(session, npc, client)`.
 pub async fn maybe_compact_npc(session: &mut Session, npc_id: &str, client: &dyn Backend) {
-    let npc_history_tokens = 64_000;
-    let npc_keep_exchanges = 6;
+    let npc_history_tokens = session.compaction.npc_history_tokens;
+    let npc_keep_exchanges = session.compaction.npc_keep_exchanges;
     let msgs = session.npc_messages.get(npc_id).cloned().unwrap_or_default();
     if messages_tokens(&msgs) < npc_history_tokens {
         return;
@@ -288,10 +295,10 @@ pub async fn maybe_compact_npc(session: &mut Session, npc_id: &str, client: &dyn
         .filter(|(_, m)| m.get("role").and_then(Value::as_str) == Some("user"))
         .map(|(i, _)| i)
         .collect();
-    if starts.len() <= npc_keep_exchanges {
+    if (starts.len() as i64) <= npc_keep_exchanges {
         return;
     }
-    let cut = starts[starts.len() - npc_keep_exchanges];
+    let cut = starts[starts.len() - npc_keep_exchanges.max(0) as usize];
     let old: Vec<Value> = msgs[..cut].to_vec();
     let recent: Vec<Value> = msgs[cut..].to_vec();
     let old_text = old
@@ -302,16 +309,22 @@ pub async fn maybe_compact_npc(session: &mut Session, npc_id: &str, client: &dyn
         .join("\n");
     let prev_summary = session.npc_summaries.get(npc_id).cloned().unwrap_or_default();
     let base = format!("{prev_summary}\n{old_text}").trim().to_string();
-    let summary = summarize_npc_history(client, &session.world, &base).await;
+    let clip = session.compaction.compact_input_chars.max(0) as usize;
+    let summary = summarize_npc_history(client, &session.world, &base, clip).await;
     session.npc_summaries.insert(npc_id.to_string(), summary);
     session.npc_messages.insert(npc_id.to_string(), recent);
 }
 
 /// `_summarize_npc_history(client, npc, world, text)`.
-async fn summarize_npc_history(client: &dyn Backend, world: &World, text: &str) -> String {
+async fn summarize_npc_history(
+    client: &dyn Backend,
+    world: &World,
+    text: &str,
+    clip_chars: usize,
+) -> String {
     let proper_nouns = world.proper_nouns().join(", ");
     let system = gml_prompts::render_npc_compact_system(&proper_nouns);
-    let clipped: String = text.chars().take(12_000).collect();
+    let clipped: String = text.chars().take(clip_chars).collect();
     let messages = json!([
         {"role": "system", "content": system},
         {"role": "user", "content": clipped},
@@ -335,10 +348,10 @@ pub fn context_usage(session: &mut Session) -> Value {
     let gm_history = messages_tokens(&session.gm_messages);
     let gm_summary = estimate_tokens(&session.gm_summary);
     let gm_active = sys_est() + world_tokens + gm_summary + gm_history;
-    let gm_limit = 100_000_i64;
+    let gm_limit = session.compaction.gm_history_tokens;
     let gm_remaining = (gm_limit - gm_history).max(0);
 
-    let npc_history_tokens = 64_000_i64;
+    let npc_history_tokens = session.compaction.npc_history_tokens;
 
     // Collect candidate npc ids.
     let mut npc_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

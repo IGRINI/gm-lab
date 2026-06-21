@@ -646,6 +646,31 @@ fn tool_emits_visible_output(name: &str, result: &ToolExecutionResult) -> bool {
 // _run_tool
 // =========================================================================
 
+/// Test-facing driver for a single tool dispatch — the Rust analogue of the
+/// Python contract-test idiom `_drive(_run_tool(session, name, args, []))`.
+///
+/// Runs [`run_tool`] (exactly the dispatch the turn loop uses, before the
+/// visible-continuation `with_model_reminder` wrap that `drive` applies), drains
+/// the events the tool emitted, and returns `(events, ToolExecutionResult)`.
+/// Both channels (`.full` / `.model`) and the `.terminal` flag are returned
+/// untouched so contract tests can assert the two-channel split.
+pub async fn run_tool_collect(
+    session: &mut Session,
+    name: &str,
+    args: &Value,
+) -> (Vec<Event>, ToolExecutionResult) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+    let sink = Sink { tx };
+    let mut metas: Vec<Value> = Vec::new();
+    let result = run_tool(session, name, args, &mut metas, &sink).await;
+    drop(sink);
+    let mut events = Vec::new();
+    while let Some(e) = rx.recv().await {
+        events.push(e);
+    }
+    (events, result)
+}
+
 async fn run_tool(
     session: &mut Session,
     name: &str,
