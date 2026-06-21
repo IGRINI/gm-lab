@@ -38,19 +38,28 @@ fn fact_source_identity(source: &Value) -> String {
 }
 
 /// `_fact_text_segments(text)` — parse `[n] known|unconfirmed: ...` segments.
+///
+/// The Python original uses a look-ahead to split BEFORE each marker:
+/// `(?s)(\[(\d+)\]\s+(?:known|unconfirmed):\s.*?)(?=\s+\[\d+\]\s+(?:known|unconfirmed):|$)`.
+/// The Rust `regex` crate has no look-around, so we reproduce the identical split
+/// by locating every `[n] known|unconfirmed: ` marker start and slicing the text
+/// between consecutive marker starts (each segment trimmed) — byte-for-byte the
+/// same segments the look-ahead produced.
 fn fact_text_segments(text: &str) -> std::collections::BTreeMap<i64, String> {
     let mut segments = std::collections::BTreeMap::new();
     let cleaned = clean_text(&Value::String(text.to_string()));
-    let re = regex::Regex::new(
-        r"(?s)(\[(\d+)\]\s+(?:known|unconfirmed):\s.*?)(?=\s+\[\d+\]\s+(?:known|unconfirmed):|$)",
-    )
-    .unwrap();
-    for cap in re.captures_iter(&cleaned) {
-        let index: i64 = match cap.get(2).and_then(|m| m.as_str().parse().ok()) {
-            Some(i) => i,
-            None => continue,
-        };
-        let seg = cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+    let re = regex::Regex::new(r"\[(\d+)\]\s+(?:known|unconfirmed):\s").unwrap();
+    let marks: Vec<(usize, i64)> = re
+        .captures_iter(&cleaned)
+        .filter_map(|cap| {
+            let start = cap.get(0)?.start();
+            let index: i64 = cap.get(1)?.as_str().parse().ok()?;
+            Some((start, index))
+        })
+        .collect();
+    for (i, &(start, index)) in marks.iter().enumerate() {
+        let end = marks.get(i + 1).map(|&(s, _)| s).unwrap_or(cleaned.len());
+        let seg = cleaned[start..end].trim().to_string();
         segments.insert(index, seg);
     }
     segments
@@ -167,4 +176,33 @@ pub fn filter_new_fact_payload(
         seen.insert(key);
     }
     (payload, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression guard: fact_text_segments must split `[n] known|unconfirmed:`
+    // segments WITHOUT a look-around regex (the Rust `regex` crate rejects it).
+    // This path is hit whenever get_world_fact returns multiple RAG sources; the
+    // earlier look-ahead literal panicked at Regex::new(...).unwrap().
+    #[test]
+    fn fact_text_segments_splits_markers() {
+        let text = "[1] known: Ворота открыты на рассвете. [2] unconfirmed: В подвале \
+прячут золото. [3] known: Капитан патрулирует площадь.";
+        let segs = fact_text_segments(text);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[&1], "[1] known: Ворота открыты на рассвете.");
+        assert_eq!(segs[&2], "[2] unconfirmed: В подвале прячут золото.");
+        assert_eq!(segs[&3], "[3] known: Капитан патрулирует площадь.");
+    }
+
+    #[test]
+    fn fact_text_segments_handles_single_and_empty() {
+        assert!(fact_text_segments("").is_empty());
+        assert!(fact_text_segments("no markers here").is_empty());
+        let one = fact_text_segments("[1] known: только один сегмент с точкой.");
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[&1], "[1] known: только один сегмент с точкой.");
+    }
 }
