@@ -116,7 +116,7 @@ _ROLL_DICE_TOOL = {"type": "function", "function": {
                              "enum": ["trivial", "easy", "moderate", "hard", "very_hard", "nearly_impossible", "custom"],
                              "description": "Human label for target_number. Prefer easy=10, moderate=15, hard=20 when improvising."},
         "modifier_note": {"type": "string",
-                          "description": "Only include when notation itself contains +N/-N, kh1, or kl1 from a real known modifier or advantage/disadvantage source, e.g. '+3 known Perception' or 'advantage from help'. For plain unmodified rolls like 1d20, omit this field entirely. Do not use for leverage, stakes, difficulty, or placeholder text."},
+                          "description": "Player-facing SHORT RUSSIAN phrase naming only the SOURCE of the modifier or advantage/disadvantage, WITHOUT the number (the UI prints the number itself). Only include when notation itself contains a real +N/-N, kh1, or kl1 from a known source, e.g. 'навык Внимательности', 'помощь союзника', 'выгодная позиция', 'преимущество от засады', 'помеха из-за темноты'. For plain unmodified rolls like 1d20, omit this field entirely. Do not use for leverage, stakes, difficulty, or placeholder text."},
         "stakes": {"type": "object", "properties": {
             "intent": {"type": "string",
                        "description": "Short English pre-roll goal the player is trying to achieve."},

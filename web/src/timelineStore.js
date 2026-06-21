@@ -151,6 +151,7 @@ export function createTimeline() {
         type: "npc",
         sid,
         name: a,
+        npc_id: d?.npc_id,
         speech: "",
         typing: true,
         revealed: false,

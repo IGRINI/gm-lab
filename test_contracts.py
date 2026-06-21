@@ -289,7 +289,7 @@ assert "when a textual list is useful, keep it to 2-4 concrete" in gm_system
 assert "When consolidating leads" in gm_system
 assert "never\n  call one NPC statement proven truth" in gm_system
 assert "It is allowed to summarize the current case state" in gm_system
-assert "Use Markdown actively" in gm_system
+assert "Emphasis is the exception" in gm_system
 assert "Russian, immersive, sensory" in gm_system
 assert "terse status update" in gm_system
 assert "immediate visible result" in gm_system
@@ -372,8 +372,8 @@ assert "does not grant you\n  hidden author knowledge" in npc_system
 assert "does NOT make you unbreakable" in npc_system
 assert "believable ladder" in npc_system
 assert "`speech` is only the exact words" in npc_system
-assert "`speech` may use lightweight Markdown" in npc_system
-assert "Values inside JSON may use lightweight Markdown" in npc_system
+assert "`speech` may rarely use lightweight Markdown" in npc_system
+assert "Values inside JSON are plain prose by default" in npc_system
 assert "`claims` are true internal facts" in npc_system
 assert "Do not put hidden motives" in npc_system
 assert "follow\n  the CURRENT NPC CARD" in npc_system

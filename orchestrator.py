@@ -25,6 +25,23 @@ def ev(kind, agent, data=None, sid=None):
     return {"kind": kind, "agent": agent, "data": data, "sid": sid}
 
 
+def _player_facing_payload(world, payload):
+    """Copy of an NPC tool payload with its display `name` swapped to the
+    player-facing label. The original payload (true `name`) still feeds the
+    GM-facing tool result; only the streamed event shows what the player knows."""
+    if not isinstance(payload, dict):
+        return payload
+    npc_id = payload.get("npc_id")
+    if not npc_id:
+        return payload
+    label = world.npc_player_label(npc_id)
+    if not label or label == payload.get("name"):
+        return payload
+    out = dict(payload)
+    out["name"] = label
+    return out
+
+
 _OMIT = object()
 
 
@@ -2856,6 +2873,7 @@ def _drive(session: Session, player_text: str, metas: list):
         calls = _normalize_tool_calls(calls, world, id_prefix=f"gm_{sid}")
         assistant_msg = _assistant_with_tool_calls(assistant_msg, calls)
         prelude_text = content.strip()
+        prelude_generated = False
         if (
             not prelude_text
             and not turn_visible_output_seen
@@ -2865,14 +2883,19 @@ def _drive(session: Session, player_text: str, metas: list):
                 session, world, player_text, calls, metas, stream_gm_content
             )
             if prelude_text:
+                prelude_generated = True
                 assistant_msg = dict(assistant_msg)
                 assistant_msg["content"] = prelude_text
 
         session.gm_messages.append(assistant_msg)   # каноничный echo в историю
         if prelude_text:
-            if content_deltas and not stream_gm_content:
-                yield ev("delta", "ГМ", {"channel": "gm_narration", "text": prelude_text}, sid)
-            yield ev("gm_narration", "ГМ", prelude_text, sid)
+            # A generated prelude already streamed AND finalized its own narration row
+            # (under its own sid). Re-emitting here would create a second identical row.
+            # Only inline content (streamed under THIS sid) needs finalizing here.
+            if not prelude_generated:
+                if content_deltas and not stream_gm_content:
+                    yield ev("delta", "ГМ", {"channel": "gm_narration", "text": prelude_text}, sid)
+                yield ev("gm_narration", "ГМ", prelude_text, sid)
             turn_visible_output_seen = True
 
         terminal_after_tools = False
@@ -2958,7 +2981,13 @@ def _generate_pre_tool_prelude(
     if thinking.strip():
         yield ev("gm_thinking", "ГМ", thinking.strip(), sid)
     metas.append(_meta("ГМ — прелюдия", stats, scope="gm"))
-    return content.strip()
+    final_text = content.strip()
+    if final_text:
+        # Finalize under the SAME sid the deltas streamed on: live, this replaces the
+        # streamed text in place (one row); on reload — which skips deltas — it renders
+        # this prelude exactly once. The caller must NOT re-emit it under another sid.
+        yield ev("gm_narration", "ГМ", final_text, sid)
+    return final_text
 
 
 def _run_tool(session: Session, name: str, args: dict, metas: list):
@@ -3004,6 +3033,12 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
             target_kind=args.get("target_kind", ""),
             roll_kind=args.get("roll_kind", ""),
         )
+        # Carry the GM's player-facing modifier/advantage reason onto the roll payload so
+        # the UI can show "+N от: <причина>" next to the die. _model_roll_text whitelists
+        # fields, so this never reaches the model.
+        note = str(args.get("modifier_note") or "").strip()
+        if note and note.lower() != "none/unknown":
+            payload["modifier_note"] = note
         detail = str(payload.get("detail", ""))
         # Stream the full structured roll (faces, kept dice, modifier, grade) so the
         # UI can animate real dice; the text `detail` stays available on payload for
@@ -3119,7 +3154,7 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
                 npc_id=args.get("npc_id", ""),
                 code="unknown_npc",
             )
-        yield ev("npc_whereabouts", "ГМ", payload)
+        yield ev("npc_whereabouts", "ГМ", _player_facing_payload(world, payload))
         return _tool_result(
             _json_compact(payload),
             _model_whereabouts_text(payload),
@@ -3144,7 +3179,7 @@ def _run_tool(session: Session, name: str, args: dict, metas: list):
                 npc_id=args.get("npc_id", ""),
                 code="unknown_npc",
             )
-        yield ev("scene_update", "ГМ", payload)
+        yield ev("scene_update", "ГМ", _player_facing_payload(world, payload))
         return _tool_result(
             _json_compact(payload),
             _model_presence_text(payload),
@@ -3237,7 +3272,10 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
     player_event = session.record_player_for(npc.npc_id)
     exchange_witnesses = frozenset(player_event.witnesses)
     sid = session.next_sid()
-    yield ev("npc_start", npc.name, None, sid)
+    # The speaker card is player-facing: show the name the player currently knows
+    # (public_label until the GM records `known_name`), not the NPC's true name.
+    npc_label = world.npc_player_label(npc.npc_id)
+    yield ev("npc_start", npc_label, {"npc_id": npc.npc_id}, sid)
 
     observations = session.observations(npc.npc_id)
     commitments = session.commit_text(npc.npc_id)
@@ -3281,7 +3319,7 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
             if val is not None:
                 disp = json_unescape(val)
                 if len(disp) > emitted:
-                    yield ev("delta", npc.name,
+                    yield ev("delta", npc_label,
                              {"channel": "npc_speech", "text": disp[emitted:]}, sid)
                     emitted = len(disp)
     except StopIteration as e:
@@ -3300,8 +3338,9 @@ def _ask_npc(session: Session, npc_id: str, situation: str,
         )
 
     yield ev("npc_thinking", npc.name, out["reasoning"], sid)
-    yield ev("npc_speech", npc.name,
-             {"speech": out["speech"], "action": out["action"], "claims": out["claims"]}, sid)
+    yield ev("npc_speech", npc_label,
+             {"speech": out["speech"], "action": out["action"], "claims": out["claims"],
+              "npc_id": npc.npc_id}, sid)
     m = _meta(npc.name, stats, scope="npc")
     if metas is not None:
         metas.append(m)

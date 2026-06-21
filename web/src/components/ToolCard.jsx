@@ -428,11 +428,6 @@ function toolView(name, args, statusLabels) {
                 <TextBlock>{args.reason}</TextBlock>
               </Field>
             )}
-            {nonEmpty(args.modifier_note) && args.modifier_note !== "none/unknown" && (
-              <Field label="Модификатор">
-                <MarkdownInline>{args.modifier_note}</MarkdownInline>
-              </Field>
-            )}
           </>
         ),
       };
@@ -630,15 +625,79 @@ function toolView(name, args, statusLabels) {
   }
 }
 
+// Player-friendly minutes → "1 дн 2 ч 30 мин" (compact, no zero parts).
+function prettyElapsed(minutes) {
+  const m = Math.max(0, Math.round(Number(minutes) || 0));
+  if (m === 0) return "меньше минуты";
+  const days = Math.floor(m / 1440);
+  const hours = Math.floor((m % 1440) / 60);
+  const mins = m % 60;
+  const parts = [];
+  if (days) parts.push(days + " дн");
+  if (hours) parts.push(hours + " ч");
+  if (mins) parts.push(mins + " мин");
+  return parts.join(" ");
+}
+
+// Compact, player-facing time advance (used when tool internals are hidden).
+function PlayerTimeCard({ payload }) {
+  const p = payload || {};
+  const current = p.current && typeof p.current === "object" ? p.current : {};
+  const now = [current.current_date_label, current.time_of_day].filter(nonEmpty).join(" · ");
+  return (
+    <div className="play-card time" style={{ "--tc": "var(--md-em)" }}>
+      <span className="play-ico" aria-hidden="true">⏳</span>
+      <span className="play-main">
+        <b>Прошло {prettyElapsed(p.elapsed_minutes)}</b>
+        {nonEmpty(now) && <span className="play-sub">{now}</span>}
+      </span>
+    </div>
+  );
+}
+
+// Compact, player-facing character-sheet update.
+function PlayerSheetCard({ payload }) {
+  const p = payload || {};
+  const updated = Array.isArray(p.updated) ? p.updated : [];
+  return (
+    <div className="play-card sheet" style={{ "--tc": "var(--player)" }}>
+      <span className="play-ico" aria-hidden="true">🛡</span>
+      <span className="play-main">
+        <b>Лист персонажа обновлён</b>
+        {updated.length > 0 && <span className="play-sub">{updated.join(", ")}</span>}
+      </span>
+    </div>
+  );
+}
+
 // `result` is the tool's outcome payload (attached by the timeline once it arrives),
 // rendered under the request inside the SAME card so call+result read as one unit.
-// roll_dice gets the animated dice; everything else reuses the result-card body.
-export default function ToolCard({ name, args = {}, result, resultLive, rollId }) {
+// `mode` controls how much is shown:
+//   'full'   — request + raw JSON + result (developer view)
+//   'result' — header + result only (no request, no raw call JSON)
+//   'player' — compact, player-facing result (dice / time / sheet)
+export default function ToolCard({ name, args = {}, result, resultLive, rollId, mode = "full" }) {
   const statusLabels = useContext(StatusLabelsContext);
   const view = toolView(name, args || {}, statusLabels);
   const hasResult = result != null;
   const isDice = name === "roll_dice" && hasResult;
   const accent = isDice ? gradeAccent(result.grade) : view.accent;
+
+  if (mode === "player") {
+    if (!hasResult) return null;
+    if (name === "roll_dice") {
+      return (
+        <div className="tool-card play-dice" style={{ "--tc": gradeAccent(result.grade) }}>
+          <DiceBody roll={result} animate={resultLive} rollId={rollId} />
+        </div>
+      );
+    }
+    if (name === "advance_time") return <PlayerTimeCard payload={result} />;
+    if (name === "update_player_character") return <PlayerSheetCard payload={result} />;
+    return null;
+  }
+
+  const showCall = mode === "full"; // request body + raw JSON spoilers (developer only)
   return (
     <div className={"tool-card" + (hasResult ? " has-result" : "")} style={{ "--tc": accent }}>
       <div className="tc-hd">
@@ -650,10 +709,12 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId }
           {name}
         </Tooltip>
       </div>
-      <div className="tc-body">{view.body}</div>
-      <Spoiler label="сырой вызов (JSON)">
-        <MarkdownText>{"```json\n" + JSON.stringify(args, null, 2) + "\n```"}</MarkdownText>
-      </Spoiler>
+      {showCall && <div className="tc-body">{view.body}</div>}
+      {showCall && (
+        <Spoiler label="сырой вызов (JSON)">
+          <MarkdownText>{"```json\n" + JSON.stringify(args, null, 2) + "\n```"}</MarkdownText>
+        </Spoiler>
+      )}
       {hasResult && (
         <div className="tc-result-sec">
           <div className="tc-result-divider">результат</div>
@@ -662,9 +723,11 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId }
           ) : (
             <>
               <div className="tc-body"><ToolResultBody name={name} payload={result} /></div>
-              <Spoiler label="сырой результат (JSON)">
-                <MarkdownText>{"```json\n" + JSON.stringify(result, null, 2) + "\n```"}</MarkdownText>
-              </Spoiler>
+              {showCall && (
+                <Spoiler label="сырой результат (JSON)">
+                  <MarkdownText>{"```json\n" + JSON.stringify(result, null, 2) + "\n```"}</MarkdownText>
+                </Spoiler>
+              )}
             </>
           )}
         </div>

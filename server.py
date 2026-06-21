@@ -18,10 +18,18 @@ DB:   $env:GM_DIALOG_DB="E:\\path\\gm_lab_dialogs.sqlite3"; python server.py
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
+import socket
+import ssl
+import subprocess
+import urllib.request
+import wave
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import config
@@ -41,6 +49,105 @@ DIALOG_DB = os.environ.get("GM_DIALOG_DB", os.path.join(HERE, "gm_lab_dialogs.sq
 
 CHAT_SCOPE_ID = (os.environ.get("GM_CHAT_SCOPE_ID") or "shared").strip() or "shared"
 REPLAY_SKIP_KINDS = {"delta"}
+
+# faster-qwen3 TTS micro-service (hf_models/faster-qwen3-tts/tts_server.py).
+TTS_URL = (os.environ.get("GM_TTS_URL") or "http://127.0.0.1:8765").rstrip("/")
+
+
+def _npc_voice(dialog: DialogRuntime, npc_id: str) -> str:
+    """Map an NPC to a TTS voice by grammatical gender (pronouns M/F)."""
+    try:
+        npc = dialog.session.world.npcs.get(npc_id)
+        pronouns = (getattr(npc, "pronouns", "") or "").strip().upper()
+    except Exception:
+        pronouns = ""
+    if pronouns.startswith("F") or "ЖЕН" in pronouns:
+        return "female"
+    if pronouns.startswith("M") or "МУЖ" in pronouns:
+        return "male"
+    return "male"  # default character voice for N/PL/unknown
+
+
+def _tts_synth(text: str, voice: str) -> bytes:
+    """Proxy a synthesis request to the TTS micro-service; returns WAV bytes."""
+    body = json.dumps({"text": text, "voice": voice}).encode("utf-8")
+    req = urllib.request.Request(
+        TTS_URL + "/speak", data=body, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return resp.read()
+
+
+# On-disk cache of compressed TTS clips, keyed by (voice, exact text).
+TTS_CACHE_DIR = os.environ.get("GM_TTS_CACHE_DIR") or os.path.join(HERE, "tts_cache")
+TTS_FORMAT = (os.environ.get("GM_TTS_FORMAT") or "ogg").strip().lower()  # ogg | mp3 | wav
+# format -> (ext, content-type, ffmpeg encode args or None to keep WAV)
+_TTS_FMT = {
+    "ogg": ("ogg", "audio/ogg", ["-c:a", "libopus", "-b:a", "32k", "-ac", "1", "-f", "ogg"]),
+    "mp3": ("mp3", "audio/mpeg", ["-c:a", "libmp3lame", "-b:a", "56k", "-ac", "1", "-f", "mp3"]),
+    "wav": ("wav", "audio/wav", None),
+}
+
+
+def _tts_cache_path(voice: str, text: str, ext: str) -> str:
+    key = hashlib.sha1(f"{voice}\n{text}".encode("utf-8")).hexdigest()
+    return os.path.join(TTS_CACHE_DIR, f"{key}.{ext}")
+
+
+def _tts_cache_lookup(voice: str, text: str):
+    """Return (bytes, content_type) for a cached clip, or (None, None)."""
+    fmt = TTS_FORMAT if TTS_FORMAT in _TTS_FMT else "ogg"
+    for ext, ctype in [(_TTS_FMT[fmt][0], _TTS_FMT[fmt][1]), ("wav", "audio/wav")]:
+        p = _tts_cache_path(voice, text, ext)
+        try:
+            if os.path.getsize(p) > 0:
+                with open(p, "rb") as f:
+                    return f.read(), ctype
+        except OSError:
+            continue
+    return None, None
+
+
+def _compress_audio(wav_bytes: bytes):
+    """Compress WAV -> configured format via ffmpeg. Returns (bytes, ctype, ext).
+    Falls back to the raw WAV if ffmpeg is unavailable or fails."""
+    fmt = TTS_FORMAT if TTS_FORMAT in _TTS_FMT else "ogg"
+    ext, ctype, args = _TTS_FMT[fmt]
+    if args is None:
+        return wav_bytes, "audio/wav", "wav"
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "wav", "-i", "pipe:0",
+             *args, "pipe:1"],
+            input=wav_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout, ctype, ext
+    except Exception:
+        pass
+    return wav_bytes, "audio/wav", "wav"
+
+
+def _tts_cache_store(voice: str, text: str, audio: bytes, ext: str) -> None:
+    try:
+        os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+        path = _tts_cache_path(voice, text, ext)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(audio)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # caching is best-effort
+
+
+def _pcm_to_wav(pcm: bytes, sr: int) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm)
+    return buf.getvalue()
 
 dialog_store = DialogStore(DIALOG_DB, make_client)
 MIGRATED_CHAT_COUNT = 0
@@ -321,7 +428,60 @@ def debug_data(dialog: DialogRuntime) -> dict:
     }
 
 
+# Player-facing events that carry an NPC's display name. The stored transcript may
+# hold an NPC's true name (e.g. legacy rows, or a name recorded before it was known);
+# on replay we resolve every such name to the label the player currently knows, so the
+# UI and the entity registry agree (which is what makes the hover highlight/tooltip work).
+_NPC_AGENT_KINDS = {"npc_start", "npc_speech", "gm_reject"}
+_NPC_DATA_NAME_KINDS = {"scene_update", "npc_whereabouts"}
+
+
+def _npc_label_maps(world):
+    """(by_id, by_name): npc_id -> current player label, and any known display name
+    (true name / public_label / current label, lowercased) -> npc_id for legacy rows."""
+    by_id: dict[str, str] = {}
+    by_name: dict[str, str] = {}
+    npcs = getattr(world, "npcs", {}) or {}
+    for npc_id in npcs:
+        label = world.npc_player_label(npc_id)
+        if label:
+            by_id[npc_id] = label
+        npc = npcs[npc_id]
+        for raw in (getattr(npc, "name", ""), getattr(npc, "public_label", ""), label):
+            key = str(raw or "").strip().lower()
+            if key:
+                by_name.setdefault(key, npc_id)
+    return by_id, by_name
+
+
+def _sanitize_player_name(event: dict, by_id: dict, by_name: dict) -> dict:
+    kind = event.get("kind")
+    if kind in _NPC_AGENT_KINDS:
+        data = event.get("data")
+        npc_id = data.get("npc_id") if isinstance(data, dict) else None
+        if not npc_id:
+            npc_id = by_name.get(str(event.get("agent") or "").strip().lower())
+        label = by_id.get(npc_id) if npc_id else None
+        if label and label != event.get("agent"):
+            event = dict(event)
+            event["agent"] = label
+        return event
+    if kind in _NPC_DATA_NAME_KINDS:
+        data = event.get("data")
+        if isinstance(data, dict):
+            npc_id = data.get("npc_id") or by_name.get(str(data.get("name") or "").strip().lower())
+            label = by_id.get(npc_id) if npc_id else None
+            if label and label != data.get("name"):
+                event = dict(event)
+                event["data"] = dict(data)
+                event["data"]["name"] = label
+        return event
+    return event
+
+
 def replay_events(dialog: DialogRuntime) -> list[dict]:
+    world = getattr(dialog.session, "world", None)
+    by_id, by_name = _npc_label_maps(world) if world is not None else ({}, {})
     events = []
     for row in dialog.transcript:
         event = row.get("event") if isinstance(row, dict) else None
@@ -329,7 +489,7 @@ def replay_events(dialog: DialogRuntime) -> list[dict]:
             continue
         if event.get("kind") in REPLAY_SKIP_KINDS:
             continue
-        events.append(event)
+        events.append(_sanitize_player_name(event, by_id, by_name))
     return events
 
 
@@ -423,9 +583,54 @@ def _find_model(models: list[dict], model_id: str) -> dict | None:
     return None
 
 
+class _SniffingHTTPSServer(ThreadingHTTPServer):
+    """HTTPS server that also tolerates a plaintext HTTP request on the same
+    port: it peeks the first byte, wraps TLS handshakes in SSL, and leaves
+    plaintext raw so the handler can 308-redirect http://host:port to https://.
+    Without this, hitting the TLS port over http (a very easy phone mistake)
+    just resets the connection (ERR_CONNECTION_RESET)."""
+
+    daemon_threads = True
+    ssl_ctx: "ssl.SSLContext | None" = None
+    is_tls_port = True
+
+    def get_request(self):
+        conn, addr = self.socket.accept()
+        head = b""
+        try:
+            conn.settimeout(8)
+            head = conn.recv(1, socket.MSG_PEEK)
+            conn.settimeout(None)
+        except OSError:
+            try:
+                conn.settimeout(None)
+            except OSError:
+                pass
+        if head[:1] == b"\x16" and self.ssl_ctx is not None:  # TLS ClientHello
+            try:
+                conn = self.ssl_ctx.wrap_socket(conn, server_side=True)
+            except OSError:
+                pass
+        # Non-TLS bytes are left as a raw socket; the handler redirects to https.
+        return conn, addr
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def _redirect_to_https_if_plaintext(self) -> bool:
+        # On the HTTPS port, a plaintext request (user opened http://host:8443)
+        # arrives on a raw (non-SSL) socket — bounce it to https on the same host.
+        if getattr(self.server, "is_tls_port", False) and not isinstance(self.connection, ssl.SSLSocket):
+            host = self.headers.get("Host")
+            if host:
+                self.send_response(308)
+                self.send_header("Location", f"https://{host}{self.path}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return True
+        return False
 
     def _chat_scope_id(self) -> str:
         return CHAT_SCOPE_ID
@@ -451,6 +656,45 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
+
+    def _proxy_tts_stream(self, text: str, voice: str) -> None:
+        """Stream PCM from the TTS service to the browser head-first, then cache
+        the compressed clip once the full stream completes."""
+        body = json.dumps({"text": text, "voice": voice}).encode("utf-8")
+        req = urllib.request.Request(
+            TTS_URL + "/speak_stream", data=body, headers={"Content-Type": "application/json"}
+        )
+        up = urllib.request.urlopen(req, timeout=120)   # raises before headers if TTS down
+        sr = int(up.headers.get("X-Sample-Rate") or 24000)
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/pcm")
+        self.send_header("X-Sample-Rate", str(sr))
+        self.send_header("X-TTS-Voice", voice)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        pcm = bytearray()
+        client_ok, completed = True, False
+        try:
+            while True:
+                chunk = up.read(16384)
+                if not chunk:
+                    completed = True
+                    break
+                pcm += chunk
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except (OSError, BrokenPipeError):
+                    client_ok = False
+                    break  # client gone -> stop pulling from the model
+        finally:
+            up.close()
+        if completed and client_ok and pcm:   # cache only a full clip
+            try:
+                audio, _ctype, ext = _compress_audio(_pcm_to_wav(bytes(pcm), sr))
+                _tts_cache_store(voice, text, audio, ext)
+            except Exception:
+                pass
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -482,6 +726,8 @@ class Handler(BaseHTTPRequestHandler):
             })
 
     def do_GET(self):
+        if self._redirect_to_https_if_plaintext():
+            return
         path = urlparse(self.path).path
         if path == "/" or path.startswith("/index"):
             self._dialog()
@@ -588,6 +834,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if self._redirect_to_https_if_plaintext():
+            return
         path = urlparse(self.path).path
 
         if path == "/chats":
@@ -969,6 +1217,47 @@ class Handler(BaseHTTPRequestHandler):
             self._json(response)
             return
 
+        if path == "/tts":
+            data = self._body()
+            text = (data.get("text") or "").strip()
+            if not text:
+                self._json({"ok": False, "error": "empty text"}, 400)
+                return
+            voice = (data.get("voice") or "").strip().lower()
+            if voice not in ("gm", "male", "female"):
+                role = (data.get("role") or "").strip().lower()
+                npc_id = (data.get("npc_id") or "").strip()
+                if role == "gm" or not npc_id:
+                    voice = "gm"
+                else:
+                    voice = _npc_voice(self._dialog(), npc_id)
+            audio, ctype = _tts_cache_lookup(voice, text)   # disk cache hit -> no GPU
+            if audio is None and bool(data.get("stream")):
+                # cache miss + streaming requested -> head-first PCM, cache after
+                try:
+                    self._proxy_tts_stream(text, voice)
+                except Exception as ex:
+                    try:
+                        self._json({"ok": False, "error": f"TTS-сервис недоступен: {ex}"}, 503)
+                    except Exception:
+                        pass
+                return
+            if audio is None:
+                try:
+                    wav = _tts_synth(text, voice)
+                except Exception as ex:
+                    self._json({"ok": False, "error": f"TTS-сервис недоступен: {ex}"}, 503)
+                    return
+                audio, ctype, ext = _compress_audio(wav)
+                _tts_cache_store(voice, text, audio, ext)
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(audio)))
+            self.send_header("X-TTS-Voice", voice)
+            self.end_headers()
+            self._write_body(audio)
+            return
+
         if path == "/turn":
             text = (self._body().get("text") or "").strip()
             self.send_response(200)
@@ -1013,11 +1302,56 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global MIGRATED_CHAT_COUNT
     MIGRATED_CHAT_COUNT = dialog_store.merge_all_chats_into_scope(CHAT_SCOPE_ID)
+    # Main app server is ALWAYS plain HTTP on PORT — http://localhost:PORT keeps
+    # working exactly as before (no surprises on desktop).
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     shown_host = "localhost" if HOST in ("", "0.0.0.0") else HOST
     url = f"http://{shown_host}:{PORT}"
     model = _default_model()
     print(f"GM-Lab веб-интерфейс: {url}  (модель {model}, backend {config.BACKEND})")
+
+    # Phones/tablets need a secure context (https) for the mic. So OPTIONALLY run
+    # a SECOND listener over HTTPS on its own port — this never touches the http
+    # port above. Enable with GM_HTTPS=1 (auto self-signed cert) or by supplying
+    # GM_TLS_CERT/GM_TLS_KEY. Reach the phone via https://<LAN-IP>:<https-port>.
+    https_srv = None
+    cert_env = os.environ.get("GM_TLS_CERT", "").strip()
+    key_env = os.environ.get("GM_TLS_KEY", "").strip()
+    https_port = int(os.environ.get("GM_HTTPS_PORT", "8443"))
+    # Auto-enable HTTPS whenever the server is exposed on the LAN (GM_HOST=0.0.0.0),
+    # since that's exactly the phone/tablet case that needs a secure context for the
+    # mic. GM_HTTPS=1 forces it on; GM_HTTPS=0 forces it off.
+    https_flag = os.environ.get("GM_HTTPS")
+    lan_exposed = HOST in ("", "0.0.0.0")
+    want_https = (
+        https_flag == "1"
+        or bool(cert_env and key_env)
+        or (https_flag != "0" and lan_exposed)
+    )
+    if want_https:
+        try:
+            if cert_env and key_env:
+                certfile, keyfile = cert_env, key_env
+            else:
+                import tls_cert
+                certfile, keyfile = tls_cert.ensure_self_signed(Path(HERE) / ".tls")
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(certfile, keyfile)
+            https_srv = _SniffingHTTPSServer((HOST, https_port), Handler)
+            https_srv.ssl_ctx = ctx  # wrap per-connection; plaintext gets redirected
+            print(f"HTTPS (для микрофона на телефоне): https://{shown_host}:{https_port}")
+            if HOST in ("", "0.0.0.0"):
+                try:
+                    import tls_cert
+                    for ip in tls_cert.lan_ipv4():
+                        print(f"  с телефона/планшета: https://{ip}:{https_port}  (принять самоподписанный сертификат один раз)")
+                except Exception:
+                    pass
+            else:
+                print("  чтобы открыть с телефона — запусти с GM_HOST=0.0.0.0")
+        except Exception as exc:
+            print(f"HTTPS не запущен ({exc}); http выше работает как обычно")
+
     print(f"SQLite dialogs: {DIALOG_DB}")
     print(f"Shared chat scope: {CHAT_SCOPE_ID}")
     if MIGRATED_CHAT_COUNT:
@@ -1028,11 +1362,17 @@ def main():
             webbrowser.open(url)
         except Exception:
             pass
+
+    if https_srv is not None:
+        import threading
+        threading.Thread(target=https_srv.serve_forever, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nстоп")
         srv.shutdown()
+        if https_srv is not None:
+            https_srv.shutdown()
 
 
 if __name__ == "__main__":

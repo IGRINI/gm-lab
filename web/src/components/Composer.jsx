@@ -1,7 +1,9 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useContext } from "react";
 import Tooltip from "./Tooltip.jsx";
 import { fmtK } from "../util.js";
 import { transcribeAudio } from "../api.js";
+import { VisibilityContext } from "../devSettings.js";
+import { setAudioSessionType } from "../ttsStore.js";
 
 // Pick a MediaRecorder MIME the browser actually supports, preferring Opus.
 function pickRecorderMime() {
@@ -193,25 +195,49 @@ function ContextUsage({ context, modelWindow }) {
 
 function QuickReplies({ playerOptions, busy, onPick }) {
   const options = Array.isArray(playerOptions?.options) ? playerOptions.options : [];
+  const question = playerOptions?.question || "Что ты делаешь дальше?";
+  const [collapsed, setCollapsed] = useState(false);
+  // Re-expand automatically whenever a fresh batch of suggestions arrives.
+  const sig = options.map((o) => o.label).join("|") + "::" + question;
+  useEffect(() => {
+    setCollapsed(false);
+  }, [sig]);
   if (!options.length) return null;
   return (
-    <section className="quick-replies" aria-label="Варианты действий">
-      <div className="quick-replies-head">{playerOptions.question || "Что ты делаешь дальше?"}</div>
-      <div className="quick-replies-list">
-        {options.map((option, index) => (
-          <button
-            type="button"
-            className="quick-reply"
-            key={`${option.label}:${index}`}
-            disabled={busy}
-            title={option.message}
-            onClick={() => onPick(option.message)}
-          >
-            <span>{option.label}</span>
-            <small>{option.message}</small>
-          </button>
-        ))}
+    <section
+      className={"quick-replies" + (collapsed ? " collapsed" : "")}
+      aria-label="Варианты действий"
+    >
+      <div className="quick-replies-head">
+        <span className="quick-replies-q">{question}</span>
+        <button
+          type="button"
+          className="quick-replies-toggle"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Развернуть варианты" : "Свернуть варианты"}
+          title={collapsed ? "Развернуть" : "Свернуть"}
+        >
+          {collapsed ? "▴" : "▾"}
+        </button>
       </div>
+      {collapsed ? null : (
+        <div className="quick-replies-list">
+          {options.map((option, index) => (
+            <button
+              type="button"
+              className="quick-reply"
+              key={`${option.label}:${index}`}
+              disabled={busy}
+              title={option.message}
+              onClick={() => onPick(option.message)}
+            >
+              <span>{option.label}</span>
+              <small>{option.message}</small>
+            </button>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -228,6 +254,7 @@ export default function Composer({
   const [value, setValue] = useState("");
   const ref = useRef(null);
   const compact = useCompact();
+  const vis = useContext(VisibilityContext);
 
   // Auto-grow: reset to content height; CSS max-height caps it and switches to
   // an inner scroll once the limit is reached.
@@ -251,14 +278,23 @@ export default function Composer({
   const chunksRef = useRef([]);
   const blobRef = useRef(null); // last recording, kept so a failed transcription can be retried
   const attemptRef = useRef(0); // bumped to invalidate stale / cancelled transcriptions
-  const micSupported =
+  const micApi =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined";
+  // On an insecure origin (LAN http) browsers hide the mic API entirely. Still
+  // show the button so a tap can explain WHY (needs https), instead of the
+  // button silently vanishing on phones/tablets.
+  const insecureContext =
+    typeof window !== "undefined" && window.isSecureContext === false;
+  const micSupported = micApi || insecureContext;
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+    // Hand the iOS audio session back to playback so TTS returns to the
+    // loudspeaker instead of staying on the earpiece after recording.
+    setAudioSessionType("playback");
   }, []);
 
   useEffect(
@@ -315,7 +351,17 @@ export default function Composer({
   const startRecording = useCallback(async () => {
     if (recording || transcribing) return;
     setVoiceError("");
+    if (!micApi) {
+      setVoiceError(
+        insecureContext
+          ? "Голосовой ввод работает только по HTTPS. Открой приложение по https://<IP> (запусти сервер с GM_HTTPS=1)."
+          : "Этот браузер не поддерживает запись с микрофона."
+      );
+      return;
+    }
     try {
+      // Tell iOS this is a record session up front; stopStream() restores playback.
+      setAudioSessionType("play-and-record");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const mime = pickRecorderMime();
@@ -340,7 +386,7 @@ export default function Composer({
       setRecording(false);
       setVoiceError("Нет доступа к микрофону");
     }
-  }, [recording, transcribing, sendVoice, stopStream]);
+  }, [recording, transcribing, sendVoice, stopStream, micApi, insecureContext]);
 
   const stopRecording = useCallback(() => {
     const rec = recRef.current;
@@ -423,8 +469,8 @@ export default function Composer({
 
   return (
     <footer>
-      <div className="footer-main">
-        <ContextUsage context={contextUsage} modelWindow={modelWindow} />
+      <div className={"footer-main" + (vis.tokenCards ? "" : " no-usage")}>
+        {vis.tokenCards ? <ContextUsage context={contextUsage} modelWindow={modelWindow} /> : null}
         <div className="composer-zone">
           <QuickReplies playerOptions={playerOptions} busy={busy} onPick={sendQuickReply} />
           {showVoice ? (
@@ -489,7 +535,7 @@ export default function Composer({
             </div>
           </div>
         </div>
-        <RunUsage run={runUsage} />
+        {vis.tokenCards ? <RunUsage run={runUsage} /> : null}
       </div>
       <div id="status">{status ? <><span className="pulse" />{status}</> : null}</div>
     </footer>

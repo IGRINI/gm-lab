@@ -55,6 +55,8 @@ _DEFAULTS.update({
     "stream_gm_content": config.STREAM_GM_CONTENT,
     "parallel_tool_calls": config._env_bool("GM_PARALLEL_TOOL_CALLS", True),
     "gm_suggest_options": config._env_bool("GM_SUGGEST_OPTIONS", False),
+    "tts_enabled": config._env_bool("GM_TTS_ENABLED", False),
+    "tts_autoplay": config._env_bool("GM_TTS_AUTOPLAY", False),
     "max_tool_hops": 0,
     "max_output_tokens": int(config.MAX_TOKENS or 0),
 })
@@ -222,6 +224,11 @@ def stream_gm_content_enabled(settings: dict[str, Any] | None = None) -> bool:
     return bool(values.get("stream_gm_content", True))
 
 
+def tts_enabled(settings: dict[str, Any] | None = None) -> bool:
+    values = settings or get()
+    return bool(values.get("tts_enabled", False))
+
+
 def max_tool_hops(settings: dict[str, Any] | None = None) -> int:
     values = settings or get()
     try:
@@ -314,6 +321,12 @@ def _clean(data: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
 
     if "gm_suggest_options" in data:
         out["gm_suggest_options"] = _bool(data.get("gm_suggest_options"))
+
+    if "tts_enabled" in data:
+        out["tts_enabled"] = _bool(data.get("tts_enabled"))
+
+    if "tts_autoplay" in data:
+        out["tts_autoplay"] = _bool(data.get("tts_autoplay"))
 
     if "max_tool_hops" in data:
         try:

@@ -331,7 +331,7 @@ export function ToolResultBody({ name, payload = {} }) {
   return resultView(name, payload).body;
 }
 
-export default function ToolResultCard({ name, payload = {} }) {
+export default function ToolResultCard({ name, payload = {}, showRaw = true }) {
   const { icon, accent, title, body } = resultView(name, payload);
   return (
     <div className="tool-card result" style={{ "--tc": accent }}>
@@ -343,9 +343,11 @@ export default function ToolResultCard({ name, payload = {} }) {
         <span className="tc-result-tag">результат</span>
       </div>
       <div className="tc-body">{body}</div>
-      <Spoiler label="сырой результат (JSON)">
-        <MarkdownText>{"```json\n" + JSON.stringify(payload, null, 2) + "\n```"}</MarkdownText>
-      </Spoiler>
+      {showRaw && (
+        <Spoiler label="сырой результат (JSON)">
+          <MarkdownText>{"```json\n" + JSON.stringify(payload, null, 2) + "\n```"}</MarkdownText>
+        </Spoiler>
+      )}
     </div>
   );
 }

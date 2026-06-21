@@ -1,12 +1,22 @@
-import { useMemo, useState, useEffect, useCallback, useSyncExternalStore } from "react";
+import { useMemo, useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
 import { api, streamTurn } from "./api.js";
 import { createTimeline } from "./timelineStore.js";
+import {
+  ttsPrime,
+  ttsAutoEnqueue,
+  ttsAutoReset,
+  ttsUnlock,
+  gmSegments,
+  npcSegments,
+  genderVoice,
+} from "./ttsStore.js";
 import Header from "./components/Header.jsx";
 import Chat from "./components/Chat.jsx";
 import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
 import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
 import { normalizeEntities } from "./entityContext.js";
+import { useDevSettings, computeVisibility, VisibilityContext, isMessageVisible } from "./devSettings.js";
 
 const EMPTY_SRV = {
   backend: "",
@@ -175,6 +185,12 @@ function WorldHud({ time, scene, playerCharacter }) {
 export default function App() {
   const store = useMemo(createTimeline, []);
   const messages = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const dev = useDevSettings();
+  const visibility = useMemo(() => computeVisibility(dev), [dev]);
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => isMessageVisible(m, visibility)),
+    [messages, visibility]
+  );
 
   const [srv, setSrv] = useState(EMPTY_SRV);
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
@@ -208,6 +224,20 @@ export default function App() {
   const [storiesError, setStoriesError] = useState("");
   const [playerOptions, setPlayerOptions] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
+
+  // Auto-generate TTS as GM/NPC lines finalize, read live inside the stream closure.
+  const ttsEnabledRef = useRef(false);
+  useEffect(() => {
+    ttsEnabledRef.current = !!settings.tts_enabled;
+  }, [settings.tts_enabled]);
+  const ttsAutoplayRef = useRef(false);
+  useEffect(() => {
+    ttsAutoplayRef.current = !!settings.tts_autoplay;
+  }, [settings.tts_autoplay]);
+  const npcsRef = useRef([]); // roster, for voice resolution inside the stream closure
+  useEffect(() => {
+    npcsRef.current = srv.npcs || [];
+  }, [srv.npcs]);
 
   const setStateFromServer = useCallback((s) => {
     setSrv({
@@ -341,13 +371,35 @@ export default function App() {
 
   const sendTurn = useCallback(
     async (text) => {
+      ttsUnlock(); // unlock audio inside the send gesture so auto-play can sound
       store.beginTurn();
+      ttsAutoReset(); // each turn's auto-play chain starts fresh
       setPlayerOptions(null);
       setBusy(true);
       setStatus("ГМ думает…");
       try {
         await streamTurn(text, (ev) => {
           store.dispatch(ev);
+          const auto = ttsAutoplayRef.current;
+          if (auto || ttsEnabledRef.current) {
+            const emit = (key, segs) => (auto ? ttsAutoEnqueue(key, segs) : ttsPrime(key, segs));
+            if (ev.kind === "gm_narration" && typeof ev.data === "string" && ev.data.trim())
+              emit(`${ev.sid}:narration`, gmSegments(ev.data));
+            else if (ev.kind === "npc_speech" && ev.data?.speech) {
+              const npc = (npcsRef.current || []).find(
+                (n) => (ev.data.npc_id && n.id === ev.data.npc_id) || n.name === ev.agent
+              );
+              emit(
+                `${ev.sid}:npc`,
+                npcSegments({
+                  name: ev.agent,
+                  speech: ev.data.speech,
+                  action: ev.data.action,
+                  voice: genderVoice(npc?.pronouns ?? npc?.gender),
+                })
+              );
+            }
+          }
           if (ev.kind === "player_options") setPlayerOptions(normalizePlayerOptions(ev.data));
           if (ev.kind === "player") setPlayerOptions(null);
           if (ev.kind === "meta_total") {
@@ -598,6 +650,7 @@ export default function App() {
   const interactionBusy = busy || chatActionBusy;
 
   return (
+    <VisibilityContext.Provider value={visibility}>
     <div className="app">
       <Header
         onToggleChats={toggleChats}
@@ -632,10 +685,10 @@ export default function App() {
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
         />
-        <main className="chat-pane">
+        <main className={"chat-pane" + (playerOptions ? " has-options" : "")}>
           <Chat
             key={activeChatId || "active-chat"}
-            messages={messages}
+            messages={visibleMessages}
             scene={srv.scene}
             npcs={srv.npcs}
             entities={srv.entities}
@@ -652,11 +705,14 @@ export default function App() {
           />
         </main>
       </div>
-      <DebugPanel
-        open={debugOpen}
-        onOpenChange={setDebugOpen}
-        refreshKey={`${activeChatId}:${runUsage.turns}:${srv.model}:${srv.scene?.scene_id || ""}`}
-      />
+      {visibility.historyDebug && (
+        <DebugPanel
+          open={debugOpen}
+          onOpenChange={setDebugOpen}
+          refreshKey={`${activeChatId}:${runUsage.turns}:${srv.model}:${srv.scene?.scene_id || ""}`}
+        />
+      )}
     </div>
+    </VisibilityContext.Provider>
   );
 }

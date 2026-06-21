@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
 
 function modelLabel(m) {
   const base = m.name && m.name !== m.id ? `${m.name} · ${m.id}` : m.id;
@@ -131,12 +132,31 @@ function RoleReasoningFields({ role, draft, settingsOptions, currentModel, setRo
   );
 }
 
+function ToggleField({ label, hint, checked, onChange }) {
+  return (
+    <label className="field check-field toggle-field">
+      <span className="toggle-label">
+        {label}
+        {hint ? <small>{hint}</small> : null}
+      </span>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    </label>
+  );
+}
+
 function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClose }) {
   const [draft, setDraft] = useState(settings);
+  const dev = useDevSettings();
+  const [tab, setTab] = useState("model");
 
   useEffect(() => {
     setDraft(settings);
   }, [settings]);
+
+  // Leaving developer mode hides the debug-view tab; bounce off it if it's open.
+  useEffect(() => {
+    if (!dev.developerMode && tab === "debug") setTab("view");
+  }, [dev.developerMode, tab]);
 
   const set = (patch) => setDraft((prev) => ({ ...prev, ...patch }));
   const setRole = (role, patch) => {
@@ -151,16 +171,77 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
     onClose();
   };
 
+  const tabs = [
+    { id: "model", label: "Модель" },
+    { id: "view", label: "Интерфейс" },
+    ...(dev.developerMode ? [{ id: "debug", label: "Дебаг-вид" }] : []),
+  ];
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <form className="settings-modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>Настройки модели</h2>
+          <h2>Настройки</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть">
             x
           </button>
         </div>
 
+        <nav className="settings-tabs" role="tablist" aria-label="Разделы настроек">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.id}
+              className={"settings-tab-btn" + (tab === t.id ? " active" : "")}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
+        {tab === "view" && (
+          <section className="settings-section">
+            <h3>Режим разработчика</h3>
+            <p>
+              Выключен — чистый вид для игрока: без счётчиков токенов, вызовов
+              инструментов, мыслей ГМ и персонажей, операций с памятью мира и
+              панели дебага истории. Включи, чтобы видеть всю «кухню».
+            </p>
+            <ToggleField
+              label="Режим разработчика"
+              hint="По умолчанию выключен."
+              checked={dev.developerMode}
+              onChange={setDeveloperMode}
+            />
+            {dev.developerMode && (
+              <p className="settings-note">
+                Что именно показывать — на вкладке «Дебаг-вид». Переключатели применяются сразу.
+              </p>
+            )}
+          </section>
+        )}
+
+        {tab === "debug" && dev.developerMode && (
+          <section className="settings-section">
+            <h3>Что показывать</h3>
+            <p>Тонкая настройка видимости интерфейса. Изменения применяются в реальном времени.</p>
+            {FLAG_META.map((flag) => (
+              <ToggleField
+                key={flag.key}
+                label={flag.label}
+                hint={flag.hint}
+                checked={dev.flags[flag.key] !== false}
+                onChange={(on) => setFlag(flag.key, on)}
+              />
+            ))}
+          </section>
+        )}
+
+        {tab === "model" && (
+        <>
         {ROLE_CONFIG.map((role) => (
           <section className="settings-section" key={role.key}>
             <h3>{role.title}</h3>
@@ -230,6 +311,24 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
           />
         </label>
 
+        <label className="field check-field">
+          <span>Озвучка реплик (TTS)</span>
+          <input
+            type="checkbox"
+            checked={!!draft.tts_enabled}
+            onChange={(e) => set({ tts_enabled: e.target.checked })}
+          />
+        </label>
+
+        <label className="field check-field">
+          <span>Автовоспроизведение озвучки (по очереди)</span>
+          <input
+            type="checkbox"
+            checked={!!draft.tts_autoplay}
+            onChange={(e) => set({ tts_autoplay: e.target.checked })}
+          />
+        </label>
+
         <label className="field">
           <span>Лимит tool-hop</span>
           <input
@@ -255,10 +354,14 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
           />
         </label>
         </section>
+        </>
+        )}
 
         <div className="modal-actions">
-          <button type="button" className="btn" onClick={onClose}>Отмена</button>
-          <button type="submit" className="btn primary">Сохранить</button>
+          <button type="button" className="btn" onClick={onClose}>
+            {tab === "model" ? "Отмена" : "Закрыть"}
+          </button>
+          {tab === "model" && <button type="submit" className="btn primary">Сохранить</button>}
         </div>
       </form>
     </div>

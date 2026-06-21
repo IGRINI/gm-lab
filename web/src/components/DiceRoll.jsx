@@ -31,16 +31,17 @@ function cubeFacePips(pts, value) {
 }
 
 // Full grade ladder from world._grade_from_margin (+ attack crits, ungraded, invalid).
+// A clear best→worst spectrum, so the badge reads as a graded outcome, not a binary.
 const GRADE = {
-  overwhelming_success: { label: "разгромный успех", cls: "crit-ok" },
-  critical_success: { label: "крит. успех", cls: "crit-ok" },
+  overwhelming_success: { label: "сокрушительный успех", cls: "crit-ok" },
+  critical_success: { label: "критический успех", cls: "crit-ok" },
   strong_success: { label: "уверенный успех", cls: "ok" },
   success: { label: "успех", cls: "ok" },
-  near_miss: { label: "почти удалось", cls: "fail" },
-  weak_failure: { label: "слабый провал", cls: "fail" },
+  near_miss: { label: "почти получилось", cls: "fail" },
+  weak_failure: { label: "лёгкая неудача", cls: "fail" },
   failure: { label: "провал", cls: "fail" },
-  major_failure: { label: "серьёзный провал", cls: "fail" },
-  critical_failure: { label: "крит. провал", cls: "crit-fail" },
+  major_failure: { label: "тяжёлый провал", cls: "fail" },
+  critical_failure: { label: "критический провал", cls: "crit-fail" },
   ungraded: { label: "", cls: "neutral" },
   invalid: { label: "неверная формула", cls: "fail" },
 };
@@ -409,6 +410,19 @@ export function DiceBody({ roll, animate = true, rollId }) {
   const formula =
     kept.join(" + ") + (mod ? ` ${mod > 0 ? "+" : "−"} ${Math.abs(mod)}` : "") + ` = ${r.total}`;
 
+  // GM-supplied reason for a modifier / advantage, shown beside the die as
+  // "+N от: <причина>". keep "kh"/"kl" carries advantage/disadvantage with no number.
+  const keep = String(r.keep || "");
+  const note = typeof r.modifier_note === "string" ? r.modifier_note.trim() : "";
+  const modAmt = mod
+    ? `${mod > 0 ? "+" : "−"}${Math.abs(mod)}`
+    : keep.startsWith("kh")
+    ? "преимущество"
+    : keep.startsWith("kl")
+    ? "помеха"
+    : "";
+  const negativeMod = mod < 0 || keep.startsWith("kl");
+
   return (
     <div className={"dice-body " + grade.cls}>
       <div className="dice-stage">
@@ -424,6 +438,12 @@ export function DiceBody({ roll, animate = true, rollId }) {
             animate={animate}
           />
         ))}
+        {note && (
+          <div className={"dice-modnote" + (negativeMod ? " neg" : "")}>
+            {modAmt && <b className="dice-modnote-amt">{modAmt}</b>}
+            <span className="dice-modnote-reason">{modAmt ? " от: " : ""}{note}</span>
+          </div>
+        )}
       </div>
 
       <div className="dice-readout">

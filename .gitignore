@@ -4,6 +4,9 @@
 !.env.example
 gm_lab_settings.json
 
+# Self-signed TLS cert/key for HTTPS LAN serving (machine-local)
+.tls/
+
 # Python bytecode, caches, and local environments
 __pycache__/
 *.py[cod]
@@ -35,6 +38,9 @@ pip-wheel-metadata/
 *.log
 logs/
 scene_trial_last.json
+
+# Cached TTS audio clips
+tts_cache/
 
 # Local Hugging Face model weights and runtime checkouts
 hf_models/

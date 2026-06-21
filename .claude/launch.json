@@ -7,6 +7,12 @@
       "runtimeArgs": ["mock_server.py"],
       "autoPort": true,
       "port": 8000
+    },
+    {
+      "name": "ai-rpg-docs",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8099", "--directory", "docs/ai-rpg-compare"],
+      "port": 8099
     }
   ]
 }
