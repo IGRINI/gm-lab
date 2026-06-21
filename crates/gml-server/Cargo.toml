@@ -1,0 +1,19 @@
+[package]
+name = "gml-server"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gml-types = { path = "../gml-types" }
+gml-config = { path = "../gml-config" }
+gml-prompts = { path = "../gml-prompts" }
+gml-world = { path = "../gml-world" }
+gml-stories = { path = "../gml-stories" }
+gml-rag = { path = "../gml-rag" }
+gml-llm = { path = "../gml-llm" }
+gml-codex = { path = "../gml-codex" }
+gml-agents = { path = "../gml-agents" }
+gml-orchestrator = { path = "../gml-orchestrator" }
+gml-persistence = { path = "../gml-persistence" }
+gml-audio = { path = "../gml-audio" }

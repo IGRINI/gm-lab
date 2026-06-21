@@ -1,0 +1,9 @@
+[package]
+name = "gml-stories"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gml-types = { path = "../gml-types" }
+gml-world = { path = "../gml-world" }

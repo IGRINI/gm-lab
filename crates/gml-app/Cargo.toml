@@ -1,0 +1,10 @@
+[package]
+name = "gml-app"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gml-server = { path = "../gml-server" }
+gml-audio = { path = "../gml-audio" }
+gml-config = { path = "../gml-config" }

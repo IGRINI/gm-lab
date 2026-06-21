@@ -1,0 +1,23 @@
+{
+  "name": "gm-lab-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "GM-Lab frontend — React 19 + react-virtuoso, builds to a single inlined index.html served by server.py",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@floating-ui/dom": "^1.7.6",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-virtuoso": "^4.18.7"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.2",
+    "vite": "^8.0.16",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}

@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Node / Vite frontend
+web/node_modules/
+web/dist/
+.vite/
+
+# Local secrets / runtime state (mirror of the Python project)
+.env
+.env.*
+!.env.example
+gm_lab_settings.json
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+.tls/
+tts_cache/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# Tauri build output
+crates/gml-app/gen/

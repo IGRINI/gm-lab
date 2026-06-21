@@ -1,0 +1,91 @@
+[
+  {
+    "record": {
+      "record_id": "r1",
+      "kind": "public",
+      "text": "Городские ворота открыты на рассвете.",
+      "scope": "public",
+      "active": true,
+      "owner": "",
+      "subject": "",
+      "source": "",
+      "status": "known",
+      "tags": [
+        "город",
+        "ворота"
+      ],
+      "entity_id": "",
+      "source_npc": "",
+      "participants": [],
+      "location_id": "",
+      "location_name": "",
+      "region_id": "",
+      "region_name": "",
+      "scene_id": "",
+      "importance": "",
+      "aliases": [],
+      "metadata": {}
+    },
+    "hash": "f744c965a42254047c18d67d2bf1b00c581836305c47c2f9d3d816f95fed2adf"
+  },
+  {
+    "record": {
+      "record_id": "r2",
+      "kind": "truth",
+      "text": "Капитан стражи — оборотень.",
+      "scope": "gm",
+      "active": true,
+      "owner": "gm",
+      "subject": "captain",
+      "source": "",
+      "status": "known",
+      "tags": [],
+      "entity_id": "",
+      "source_npc": "",
+      "participants": [
+        "captain",
+        "player"
+      ],
+      "location_id": "",
+      "location_name": "",
+      "region_id": "",
+      "region_name": "",
+      "scene_id": "",
+      "importance": "",
+      "aliases": [],
+      "metadata": {
+        "weight": 5,
+        "ru": "тайна"
+      }
+    },
+    "hash": "75281041cef2676a6d6c15740386ed1282623577dd05d6aa19ad3c15a59f4688"
+  },
+  {
+    "record": {
+      "record_id": "r3",
+      "kind": "rumor",
+      "text": "Говорят, в подвале прячут золото.",
+      "scope": "shared",
+      "active": true,
+      "owner": "",
+      "subject": "",
+      "source": "",
+      "status": "rumored",
+      "tags": [],
+      "entity_id": "",
+      "source_npc": "",
+      "participants": [],
+      "location_id": "loc_inn",
+      "location_name": "Таверна «Старый дуб»",
+      "region_id": "",
+      "region_name": "",
+      "scene_id": "",
+      "importance": "",
+      "aliases": [
+        "слух"
+      ],
+      "metadata": {}
+    },
+    "hash": "d57ed87b8f930c50c18bf1462e62605038f5b1fccc214ae47fb827052902dcf7"
+  }
+]

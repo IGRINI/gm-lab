@@ -1,0 +1,12 @@
+[package]
+name = "gml-agents"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gml-types = { path = "../gml-types" }
+gml-config = { path = "../gml-config" }
+gml-prompts = { path = "../gml-prompts" }
+gml-world = { path = "../gml-world" }
+gml-llm = { path = "../gml-llm" }

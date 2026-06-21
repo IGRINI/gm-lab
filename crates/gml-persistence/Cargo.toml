@@ -1,0 +1,13 @@
+[package]
+name = "gml-persistence"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gml-types = { path = "../gml-types" }
+gml-config = { path = "../gml-config" }
+gml-world = { path = "../gml-world" }
+gml-orchestrator = { path = "../gml-orchestrator" }
+gml-rag = { path = "../gml-rag" }
+gml-llm = { path = "../gml-llm" }

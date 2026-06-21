@@ -1,0 +1,32 @@
+{
+  "GM_SYSTEM": {
+    "sha256": "69bd3a3bf776c8d5caa6c952a9dd12b7f0063cbd13cfb7a4012ee47a5c577eb0",
+    "chars": 36320,
+    "bytes": 36549
+  },
+  "NPC_SYSTEM_STATIC": {
+    "sha256": "e222473ee56fdcf8b07491275d2af88048b222eda775bd49f7e8d49cbbda7264",
+    "chars": 6901,
+    "bytes": 6974
+  },
+  "NPC_SYSTEM_TEMPLATE": {
+    "sha256": "e222473ee56fdcf8b07491275d2af88048b222eda775bd49f7e8d49cbbda7264",
+    "chars": 6901,
+    "bytes": 6974
+  },
+  "NPC_CARD_TEMPLATE": {
+    "sha256": "73cb6261b026b1d1b8682caf45047ca625b601f43147f48a6c9b0f3e2dd3a454",
+    "chars": 571,
+    "bytes": 571
+  },
+  "NPC_COMPACT_SYSTEM": {
+    "sha256": "5d9d761fc72569c21b51f66e26848c56fd432c5aff0317d470f9ad191c66bdbf",
+    "chars": 444,
+    "bytes": 444
+  },
+  "GM_COMPACT_SYSTEM": {
+    "sha256": "33bb15fd2904ca47d324238c3e15d75458c48ce246b16beb54a26b7f8de651c8",
+    "chars": 608,
+    "bytes": 608
+  }
+}

@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+# Shared dependency versions — individual crates opt in via `dep.workspace = true`.
+# Pinned to current majors; refined per-crate as porting proceeds.
+[workspace.dependencies]
+# internal crates (path) — declared here so members can use `{ workspace = true }`
+gml-types = { path = "crates/gml-types" }
+gml-config = { path = "crates/gml-config" }
+gml-prompts = { path = "crates/gml-prompts" }
+gml-world = { path = "crates/gml-world" }
+gml-stories = { path = "crates/gml-stories" }
+gml-rag = { path = "crates/gml-rag" }
+gml-llm = { path = "crates/gml-llm" }
+gml-codex = { path = "crates/gml-codex" }
+gml-agents = { path = "crates/gml-agents" }
+gml-orchestrator = { path = "crates/gml-orchestrator" }
+gml-persistence = { path = "crates/gml-persistence" }
+gml-audio = { path = "crates/gml-audio" }
+gml-server = { path = "crates/gml-server" }
+
+# async + http
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+futures = "0.3"
+async-stream = "0.3"
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "set-header", "trace"] }
+hyper = "1"
+bytes = "1"
+
+# http clients
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# serialization — preserve_order matches Python dict insertion order for cache prefix byte-identity
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+# storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# crypto / encoding — match Python hashlib hexdigests byte-for-byte
+sha2 = "0.10"
+sha1 = "0.10"
+base64 = "0.22"
+
+# tls (self-signed LAN serving)
+rcgen = "0.13"
+rustls = "0.23"
+tokio-rustls = "0.26"
+local-ip-address = "0.6"
+
+# platform + process
+directories = "5"
+tempfile = "3"
+open = "5"
+
+# utilities
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+once_cell = "1"
+urlencoding = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
