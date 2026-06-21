@@ -157,13 +157,24 @@ fn crud_create_save_load_list_delete() {
     let reloaded = store.load_chat(guest, &chat_id).expect("reload");
     assert_eq!(reloaded.turn_count, 7);
 
-    // create a second chat, list ordering = newest first
+    // create a second chat
     let chat2 = store
         .create_chat(guest, None, None, 0, Some("Вторая"), None, true)
         .expect("create_chat 2");
     let chats = store.list_chats(guest).expect("list2");
     assert_eq!(chats.len(), 2);
-    assert_eq!(chats[0]["id"], json!(chat2)); // most-recent updated_at first
+    // List order is (updated_at DESC, created_at DESC, chat_id DESC), ported
+    // verbatim from dialog_store.py. In this fast test both rows share the same
+    // 1-second `datetime('now')` timestamp, so the deterministic part of the order
+    // ties and the chat_id-DESC tiebreak (random tokens) decides — asserting a
+    // strict newest-first index here would flake. Assert set-membership instead,
+    // without weakening the production ORDER BY.
+    let ids: std::collections::HashSet<&str> =
+        chats.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert!(ids.contains(chat_id.as_str()), "first chat present in list");
+    assert!(ids.contains(chat2.as_str()), "second chat present in list");
+    // creating with activate=true makes chat2 the active chat
+    assert_eq!(store.active_chat_id(guest).unwrap().as_deref(), Some(chat2.as_str()));
 
     // activate the first again
     assert!(store.activate_chat(guest, &chat_id).expect("activate"));
