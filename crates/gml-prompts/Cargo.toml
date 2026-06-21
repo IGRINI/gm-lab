@@ -5,4 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-gml-config = { path = "../gml-config" }
+gml-config = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }

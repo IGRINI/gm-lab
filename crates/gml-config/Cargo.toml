@@ -5,4 +5,13 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-gml-types = { path = "../gml-types" }
+gml-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+directories = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
