@@ -389,6 +389,14 @@ impl Backend for CodexClient {
         self.identity.set(session_id, thread_id);
     }
 
+    fn session_id(&self) -> String {
+        self.identity.session_id()
+    }
+
+    fn thread_id(&self) -> String {
+        self.identity.thread_id()
+    }
+
     async fn list_models(&self) -> Vec<Value> {
         match self.list_models_inner().await {
             Ok(v) => v,

@@ -141,6 +141,19 @@ pub trait Backend: Send + Sync {
     /// overrides this.
     fn set_session_identity(&self, _session_id: Option<&str>, _thread_id: Option<&str>) {}
 
+    /// `self.session_id` — the per-client session id captured for persistence so
+    /// prompt-cache keys survive save/restore. Empty for backends that do not key
+    /// the cache on a session id (OpenAI-compatible, mock); Codex overrides it.
+    fn session_id(&self) -> String {
+        String::new()
+    }
+
+    /// `self.thread_id` — the per-client thread id (Codex `prompt_cache_key`
+    /// source). Empty for non-Codex backends; Codex overrides it.
+    fn thread_id(&self) -> String {
+        String::new()
+    }
+
     /// `list_models()` — available models as `[{id, name, supported}]`.
     async fn list_models(&self) -> Vec<Value>;
 
