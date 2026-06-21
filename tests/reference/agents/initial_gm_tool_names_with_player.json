@@ -1,0 +1,11 @@
+[
+  "advance_time",
+  "ask_npc",
+  "ask_player",
+  "get_world_fact",
+  "query_world_state",
+  "roll_dice",
+  "tool_search",
+  "update_player_character",
+  "update_world_state"
+]

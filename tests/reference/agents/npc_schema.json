@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "properties": {
+    "reasoning": {
+      "type": "string"
+    },
+    "speech": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "reasoning",
+    "speech",
+    "action",
+    "claims"
+  ]
+}

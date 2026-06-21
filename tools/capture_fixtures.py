@@ -320,6 +320,79 @@ def capture_rag() -> None:
     _write(OUT / "rag_contextual_text.json", {d.doc_id: d.contextual_text() for d in docs})
 
 
+def capture_agents() -> None:
+    print("[agents]")
+    try:
+        import stories
+        import world as world_mod
+        import agents
+        import json as _json
+    except Exception as ex:
+        print(f"  SKIP agents import: {ex}")
+        return
+
+    seed = None
+    fn = getattr(stories, "default_story_seed", None)
+    if callable(fn):
+        try:
+            seed = fn()
+        except Exception as ex:
+            print(f"  default_story_seed failed: {ex}")
+    if seed is None:
+        print("  SKIP agents: no seed")
+        return
+    w = world_mod.World(seed)
+
+    player_text = "Я осматриваю площадь и подхожу к воротам."
+    agents_dir = OUT / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    # GM assembly (cache-prefix critical).
+    _write(agents_dir / "gm_world_setup.txt", agents._gm_world_setup(w))
+    _write(agents_dir / "gm_turn_context_noopts.txt", agents._gm_turn_context(w, player_text, False))
+    _write(agents_dir / "gm_turn_context_opts.txt", agents._gm_turn_context(w, player_text, True))
+    gum = agents.gm_user_message(w, player_text, False)
+    req_empty = agents._gm_request_messages(w, [gum], "")
+    req_summary = agents._gm_request_messages(w, [gum], "Краткое содержание прошлых сцен.")
+    _write(agents_dir / "gm_request_messages_empty.json", req_empty)
+    _write(agents_dir / "gm_request_messages_summary.json", req_summary)
+
+    # Tool catalog (must be STATIC — no dynamic enums of live npc ids).
+    tools = agents.build_gm_tools(w)
+    _write(agents_dir / "gm_tools.json", tools)
+    raw_tools = _json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+    (agents_dir / "gm_tools.compact.json").write_text(raw_tools, encoding="utf-8", newline="")
+    _write(agents_dir / "initial_gm_tool_names.json", sorted(agents.initial_gm_tool_names(False)))
+    _write(agents_dir / "initial_gm_tool_names_with_player.json", sorted(agents.initial_gm_tool_names(True)))
+    _write(agents_dir / "npc_schema.json", agents.NPC_SCHEMA)
+
+    # NPC ordering check: Python dict insertion order vs sorted(id).
+    npc_ids_insertion = list(w.npcs.keys())
+    _write(agents_dir / "npc_order.json", {
+        "insertion_order": npc_ids_insertion,
+        "sorted_order": sorted(npc_ids_insertion),
+        "order_matches_sorted": npc_ids_insertion == sorted(npc_ids_insertion),
+    })
+
+    # NPC assembly for the first NPC.
+    if npc_ids_insertion:
+        npc = w.npcs[npc_ids_insertion[0]]
+        _write(agents_dir / "npc_system_message.json", agents.npc_system_message())
+        _write(agents_dir / "npc_card_block.txt", agents.npc_card_block(npc))
+        situation = "Игрок подошёл к стойке и спрашивает о слухах."
+        observations = "Ты видел, как капитан стражи говорил с торговцем."
+        commitments = "Ты уже сказал, что таверна закрывается в полночь."
+        scene_slice = w.npc_scene_slice(npc.npc_id) if hasattr(w, "npc_scene_slice") else ""
+        constraints = list(getattr(w, "constraints", []) or [])
+        num = agents.npc_user_message(npc, situation, observations, commitments, None, constraints, scene_slice)
+        _write(agents_dir / "npc_user_message.json", num)
+        nreq = agents.npc_request_messages(npc, [], "", num)
+        _write(agents_dir / "npc_request_messages_empty.json", nreq)
+        # feedback (correction) path
+        num_fb = agents.npc_user_message(npc, situation, observations, commitments, "Так нельзя: задней двери нет.", constraints, scene_slice)
+        _write(agents_dir / "npc_user_message_feedback.json", num_fb)
+
+
 def _default_story_id(stories):
     for name in ("DEFAULT_STORY_ID", "DEFAULT_STORY", "default_story_id"):
         val = getattr(stories, name, None)
@@ -345,6 +418,7 @@ def main() -> None:
     capture_state_record_hash()
     capture_dice()
     capture_rag()
+    capture_agents()
     capture_snapshot()
     print("Done.")
 

@@ -1,0 +1,92 @@
+CURRENT TURN CONTEXT (latest engine state snapshot):
+
+TIME STATE:
+Current world time: День 1, 00:00
+Previous player turn elapsed: 0 minutes
+INTERNAL NPC ROSTER (tool ids; internal_name is GM-only unless player_label matches it):
+- id=borin; internal_name=Борин; player_label=Борин; role=трактирщик; род=мужской род
+- id=lysa; internal_name=Лиза; player_label=служанка; role=служанка; род=женский род
+- id=mareth; internal_name=Капитан Марет; player_label=Капитан Марет; role=капитан стражи; род=женский род
+
+CURRENT PUBLIC FACTS:
+- Алдрик был небогатым купцом: торговал специями, сушёными травами и редкими настойками, время от времени возил товары через Тёрнвейл. Его считали скрытным и нелюдимым; долги он записывал сам и не любил, когда приказчики трогали его книги. Прошлой ночью его нашли мёртвым рядом с лавкой.
+- Тёрнвейл — небольшой торговый городок на большой дороге; он живёт за счёт проезжих купцов, сезонной ярмарки и налогов с караванов. Местные знают, что плохая слава быстро перекрывает дорогу лучше любого шлагбаума.
+- «Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин. Здесь ночуют караванщики, играют в кости возчики и чаще всего появляются слухи, прежде чем попасть к страже.
+- Говорят, на большой дороге действует гильдия воров: караваны теряют тюки, сборщики пошлин забывают лица, а свидетели потом отказываются от слов. Официальных доказательств нет.
+- Городская стража небольшая; расследованием убийства занимается Капитан Марет. Она держит лавку Алдрика под печатью и запрещает толпе трогать следы, но людей для полного оцепления у неё мало.
+- Купцы с утреннего каравана требуют открыть дорогу до полудня: если стража задержит обозы, Тёрнвейл потеряет деньги и репутацию.
+- Лавка Алдрика стоит в двух переулках от «Серого грифона». Горожане спорят, слышали ли ночью тележные колёса, собачий лай или просто ветер в ставнях.
+- Чёрный шафран редко продают открыто: он дорогой, едкий на запах и оставляет тёмную пыль на ткани. В Тёрнвейле его знают скорее как купеческую диковину, чем как обычную приправу.
+
+PLAYER CHARACTER CARD (current sheet; GM-only notes may be present):
+Name: Дарра
+Pronouns: F
+Class/role: странствующая сыщица
+Level: 2
+Background: вольная сыщица, что ездит от города к городу и продаёт умение находить правду
+Age: Фактически 34 года; выглядит чуть моложе.
+Type/size/appearance: невысокая жилистая женщина в дорожном платье
+Distinctive features: цепкий взгляд, кривая усмешка, серебряное кольцо-печатка от прежнего нанимателя, потёртая записная книжка
+Life status: alive
+Condition: в дороге, собрана, чует, что влипла в чужую беду
+Personality: остра на язык, наблюдательна, недоверчива к властям, легко сходится с простым людом
+Values: правда, расплата за тех, кого заставили замолчать, своя независимость, не оставаться в долгу
+Mechanics: {"abilities":{"CHA":15,"CON":11,"DEX":13,"INT":13,"STR":9,"WIS":14},"ac":13,"hp":{"current":16,"max":16},"languages":"Общий; воровское арго","passive_perception":14,"saving_throws":{"CHA":4,"WIS":4},"senses":"обычное зрение; чует ложь и недосказанность в разговоре","skills":{"Deception":4,"Insight":4,"Investigation":3,"Perception":4,"Persuasion":4},"speed":"30 ft"}
+Inventory: дорожный плащ; кинжал; потайной фонарь; записная книжка с карандашом; лупа; набор отмычек; кости со свинцом для своих игр; кошель монет на подкуп
+Equipment: проклёпанная кожаная куртка
+Features: Глаз дознавателя: ловишь несостыковки в чужих рассказах; Язык без костей: разговоришь почти любого завсегдатая; Тихие пальцы: вскроешь простой замок без шума
+GM notes: Дарра попала в «Серый грифон» проездом: искала ночлег и оказалась в городе, где ночью убили купца Алдрика. Власти стражи у неё нет — только репутация сыщицы, которая умеет слушать и складывать мелочи. Капитан Марет терпит её, пока она приносит факты, а не слухи; людям гильдии удобнее, чтобы она уехала с утренним караваном до полудня.
+Card revision: 0
+
+CURRENT SCENE STATE:
+Scene: Трактир «Серый грифон»
+Location: grey_griffon
+World time: День 1, 00:00
+Description: Утро в общем зале трактира тяжёлое и серое. Дым от очага стелется низко, на мокром полу темнеют свежие следы, а у дальнего стола караванщики спорят шёпотом, не решаясь назвать гильдию вслух. Стойка, боковая дверь на кухню, лестница к комнатам и главный вход хорошо видны игроку; за окнами в переулке мелькают копья городской стражи.
+Present named NPCs: Борин (borin, трактирщик), крупный пожилой человек, condition: устал, насторожен, внешне здоров, род: мужской род at за стойкой, служанка (lysa, служанка), молодая быстрая женщина, condition: напугана, но держится на работе, род: женский род at между столами
+Known offscreen NPC whereabouts: - Капитан Марет (mareth, капитан стражи); NOT in current scene; status: likely; location: служба городской стражи; details: расследует убийство Алдрика; если точное место не установлено, её логично искать в караульной, у городских ворот или у места находки тела
+Visible objects: стойка, кружки, бочки с элем, мокрые следы с тёмной пылью, остывшая миска похлёбки Алдрика, доска объявлений с караванными расписками, зола с обрывком синей сургучной печати
+Visible exits: главная дверь -> улица Тёрнвейла, дверь на кухню -> кухня и задний двор трактира, лестница к комнатам -> гостевые комнаты второго этажа, люк в погреб -> погреб под трактиром
+Tension: В зале тесно и нервно: каждый боится убийцы, но ещё больше боится оказаться свидетелем, которого потом заставят молчать.
+
+ENTITY REFERENCE MARKUP:
+Available player-safe entity refs (use exact labels for specific listed entities):
+NPCs: [[npc:borin|Борин]], [[npc:lysa|служанка]], [[npc:mareth|Капитан Марет]]
+Locations: [[loc:grey_griffon|Трактир «Серый грифон»]], [[loc:main_door_destination|улица Тёрнвейла]], [[loc:kitchen_door_destination|кухня и задний двор трактира]], [[loc:stairs_destination|гостевые комнаты второго этажа]], [[loc:cellar_hatch_destination|погреб под трактиром]], [[loc:town_guard_duty|служба городской стражи]]
+
+SCENE CONSTRAINTS (must enforce when reviewing NPC responses):
+- В общем зале полно посетителей: пересечь зал, выйти, драться или незаметно возиться с предметами почти невозможно. Тихие слова, сказанные вплотную, по умолчанию остаются приватными; другие могут заметить жесты, позу или близость, но не содержание разговора, если явно не подслушивают.
+- Люк в погреб находится за стойкой: без согласия Борина туда нельзя пройти незаметно.
+- Стражники в переулке следят за толпой, но не слышат тихие разговоры внутри трактира.
+- Караванщики нервничают и могут вмешаться, если решат, что расследование задержит их обоз.
+
+PLAYER OPTION SUGGESTIONS:
+enabled. After resolving all needed tools for this player action, call ask_player as the last tool before final narration with 4-8 useful Russian quick replies. This is mandatory for every completed turn while the feature is enabled: do not finish with narration only. Do not call more tools after ask_player unless the ask_player result reports invalid arguments. After the ask_player tool result confirms the buttons were shown, write the final player-facing narration and stop. The engine does not create fallback buttons. Do not put a textual choice menu in final narration; the quick-reply buttons handle it. Each option needs a short label and a fuller message that can be sent as the player's next action. Keep free text input available by offering suggestions, not commands.
+
+<system-reminder>
+TURN RESOLUTION CHECK:
+- First verify material possibility from PLAYER CHARACTER CARD and
+  CURRENT SCENE STATE: required inventory/equipment/features, spells, tools, training,
+  authority, body access, scene objects, materials, time, and position must exist.
+  If the action rests on a missing or unsupported premise, stop with a reality correction:
+  say what cannot happen and why, mention possible established remainders, and do not call
+  roll_dice, ask_npc, advance_time, or state-update tools for that attempted premise.
+  Only after the player deliberately continues with a physically possible remainder may you
+  resolve that remainder; the missing item/spell/feature/expertise/effect stays absent.
+- Before final narration, decide whether the latest player action needs roll_dice.
+  Active observation/search/listening, including "я осматриваюсь", "смотрю вокруг",
+  "прислушиваюсь", or "ищу", must roll Perception/Investigation/etc before hidden or
+  non-obvious clues/details are revealed. Without the roll, reveal only obvious visible
+  facts.
+- Respect resolved rolls. A success gives a real benefit; a critical success gives the
+  best plausible benefit. If the player asks why a strong roll did not produce the
+  expected effect, explain the established constraint clearly and never invent a new
+  post-roll reason to cancel the success.
+- If any in-world time passed, call advance_time once before final narration. advance_time
+  records elapsed time only; it does not replace a needed roll, NPC reaction, scene
+  update, memory update, or player-sheet update.
+</system-reminder>
+
+
+PLAYER ACTION (latest user input, free roleplay text):
+Я осматриваю площадь и подхожу к воротам.
