@@ -53,6 +53,81 @@ fn record_text_key(text: &str) -> String {
     crate::helpers::collapse_ws(&clean_text(&Value::String(text.to_string())).to_lowercase())
 }
 
+/// `_record_participant_ids(record)` — lowercased {owner, subject} + participants,
+/// with empties discarded.
+fn record_participant_ids(record: &StateRecord) -> BTreeSet<String> {
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+    ids.insert(clean_text(&Value::String(record.owner.clone())).to_lowercase());
+    ids.insert(clean_text(&Value::String(record.subject.clone())).to_lowercase());
+    for item in &record.participants {
+        ids.insert(clean_text(&Value::String(item.clone())).to_lowercase());
+    }
+    ids.remove("");
+    ids
+}
+
+/// `_find_mergeable_state_record(world, kind, text, scope, owner, entity_id,
+/// source_npc, location_id, region_id, scene_id)` — returns the `record_id` of an
+/// active, identical-text, same-anchors record of the same kind/scope/owner.
+/// `relationship`/`goal` never merge.
+#[allow(clippy::too_many_arguments)]
+fn find_mergeable_state_record(
+    world: &World,
+    kind: &str,
+    text: &str,
+    scope: &str,
+    owner: &str,
+    entity_id: &str,
+    source_npc: &str,
+    location_id: &str,
+    region_id: &str,
+    scene_id: &str,
+) -> Option<String> {
+    if matches!(kind, "relationship" | "goal") {
+        return None;
+    }
+    let text_key = record_text_key(text);
+    if text_key.is_empty() {
+        return None;
+    }
+    let wanted_scope = gml_world::state_record::state_record_scope(scope);
+    let want_kind = gml_world::state_record::state_record_kind(kind);
+    let lc = |s: &str| clean_text(&Value::String(s.to_string())).to_lowercase();
+    for record in &world.state_records {
+        if !record.active {
+            continue;
+        }
+        if want_kind != gml_world::state_record::state_record_kind(&record.kind) {
+            continue;
+        }
+        if wanted_scope != gml_world::state_record::state_record_scope(&record.scope) {
+            continue;
+        }
+        if lc(&record.owner) != lc(owner) {
+            continue;
+        }
+        if lc(&record.entity_id) != lc(entity_id) {
+            continue;
+        }
+        if lc(&record.source_npc) != lc(source_npc) {
+            continue;
+        }
+        if lc(&record.location_id) != lc(location_id) {
+            continue;
+        }
+        if lc(&record.region_id) != lc(region_id) {
+            continue;
+        }
+        if lc(&record.scene_id) != lc(scene_id) {
+            continue;
+        }
+        if record_text_key(&record.text) == text_key {
+            return Some(record.record_id.clone());
+        }
+    }
+    None
+}
+
 // =========================================================================
 // resolve helpers
 // =========================================================================
@@ -474,10 +549,122 @@ fn apply_state_record_add(
         return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!("target or participants is required for shared scope"))])));
     }
 
-    // mergeable / duplicate checks omitted for brevity in non-golden paths;
-    // proceed to store. (Relationship/goal de-dup is preserved by the world
-    // layer's add behavior; full merge semantics tracked in followups.)
-    let _ = record_text_key(text);
+    // `_find_mergeable_state_record` — merge participants of an identical active
+    // memory, or reject as `not_added`.
+    let mergeable_id = find_mergeable_state_record(
+        world,
+        item_type,
+        text,
+        scope,
+        &owner,
+        &entity_id,
+        &source_npc,
+        &location_id,
+        &region_id,
+        &scene_id,
+    );
+    // `record_by_id` is guaranteed to resolve `mergeable_id` (it came from the
+    // same `world.state_records`); the `if let` keeps the borrow checker happy.
+    if let Some(existing) = mergeable_id.and_then(|id| record_by_id(world, &id).cloned()) {
+        let existing_participants = record_participant_ids(&existing);
+        let mut wanted_participants: BTreeSet<String> =
+            participants.iter().map(|p| p.to_lowercase()).collect();
+        let target_actor = resolve_actor_target(world, &target);
+        if !target_actor.is_empty() {
+            wanted_participants.insert(target_actor);
+        }
+        // sorted((existing | wanted) - {owner.lower(), subject.lower()})
+        let drop: BTreeSet<String> = [
+            clean_text(&Value::String(existing.owner.clone())).to_lowercase(),
+            clean_text(&Value::String(existing.subject.clone())).to_lowercase(),
+        ]
+        .into_iter()
+        .collect();
+        let merged_participants: Vec<String> = existing_participants
+            .union(&wanted_participants)
+            .filter(|p| !drop.contains(*p))
+            .cloned()
+            .collect(); // BTreeSet union iterates sorted -> already sorted, deduped
+
+        let current_participants: BTreeSet<String> =
+            existing.participants.iter().cloned().collect();
+        let merged_set: BTreeSet<String> = merged_participants.iter().cloned().collect();
+        if current_participants != merged_set {
+            let update_payload = json!({
+                "id": existing.record_id,
+                "participants": merged_participants,
+            });
+            let updated = world.update_state_records(&Value::Array(vec![update_payload]));
+            let rec = updated.into_iter().next().unwrap_or(existing);
+            let row = json!({
+                "index": index,
+                "op": "update",
+                "type": rec.kind,
+                "id": rec.record_id,
+                "npc_id": rec.owner,
+                "target": rec.subject,
+                "participants": rec.participants,
+                "scope": state_visibility_from_scope(&rec.scope),
+                "hash": state_record_hash(&rec),
+                "status": "merged",
+            });
+            return (Some(row), None);
+        }
+        // Identical active memory already exists with no participant change.
+        let err = json!({
+            "index": index,
+            "op": op,
+            "type": item_type,
+            "npc_id": owner,
+            "target": target,
+            "participants": participants,
+            "scope": scope,
+            "existing_id": existing.record_id,
+            "existing_hash": state_record_hash(&existing),
+            "status": "not_added",
+            "error": "not added: identical active memory already exists; update the existing record instead",
+        });
+        return (None, Some(err));
+    }
+
+    // Relationship-already-exists branch (via state_records_for).
+    if item_type == "relationship" {
+        let kinds = vec!["relationship".to_string()];
+        let scopes = vec![gml_world::state_record::state_record_scope(scope)];
+        let mut query = StateRecordQuery::new("debug");
+        query.kinds = Some(&kinds);
+        let owner_owned = owner.clone();
+        let subject_owned = target.clone();
+        query.owner = &owner_owned;
+        query.subject = &subject_owned;
+        query.scopes = Some(&scopes);
+        let existing: Option<StateRecord> =
+            world.state_records_for(&query).first().map(|r| (*r).clone());
+        if let Some(rec) = existing {
+            let err = json!({
+                "index": index,
+                "op": op,
+                "type": item_type,
+                "npc_id": owner,
+                "target": target,
+                "entity_id": entity_id,
+                "source_npc": source_npc,
+                "location_id": location_id,
+                "location_name": location_name,
+                "region_id": region_id,
+                "region_name": region_name,
+                "scene_id": scene_id,
+                "importance": importance,
+                "aliases": aliases,
+                "scope": scope,
+                "existing_id": rec.record_id,
+                "existing_hash": state_record_hash(&rec),
+                "status": "not_added",
+                "error": "not added: active relationship already exists; use op=update with existing_id and existing_hash",
+            });
+            return (None, Some(err));
+        }
+    }
 
     let mode = clean_text(item.get("mode").unwrap_or(&Value::Null)).to_lowercase();
     if matches!(item_type, "goal" | "goals") && mode == "replace" {
@@ -567,7 +754,9 @@ fn apply_state_record_add(
     (Some(row), None)
 }
 
-/// Direct update path (`op == "update"`).
+/// Full update path (`op == "update"`) — faithful port of the Python `op ==
+/// "update"` branch (scope-change validation, owner/target/entity_id/source_npc/
+/// known_name resolution, anchor passthrough, full return row).
 #[allow(clippy::too_many_arguments)]
 fn apply_state_record_update(
     session: &mut Session,
@@ -576,25 +765,46 @@ fn apply_state_record_update(
     item_type: &str,
     text: &str,
     scope: &str,
-    _source: &str,
+    source: &str,
     item: &Value,
     record_id: &str,
 ) -> (Option<Value>, Option<Value>) {
+    // Helper for update-branch error rows (Python always includes "id").
+    let uerr = |fields: &[(&str, Value)]| -> Value {
+        let mut m = Map::new();
+        m.insert("index".to_string(), json!(index));
+        m.insert("op".to_string(), json!(op));
+        m.insert("type".to_string(), json!(item_type));
+        m.insert("id".to_string(), json!(record_id));
+        for (k, v) in fields {
+            m.insert((*k).to_string(), v.clone());
+        }
+        Value::Object(m)
+    };
+
     if record_id.is_empty() {
-        return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!("id is required for update"))])));
+        return (
+            None,
+            Some(err_row(&[
+                ("index", json!(index)),
+                ("op", json!(op)),
+                ("type", json!(item_type)),
+                ("error", json!("id is required for update")),
+            ])),
+        );
     }
     let world = &mut session.world;
-    if record_by_id(world, record_id).is_none() {
-        return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("id", json!(record_id)), ("error", json!("record id not found"))])));
-    }
-    let expected = expected_hash(item);
-    if !expected.is_empty() {
-        if let Some(h) = record_hash_by_id(world, record_id) {
-            if expected.to_lowercase() != h.to_lowercase() {
-                return (None, Some(hash_conflict_error(world, index, op, item_type, record_id, &expected)));
-            }
+    let existing = match record_by_id(world, record_id) {
+        Some(r) => r.clone(),
+        None => {
+            return (None, Some(uerr(&[("error", json!("record id not found"))])));
         }
+    };
+    let expected = expected_hash(item);
+    if !expected.is_empty() && expected.to_lowercase() != state_record_hash(&existing).to_lowercase() {
+        return (None, Some(hash_conflict_error(world, index, op, item_type, record_id, &expected)));
     }
+
     let mut update_payload = Map::new();
     update_payload.insert("id".to_string(), json!(record_id));
     if !item_type.is_empty() {
@@ -603,14 +813,172 @@ fn apply_state_record_update(
     if !text.is_empty() {
         update_payload.insert("text".to_string(), json!(text));
     }
-    if item.get("scope").is_some() || item.get("visibility").is_some() {
-        update_payload.insert("scope".to_string(), json!(state_record_scope_local(scope)));
+
+    // owner from npc_id (only when npc_id present).
+    let mut owner = String::new();
+    if let Some(npc_id_val) = item.get("npc_id") {
+        if !clean_text(npc_id_val).is_empty() {
+            let (id, error) = resolve_npc_id(world, npc_id_val);
+            if !error.is_empty() {
+                return (None, Some(uerr(&[("error", json!(error))])));
+            }
+            owner = id;
+        }
     }
+
+    let mut target = clean_text(item.get("target").unwrap_or(&Value::Null));
+    let mut entity_id = first_present(item, &["entity_id", "entity", "about"]);
+    let mut source_npc = first_present(item, &["source_npc", "source_npc_id"]);
+    let known_name = clean_text(item.get("known_name").unwrap_or(&Value::Null));
+    let location_id = clean_text(item.get("location_id").unwrap_or(&Value::Null));
+    let location_name = clean_text(item.get("location_name").unwrap_or(&Value::Null));
+    let region_id = clean_text(item.get("region_id").unwrap_or(&Value::Null));
+    let region_name = clean_text(item.get("region_name").unwrap_or(&Value::Null));
+    let scene_id = clean_text(item.get("scene_id").unwrap_or(&Value::Null));
+    let importance = clean_text(item.get("importance").unwrap_or(&Value::Null));
+    let aliases = clean_list(item.get("aliases").unwrap_or(&Value::Null));
+    let (participants, error) =
+        resolve_participants(world, item.get("participants").unwrap_or(&Value::Null));
+    if !error.is_empty() {
+        return (None, Some(uerr(&[("error", json!(error))])));
+    }
+
+    let scope_changing = item.get("scope").is_some() || item.get("visibility").is_some();
+    if scope_changing {
+        update_payload.insert("scope".to_string(), json!(state_record_scope_local(scope)));
+        let existing_owner = clean_text(&Value::String(existing.owner.clone()));
+        if scope == "npc" && owner.is_empty() && existing_owner.is_empty() {
+            return (
+                None,
+                Some(uerr(&[("error", json!("npc_id is required when changing scope to npc"))])),
+            );
+        }
+        if scope == "shared" {
+            let has_owner = !owner.is_empty() || !existing_owner.is_empty();
+            let existing_subject = clean_text(&Value::String(existing.subject.clone()));
+            let has_target_or_participants = !target.is_empty()
+                || !participants.is_empty()
+                || !existing_subject.is_empty()
+                || !existing.participants.is_empty();
+            if !has_owner || !has_target_or_participants {
+                return (
+                    None,
+                    Some(uerr(&[(
+                        "error",
+                        json!("npc_id and target or participants are required when changing scope to shared"),
+                    )])),
+                );
+            }
+        }
+    }
+
+    if !source_npc.is_empty() {
+        let (id, error) = resolve_npc_id(world, &Value::String(source_npc.clone()));
+        if !error.is_empty() {
+            return (None, Some(uerr(&[("error", json!(error))])));
+        }
+        source_npc = id;
+    }
+
+    let effective_scope = if scope_changing {
+        scope.to_string()
+    } else {
+        state_visibility_from_scope(&existing.scope)
+    };
+    if !target.is_empty() && effective_scope == "shared" {
+        let target_actor = resolve_actor_target(world, &target);
+        if target_actor.is_empty() {
+            return (
+                None,
+                Some(uerr(&[
+                    ("target", json!(target)),
+                    ("error", json!("target for shared scope must be player or a known npc_id; use participants for multiple actors")),
+                ])),
+            );
+        }
+        target = target_actor;
+    }
+
+    if !known_name.is_empty() {
+        let known_entity_id = if entity_id.is_empty() {
+            existing.entity_id.clone()
+        } else {
+            entity_id.clone()
+        };
+        if known_entity_id.is_empty() {
+            return (
+                None,
+                Some(uerr(&[("error", json!("entity_id is required when setting known_name"))])),
+            );
+        }
+        // `_resolve_npc_id` returns ("", err) on failure — the Python error row
+        // carries that (empty) resolved id, which `_drop_empty` then prunes.
+        let (id, error) = resolve_npc_id(world, &Value::String(known_entity_id));
+        if !error.is_empty() {
+            return (
+                None,
+                Some(uerr(&[
+                    ("entity_id", json!(id)),
+                    ("error", json!("known_name requires entity_id to be an NPC id")),
+                ])),
+            );
+        }
+        entity_id = id;
+    }
+
+    if !owner.is_empty() {
+        update_payload.insert("owner".to_string(), json!(owner));
+    }
+    if !target.is_empty() {
+        update_payload.insert("subject".to_string(), json!(target));
+    }
+    if !entity_id.is_empty() {
+        update_payload.insert("entity_id".to_string(), json!(entity_id));
+    }
+    if !source_npc.is_empty() {
+        update_payload.insert("source_npc".to_string(), json!(source_npc));
+    }
+    if item.get("participants").is_some() {
+        update_payload.insert("participants".to_string(), json!(participants));
+    }
+    if item.get("location_id").is_some() {
+        update_payload.insert("location_id".to_string(), json!(location_id));
+    }
+    if item.get("location_name").is_some() {
+        update_payload.insert("location_name".to_string(), json!(location_name));
+    }
+    if item.get("region_id").is_some() {
+        update_payload.insert("region_id".to_string(), json!(region_id));
+    }
+    if item.get("region_name").is_some() {
+        update_payload.insert("region_name".to_string(), json!(region_name));
+    }
+    if item.get("scene_id").is_some() {
+        update_payload.insert("scene_id".to_string(), json!(scene_id));
+    }
+    if item.get("importance").is_some() {
+        update_payload.insert("importance".to_string(), json!(importance));
+    }
+    if item.get("aliases").is_some() {
+        update_payload.insert("aliases".to_string(), json!(aliases));
+    }
+    if !source.is_empty() {
+        update_payload.insert("source".to_string(), json!(source));
+    }
+    if !known_name.is_empty() {
+        let mut metadata = existing.metadata.clone();
+        metadata.insert("known_name".to_string(), json!(known_name));
+        update_payload.insert("metadata".to_string(), Value::Object(metadata));
+    }
+    if let Some(active) = item.get("active") {
+        update_payload.insert("active".to_string(), active.clone());
+    }
+
     let updated = world.update_state_records(&Value::Array(vec![Value::Object(update_payload)]));
     let record = match updated.into_iter().next() {
         Some(r) => r,
         None => {
-            return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("id", json!(record_id)), ("error", json!("record id not found"))])));
+            return (None, Some(uerr(&[("error", json!("record id not found"))])));
         }
     };
     let row = json!({
@@ -620,6 +988,17 @@ fn apply_state_record_update(
         "id": record.record_id,
         "npc_id": record.owner,
         "target": record.subject,
+        "entity_id": record.entity_id,
+        "source_npc": record.source_npc,
+        "participants": record.participants,
+        "known_name": record.metadata.get("known_name").and_then(Value::as_str).unwrap_or(""),
+        "location_id": record.location_id,
+        "location_name": record.location_name,
+        "region_id": record.region_id,
+        "region_name": record.region_name,
+        "scene_id": record.scene_id,
+        "importance": record.importance,
+        "aliases": record.aliases,
         "scope": state_visibility_from_scope(&record.scope),
         "hash": state_record_hash(&record),
         "status": "updated",
