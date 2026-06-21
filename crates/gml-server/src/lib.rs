@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 use gml_audio::{cache_lookup, cache_store, compress_audio, tts_format, tts_synth};
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::Backend;
-use gml_orchestrator::{run_turn_into, Session};
+use gml_orchestrator::{run_turn_into, CompactionThresholds, Session};
 use gml_persistence::{DialogRuntime, DialogStore};
 use gml_world::World;
 
@@ -842,6 +842,7 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
                 let world = World::from_seed(&seed);
                 let factory = session.npc_client_factory.clone();
                 let mut new_session = Session::with_world((app.make_client)(), world, factory);
+                new_session.compaction = CompactionThresholds::from_config(&app.config);
                 new_session.client_backend = app.config.backend.clone();
                 new_session.client_model = model;
                 new_session.client_session_id = session_id;
@@ -1414,6 +1415,7 @@ fn build_session(
     model_hint: &str,
 ) -> Session {
     let mut session = Session::with_world(client.clone(), world, make_client.clone());
+    session.compaction = CompactionThresholds::from_config(cfg);
     session.client_backend = cfg.backend.clone();
     let m = client.model();
     session.client_model = if !m.is_empty() {
@@ -1433,6 +1435,7 @@ fn story_session(client: Arc<dyn Backend>, world: World, cfg: &Config, model_hin
         || -> Arc<dyn Backend> { Arc::new(gml_llm::MockClient::new()) }
     });
     let mut session = Session::with_world(client_placeholder(), world, factory);
+    session.compaction = CompactionThresholds::from_config(cfg);
     session.client_backend = cfg.backend.clone();
     session.client_model = model_hint.to_string();
     session

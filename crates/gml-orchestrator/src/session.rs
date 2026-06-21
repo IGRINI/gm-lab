@@ -72,6 +72,23 @@ impl Default for CompactionThresholds {
     }
 }
 
+impl CompactionThresholds {
+    /// Build from the live [`gml_config::Config`] so env overrides
+    /// (`GM_HISTORY_TOKENS`, `NPC_HISTORY_TOKENS`, `GM_KEEP_TURNS`,
+    /// `NPC_KEEP_EXCHANGES`, `GM_COMPACT_INPUT_CHARS`) take effect in production —
+    /// mirroring Python's call-time `config.*` reads. The `Default` impl above is
+    /// the production-default fallback used by tests and config-less construction.
+    pub fn from_config(cfg: &gml_config::Config) -> Self {
+        CompactionThresholds {
+            gm_history_tokens: cfg.gm_history_tokens,
+            gm_keep_turns: cfg.gm_keep_turns,
+            npc_history_tokens: cfg.npc_history_tokens,
+            npc_keep_exchanges: cfg.npc_keep_exchanges,
+            compact_input_chars: cfg.compact_input_chars,
+        }
+    }
+}
+
 /// Serializable per-NPC client identity (`npc_client_state[id]`).
 #[derive(Clone, Debug, Default)]
 pub struct NpcClientState {

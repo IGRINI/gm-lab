@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use gml_config::Config;
 use gml_llm::Backend;
-use gml_orchestrator::{ClientFactory, Session};
+use gml_orchestrator::{ClientFactory, CompactionThresholds, Session};
 
 /// `SCHEMA_VERSION = 1` — hard-checked on load (no migrations exist).
 pub const SCHEMA_VERSION: i64 = 1;
@@ -306,7 +306,9 @@ impl DialogStore {
         activate: bool,
     ) -> Result<String, StoreError> {
         let chat_id = self.new_chat_id(guest_id)?;
-        let session = session.unwrap_or_else(|| Session::new((self.client_factory)()));
+        let mut session = session.unwrap_or_else(|| Session::new((self.client_factory)()));
+        // Honor env-tuned compaction thresholds (GM_HISTORY_TOKENS, NPC_HISTORY_TOKENS, ...).
+        session.compaction = CompactionThresholds::from_config(&self.config);
         let mut runtime = DialogRuntime {
             guest_id: guest_id.to_string(),
             chat_id: chat_id.clone(),
@@ -451,12 +453,14 @@ impl DialogStore {
         // Rebuild the live client + NPC factory via the make_client factory.
         let client: Arc<dyn Backend> = (self.client_factory)();
         let factory: ClientFactory = self.client_factory.clone();
-        let session = Session::from_payload(
+        let mut session = Session::from_payload(
             data.get("session").unwrap_or(&Value::Null),
             client,
             factory,
         )
         .map_err(StoreError::Payload)?;
+        // Honor env-tuned compaction thresholds on the loaded session too.
+        session.compaction = CompactionThresholds::from_config(&self.config);
         let transcript = match data.get("transcript") {
             Some(Value::Array(a)) => a.clone(),
             _ => Vec::new(),
