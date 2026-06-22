@@ -15,6 +15,7 @@ import Chat from "./components/Chat.jsx";
 import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
 import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
+import WorldDetailModal from "./components/WorldDetailModal.jsx";
 import { normalizeEntities } from "./entityContext.js";
 import { useDevSettings, computeVisibility, VisibilityContext, isMessageVisible } from "./devSettings.js";
 
@@ -150,35 +151,74 @@ function requireChatSessionPayload(payload) {
   return { chatId: payload.chat.id, state: payload.state, transcript: payload.transcript };
 }
 
-function WorldHud({ time, scene, playerCharacter }) {
+function WorldHud({ time, scene, playerCharacter, npcs, statusLabels }) {
+  const [detail, setDetail] = useState(null);
   const dateLabel = textValue(time?.current_date_label) || (time?.day_number ? `День ${time.day_number}` : "");
   const timeOfDay = textValue(time?.time_of_day);
   const calendar = textValue(time?.calendar_name);
   const sceneTitle = textValue(scene?.title);
   const pcName = textValue(playerCharacter?.name);
   if (!dateLabel && !timeOfDay && !sceneTitle && !pcName) return null;
+
+  const sceneClickable = !!scene && !!(sceneTitle || textValue(scene?.description));
+  const pcClickable = !!playerCharacter && !!pcName;
+
   return (
-    <aside className="world-hud" aria-label="Текущее состояние мира">
-      <div className="world-hud-kicker">мир</div>
-      <div className="world-hud-row">
-        <span>дата</span>
-        <b>{calendar ? `${calendar}, ${dateLabel || "—"}` : dateLabel || "—"}</b>
-      </div>
-      <div className="world-hud-row">
-        <span>время</span>
-        <b>{timeOfDay || "—"}</b>
-      </div>
-      <div className="world-hud-row">
-        <span>сцена</span>
-        <b>{sceneTitle || "—"}</b>
-      </div>
-      {pcName && (
+    <>
+      <aside className="world-hud" aria-label="Текущее состояние мира">
+        <div className="world-hud-kicker">мир</div>
         <div className="world-hud-row">
-          <span>персонаж</span>
-          <b>{pcName}</b>
+          <span>дата</span>
+          <b>{calendar ? `${calendar}, ${dateLabel || "—"}` : dateLabel || "—"}</b>
         </div>
+        <div className="world-hud-row">
+          <span>время</span>
+          <b>{timeOfDay || "—"}</b>
+        </div>
+        <div className="world-hud-row">
+          <span>сцена</span>
+          {sceneClickable ? (
+            <button
+              type="button"
+              className="world-hud-link"
+              onClick={() => setDetail("scene")}
+              title="Подробнее о локации"
+            >
+              {sceneTitle || "—"}
+            </button>
+          ) : (
+            <b>{sceneTitle || "—"}</b>
+          )}
+        </div>
+        {pcName && (
+          <div className="world-hud-row">
+            <span>персонаж</span>
+            {pcClickable ? (
+              <button
+                type="button"
+                className="world-hud-link"
+                onClick={() => setDetail("character")}
+                title="Открыть лист персонажа"
+              >
+                {pcName}
+              </button>
+            ) : (
+              <b>{pcName}</b>
+            )}
+          </div>
+        )}
+      </aside>
+      {detail && (
+        <WorldDetailModal
+          kind={detail}
+          scene={scene}
+          playerCharacter={playerCharacter}
+          npcs={npcs}
+          statusLabels={statusLabels}
+          onClose={() => setDetail(null)}
+        />
       )}
-    </aside>
+    </>
   );
 }
 
@@ -667,7 +707,13 @@ export default function App() {
         onReset={onReset}
       />
       <div className={"app-body" + (debugOpen ? " debug-open" : "") + (chatsOpen ? "" : " chats-collapsed")}>
-        <WorldHud time={srv.time} scene={srv.scene} playerCharacter={srv.playerCharacter} />
+        <WorldHud
+          time={srv.time}
+          scene={srv.scene}
+          playerCharacter={srv.playerCharacter}
+          npcs={srv.npcs}
+          statusLabels={srv.statusLabels}
+        />
         <ChatHistorySidebar
           chats={chats}
           activeChatId={activeChatId}

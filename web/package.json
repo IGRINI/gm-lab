@@ -6,6 +6,7 @@
   "description": "GM-Lab frontend — React 19 + react-virtuoso, builds to a single inlined index.html served by server.py",
   "scripts": {
     "dev": "vite",
+    "dev:phone": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dev-phone.ps1",
     "build": "vite build",
     "preview": "vite preview"
   },

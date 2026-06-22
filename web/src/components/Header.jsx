@@ -1,6 +1,83 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
 import TokenCounter from "./TokenCounter.jsx";
+import Tooltip from "./Tooltip.jsx";
+
+// Mirror of REFRESH_MARGIN_MS in crates/gml-codex/src/oauth.rs: the backend
+// auto-refreshes a Codex token once it's within 5 minutes of expiry.
+const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+function fmtExpiry(ms) {
+  const left = ms - Date.now();
+  const when = new Date(ms).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  let rel;
+  if (left <= 0) rel = "истёк";
+  else if (left < 60 * 60 * 1000) rel = `через ${Math.max(1, Math.round(left / 60000))} мин`;
+  else if (left < 24 * 60 * 60 * 1000) rel = `через ${Math.round(left / 3600000)} ч`;
+  else rel = `через ${Math.round(left / 86400000)} дн`;
+  return `${when} (${rel})`;
+}
+
+// Map the backend codex_auth blob onto a four-state connection indicator.
+// Returns null for non-Codex backends (no indicator at all).
+function codexStatus(srv) {
+  if (srv?.backend !== "codex") return null;
+  const auth = srv.codex_auth;
+  if (!auth) {
+    return { level: "off", title: "Codex: загрузка…", rows: [], note: "Получаю состояние подключения…" };
+  }
+  const msg = auth.message || "";
+  const exp = typeof auth.expires_at === "number" ? auth.expires_at : null;
+  const rows = [];
+  if (auth.account_id) rows.push({ k: "Аккаунт", v: String(auth.account_id) });
+
+  if (auth.authenticated) {
+    if (exp != null) {
+      rows.push({ k: "Токен", v: fmtExpiry(exp) });
+      if (exp - Date.now() <= REFRESH_MARGIN_MS) {
+        return {
+          level: "warn",
+          title: "Codex: токен скоро истечёт",
+          rows,
+          note: "Обновится автоматически при следующем запросе.",
+        };
+      }
+    }
+    return { level: "ok", title: "Codex подключён", rows };
+  }
+
+  if (/invalid|ошиб|error/i.test(msg)) {
+    return { level: "error", title: "Codex: ошибка авторизации", rows, note: msg };
+  }
+  return { level: "off", title: "Codex не подключён", rows, note: msg || "Codex OAuth не авторизован" };
+}
+
+function ConnTooltip({ status }) {
+  return (
+    <div className="conn-tip">
+      <div className="conn-tip-head">
+        <span className={"conn-dot " + status.level} />
+        <b>{status.title}</b>
+      </div>
+      {status.rows.length > 0 && (
+        <div className="conn-tip-rows">
+          {status.rows.map((r, i) => (
+            <div className="conn-tip-row" key={i}>
+              <span className="conn-tip-row-k">{r.k}</span>
+              <span className="conn-tip-row-v">{r.v}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {status.note && <small className="conn-tip-note">{status.note}</small>}
+    </div>
+  );
+}
 
 function modelLabel(m) {
   const base = m.name && m.name !== m.id ? `${m.name} · ${m.id}` : m.id;
@@ -145,10 +222,14 @@ function ToggleField({ label, hint, checked, onChange }) {
   );
 }
 
-function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClose, onOpenTokenCounter }) {
+function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, onClose, onOpenTokenCounter, onCodex, onLogout }) {
   const [draft, setDraft] = useState(settings);
   const dev = useDevSettings();
   const [tab, setTab] = useState("model");
+
+  const isCodex = srv?.backend === "codex";
+  const codexOk = !!(srv?.codex_auth && srv.codex_auth.authenticated);
+  const status = codexStatus(srv);
 
   useEffect(() => {
     setDraft(settings);
@@ -158,6 +239,11 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
   useEffect(() => {
     if (!dev.developerMode && tab === "debug") setTab("view");
   }, [dev.developerMode, tab]);
+
+  // The connection tab only exists for the Codex backend; bounce off it otherwise.
+  useEffect(() => {
+    if (!isCodex && tab === "connection") setTab("model");
+  }, [isCodex, tab]);
 
   const set = (patch) => setDraft((prev) => ({ ...prev, ...patch }));
   const setRole = (role, patch) => {
@@ -175,6 +261,7 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
   const tabs = [
     { id: "model", label: "Модель" },
     { id: "view", label: "Интерфейс" },
+    ...(isCodex ? [{ id: "connection", label: "Подключение" }] : []),
     ...(dev.developerMode ? [{ id: "debug", label: "Дебаг-вид" }] : []),
   ];
 
@@ -248,6 +335,36 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
               </button>
             </section>
           </>
+        )}
+
+        {tab === "connection" && isCodex && (
+          <section className="settings-section">
+            <h3>Codex</h3>
+            <p>
+              Подключение к Codex через OAuth в браузере. Нужно для доступа к
+              моделям этого бэкенда.
+            </p>
+            <div className="field check-field">
+              <span>Статус</span>
+              <span className="conn-status-line">
+                <span className={"conn-dot " + (status?.level || "off")} />
+                <span className={"conn-status " + (status?.level || "off")}>
+                  {status?.title || (codexOk ? "Подключён" : "Не подключён")}
+                </span>
+              </span>
+            </div>
+            {status?.note && <p className="settings-note conn-tab-note">{status.note}</p>}
+            {!codexOk && (
+              <button type="button" className="btn primary" onClick={onCodex}>
+                Подключить Codex
+              </button>
+            )}
+            {codexOk && (
+              <button type="button" className="btn" onClick={onLogout}>
+                Выйти
+              </button>
+            )}
+          </section>
         )}
 
         {tab === "model" && (
@@ -392,8 +509,6 @@ export default function Header({
   onExport,
   onReset,
 }) {
-  const isCodex = srv.backend === "codex";
-  const codexOk = !!(srv.codex_auth && srv.codex_auth.authenticated);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tokenCounterOpen, setTokenCounterOpen] = useState(false);
 
@@ -412,6 +527,7 @@ export default function Header({
   );
 
   const chip = srv.backend ? srv.backend + (srv.stream_gm_content ? " · GM stream" : "") : "…";
+  const conn = codexStatus(srv);
 
   return (
     <header>
@@ -432,7 +548,18 @@ export default function Header({
       <h1>
         GM-<b>Lab</b>
       </h1>
-      <span className="chip">{chip}</span>
+      {conn ? (
+        <Tooltip
+          content={<ConnTooltip status={conn} />}
+          tipClassName="conn-tip-wrap"
+          className="chip chip-conn"
+        >
+          <span className={"conn-dot " + conn.level} aria-hidden="true" />
+          <span className="chip-conn-label">{chip}</span>
+        </Tooltip>
+      ) : (
+        <span className="chip">{chip}</span>
+      )}
       <select
         className="model-select"
         title="Модель"
@@ -450,21 +577,6 @@ export default function Header({
         <button className="btn" onClick={() => setSettingsOpen(true)}>
           Настройки
         </button>
-        {isCodex && (
-          <button
-            className={"btn" + (codexOk ? " auth-ok" : "")}
-            onClick={onCodex}
-            title={codexOk ? "Codex подключён" : "Подключить Codex"}
-          >
-            <span className="btn-label">{codexOk ? "Codex подключён" : "Подключить Codex"}</span>
-            <span className="btn-short">{codexOk ? "Codex ✓" : "Codex"}</span>
-          </button>
-        )}
-        {isCodex && codexOk && (
-          <button className="btn" onClick={onLogout}>
-            Выйти
-          </button>
-        )}
         <button className="btn btn-icon" onClick={onExport} title="Скачать JSON" aria-label="Скачать JSON">
           <span className="bi" aria-hidden="true">⬇</span>
           <span className="btn-label">JSON</span>
@@ -479,9 +591,12 @@ export default function Header({
           settings={settings}
           settingsOptions={settingsOptions}
           currentModel={currentModel}
+          srv={srv}
           onApply={onSettingsChange}
           onClose={() => setSettingsOpen(false)}
           onOpenTokenCounter={() => setTokenCounterOpen(true)}
+          onCodex={onCodex}
+          onLogout={onLogout}
         />
       )}
       {tokenCounterOpen && (

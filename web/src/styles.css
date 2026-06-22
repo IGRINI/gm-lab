@@ -37,7 +37,112 @@ a{color:var(--acc)}
 .world-hud-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .world-hud-row span{flex:none;color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.65px}
 .world-hud-row b{min-width:0;color:var(--tx);font-size:12px;line-height:1.25;text-align:right;word-break:break-word}
+.world-hud-link{pointer-events:auto;cursor:pointer;background:none;border:0;margin:0;padding:0;
+  font:inherit;font-size:12px;font-weight:700;line-height:1.25;color:var(--tx);
+  text-align:right;word-break:break-word;min-width:0;
+  border-bottom:1px dashed rgba(156,207,216,.45);
+  transition:color .12s ease,border-color .12s ease}
+.world-hud-link:hover,.world-hud-link:focus-visible{color:var(--acc);
+  border-bottom-color:var(--acc);outline:none}
 @media(max-width:1220px){.world-hud{display:none}}
+
+/* ---- world detail modal (location / character sheet) ---- */
+.dbg-modal.wd-modal{width:min(900px,100%)}
+.wd-modal .dbg-modal-body{padding:18px 20px}
+.wd-modal .dbg-modal-title h3{font-size:18px}
+
+/* Semantic tone palette: each class exposes --tone (text/accent),
+   --tone-tint (fill) and --tone-line (border) so any toned element reads
+   the same three vars. Quality tones go great->good->mid->weak->bad; the
+   category tones (blue/purple/amber/green/teal) tag a section by meaning. */
+.tone-great{--tone:var(--ok);--tone-tint:rgba(166,203,160,.12);--tone-line:rgba(166,203,160,.42)}
+.tone-good{--tone:var(--acc);--tone-tint:rgba(156,207,216,.12);--tone-line:rgba(156,207,216,.42)}
+.tone-mid{--tone:var(--sub);--tone-tint:rgba(192,196,214,.09);--tone-line:rgba(192,196,214,.26)}
+.tone-weak{--tone:var(--md-strong);--tone-tint:rgba(230,192,138,.12);--tone-line:rgba(230,192,138,.42)}
+.tone-bad{--tone:var(--redo);--tone-tint:rgba(224,134,152,.13);--tone-line:rgba(224,134,152,.45)}
+.tone-blue{--tone:var(--player);--tone-tint:rgba(144,168,224,.13);--tone-line:rgba(144,168,224,.45)}
+.tone-purple{--tone:var(--md-em);--tone-tint:rgba(196,167,231,.13);--tone-line:rgba(196,167,231,.45)}
+.tone-amber{--tone:var(--md-strong);--tone-tint:rgba(230,192,138,.13);--tone-line:rgba(230,192,138,.45)}
+.tone-green{--tone:var(--ok);--tone-tint:rgba(166,203,160,.12);--tone-line:rgba(166,203,160,.42)}
+.tone-teal{--tone:var(--acc);--tone-tint:rgba(156,207,216,.12);--tone-line:rgba(156,207,216,.42)}
+
+.wd{display:flex;flex-direction:column;gap:16px}
+.wd-char{gap:18px}
+.wd-desc{margin:0;color:var(--sub);font-size:13px;line-height:1.55}
+.wd-inline-k{color:var(--tone,var(--acc));font-weight:650}
+.wd-section{display:flex;flex-direction:column;gap:9px}
+.wd-section h4{margin:0;color:var(--tone,var(--acc));font-size:11px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.8px;
+  border-left:3px solid var(--tone,var(--acc));border-radius:0;padding-left:9px}
+
+/* vitals strip — prominent combat badges, colored by category / health */
+.wd-vitals{display:grid;grid-template-columns:repeat(auto-fit,minmax(124px,1fr));gap:10px}
+.wd-vital{display:flex;flex-direction:column;align-items:center;gap:4px;padding:13px 10px;
+  border-radius:11px;background:var(--tone-tint,var(--bg3));
+  border:1px solid var(--tone-line,var(--line));text-align:center}
+.wd-vital-v{color:var(--tone,var(--tx));font-size:21px;font-weight:750;line-height:1}
+.wd-vital-k{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.6px}
+
+/* bio info grid — compact field cards, long values span full width */
+.wd-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.wd-field{display:flex;flex-direction:column;gap:3px;padding:9px 12px;border-radius:9px;
+  background:var(--bg2);border:1px solid rgba(255,255,255,.05)}
+.wd-field.tone-great,.wd-field.tone-good,.wd-field.tone-mid,.wd-field.tone-weak,
+.wd-field.tone-bad,.wd-field.tone-amber{background:var(--tone-tint);
+  border-color:var(--tone-line);box-shadow:inset 3px 0 0 var(--tone)}
+.wd-field--wide{grid-column:1 / -1}
+.wd-field-k{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.55px}
+.wd-field-v{color:var(--tx);font-size:13px;font-weight:600;line-height:1.45;word-break:break-word}
+.wd-field.tone-great .wd-field-v,.wd-field.tone-good .wd-field-v,.wd-field.tone-weak .wd-field-v,
+.wd-field.tone-bad .wd-field-v{color:var(--tone)}
+
+/* ability stat blocks — value + modifier colored by how strong the score is */
+.wd-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:9px}
+.wd-stat{display:flex;flex-direction:column;align-items:center;gap:4px;padding:11px 8px;
+  border-radius:11px;background:var(--tone-tint,var(--bg3));border:1px solid var(--tone-line,var(--line))}
+.wd-stat-k{color:var(--mut);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px}
+.wd-stat-v{color:var(--tone,var(--acc));font-size:20px;font-weight:750;line-height:1}
+.wd-stat-mod{color:var(--tone,var(--acc));font-size:11px;font-weight:700;line-height:1;
+  padding:2px 7px;border-radius:999px;background:rgba(0,0,0,.18);border:1px solid var(--tone-line)}
+
+/* bonus chips (skills / saving throws) — tinted by bonus magnitude */
+.wd-chips{display:flex;flex-wrap:wrap;gap:7px}
+.wd-chip{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:8px;
+  background:var(--tone-tint,var(--bg3));border:1px solid var(--tone-line,var(--line))}
+.wd-chip-k{color:var(--sub);font-size:12.5px}
+.wd-chip--save .wd-chip-k{color:var(--mut);text-transform:uppercase;letter-spacing:.5px;font-size:11px}
+.wd-chip-v{color:var(--tone,var(--acc));font-weight:750;font-size:13px}
+
+/* present / off-screen npc rows */
+.wd-npcs{display:flex;flex-direction:column;gap:7px}
+.wd-npc{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.wd-npc>b{font-weight:650}
+.wd-npc-hint{color:var(--mut);font-size:12px}
+
+/* exits / items — inherit the section tone, blocked exits override to red */
+.wd-list2{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px}
+.wd-item{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;font-size:13px;
+  padding:8px 11px;border-radius:9px;background:var(--tone-tint,var(--bg2));
+  border:1px solid var(--tone-line,rgba(255,255,255,.05));box-shadow:inset 3px 0 0 var(--tone,transparent)}
+.wd-item>b{color:var(--tx);font-weight:650}
+.wd-item>span{color:var(--sub)}
+.wd-blocked{color:var(--redo);font-style:normal;font-size:12px}
+
+/* feature tags — highlighted so special traits stand out */
+.wd-tags{display:flex;flex-wrap:wrap;gap:7px}
+.wd-tag{font-size:13px;color:var(--tx);padding:6px 11px;border-radius:8px;
+  background:var(--tone-tint,var(--bg3));border:1px solid var(--tone-line,var(--line));
+  box-shadow:inset 3px 0 0 var(--tone,transparent)}
+
+.wd-list{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;
+  color:var(--sub);font-size:13px;line-height:1.45}
+.wd-list li::marker{color:var(--tone,var(--acc))}
+.wd-empty{margin:0;color:var(--mut);font-size:13px}
+
+@media(max-width:560px){
+  .wd-fields,.wd-list2{grid-template-columns:1fr}
+  .wd-vitals{grid-template-columns:repeat(2,1fr)}
+}
 
 header{flex:none;z-index:5;background:var(--bg2);
   border-bottom:1px solid var(--line);padding:10px 16px;
@@ -51,6 +156,39 @@ header h1 b{color:var(--acc)}
   font-size:16px;outline:none}
 .model-select:focus{border-color:var(--acc)}
 .auth-ok{border-color:rgba(166,227,161,.36);color:var(--ok)}
+
+/* ---- connection status dot + tooltip ---- */
+.conn-dot{display:inline-block;width:9px;height:9px;border-radius:50%;flex:none;
+  background:var(--entity-unknown);border:1px solid rgba(255,255,255,.16);
+  vertical-align:middle;cursor:help}
+.conn-dot.ok{background:var(--ok);border-color:rgba(166,203,160,.55);
+  box-shadow:0 0 0 3px rgba(166,203,160,.14)}
+.conn-dot.warn{background:var(--md-strong);border-color:rgba(230,192,138,.55);
+  box-shadow:0 0 0 3px rgba(230,192,138,.16)}
+.conn-dot.error{background:var(--redo);border-color:rgba(224,134,152,.55);
+  animation:conn-pulse 1.6s ease-in-out infinite}
+.conn-dot.off{background:var(--entity-unknown);opacity:.6}
+.chip-conn{display:inline-flex;align-items:center;gap:7px;cursor:help}
+.chip-conn:hover,.chip-conn:focus-visible{border-color:var(--acc);outline:none}
+.chip-conn .conn-dot{cursor:inherit}
+@keyframes conn-pulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(224,134,152,0)}
+  50%{box-shadow:0 0 0 4px rgba(224,134,152,.24)}}
+
+.conn-status-line{display:inline-flex;align-items:center;gap:8px}
+.conn-status{font-size:13px;color:var(--mut)}
+.conn-status.ok{color:var(--ok)}
+.conn-status.warn{color:var(--md-strong)}
+.conn-status.error{color:var(--redo)}
+.conn-tab-note{margin-top:6px}
+
+.conn-tip-head{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+.conn-tip-head b{color:var(--tx);font-weight:650}
+.conn-tip-rows{display:flex;flex-direction:column;gap:2px}
+.conn-tip-row{display:flex;justify-content:space-between;gap:16px}
+.conn-tip-row-k{color:var(--mut)}
+.conn-tip-row-v{color:var(--tx);word-break:break-word;text-align:right}
+.conn-tip-note{display:block;margin-top:6px;color:var(--mut)}
 .spacer{flex:1}
 .btn{background:var(--bg3);color:var(--tx);border:1px solid var(--line);
   border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px}
@@ -950,6 +1088,9 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
   .chat-toggle{display:inline-flex;order:0;flex:none;padding:7px 10px;min-height:36px}
   header h1{order:1;font-size:15px}
   .chip{display:none}                     /* backend chip is non-essential on phones */
+  /* keep the connection indicator visible on phones — just the dot, no label */
+  .chip.chip-conn{display:inline-flex;order:1;padding:4px 7px}
+  .chip-conn-label{display:none}
   .spacer{display:none}
   .model-select{order:2;flex:1 1 140px;min-width:0;max-width:100%;min-height:38px}
   .header-actions{order:3;flex:1 1 100%;justify-content:flex-end;gap:6px}

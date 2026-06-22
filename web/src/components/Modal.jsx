@@ -1,7 +1,7 @@
 // Lightweight stacked-modal. A modal manager (DebugPanel) owns the stack and
 // closes only the TOP layer on ESC / backdrop-click, so layering stays sane.
 // Each deeper layer sits at a higher z-index and dims the one below it.
-export default function Modal({ title, subtitle, onClose, depth = 0, wide = false, children, footer }) {
+export default function Modal({ title, subtitle, onClose, depth = 0, wide = false, className = "", children, footer }) {
   return (
     <div
       className="dbg-backdrop"
@@ -10,7 +10,7 @@ export default function Modal({ title, subtitle, onClose, depth = 0, wide = fals
       onMouseDown={onClose}
     >
       <div
-        className={["dbg-modal", wide ? "wide" : ""].filter(Boolean).join(" ")}
+        className={["dbg-modal", wide ? "wide" : "", className].filter(Boolean).join(" ")}
         role="dialog"
         aria-modal="true"
         onMouseDown={(e) => e.stopPropagation()}
