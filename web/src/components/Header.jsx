@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
+import TokenCounter from "./TokenCounter.jsx";
 
 function modelLabel(m) {
   const base = m.name && m.name !== m.id ? `${m.name} · ${m.id}` : m.id;
@@ -144,7 +145,7 @@ function ToggleField({ label, hint, checked, onChange }) {
   );
 }
 
-function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClose }) {
+function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClose, onOpenTokenCounter }) {
   const [draft, setDraft] = useState(settings);
   const dev = useDevSettings();
   const [tab, setTab] = useState("model");
@@ -225,19 +226,28 @@ function SettingsModal({ settings, settingsOptions, currentModel, onApply, onClo
         )}
 
         {tab === "debug" && dev.developerMode && (
-          <section className="settings-section">
-            <h3>Что показывать</h3>
-            <p>Тонкая настройка видимости интерфейса. Изменения применяются в реальном времени.</p>
-            {FLAG_META.map((flag) => (
-              <ToggleField
-                key={flag.key}
-                label={flag.label}
-                hint={flag.hint}
-                checked={dev.flags[flag.key] !== false}
-                onChange={(on) => setFlag(flag.key, on)}
-              />
-            ))}
-          </section>
+          <>
+            <section className="settings-section">
+              <h3>Что показывать</h3>
+              <p>Тонкая настройка видимости интерфейса. Изменения применяются в реальном времени.</p>
+              {FLAG_META.map((flag) => (
+                <ToggleField
+                  key={flag.key}
+                  label={flag.label}
+                  hint={flag.hint}
+                  checked={dev.flags[flag.key] !== false}
+                  onChange={(on) => setFlag(flag.key, on)}
+                />
+              ))}
+            </section>
+            <section className="settings-section">
+              <h3>Инструменты</h3>
+              <p>Подсчёт токенов текста через OpenAI API (нужен сохранённый API-ключ).</p>
+              <button type="button" className="btn" onClick={() => onOpenTokenCounter?.()}>
+                🔢 Подсчёт токенов
+              </button>
+            </section>
+          </>
         )}
 
         {tab === "model" && (
@@ -385,6 +395,7 @@ export default function Header({
   const isCodex = srv.backend === "codex";
   const codexOk = !!(srv.codex_auth && srv.codex_auth.authenticated);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tokenCounterOpen, setTokenCounterOpen] = useState(false);
 
   // Ensure the current model is always selectable, even if not in the catalog.
   const options = useMemo(() => {
@@ -470,6 +481,14 @@ export default function Header({
           currentModel={currentModel}
           onApply={onSettingsChange}
           onClose={() => setSettingsOpen(false)}
+          onOpenTokenCounter={() => setTokenCounterOpen(true)}
+        />
+      )}
+      {tokenCounterOpen && (
+        <TokenCounter
+          models={models}
+          currentModel={srv.model || ""}
+          onClose={() => setTokenCounterOpen(false)}
         />
       )}
     </header>

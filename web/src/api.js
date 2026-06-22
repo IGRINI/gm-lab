@@ -59,6 +59,12 @@ export const api = {
   codexLogin: () => getJSON("/codex/login", { method: "POST" }),
   codexLogout: () => getJSON("/codex/logout", { method: "POST" }),
 
+  // --- dev token counter (local tiktoken) + optional OpenAI key storage ---
+  tokenize: (text, model) => _post("/debug/tokenize", { text, model }),
+  openaiKeyStatus: () => getJSON("/debug/openai_key"),
+  saveOpenaiKey: (key) => _post("/debug/openai_key", { key }),
+  deleteOpenaiKey: () => _post("/debug/openai_key/delete"),
+
   // --- debug-panel mutations: each returns the fresh /debug payload ---
   debugRoll: (body) => _post("/debug/roll", body),
   addFact: (text, kind) => _post("/debug/fact", { text, kind }),

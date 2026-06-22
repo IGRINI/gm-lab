@@ -38,6 +38,24 @@ function useCompact() {
   return compact;
 }
 
+// True on touch devices (phones/tablets) whose primary pointer is coarse and
+// where the on-screen keyboard's Enter is a plain newline — there is no
+// Shift+Enter, so Enter must NOT submit. Desktops (fine pointer) keep
+// Enter-to-send / Shift+Enter-for-newline.
+function useSoftKeyboard() {
+  const [soft, setSoft] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(pointer: coarse)");
+    const on = (e) => setSoft(e.matches);
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+  return soft;
+}
+
 function usageTitle(run) {
   return [
     "Весь ран",
@@ -254,6 +272,7 @@ export default function Composer({
   const [value, setValue] = useState("");
   const ref = useRef(null);
   const compact = useCompact();
+  const softKeyboard = useSoftKeyboard();
   const vis = useContext(VisibilityContext);
 
   // Auto-grow: reset to content height; CSS max-height caps it and switches to
@@ -447,7 +466,14 @@ export default function Composer({
   };
 
   const onKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // On phones/tablets Enter is a plain newline (no Shift+Enter) — never submit;
+    // sending is done via the send button. Desktop keeps Enter-to-send.
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey &&
+      !e.nativeEvent.isComposing &&
+      !softKeyboard
+    ) {
       e.preventDefault();
       submit();
     }
@@ -502,7 +528,7 @@ export default function Composer({
                 ref={ref}
                 rows={1}
                 value={value}
-                placeholder={compact ? PLACEHOLDER_COMPACT : PLACEHOLDER}
+                placeholder={compact || softKeyboard ? PLACEHOLDER_COMPACT : PLACEHOLDER}
                 autoComplete="off"
                 onChange={(e) => setValue(e.target.value)}
                 onKeyDown={onKeyDown}

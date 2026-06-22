@@ -14,6 +14,7 @@
 //! `tokio::sync::Mutex` (held across a streamed `/turn`, replacing Python's
 //! per-runtime `RLock`).
 
+pub mod openai_key;
 pub mod payload;
 pub mod tls;
 
@@ -124,6 +125,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/debug/scene", post(post_debug_scene))
         .route("/debug/state_record", post(post_debug_state_record))
         .route("/debug/rumor", post(post_debug_rumor))
+        // dev token counter (OpenAI /v1/responses/input_tokens) + key storage
+        .route(
+            "/debug/openai_key",
+            get(get_openai_key).post(post_openai_key),
+        )
+        .route("/debug/openai_key/delete", post(post_openai_key_delete))
+        .route("/debug/tokenize", post(post_debug_tokenize))
         // /index* -> index.html; everything else -> 404 {error:"not found"}.
         .fallback(fallback_handler)
         .with_state(state)
@@ -339,6 +347,96 @@ async fn get_settings(State(state): State<AppState>) -> Response {
 async fn get_codex_status(State(state): State<AppState>) -> Response {
     let _ = active_chat(&state);
     ok_json(&Value::Object(gml_codex::auth_status()))
+}
+
+// --- dev token counter (OpenAI /v1/responses/input_tokens) + key storage -----
+
+/// `{ok: true, saved, hint}` merged from `openai_key::status()`.
+fn openai_key_ok() -> Response {
+    let mut out = Map::new();
+    out.insert("ok".into(), Value::Bool(true));
+    out.extend(openai_key::status());
+    ok_json(&Value::Object(out))
+}
+
+/// `GET /debug/openai_key` — saved flag + masked hint (never the raw key).
+async fn get_openai_key() -> Response {
+    openai_key_ok()
+}
+
+/// `POST /debug/openai_key {key}` — store the key (server-side), return status.
+async fn post_openai_key(body: Bytes) -> Response {
+    let data = parse_body(&body);
+    openai_key::save_key(data.get("key").and_then(Value::as_str).unwrap_or(""));
+    openai_key_ok()
+}
+
+/// `POST /debug/openai_key/delete`.
+async fn post_openai_key_delete() -> Response {
+    openai_key::delete_key();
+    ok_json(&json!({"ok": true, "saved": false, "hint": ""}))
+}
+
+/// `POST /debug/tokenize {text, model}` — proxy to OpenAI's free
+/// `/v1/responses/input_tokens` (no model run; returns just the input-token
+/// count). Faithful port of `server.py`'s handler.
+async fn post_debug_tokenize(State(state): State<AppState>, body: Bytes) -> Response {
+    let data = parse_body(&body);
+    let text = data.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    let model = data
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let key = openai_key::load_key();
+    if key.is_empty() {
+        return ok_json(&json!({"ok": false, "error": "Сначала сохрани OpenAI API-ключ."}));
+    }
+    if text.is_empty() {
+        return ok_json(&json!({"ok": false, "error": "Пустой текст."}));
+    }
+    let model_req = if model.is_empty() { "gpt-4o-mini".to_string() } else { model.clone() };
+    let resp = state
+        .http
+        .post("https://api.openai.com/v1/responses/input_tokens")
+        .header("Authorization", format!("Bearer {key}"))
+        .header("Content-Type", "application/json")
+        .json(&json!({"model": model_req, "input": text}))
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await;
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => return ok_json(&json!({"ok": false, "error": e.to_string()})),
+    };
+    let st = resp.status();
+    let raw = resp.text().await.unwrap_or_default();
+    let body_val: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    if !st.is_success() {
+        let msg = body_val
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let detail = if msg.is_empty() {
+            raw.chars().take(200).collect::<String>()
+        } else {
+            msg.to_string()
+        };
+        return ok_json(&json!({
+            "ok": false,
+            "status": st.as_u16(),
+            "error": format!("OpenAI {}: {}", st.as_u16(), detail),
+        }));
+    }
+    let count = body_val.get("input_tokens").cloned().unwrap_or(Value::Null);
+    ok_json(&json!({
+        "ok": true,
+        "count": count,
+        "chars": text.chars().count(),
+        "model": model,
+    }))
 }
 
 async fn get_chats(State(state): State<AppState>) -> Response {
