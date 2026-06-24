@@ -299,6 +299,9 @@ export default function App() {
   });
   const [chatsLoading, setChatsLoading] = useState(false);
   const [chatsError, setChatsError] = useState("");
+  const [worlds, setWorlds] = useState([]);
+  const [worldsLoading, setWorldsLoading] = useState(false);
+  const [worldsError, setWorldsError] = useState("");
   const [chatActionBusy, setChatActionBusy] = useState(false);
   const [stories, setStories] = useState([]);
   const [selectedStoryId, setSelectedStoryId] = useState("");
@@ -367,6 +370,22 @@ export default function App() {
       setChatsLoading(false);
     }
   }, [setChatsFromServer]);
+
+  const refreshWorlds = useCallback(async () => {
+    setWorldsLoading(true);
+    setWorldsError("");
+    try {
+      const data = await api.worlds();
+      if (!data.ok) throw new Error(data.error || "список миров не загружен");
+      setWorlds(Array.isArray(data.worlds) ? data.worlds : []);
+      return data;
+    } catch (e) {
+      setWorldsError(e.message || "список миров не загружен");
+      return null;
+    } finally {
+      setWorldsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     let stopped = false;
@@ -462,7 +481,7 @@ export default function App() {
   // initial load
   useEffect(() => {
     (async () => {
-      await Promise.all([refreshChats(), loadStories()]);
+      await Promise.all([refreshChats(), refreshWorlds(), loadStories()]);
       try {
         const s = await api.state();
         setStateFromServer(s);
@@ -657,27 +676,22 @@ export default function App() {
     async (draft) => {
       if (busy || chatActionBusy) return;
       const payload = {
-        activate: true,
-        story_id: "procedural",
-        title: textValue(draft?.title) || "Процедурный мир",
-        story_title: textValue(draft?.title) || "Процедурный мир",
-        seed: textValue(draft?.seed),
+        title: textValue(draft?.title) || "Новый мир",
         genre: textValue(draft?.genre) || "fantasy",
         tone: textValue(draft?.tone) || "tense",
-        scale: textValue(draft?.scale) || "village",
-        story_brief: textValue(draft?.storyBrief),
-        public_intro: textValue(draft?.publicIntro),
+        world_size: textValue(draft?.worldSize),
+        population: textValue(draft?.population),
+        public_premise: textValue(draft?.publicPremise),
         world_lore: draft?.worldLore && typeof draft.worldLore === "object" ? draft.worldLore : null,
       };
       setChatActionBusy(true);
-      setStatus("Создаю мир...");
+      setStatus("Сохраняю мир...");
       try {
-        const data = await api.createChat(payload);
+        const data = await api.createWorld(payload);
         if (!data.ok) throw new Error(data.error || "мир не создан");
-        restoreChatSession(data);
-        setMainView("chat");
-        await refreshChats();
-        closeChatsOnMobile();
+        if (Array.isArray(data.worlds)) setWorlds(data.worlds);
+        else await refreshWorlds();
+        setMainView("world");
       } catch (e) {
         store.dispatch({ kind: "error", agent: "мир", data: e.message });
       } finally {
@@ -685,7 +699,7 @@ export default function App() {
         setStatus("");
       }
     },
-    [busy, chatActionBusy, store, restoreChatSession, refreshChats, closeChatsOnMobile]
+    [busy, chatActionBusy, store, refreshWorlds]
   );
 
   const onWorldArchitectTurn = useCallback(async (body) => api.worldArchitectChat(body), []);
@@ -735,6 +749,21 @@ export default function App() {
       }
     },
     [activeChatId, restoreChatSession, refreshChats, store]
+  );
+
+  const onDeleteWorld = useCallback(
+    async (worldId) => {
+      if (!worldId) return;
+      try {
+        const data = await api.deleteWorld(worldId);
+        if (!data.ok) throw new Error(data.error || "мир не удалён");
+        if (Array.isArray(data.worlds)) setWorlds(data.worlds);
+        else await refreshWorlds();
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "мир", data: e.message });
+      }
+    },
+    [refreshWorlds, store]
   );
 
   const send = useCallback(
@@ -850,11 +879,14 @@ export default function App() {
         )}
         <ChatHistorySidebar
           chats={chats}
+          worlds={worlds}
           activeChatId={activeChatId}
           open={chatsOpen}
           busy={interactionBusy}
           loading={chatsLoading}
           error={chatsError}
+          worldsLoading={worldsLoading}
+          worldsError={worldsError}
           stories={stories}
           selectedStoryId={selectedStoryId}
           storiesLoading={storiesLoading}
@@ -867,6 +899,7 @@ export default function App() {
           onShowChats={showChatView}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
+          onDeleteWorld={onDeleteWorld}
         />
         {mainView === "world" ? (
           <main className="world-creation-pane">

@@ -272,6 +272,61 @@ fn crud_create_save_load_list_delete() {
 }
 
 #[test]
+fn worlds_are_stored_separately_from_chats() {
+    let (store, _dir) = temp_store();
+    let guest = "worlds-guest";
+
+    assert!(store.list_worlds(guest).expect("list worlds").is_empty());
+    assert_eq!(
+        store.active_chat_id(guest).expect("active before worlds"),
+        None,
+        "listing worlds must not create an active chat"
+    );
+
+    let world = store
+        .create_world(
+            guest,
+            json!({
+                "title": "Порог Второго Неба",
+                "genre": "fantasy isekai",
+                "tone": "tense hopeful",
+                "world_size": "Континент с несколькими королевствами",
+                "population": "Десятки миллионов жителей",
+                "public_premise": "Клятвы и долги имеют силу закона и магии.",
+                "world_lore": {
+                    "name": "Порог Второго Неба",
+                    "public_premise": "Клятвы и долги имеют силу закона и магии.",
+                    "world_laws": ["магия требует имени, цены или признанного права"]
+                }
+            }),
+        )
+        .expect("create world");
+    let world_id = world["id"].as_str().expect("world id").to_string();
+    assert_eq!(world["kind"], json!("world"));
+    assert_eq!(world["title"], json!("Порог Второго Неба"));
+    assert_eq!(world["genre"], json!("fantasy isekai"));
+    assert!(world["preview"].as_str().unwrap_or("").contains("Клятвы"));
+    assert_eq!(
+        store
+            .active_chat_id(guest)
+            .expect("active after create world"),
+        None,
+        "creating a world must not create or activate a chat"
+    );
+
+    let worlds = store.list_worlds(guest).expect("list worlds after create");
+    assert_eq!(worlds.len(), 1);
+    assert_eq!(worlds[0]["id"], json!(world_id));
+
+    let deleted = store.delete_world(guest, &world_id).expect("delete world");
+    assert_eq!(deleted["deleted"], json!(true));
+    assert!(store
+        .list_worlds(guest)
+        .expect("list worlds after delete")
+        .is_empty());
+}
+
+#[test]
 fn get_active_creates_when_empty() {
     let (store, _dir) = temp_store();
     let guest = "fresh";

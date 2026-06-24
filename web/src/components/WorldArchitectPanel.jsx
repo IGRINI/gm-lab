@@ -15,9 +15,20 @@ const WORLD_PRESETS = [
       title: "Пепельный Узел",
       genre: "postapocalyptic machine world",
       tone: "bleak",
-      scale: "outpost",
-      storyBrief: "Ты приходишь к форпосту у старого машинного узла, где вода, энергия и доступ к закрытым дверям важнее любых монет.",
-      publicIntro: "Выжившие спорят за право пользоваться старым узлом. Машины вокруг не молчат окончательно: одни служат, другие охраняют забытые протоколы.",
+      worldSize: "Один большой регион вокруг цепочки старых машинных узлов; за его пределами мир шире, но связь и дороги ненадежны.",
+      population: "Сотни тысяч выживших, разбитых на общины, караванные союзы и технокульты.",
+      publicPremise: "Люди живут вокруг старых узлов воды, энергии и ремонта. Машины не исчезли: одни служат, другие охраняют протоколы, которые никто уже не понимает.",
+      worldLore: {
+        world_laws: [
+          "старые машины следуют протоколам, а не морали",
+          "вода, энергия, детали и доступ к узлам важнее монет",
+        ],
+        inhabitants: ["выжившие общины", "технокульты", "караванщики", "автономные дроны"],
+        regions: ["сеть узлов в пепельной зоне", "сухие трассы между поселениями", "закрытые машинные сектора"],
+        power_centers: ["советы водных общин", "ремонтные братства", "узловые культы"],
+        location_rules: ["каждая локация должна показывать цену воды, энергии, деталей, доступа или сигнала"],
+        prohibited_elements: ["классическая магия без объяснения как сбой, культ или чужеродный артефакт"],
+      },
     },
   },
   {
@@ -28,9 +39,19 @@ const WORLD_PRESETS = [
       title: "Порог Второго Неба",
       genre: "fantasy isekai",
       tone: "tense hopeful",
-      scale: "village",
-      storyBrief: "Ты оказываешься в чужом мире у деревни, где имя, клятва и долг перед духами значат больше, чем сила оружия.",
-      publicIntro: "Местные ждут знака от святилища, боятся чужаков и шепчутся, что старый договор с духами снова нарушен.",
+      worldSize: "Континент с несколькими королевствами, духами дорог и местными святилищами; игра может начинаться где угодно внутри него.",
+      population: "Десятки миллионов людей, духовных родов, призванных чужаков и малых народов.",
+      publicPremise: "Имя, клятва и долг имеют силу закона и магии. Призванные чужаки появляются редко, но почти всегда становятся частью старого договора.",
+      worldLore: {
+        dogmas: ["имя и клятва имеют юридическую и мистическую силу", "духи мест помнят долги лучше людей"],
+        world_laws: ["магия требует имени, цены или признанного права", "дальняя дорога меняет слухи и баланс сил"],
+        inhabitants: ["родовые дома", "духи мест", "призванные чужаки", "гильдии рунников"],
+        regions: ["Семь земель под Осколочной Луной", "живые дороги", "пороговые святилища"],
+        religions: ["культ дорожных духов", "официальная вера клятв"],
+        gods: ["Старшие Духи Порогов"],
+        location_rules: ["каждая новая локация должна иметь связь с долгом, властью, дорогой или духом места"],
+        prohibited_elements: ["бесплатное воскрешение", "магия без имени, цены или договора"],
+      },
     },
   },
   {
@@ -41,27 +62,41 @@ const WORLD_PRESETS = [
       title: "Край Старых Дорог",
       genre: "frontier fantasy",
       tone: "tense",
-      scale: "town",
-      storyBrief: "Ты прибываешь в пограничный городок, где дороги важнее стен, а каждый слух может открыть путь к чужому долгу.",
-      publicIntro: "Поселение живёт торговлей, старыми договорами и страхом перед местами, которые снова начали просыпаться.",
+      worldSize: "Один обжитой континент с королевствами, пограничными трактами, старыми местами и дальними землями за картой.",
+      population: "Несколько миллионов жителей: города-государства, деревни, кочевые семьи, дорожные ордена и старые народы.",
+      publicPremise: "Дороги важнее стен: слухи, караваны, старые договоры и опасные места связывают поселения сильнее любой короны.",
+      worldLore: {
+        conflicts: ["корона пытается подчинить дороги", "старые места снова просыпаются", "пограничные поселения спорят за пошлины"],
+        regions: ["королевские тракты", "старые леса", "пограничные города", "забытые святилища"],
+        power_centers: ["дорожные ордена", "городские советы", "караванные дома", "пограничная стража"],
+        economy: ["пошлины", "караваны", "долги за охрану", "право прохода"],
+        location_rules: ["каждая дорога должна иметь характер, цену, риск и тех, кто о ней знает"],
+        prohibited_elements: ["случайные данжи без связи с дорогами, долгами или старым правом"],
+      },
     },
   },
 ];
 
 const DEFAULT_WORLD_DRAFT = {
   title: "",
-  seed: "",
   genre: "fantasy",
   tone: "tense",
-  scale: "village",
-  storyBrief: "",
-  publicIntro: "",
+  worldSize: "",
+  population: "",
+  publicPremise: "",
   worldLore: null,
 };
 
 const LORE_PREVIEW_FIELDS = [
   ["dogmas", "Догматы"],
   ["world_laws", "Законы мира"],
+  ["inhabitants", "Народы/виды"],
+  ["creatures", "Существа/угрозы"],
+  ["power_sources", "Силы/магия/технологии"],
+  ["technologies", "Материальная культура"],
+  ["taboos", "Табу/законы"],
+  ["conflicts", "Конфликты"],
+  ["inspirations", "Референсы"],
   ["regions", "Регионы"],
   ["power_centers", "Власть"],
   ["religions", "Вера"],
@@ -70,9 +105,11 @@ const LORE_PREVIEW_FIELDS = [
   ["history", "История"],
   ["economy", "Экономика"],
   ["daily_life", "Быт"],
+  ["story_hooks", "Напряжения для будущих историй"],
   ["hidden_secrets", "Секреты GM"],
   ["location_rules", "Правила локаций"],
   ["prohibited_elements", "Нельзя без причины"],
+  ["open_questions", "Открытые вопросы"],
 ];
 
 function textValue(value) {
@@ -101,12 +138,11 @@ function normalizeModelMessage(value) {
 function cleanWorldDraft(draft) {
   return {
     title: textValue(draft.title),
-    seed: textValue(draft.seed),
     genre: textValue(draft.genre),
     tone: textValue(draft.tone),
-    scale: textValue(draft.scale),
-    storyBrief: textValue(draft.storyBrief),
-    publicIntro: textValue(draft.publicIntro),
+    worldSize: textValue(draft.worldSize),
+    population: textValue(draft.population),
+    publicPremise: textValue(draft.publicPremise),
     worldLore: draft.worldLore && typeof draft.worldLore === "object" ? draft.worldLore : null,
   };
 }
@@ -119,9 +155,9 @@ function mergeArchitectDraft(current, draft) {
     title: textValue(draft.title) || current.title,
     genre: textValue(draft.genre) || current.genre,
     tone: textValue(draft.tone) || current.tone,
-    scale: textValue(draft.scale) || current.scale,
-    storyBrief: textValue(draft.story_brief) || current.storyBrief,
-    publicIntro: textValue(draft.public_intro) || current.publicIntro,
+    worldSize: textValue(draft.world_size) || current.worldSize,
+    population: textValue(draft.population) || current.population,
+    publicPremise: textValue(draft.public_premise) || current.publicPremise,
     worldLore: lore ? normalizeWorldLore(lore, draft) : current.worldLore,
   };
 }
@@ -131,8 +167,12 @@ function normalizeWorldLore(lore, draft) {
   if (!textValue(next.name)) next.name = textValue(draft.title);
   if (!textValue(next.genre)) next.genre = textValue(draft.genre);
   if (!textValue(next.tone)) next.tone = textValue(draft.tone);
-  if (!textValue(next.scale)) next.scale = textValue(draft.scale);
-  if (!textValue(next.public_premise)) next.public_premise = textValue(draft.public_intro);
+  if (!textValue(next.world_size)) next.world_size = textValue(draft.world_size);
+  if (!textValue(next.population)) next.population = textValue(draft.population);
+  if (!textValue(next.public_premise)) next.public_premise = textValue(draft.public_premise);
+  if (!Array.isArray(next.open_questions) && Array.isArray(draft.open_questions)) {
+    next.open_questions = draft.open_questions;
+  }
   return next;
 }
 
@@ -156,7 +196,6 @@ function applyPresetValues(current, preset) {
   return {
     ...current,
     ...preset.values,
-    seed: current.seed,
   };
 }
 
@@ -170,12 +209,14 @@ function loreHasContent(lore) {
 
 // Render a list lore field as newline-separated text for the manual textareas.
 function loreFieldText(lore, field) {
-  return Array.isArray(lore?.[field]) ? lore[field].join("\n") : "";
+  if (Array.isArray(lore?.[field])) return lore[field].join("\n");
+  if (typeof lore?.[field] === "string") return lore[field];
+  return "";
 }
 
 // Build the final world_lore object on submit: clean list fields (trim + drop
-// empties), keep a non-empty hidden premise, and backfill name/genre/tone/scale/
-// public premise from the top-level draft so a fully manual world is still valid.
+// empties), keep a non-empty hidden premise, and backfill name/genre/tone/
+// world-size/public premise from the top-level draft so manual worlds are valid.
 function finalizeWorldLore(payload) {
   const source = payload.worldLore && typeof payload.worldLore === "object" ? payload.worldLore : {};
   const lore = { ...source };
@@ -189,13 +230,14 @@ function finalizeWorldLore(payload) {
   const hidden = textValue(lore.hidden_premise);
   if (hidden) lore.hidden_premise = hidden;
   else delete lore.hidden_premise;
-  if (!textValue(lore.public_premise) && textValue(payload.publicIntro)) {
-    lore.public_premise = textValue(payload.publicIntro);
+  if (!textValue(lore.public_premise) && textValue(payload.publicPremise)) {
+    lore.public_premise = textValue(payload.publicPremise);
   }
   if (!textValue(lore.name)) lore.name = textValue(payload.title);
   if (!textValue(lore.genre)) lore.genre = textValue(payload.genre);
   if (!textValue(lore.tone)) lore.tone = textValue(payload.tone);
-  if (!textValue(lore.scale)) lore.scale = textValue(payload.scale);
+  if (!textValue(lore.world_size)) lore.world_size = textValue(payload.worldSize);
+  if (!textValue(lore.population)) lore.population = textValue(payload.population);
   return lore;
 }
 
@@ -209,7 +251,7 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
     {
       role: "assistant",
       content:
-        "Можешь просто описать мир в свободной форме — или ответь прямо на вопросы:\n\n1. Жанр и сеттинг? (тёмное фэнтези, киберпанк, иссекай…)\n2. Настроение и тон? (мрачный, героический, ироничный)\n3. Масштаб старта? (деревня, городок, регион)\n4. Что в мире точно должно быть?\n5. Чего быть не должно ни в коем случае?\n6. Главный скрытый конфликт или тайна мира?\n\nОтвечай как удобно — одним абзацем или по пунктам. Поля справа можно заполнить и вручную.",
+        "Опиши мир свободно — или дай направление, а детали я соберу сам.\n\nЧто особенно полезно:\n\n1. Жанр и настроение.\n2. Насколько большой мир и сколько в нём жителей примерно.\n3. Кто его населяет: люди, расы, виды, культуры, фракции.\n4. Какие законы реальности работают: магия, технологии, боги, смерть, дороги.\n5. Что в мире точно должно быть.\n6. Чего нельзя добавлять без причины.\n7. Какие скрытые истины должен знать только GM.\n\nСтартовую сцену, роль игрока и квест сейчас не придумываем — это будет отдельный шаг истории.",
     },
   ]);
   const [modelMessages, setModelMessages] = useState([]);
@@ -224,13 +266,14 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
   const worldPayload = useMemo(() => cleanWorldDraft(worldDraft), [worldDraft]);
   const loreFilled = useMemo(() => loreHasContent(worldPayload.worldLore), [worldPayload.worldLore]);
   // Creatable manually too: the basics plus either a public premise or any lore.
-  const loreReady = !!textValue(worldPayload.publicIntro) || loreFilled;
+  const loreReady = !!textValue(worldPayload.publicPremise) || loreFilled;
   const worldCreateLocked =
     locked ||
     !worldPayload.title ||
     !worldPayload.genre ||
     !worldPayload.tone ||
-    !worldPayload.scale ||
+    !worldPayload.worldSize ||
+    !worldPayload.population ||
     !loreReady;
   const architectLocked = locked || architectBusy;
 
@@ -338,12 +381,12 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
             <span className="world-studio-kicker">создание мира</span>
             <b>Студия миров</b>
             <p className="world-studio-sub">
-              Соберите лор с архитектором или заполните вручную — затем создайте мир и первый чат.
+              Соберите лор и правила мира с архитектором или заполните вручную — без старта игрового чата.
             </p>
           </div>
         </div>
         <span className={`world-studio-chip${worldCreateLocked ? "" : " ready"}`}>
-          {worldCreateLocked ? "черновик не готов" : "готово к созданию"}
+          {worldCreateLocked ? "черновик не готов" : "готово к сохранению"}
         </span>
       </header>
 
@@ -435,7 +478,7 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
 
           <div className="world-inspector-body">
             <div className="world-inspector-section">
-              <span className="world-inspector-label">Быстрый старт</span>
+              <span className="world-inspector-label">Пресеты мира</span>
               <div className="world-manager-presets" aria-label="Быстрые пресеты мира">
                 {WORLD_PRESETS.map((preset) => (
                   <button
@@ -453,11 +496,11 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
             </div>
 
             <label className="world-field">
-              <span>Название истории</span>
+              <span>Название мира</span>
               <input
                 value={worldDraft.title}
                 onChange={(event) => updateWorldDraft("title", event.target.value)}
-                placeholder="Например: Пепельный Узел"
+                placeholder="Например: Порог Второго Неба"
                 disabled={locked}
               />
             </label>
@@ -483,49 +526,33 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
               </label>
             </div>
 
-            <div className="world-field-grid">
-              <label className="world-field">
-                <span>Масштаб</span>
-                <select
-                  value={worldDraft.scale}
-                  onChange={(event) => updateWorldDraft("scale", event.target.value)}
-                  disabled={locked}
-                >
-                  <option value="village">Деревня</option>
-                  <option value="town">Городок</option>
-                  <option value="city">Город</option>
-                  <option value="outpost">Форпост</option>
-                  <option value="region">Регион</option>
-                </select>
-              </label>
-              <label className="world-field">
-                <span>Seed</span>
-                <input
-                  value={worldDraft.seed}
-                  onChange={(event) => updateWorldDraft("seed", event.target.value)}
-                  placeholder="пусто = случайный"
-                  disabled={locked}
-                />
-              </label>
-            </div>
-
             <label className="world-field">
-              <span>Бриф для игрока</span>
+              <span>Размер мира</span>
               <textarea
-                value={worldDraft.storyBrief}
-                onChange={(event) => updateWorldDraft("storyBrief", event.target.value)}
-                placeholder="Коротко: где игрок, что произошло и почему ему есть дело."
-                rows={4}
+                value={worldDraft.worldSize}
+                onChange={(event) => updateWorldDraft("worldSize", event.target.value)}
+                placeholder="Например: один континент; школа внутри большого магического общества; сектор галактики с десятками планет."
+                rows={3}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Публичная завязка мира</span>
+              <span>Население</span>
+              <input
+                value={worldDraft.population}
+                onChange={(event) => updateWorldDraft("population", event.target.value)}
+                placeholder="Например: десятки миллионов, 5 разумных видов, сотни культур."
+                disabled={locked}
+              />
+            </label>
+
+            <label className="world-field">
+              <span>Публичное описание мира</span>
               <textarea
-                value={worldDraft.publicIntro}
-                onChange={(event) => updateWorldDraft("publicIntro", event.target.value)}
-                placeholder="Что известно о мире без скрытых секретов GM."
+                value={worldDraft.publicPremise}
+                onChange={(event) => updateWorldDraft("publicPremise", event.target.value)}
+                placeholder="Что можно безопасно рассказать игроку о мире без стартового квеста и скрытых секретов GM."
                 rows={4}
                 disabled={locked}
               />
@@ -579,10 +606,10 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
 
           <div className="world-inspector-foot">
             <button type="submit" className="btn primary world-create-btn" disabled={worldCreateLocked}>
-              Создать мир и чат
+              Сохранить мир
             </button>
             <p className="world-manager-note">
-              Нужны название, жанр, тон, масштаб и публичная завязка (или библия мира). Лор станет рамками канона для GM и генератора локаций.
+              Нужны название, жанр, тон, размер мира, население и публичное описание или библия мира. Сохранение не запускает чат.
             </p>
           </div>
         </section>

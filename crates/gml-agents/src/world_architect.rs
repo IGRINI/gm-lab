@@ -1,10 +1,9 @@
 //! Dedicated world-architect agent.
 //!
 //! This is not the in-game GM and not the location generator. It is a separate
-//! planning chat that helps the player author a world bible before a procedural
-//! campaign is created. The only mutating surface it has is a draft tool call;
-//! committing that draft into an actual campaign remains the `/chats`
-//! procedural create path.
+//! planning chat that helps the player author a reusable world bible. The only
+//! mutating surface it has is a draft tool call; saving the draft creates a
+//! standalone world, not a running campaign.
 
 use serde_json::{json, Map, Value};
 
@@ -12,12 +11,12 @@ use gml_llm::{Backend, BackendError, NullSink};
 use gml_types::Role;
 
 const WORLD_ARCHITECT_SYSTEM: &str = r#"You are the GM-Lab world architect, a specialist AI that helps a user create a
-coherent playable world bible before the live GM starts a campaign.
+coherent reusable world bible before any story is created.
 
 You are not the in-game GM. Do not narrate play, do not resolve player actions,
-and do not create a running scene. Your job is to ask useful questions, clarify
-preferences, and draft the world-level canon that later constrains the GM and
-location generator.
+and do not create a running scene, player role, starting quest, or starting
+location. Your job is to ask useful questions, clarify preferences, and draft
+the world-level canon that later constrains the GM and location generator.
 
 Write in Russian. Keep the conversation practical and concrete. If the user is
 underspecified, ask 3-6 focused questions instead of inventing everything. If
@@ -25,7 +24,8 @@ there is enough information, summarize the direction and call draft_world_bible.
 
 ## What a complete world bible must cover
 - Core promise: what kind of story this world makes possible.
-- Genre, tone, scale, inspirations, and explicit anti-inspirations.
+- Genre, tone, world size, population scale, inspirations, and explicit
+  anti-inspirations.
 - Reality laws: magic, technology, divinity, ecology, death, travel, and limits.
 - Religions/creeds, gods/spirits/forces, heresies, rituals, taboos, afterlife.
 - History: ancient origin, major breaks, recent causes; avoid one-cause history.
@@ -39,7 +39,8 @@ there is enough information, summarize the direction and call draft_world_bible.
 - Location generation rules: what future cities, villages, rooms, dungeons,
   roads, and situations are allowed to contain.
 - Prohibited elements: things that should not appear without a special reason.
-- Story hooks: tensions that can produce a living campaign start.
+- World tensions: reusable conflicts that can support later stories without
+  defining a specific start.
 - Open questions: what still needs user choice later.
 
 ## Tool use
@@ -52,15 +53,24 @@ Example draft shape:
   "title": "Порог Второго Неба",
   "genre": "fantasy isekai",
   "tone": "tense hopeful",
-  "scale": "region",
-  "story_brief": "Ты приходишь в мир, где имя и клятва весят больше стали...",
-  "public_intro": "Местные знают: старые договоры с духами снова дают трещину...",
+  "world_size": "Континент с несколькими королевствами, духами дорог и дальними землями за картой",
+  "population": "Десятки миллионов жителей: люди, духи мест, малые народы и редкие призванные чужаки",
+  "public_premise": "Имя, клятва и долг имеют силу закона и магии.",
   "world_lore": {
     "name": "Порог Второго Неба",
     "public_premise": "...",
     "hidden_premise": "...",
+    "world_size": "...",
+    "population": "...",
     "dogmas": ["..."],
     "world_laws": ["..."],
+    "inhabitants": ["..."],
+    "creatures": ["..."],
+    "power_sources": ["..."],
+    "technologies": ["..."],
+    "taboos": ["..."],
+    "conflicts": ["..."],
+    "inspirations": ["..."],
     "regions": ["..."],
     "power_centers": ["..."],
     "religions": ["..."],
@@ -69,9 +79,11 @@ Example draft shape:
     "history": ["..."],
     "economy": ["..."],
     "daily_life": ["..."],
+    "story_hooks": ["..."],
     "hidden_secrets": ["..."],
     "location_rules": ["..."],
-    "prohibited_elements": ["..."]
+    "prohibited_elements": ["..."],
+    "open_questions": ["..."]
   }
 }"#;
 
@@ -119,17 +131,17 @@ pub fn world_architect_tools() -> Vec<Value> {
         "type": "function",
         "function": {
             "name": "draft_world_bible",
-            "description": "Create or update the structured world bible draft that can later be committed into a procedural campaign.",
+            "description": "Create or update the structured reusable world bible draft.",
             "parameters": {
                 "type": "object",
                 "additionalProperties": true,
                 "properties": {
-                    "title": {"type": "string", "description": "Player-facing campaign/world title."},
+                    "title": {"type": "string", "description": "World title."},
                     "genre": {"type": "string", "description": "Short genre label, e.g. fantasy isekai or machine postapocalypse."},
                     "tone": {"type": "string", "description": "Short tone label."},
-                    "scale": {"type": "string", "description": "Starting scope: village, town, city, outpost, region, kingdom, world."},
-                    "story_brief": {"type": "string", "description": "Short player-facing start brief: where they are, what happened, why it matters."},
-                    "public_intro": {"type": "string", "description": "Player-safe world premise."},
+                    "world_size": {"type": "string", "description": "Descriptive setting size, not a start scope."},
+                    "population": {"type": "string", "description": "Approximate population scale and diversity."},
+                    "public_premise": {"type": "string", "description": "Player-safe world premise without a starting quest."},
                     "world_lore": {
                         "type": "object",
                         "additionalProperties": true,
@@ -181,8 +193,8 @@ pub async fn world_architect_turn(
         draft_call
             .as_ref()
             .and_then(draft_title)
-            .map(|title| format!("Собрал черновик мира «{title}». Его можно править дальше или создать по нему историю."))
-            .unwrap_or_else(|| "Черновик мира обновлён. Его можно править дальше или создать по нему историю.".to_string())
+            .map(|title| format!("Собрал черновик мира «{title}». Его можно править дальше или сохранить как отдельный мир."))
+            .unwrap_or_else(|| "Черновик мира обновлён. Его можно править дальше или сохранить как отдельный мир.".to_string())
     } else {
         output.content.trim().to_string()
     };

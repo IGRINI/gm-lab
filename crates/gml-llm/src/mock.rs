@@ -259,7 +259,20 @@ fn world_architect_chat_output() -> ChatOutput {
         ("name", Value::String("Порог Второго Неба".to_string())),
         ("genre", Value::String("fantasy isekai".to_string())),
         ("tone", Value::String("tense hopeful".to_string())),
-        ("scale", Value::String("region".to_string())),
+        (
+            "world_size",
+            Value::String(
+                "Континент с несколькими королевствами, духами дорог и дальними землями за картой."
+                    .to_string(),
+            ),
+        ),
+        (
+            "population",
+            Value::String(
+                "Десятки миллионов жителей: люди, духи мест, малые народы и редкие призванные чужаки."
+                    .to_string(),
+            ),
+        ),
         (
             "public_premise",
             Value::String(
@@ -364,18 +377,24 @@ fn world_architect_chat_output() -> ChatOutput {
             ("title", Value::String("Порог Второго Неба".to_string())),
             ("genre", Value::String("fantasy isekai".to_string())),
             ("tone", Value::String("tense hopeful".to_string())),
-            ("scale", Value::String("region".to_string())),
             (
-                "story_brief",
+                "world_size",
                 Value::String(
-                    "Ты приходишь в мир, где имя, клятва и долг перед духами значат больше силы."
+                    "Континент с несколькими королевствами, духами дорог и дальними землями за картой."
                         .to_string(),
                 ),
             ),
             (
-                "public_intro",
+                "population",
                 Value::String(
-                    "Местные знают: старые договоры с духами снова дают трещину, а появление чужака редко бывает случайным."
+                    "Десятки миллионов жителей: люди, духи мест, малые народы и редкие призванные чужаки."
+                        .to_string(),
+                ),
+            ),
+            (
+                "public_premise",
+                Value::String(
+                    "Имя, клятва и долг имеют силу закона и магии; старые договоры с духами снова дают трещину."
                         .to_string(),
                 ),
             ),
@@ -383,7 +402,7 @@ fn world_architect_chat_output() -> ChatOutput {
             (
                 "open_questions",
                 Value::Array(vec![Value::String(
-                    "Каким должен быть первый регион: деревня, город или пограничный тракт?"
+                    "Насколько широко показывать мир: один континент, несколько морей или соседние планы?"
                         .to_string(),
                 )]),
             ),

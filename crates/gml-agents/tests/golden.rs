@@ -693,6 +693,11 @@ fn world_architect_has_static_prompt_and_draft_tool() {
     assert!(system.contains("GM-Lab world architect"));
     assert!(system.contains("Religions/creeds"));
     assert!(system.contains("History"));
+    assert!(system.contains("world_size"));
+    assert!(system.contains("population"));
+    assert!(!system.contains("story_brief"));
+    assert!(!system.contains("public_intro"));
+    assert!(!system.contains("\"scale\""));
     assert!(messages.last().unwrap()["content"]
         .as_str()
         .unwrap()
@@ -704,7 +709,14 @@ fn world_architect_has_static_prompt_and_draft_tool() {
         tools[0]["function"]["name"], "draft_world_bible",
         "architect has its own draft tool"
     );
-    assert!(tools[0]["function"]["parameters"]["properties"]["world_lore"].is_object());
+    let props = &tools[0]["function"]["parameters"]["properties"];
+    assert!(props["world_lore"].is_object());
+    assert!(props["world_size"].is_object());
+    assert!(props["population"].is_object());
+    assert!(props["public_premise"].is_object());
+    assert!(props["scale"].is_null());
+    assert!(props["story_brief"].is_null());
+    assert!(props["public_intro"].is_null());
 }
 
 #[test]

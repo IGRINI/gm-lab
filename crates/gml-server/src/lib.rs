@@ -113,6 +113,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/transcript", get(get_transcript))
         .route("/stories", get(get_stories))
         .route("/chats", get(get_chats).post(post_create_chat))
+        .route("/worlds", get(get_worlds).post(post_create_world))
         .route("/world-architect/chat", post(post_world_architect_chat))
         .route("/export", get(get_export))
         .route("/codex/status", get(get_codex_status))
@@ -120,6 +121,7 @@ pub fn build_router(state: AppState) -> Router {
         // POST
         .route("/chats/{id}/activate", post(post_activate_chat))
         .route("/chats/{id}/delete", post(post_delete_chat))
+        .route("/worlds/{id}/delete", post(post_delete_world))
         .route("/model", post(post_model))
         .route("/cmd", post(post_cmd))
         .route("/turn", post(post_turn))
@@ -276,6 +278,84 @@ fn required_world_lore_from_body(
         Err("world_lore must not be empty".to_string())
     } else {
         Ok(lore)
+    }
+}
+
+fn reusable_world_payload_from_body(map: &Map<String, Value>) -> Result<Value, String> {
+    for key in [
+        "activate",
+        "seed",
+        "story_id",
+        "story_title",
+        "story_brief",
+        "storyBrief",
+        "public_intro",
+        "publicIntro",
+        "scale",
+    ] {
+        if map.contains_key(key) {
+            return Err(format!(
+                "{key} belongs to story creation, not world creation"
+            ));
+        }
+    }
+
+    let title = body_str(map, "title");
+    let genre = body_str(map, "genre");
+    let tone = body_str(map, "tone");
+    let world_size = body_str(map, "world_size");
+    let population = body_str(map, "population");
+    if title.is_empty() {
+        return Err("title is required".to_string());
+    }
+    if genre.is_empty() {
+        return Err("genre is required".to_string());
+    }
+    if tone.is_empty() {
+        return Err("tone is required".to_string());
+    }
+    if world_size.is_empty() {
+        return Err("world_size is required".to_string());
+    }
+    if population.is_empty() {
+        return Err("population is required".to_string());
+    }
+
+    let world_lore = map
+        .get("world_lore")
+        .ok_or_else(|| "world_lore is required".to_string())?;
+    if !world_lore.is_object() {
+        return Err("world_lore must be an object".to_string());
+    }
+    if !value_has_text(world_lore) {
+        return Err("world_lore must not be empty".to_string());
+    }
+
+    let mut payload = Map::new();
+    payload.insert("title".to_string(), Value::String(title));
+    payload.insert("genre".to_string(), Value::String(genre));
+    payload.insert("tone".to_string(), Value::String(tone));
+    payload.insert("world_size".to_string(), Value::String(world_size));
+    payload.insert("population".to_string(), Value::String(population));
+    if let Some(public_premise) = map.get("public_premise").and_then(Value::as_str) {
+        let trimmed = public_premise.trim();
+        if !trimmed.is_empty() {
+            payload.insert(
+                "public_premise".to_string(),
+                Value::String(trimmed.to_string()),
+            );
+        }
+    }
+    payload.insert("world_lore".to_string(), world_lore.clone());
+    Ok(Value::Object(payload))
+}
+
+fn value_has_text(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => items.iter().any(value_has_text),
+        Value::Object(map) => map.values().any(value_has_text),
+        _ => false,
     }
 }
 
@@ -778,6 +858,47 @@ async fn get_chats(State(state): State<AppState>) -> Response {
     }
 }
 
+async fn get_worlds(State(state): State<AppState>) -> Response {
+    let scope = chat_scope_id();
+    let store = state.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let worlds = store.list_worlds(&scope)?;
+        Ok::<Value, gml_persistence::StoreError>(json!({
+            "ok": true,
+            "worlds": worlds,
+        }))
+    })
+    .await;
+    join_json(res)
+}
+
+async fn post_create_world(State(state): State<AppState>, body: Bytes) -> Response {
+    let data = parse_body(&body);
+    let payload = match reusable_world_payload_from_body(&data) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            )
+        }
+    };
+
+    let scope = chat_scope_id();
+    let store = state.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let world = store.create_world(&scope, payload)?;
+        let worlds = store.list_worlds(&scope)?;
+        Ok::<Value, gml_persistence::StoreError>(json!({
+            "ok": true,
+            "world": world,
+            "worlds": worlds,
+        }))
+    })
+    .await;
+    join_json(res)
+}
+
 async fn get_models(State(state): State<AppState>) -> Response {
     let cfg = state.config.clone();
     let settings = state.settings.clone();
@@ -1102,6 +1223,53 @@ async fn post_delete_chat(State(state): State<AppState>, AxPath(id): AxPath<Stri
             out.insert("embeddings_purged".to_string(), json!(embeddings_purged));
         })?;
         Ok::<Value, gml_persistence::StoreError>(Value::Object(out))
+    })
+    .await;
+    match res {
+        Ok(Ok(mut v)) => {
+            let status = v.get("__status").and_then(Value::as_i64);
+            if let Value::Object(ref mut m) = v {
+                m.remove("__status");
+            }
+            if status == Some(404) {
+                json_response(StatusCode::NOT_FOUND, &v)
+            } else {
+                ok_json(&v)
+            }
+        }
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    let world_id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let scope = chat_scope_id();
+    let store = state.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let result = store.delete_world(&scope, &world_id)?;
+        if result.get("deleted").and_then(Value::as_bool) != Some(true) {
+            let reason = result
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("world not found")
+                .to_string();
+            return Ok(json!({"ok": false, "error": reason, "__status": 404}));
+        }
+        let worlds = store.list_worlds(&scope)?;
+        Ok::<Value, gml_persistence::StoreError>(json!({
+            "ok": true,
+            "deleted": true,
+            "worlds": worlds,
+        }))
     })
     .await;
     match res {

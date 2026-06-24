@@ -409,6 +409,107 @@ async fn get_chats_shape() {
 }
 
 #[tokio::test]
+async fn worlds_route_is_separate_from_chats() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    let (status, body) = get(&state, "/worlds").await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["worlds"], json!([]));
+    assert_eq!(
+        state.store.active_chat_id("shared").unwrap(),
+        None,
+        "reading worlds must not create an active chat"
+    );
+
+    let (status, body) = post(
+        &state,
+        "/worlds",
+        json!({
+            "title": "Порог Второго Неба",
+            "genre": "fantasy isekai",
+            "tone": "tense hopeful",
+            "world_size": "Континент с несколькими королевствами",
+            "population": "Десятки миллионов жителей",
+            "public_premise": "Клятвы и долги имеют силу закона и магии.",
+            "world_lore": {
+                "name": "Порог Второго Неба",
+                "public_premise": "Клятвы и долги имеют силу закона и магии.",
+                "world_laws": ["магия требует имени, цены или признанного права"]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["world"]["kind"], "world");
+    assert_eq!(got["world"]["title"], "Порог Второго Неба");
+    assert_eq!(
+        got["world"]["world_size"],
+        "Континент с несколькими королевствами"
+    );
+    assert!(
+        got.get("chat").is_none(),
+        "world create must not return chat payload"
+    );
+    assert!(
+        got.get("state").is_none(),
+        "world create must not start a session"
+    );
+    assert!(got.get("transcript").is_none());
+    assert_eq!(
+        state.store.active_chat_id("shared").unwrap(),
+        None,
+        "creating a world must not create an active chat"
+    );
+
+    let world_id = got["world"]["id"].as_str().unwrap();
+    let (status, body) = post(&state, &format!("/worlds/{world_id}/delete"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["deleted"], true);
+    assert_eq!(got["worlds"], json!([]));
+}
+
+#[tokio::test]
+async fn create_world_rejects_story_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let base = json!({
+        "title": "Порог Второго Неба",
+        "genre": "fantasy isekai",
+        "tone": "tense hopeful",
+        "world_size": "Континент",
+        "population": "Десятки миллионов",
+        "world_lore": {"name": "Порог Второго Неба", "world_laws": ["клятвы имеют силу"]}
+    });
+    for legacy_key in [
+        "activate",
+        "seed",
+        "story_id",
+        "story_brief",
+        "storyBrief",
+        "public_intro",
+        "publicIntro",
+        "scale",
+    ] {
+        let mut body = base.clone();
+        body.as_object_mut()
+            .unwrap()
+            .insert(legacy_key.to_string(), json!("legacy"));
+        let (status, bytes) = post(&state, "/worlds", body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{legacy_key}");
+        let got: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(got["ok"], false);
+        assert!(got["error"].as_str().unwrap_or("").contains(legacy_key));
+    }
+}
+
+#[tokio::test]
 async fn sidecar_status_route_returns_shape() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
@@ -781,6 +882,21 @@ async fn world_architect_chat_returns_structured_draft() {
         .unwrap_or("")
         .contains("Порог Второго Неба"));
     assert_eq!(got["draft"]["title"], "Порог Второго Неба");
+    assert!(got["draft"]["scale"].is_null());
+    assert!(got["draft"]["story_brief"].is_null());
+    assert!(got["draft"]["public_intro"].is_null());
+    assert_eq!(
+        got["draft"]["world_size"],
+        "Континент с несколькими королевствами, духами дорог и дальними землями за картой."
+    );
+    assert!(got["draft"]["population"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Десятки миллионов"));
+    assert!(got["draft"]["public_premise"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Имя, клятва и долг"));
     assert_eq!(
         got["draft"]["world_lore"]["gods"][0],
         "Старшие Духи Порогов"

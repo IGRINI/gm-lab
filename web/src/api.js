@@ -31,13 +31,19 @@ export const api = {
 
   chats: () => getJSON("/chats"),
 
+  worlds: () => getJSON("/worlds"),
+
   createChat: (body) => _post("/chats", body),
+
+  createWorld: (body) => _post("/worlds", body),
 
   worldArchitectChat: (body) => _post("/world-architect/chat", body),
 
   activateChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/activate`),
 
   deleteChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/delete`),
+
+  deleteWorld: (worldId) => _post(`/worlds/${encodeURIComponent(worldId)}/delete`),
 
   setModel: (model) =>
     getJSON("/model", {

@@ -435,6 +435,9 @@ header h1 b{color:var(--acc)}
   border-left-color:var(--acc)}
 .chat-history-row:disabled{cursor:default}
 .chat-history-row:disabled:not(.active){opacity:.55}
+.world-history-row{cursor:default}
+.world-history-row:hover{background:rgba(255,255,255,.025);border-color:rgba(156,207,216,.18);
+  border-left-color:transparent}
 .chat-row-head{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:8px}
 .chat-row-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:760;font-size:13.5px}
 .chat-row-date{color:var(--mut);font-size:11px;white-space:nowrap}

@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use gml_config::Config;
 use gml_llm::Backend;
@@ -173,6 +173,18 @@ impl DialogStore {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS worlds (
+                guest_id TEXT NOT NULL,
+                world_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                preview TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guest_id, world_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_worlds_guest_updated
+                ON worlds(guest_id, updated_at);
             "#,
         )?;
         Ok(())
@@ -285,6 +297,90 @@ impl DialogStore {
                 })
             })
             .collect())
+    }
+
+    /// List reusable world bibles. This is intentionally separate from chats:
+    /// reading worlds must not create or activate a dialog runtime.
+    pub fn list_worlds(&self, guest_id: &str) -> Result<Vec<Value>, StoreError> {
+        let con = self.connect()?;
+        let mut stmt = con.prepare(
+            "SELECT world_id, title, preview, payload, created_at, updated_at
+             FROM worlds
+             WHERE guest_id = ?1
+             ORDER BY updated_at DESC, created_at DESC, world_id DESC",
+        )?;
+        let rows: Vec<(String, String, String, String, String, String)> = stmt
+            .query_map([guest_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, preview, payload, created_at, updated_at)| {
+                world_row_response(&id, &title, &preview, &payload, &created_at, &updated_at)
+            })
+            .collect())
+    }
+
+    /// Create a reusable world bible. It does not create a chat, session, canon
+    /// runtime, transcript, or active-chat pointer.
+    pub fn create_world(&self, guest_id: &str, payload: Value) -> Result<Value, StoreError> {
+        let world_id = self.new_world_id(guest_id)?;
+        let payload = normalize_world_payload(payload);
+        let title = world_title_from_payload(&payload);
+        let preview = world_preview_from_payload(&payload, &title);
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|e| StoreError::Payload(format!("world payload serialize: {e}")))?;
+
+        let con = self.connect()?;
+        con.execute(
+            "INSERT INTO worlds (
+                guest_id, world_id, title, preview, payload, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
+            rusqlite::params![guest_id, world_id, title, preview, payload_json],
+        )?;
+        let saved: (Option<String>, Option<String>) = con.query_row(
+            "SELECT created_at, updated_at FROM worlds
+             WHERE guest_id = ?1 AND world_id = ?2",
+            rusqlite::params![guest_id, world_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        con.commit_implicit()?;
+        Ok(world_row_response(
+            &world_id,
+            &title,
+            &preview,
+            &serde_json::to_string(&payload).unwrap_or_default(),
+            saved.0.as_deref().unwrap_or_default(),
+            saved.1.as_deref().unwrap_or_default(),
+        ))
+    }
+
+    /// Delete a reusable world bible. This never touches chat state.
+    pub fn delete_world(&self, guest_id: &str, world_id: &str) -> Result<Value, StoreError> {
+        let world_id = world_id.trim();
+        if world_id.is_empty() {
+            return Ok(json!({"deleted": false, "reason": "world_id is required"}));
+        }
+        let con = self.connect()?;
+        let removed = con.execute(
+            "DELETE FROM worlds WHERE guest_id = ?1 AND world_id = ?2",
+            rusqlite::params![guest_id, world_id],
+        )?;
+        con.commit_implicit()?;
+        if removed == 0 {
+            Ok(json!({"deleted": false, "reason": "world not found"}))
+        } else {
+            Ok(json!({"deleted": true}))
+        }
     }
 
     /// `active_chat_id(guest_id)` — with self-heal to latest.
@@ -729,6 +825,11 @@ impl DialogStore {
         new_chat_id(&con, guest_id)
     }
 
+    fn new_world_id(&self, guest_id: &str) -> Result<String, StoreError> {
+        let con = self.connect()?;
+        new_world_id(&con, guest_id)
+    }
+
     fn chat_exists(&self, guest_id: &str, chat_id: &str) -> Result<bool, StoreError> {
         let con = self.connect()?;
         chat_exists(&con, guest_id, chat_id)
@@ -846,6 +947,118 @@ fn new_chat_id(con: &Connection, guest_id: &str) -> Result<String, StoreError> {
     Err(StoreError::Other(
         "could not allocate unique chat id".to_string(),
     ))
+}
+
+fn new_world_id(con: &Connection, guest_id: &str) -> Result<String, StoreError> {
+    for _ in 0..32 {
+        let world_id = token_urlsafe(12);
+        if !world_exists(con, guest_id, &world_id)? {
+            return Ok(world_id);
+        }
+    }
+    Err(StoreError::Other(
+        "could not allocate unique world id".to_string(),
+    ))
+}
+
+fn world_exists(con: &Connection, guest_id: &str, world_id: &str) -> Result<bool, StoreError> {
+    let row: Option<i64> = con
+        .query_row(
+            "SELECT 1 FROM worlds WHERE guest_id = ?1 AND world_id = ?2 LIMIT 1",
+            rusqlite::params![guest_id, world_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(row.is_some())
+}
+
+fn normalize_world_payload(payload: Value) -> Value {
+    let mut object = match payload {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    let title = clean_metadata_text(
+        object
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        100,
+    );
+    if !title.is_empty() {
+        object.insert("title".to_string(), Value::String(title));
+    }
+    Value::Object(object)
+}
+
+fn world_row_response(
+    world_id: &str,
+    title: &str,
+    preview: &str,
+    payload: &str,
+    created_at: &str,
+    updated_at: &str,
+) -> Value {
+    let payload_value: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
+    let mut out = Map::new();
+    if let Value::Object(map) = payload_value {
+        for (key, value) in map {
+            out.insert(key, value);
+        }
+    }
+    out.insert("id".to_string(), json!(world_id));
+    out.insert("kind".to_string(), json!("world"));
+    out.insert(
+        "title".to_string(),
+        json!(if title.is_empty() {
+            "Новый мир"
+        } else {
+            title
+        }),
+    );
+    out.insert("preview".to_string(), json!(preview));
+    out.insert("created_at".to_string(), json!(created_at));
+    out.insert("updated_at".to_string(), json!(updated_at));
+    Value::Object(out)
+}
+
+fn world_title_from_payload(payload: &Value) -> String {
+    let title = payload
+        .get("title")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            payload
+                .get("world_lore")
+                .and_then(|lore| lore.get("name"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default();
+    let title = clean_metadata_text(title, 100);
+    if title.is_empty() {
+        "Новый мир".to_string()
+    } else {
+        title
+    }
+}
+
+fn world_preview_from_payload(payload: &Value, title: &str) -> String {
+    for text in [
+        payload.get("public_premise").and_then(Value::as_str),
+        payload
+            .get("world_lore")
+            .and_then(|lore| lore.get("public_premise"))
+            .and_then(Value::as_str),
+        payload.get("world_size").and_then(Value::as_str),
+        payload.get("genre").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let preview = clean_metadata_text(text, 180);
+        if !preview.is_empty() {
+            return preview;
+        }
+    }
+    clean_metadata_text(title, 180)
 }
 
 // ======================================================================

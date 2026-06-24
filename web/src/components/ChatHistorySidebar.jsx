@@ -12,8 +12,16 @@ function chatTitle(chat) {
   return chat?.title?.trim() || "Новый чат";
 }
 
+function worldTitle(world) {
+  return world?.title?.trim() || "Новый мир";
+}
+
 function chatPreview(chat) {
   return chat?.preview?.trim() || "Пустой чат";
+}
+
+function worldPreview(world) {
+  return world?.preview?.trim() || world?.public_premise?.trim?.() || "Пустой мир";
 }
 
 function chatDate(chat) {
@@ -29,14 +37,15 @@ function turnCount(chat) {
   return `${count} ходов`;
 }
 
-function sameChatId(a, b) {
-  return a != null && b != null && String(a) === String(b);
+function worldMeta(world) {
+  const parts = [world?.genre, world?.tone, world?.world_size]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "мир";
 }
 
-function chatKind(chat) {
-  const kind = typeof chat?.kind === "string" ? chat.kind.trim() : "";
-  if (kind) return kind;
-  return chat?.story_id === "procedural" ? "world" : "chat";
+function sameChatId(a, b) {
+  return a != null && b != null && String(a) === String(b);
 }
 
 function storyDescription(story) {
@@ -45,11 +54,14 @@ function storyDescription(story) {
 
 export default function ChatHistorySidebar({
   chats,
+  worlds,
   activeChatId,
   open,
   busy,
   loading,
   error,
+  worldsLoading,
+  worldsError,
   stories,
   selectedStoryId,
   storiesLoading,
@@ -62,38 +74,43 @@ export default function ChatHistorySidebar({
   onShowChats,
   onActivate,
   onDelete,
+  onDeleteWorld,
 }) {
   const closeRef = useRef(null);
   const createChatRef = useRef(null);
   const createWorldRef = useRef(null);
-  const [confirmId, setConfirmId] = useState(null);
+  const [confirmTarget, setConfirmTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [tab, setTab] = useState("chats");
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
+  const sortedWorlds = useMemo(() => (Array.isArray(worlds) ? worlds : []), [worlds]);
   const storyOptions = useMemo(() => (Array.isArray(stories) ? stories : []), [stories]);
   const selectedStory = storyOptions.find((story) => sameChatId(story.id, selectedStoryId)) || null;
   const hasStories = storyOptions.length > 0;
   const locked = busy || loading;
   const storyLocked = locked || storiesLoading || Boolean(storiesError) || !hasStories;
   const createLocked = locked || storyLocked || !selectedStoryId;
-  const confirmChat = confirmId
-    ? sortedChats.find((chat) => sameChatId(chat.id, confirmId)) || null
-    : null;
   const isWorldTab = tab === "world";
-  const visibleChats = useMemo(
-    () => sortedChats.filter((chat) => (isWorldTab ? chatKind(chat) === "world" : chatKind(chat) !== "world")),
-    [isWorldTab, sortedChats]
-  );
+  const worldLocked = busy || worldsLoading;
+  const visibleChats = sortedChats;
+  const visibleWorlds = sortedWorlds;
+  const confirmKind = confirmTarget?.kind || "";
+  const confirmItem =
+    confirmKind === "world"
+      ? sortedWorlds.find((world) => sameChatId(world.id, confirmTarget?.id)) || null
+      : sortedChats.find((chat) => sameChatId(chat.id, confirmTarget?.id)) || null;
+  const confirmTitle = confirmKind === "world" ? worldTitle(confirmItem) : chatTitle(confirmItem);
 
   const cancelDelete = () => {
-    if (!deleting) setConfirmId(null);
+    if (!deleting) setConfirmTarget(null);
   };
   const confirmDelete = async () => {
-    if (!confirmChat || deleting) return;
+    if (!confirmItem || deleting) return;
     setDeleting(true);
     try {
-      await onDelete?.(confirmChat.id);
-      setConfirmId(null);
+      if (confirmKind === "world") await onDeleteWorld?.(confirmItem.id);
+      else await onDelete?.(confirmItem.id);
+      setConfirmTarget(null);
     } finally {
       setDeleting(false);
     }
@@ -101,16 +118,16 @@ export default function ChatHistorySidebar({
 
   // Confirm dialog owns Escape while open (capture phase, so it beats the sidebar handler).
   useEffect(() => {
-    if (!confirmId || typeof document === "undefined") return undefined;
+    if (!confirmTarget || typeof document === "undefined") return undefined;
     const onKey = (event) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      if (!deleting) setConfirmId(null);
+      if (!deleting) setConfirmTarget(null);
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [confirmId, deleting]);
+  }, [confirmTarget, deleting]);
 
   useEffect(() => {
     if (!open || typeof document === "undefined") return undefined;
@@ -124,7 +141,7 @@ export default function ChatHistorySidebar({
     const previousFocus = document.activeElement;
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
-      if (confirmId) return; // the confirm dialog handles Escape first
+      if (confirmTarget) return; // the confirm dialog handles Escape first
       event.preventDefault();
       onClose();
     };
@@ -142,7 +159,7 @@ export default function ChatHistorySidebar({
         previousFocus.focus({ preventScroll: true });
       }
     };
-  }, [open, onClose, isWorldTab]);
+  }, [open, onClose, isWorldTab, confirmTarget]);
 
   return (
     <>
@@ -264,22 +281,71 @@ export default function ChatHistorySidebar({
               type="button"
               className="btn primary chat-new"
               onClick={onCreateWorld}
-              disabled={locked}
+              disabled={worldLocked}
             >
               + Создать мир
             </button>
-            {loading && <span className="chat-sidebar-status">Обновляю...</span>}
+            {worldsLoading && <span className="chat-sidebar-status">Обновляю...</span>}
           </div>
         )}
 
-        {error && <div className="chat-sidebar-error">{error}</div>}
+        {(isWorldTab ? worldsError : error) && (
+          <div className="chat-sidebar-error">{isWorldTab ? worldsError : error}</div>
+        )}
 
         <nav className="chat-list" aria-label={isWorldTab ? "Сохранённые миры" : "Предыдущие чаты"}>
-          {visibleChats.length === 0 && !loading ? (
+          {isWorldTab && visibleWorlds.length === 0 && !worldsLoading ? (
             <div className="chat-sidebar-empty">
-              {isWorldTab ? "Сохранённых миров пока нет." : "Сохранённых чатов пока нет."}
+              Сохранённых миров пока нет.
             </div>
-          ) : (
+          ) : null}
+          {!isWorldTab && visibleChats.length === 0 && !loading ? (
+            <div className="chat-sidebar-empty">
+              Сохранённых чатов пока нет.
+            </div>
+          ) : null}
+          {isWorldTab
+            ? visibleWorlds.map((world) => (
+                <div key={world.id} className="chat-history-item world-history-item">
+                  <div
+                    className="chat-history-row world-history-row"
+                    role="group"
+                    aria-label={`Мир: ${worldTitle(world)}`}
+                  >
+                    <span className="chat-row-head">
+                      <span className="chat-row-title">{worldTitle(world)}</span>
+                      <span className="chat-row-date">{chatDate(world)}</span>
+                    </span>
+                    <span className="chat-row-preview">{worldPreview(world)}</span>
+                    <span className="chat-row-meta">
+                      <span>{worldMeta(world)}</span>
+                    </span>
+                  </div>
+                  <Tooltip
+                    className="tooltip-wrap"
+                    tipClassName="ui-tip-wrap"
+                    focusable={false}
+                    content={
+                      <TipContent
+                        title="Удалить мир"
+                        subtitle={worldTitle(world)}
+                        note="Перед удалением появится подтверждение. Игровые чаты не изменятся."
+                      />
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="chat-row-delete"
+                      aria-label={`Удалить мир: ${worldTitle(world)}`}
+                      onClick={() => setConfirmTarget({ kind: "world", id: world.id })}
+                      disabled={worldLocked}
+                    >
+                      <span aria-hidden="true">🗑</span>
+                    </button>
+                  </Tooltip>
+                </div>
+              ))
+            : (
             visibleChats.map((chat) => {
               const active = chat.active || sameChatId(chat.id, activeChatId);
               return (
@@ -322,7 +388,7 @@ export default function ChatHistorySidebar({
                       type="button"
                       className="chat-row-delete"
                       aria-label={`Удалить чат: ${chatTitle(chat)}`}
-                      onClick={() => setConfirmId(chat.id)}
+                      onClick={() => setConfirmTarget({ kind: "chat", id: chat.id })}
                       disabled={locked}
                     >
                       <span aria-hidden="true">🗑</span>
@@ -335,7 +401,7 @@ export default function ChatHistorySidebar({
         </nav>
       </aside>
 
-      {confirmChat && (
+      {confirmItem && (
         <div
           className="confirm-backdrop"
           role="presentation"
@@ -350,11 +416,12 @@ export default function ChatHistorySidebar({
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-icon" aria-hidden="true">🗑</div>
-            <h3 id="confirm-delete-title">Удалить чат?</h3>
-            <p className="confirm-name">«{chatTitle(confirmChat)}»</p>
+            <h3 id="confirm-delete-title">{confirmKind === "world" ? "Удалить мир?" : "Удалить чат?"}</h3>
+            <p className="confirm-name">«{confirmTitle}»</p>
             <p id="confirm-delete-note" className="confirm-note">
-              Чат и все его данные удалятся из базы безвозвратно — история, персонажи,
-              мир и связанные эмбеддинги. Это действие нельзя отменить.
+              {confirmKind === "world"
+                ? "Мир удалится из списка сохранённых миров. Игровые чаты и текущая сессия не изменятся. Это действие нельзя отменить."
+                : "Чат и все его данные удалятся из базы безвозвратно — история, персонажи, мир и связанные эмбеддинги. Это действие нельзя отменить."}
             </p>
             <div className="confirm-actions">
               <button type="button" className="btn" onClick={cancelDelete} disabled={deleting}>
