@@ -15,6 +15,7 @@ import Chat from "./components/Chat.jsx";
 import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
 import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
+import WorldArchitectPanel from "./components/WorldArchitectPanel.jsx";
 import WorldDetailModal from "./components/WorldDetailModal.jsx";
 import Tooltip, { TipContent } from "./components/Tooltip.jsx";
 import { normalizeEntities } from "./entityContext.js";
@@ -305,6 +306,7 @@ export default function App() {
   const [storiesError, setStoriesError] = useState("");
   const [playerOptions, setPlayerOptions] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [mainView, setMainView] = useState("chat");
 
   // Auto-generate TTS as GM/NPC lines finalize, read live inside the stream closure.
   const ttsEnabledRef = useRef(false);
@@ -589,6 +591,14 @@ export default function App() {
     }
   }, []);
 
+  const openWorldCreator = useCallback(() => {
+    if (busy || chatActionBusy) return;
+    setPlayerOptions(null);
+    setStatus("");
+    setMainView("world");
+    closeChatsOnMobile();
+  }, [busy, chatActionBusy, closeChatsOnMobile]);
+
   // Remember the collapse/expand choice across reloads.
   useEffect(() => {
     try {
@@ -662,6 +672,7 @@ export default function App() {
         const data = await api.createChat(payload);
         if (!data.ok) throw new Error(data.error || "мир не создан");
         restoreChatSession(data);
+        setMainView("chat");
         await refreshChats();
         closeChatsOnMobile();
       } catch (e) {
@@ -678,15 +689,21 @@ export default function App() {
 
   const onActivateChat = useCallback(
     async (chatId) => {
-      if (!chatId || sameChatId(chatId, activeChatId) || busy || chatActionBusy) return;
+      if (!chatId || busy || chatActionBusy) return;
+      if (sameChatId(chatId, activeChatId)) {
+        setMainView("chat");
+        closeChatsOnMobile();
+        return;
+      }
       setChatActionBusy(true);
       setStatus("Открываю чат...");
       try {
         const data = await api.activateChat(chatId);
         if (!data.ok) throw new Error(data.error || "чат не открыт");
         restoreChatSession(data);
+        setMainView("chat");
         await refreshChats();
-        setChatsOpen(false);
+        closeChatsOnMobile();
       } catch (e) {
         store.dispatch({ kind: "error", agent: "чаты", data: e.message });
       } finally {
@@ -819,13 +836,15 @@ export default function App() {
         onReset={onReset}
       />
       <div className={"app-body" + (debugOpen ? " debug-open" : "") + (chatsOpen ? "" : " chats-collapsed")}>
-        <WorldHud
-          time={srv.time}
-          scene={srv.scene}
-          playerCharacter={srv.playerCharacter}
-          npcs={srv.npcs}
-          statusLabels={srv.statusLabels}
-        />
+        {mainView === "chat" && (
+          <WorldHud
+            time={srv.time}
+            scene={srv.scene}
+            playerCharacter={srv.playerCharacter}
+            npcs={srv.npcs}
+            statusLabels={srv.statusLabels}
+          />
+        )}
         <ChatHistorySidebar
           chats={chats}
           activeChatId={activeChatId}
@@ -833,38 +852,42 @@ export default function App() {
           busy={interactionBusy}
           loading={chatsLoading}
           error={chatsError}
-          stories={stories}
-          selectedStoryId={selectedStoryId}
-          storiesLoading={storiesLoading}
-          storiesError={storiesError}
-          onSelectStory={setSelectedStoryId}
           onClose={closeChats}
-          onCreate={onCreateChat}
-          onCreateWorld={onCreateWorld}
-          onWorldArchitectTurn={onWorldArchitectTurn}
+          onCreateWorld={openWorldCreator}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
         />
-        <main className={"chat-pane" + (playerOptions ? " has-options" : "")}>
-          <Chat
-            key={activeChatId || "active-chat"}
-            messages={visibleMessages}
-            storyBrief={srv.storyBrief}
-            scene={srv.scene}
-            npcs={srv.npcs}
-            entities={srv.entities}
-            statusLabels={srv.statusLabels}
-          />
-          <Composer
-            onSend={send}
-            busy={interactionBusy}
-            status={status}
-            playerOptions={playerOptions}
-            runUsage={runUsage}
-            contextUsage={contextUsage}
-            modelWindow={currentModel?.context_window || currentModel?.max_context_window || 0}
-          />
-        </main>
+        {mainView === "world" ? (
+          <main className="world-creation-pane">
+            <WorldArchitectPanel
+              className="world-manager-main"
+              locked={interactionBusy}
+              onCreateWorld={onCreateWorld}
+              onArchitectTurn={onWorldArchitectTurn}
+            />
+          </main>
+        ) : (
+          <main className={"chat-pane" + (playerOptions ? " has-options" : "")}>
+            <Chat
+              key={activeChatId || "active-chat"}
+              messages={visibleMessages}
+              storyBrief={srv.storyBrief}
+              scene={srv.scene}
+              npcs={srv.npcs}
+              entities={srv.entities}
+              statusLabels={srv.statusLabels}
+            />
+            <Composer
+              onSend={send}
+              busy={interactionBusy}
+              status={status}
+              playerOptions={playerOptions}
+              runUsage={runUsage}
+              contextUsage={contextUsage}
+              modelWindow={currentModel?.context_window || currentModel?.max_context_window || 0}
+            />
+          </main>
+        )}
       </div>
       {visibility.historyDebug && (
         <DebugPanel

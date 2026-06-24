@@ -136,7 +136,7 @@ function applyPresetValues(current, preset) {
   };
 }
 
-export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitectTurn }) {
+export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitectTurn, className = "" }) {
   const [worldDraft, setWorldDraft] = useState(DEFAULT_WORLD_DRAFT);
   const [messages, setMessages] = useState([
     {
@@ -204,167 +204,171 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
   };
 
   return (
-    <form className="world-manager" onSubmit={submitWorld}>
-      <section className="world-architect" aria-label="Чат с архитектором мира">
-        <div className="world-architect-head">
-          <div>
-            <span>архитектор</span>
-            <b>Собрать лор мира</b>
-          </div>
-          <Tooltip
-            tipClassName="ui-tip-wrap"
-            focusable={false}
-            content={
-              <TipContent
-                title="Архитектор мира"
-                subtitle="Отдельный AI-контур до старта игры."
-                note="Он задаёт вопросы и собирает библию мира: законы, веру, историю, регионы, власти, секреты и правила генерации локаций."
-              />
-            }
-          >
-            <span className="world-architect-help" aria-hidden="true">?</span>
-          </Tooltip>
-        </div>
-        <div className="world-architect-log" aria-live="polite">
-          {messages.map((message, index) => (
-            <div key={`${message.role}-${index}`} className={`world-architect-msg ${message.role}`}>
-              {message.content}
+    <form className={`world-manager${className ? ` ${className}` : ""}`} onSubmit={submitWorld}>
+      <div className="world-manager-left">
+        <section className="world-architect" aria-label="Чат с архитектором мира">
+          <div className="world-architect-head">
+            <div>
+              <span>архитектор</span>
+              <b>Собрать лор мира</b>
             </div>
-          ))}
-          {architectBusy && <div className="world-architect-msg assistant">Думаю над черновиком...</div>}
-        </div>
-        <div className="world-architect-input-row">
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги..."
-            rows={3}
-            disabled={architectLocked}
-          />
-          <button type="button" className="btn" onClick={sendArchitectMessage} disabled={architectLocked || !input.trim()}>
-            Спросить
-          </button>
-        </div>
-        {architectError && <div className="chat-sidebar-error inline">{architectError}</div>}
-      </section>
-
-      <div className="world-manager-presets" aria-label="Быстрые пресеты мира">
-        {WORLD_PRESETS.map((preset) => (
-          <button
-            key={preset.id}
-            type="button"
-            className="world-preset"
-            onClick={() => applyPreset(preset)}
-            disabled={locked}
-          >
-            <b>{preset.label}</b>
-            <span>{preset.description}</span>
-          </button>
-        ))}
-      </div>
-
-      <label className="world-field">
-        <span>Название истории</span>
-        <input
-          value={worldDraft.title}
-          onChange={(event) => updateWorldDraft("title", event.target.value)}
-          placeholder="Например: Пепельный Узел"
-          disabled={locked}
-        />
-      </label>
-
-      <div className="world-field-grid">
-        <label className="world-field">
-          <span>Жанр</span>
-          <input
-            value={worldDraft.genre}
-            onChange={(event) => updateWorldDraft("genre", event.target.value)}
-            placeholder="fantasy isekai"
-            disabled={locked}
-          />
-        </label>
-        <label className="world-field">
-          <span>Тон</span>
-          <input
-            value={worldDraft.tone}
-            onChange={(event) => updateWorldDraft("tone", event.target.value)}
-            placeholder="tense"
-            disabled={locked}
-          />
-        </label>
-      </div>
-
-      <div className="world-field-grid">
-        <label className="world-field">
-          <span>Масштаб</span>
-          <select
-            value={worldDraft.scale}
-            onChange={(event) => updateWorldDraft("scale", event.target.value)}
-            disabled={locked}
-          >
-            <option value="village">Деревня</option>
-            <option value="town">Городок</option>
-            <option value="city">Город</option>
-            <option value="outpost">Форпост</option>
-            <option value="region">Регион</option>
-          </select>
-        </label>
-        <label className="world-field">
-          <span>Seed</span>
-          <input
-            value={worldDraft.seed}
-            onChange={(event) => updateWorldDraft("seed", event.target.value)}
-            placeholder="пусто = случайный"
-            disabled={locked}
-          />
-        </label>
-      </div>
-
-      <label className="world-field">
-        <span>Бриф для игрока</span>
-        <textarea
-          value={worldDraft.storyBrief}
-          onChange={(event) => updateWorldDraft("storyBrief", event.target.value)}
-          placeholder="Коротко: где игрок, что произошло и почему ему есть дело."
-          rows={4}
-          disabled={locked}
-        />
-      </label>
-
-      <label className="world-field">
-        <span>Публичная завязка мира</span>
-        <textarea
-          value={worldDraft.publicIntro}
-          onChange={(event) => updateWorldDraft("publicIntro", event.target.value)}
-          placeholder="Что известно о мире без скрытых секретов GM."
-          rows={4}
-          disabled={locked}
-        />
-      </label>
-
-      {loreRows.length > 0 && (
-        <section className="world-lore-preview" aria-label="Черновик библии мира">
-          <div className="world-lore-preview-head">
-            <span>библия мира</span>
-            <b>{textValue(worldPayload.worldLore?.name) || worldPayload.title}</b>
+            <Tooltip
+              tipClassName="ui-tip-wrap"
+              focusable={false}
+              content={
+                <TipContent
+                  title="Архитектор мира"
+                  subtitle="Отдельный AI-контур до старта игры."
+                  note="Он задаёт вопросы и собирает библию мира: законы, веру, историю, регионы, власти, секреты и правила генерации локаций."
+                />
+              }
+            >
+              <span className="world-architect-help" aria-hidden="true">?</span>
+            </Tooltip>
           </div>
-          <div className="world-lore-preview-rows">
-            {loreRows.slice(0, 9).map(([label, value]) => (
-              <div key={label} className="world-lore-preview-row">
-                <span>{label}</span>
-                <p>{value}</p>
+          <div className="world-architect-log" aria-live="polite">
+            {messages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className={`world-architect-msg ${message.role}`}>
+                {message.content}
               </div>
             ))}
+            {architectBusy && <div className="world-architect-msg assistant">Думаю над черновиком...</div>}
           </div>
+          <div className="world-architect-input-row">
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги..."
+              rows={3}
+              disabled={architectLocked}
+            />
+            <button type="button" className="btn" onClick={sendArchitectMessage} disabled={architectLocked || !input.trim()}>
+              Спросить
+            </button>
+          </div>
+          {architectError && <div className="chat-sidebar-error inline">{architectError}</div>}
         </section>
-      )}
 
-      <button type="submit" className="btn primary chat-new" disabled={worldCreateLocked}>
-        Создать мир и чат
-      </button>
-      <p className="world-manager-note">
-        Создание доступно только после черновика архитектора: библия мира станет рамками канона для GM и генератора локаций.
-      </p>
+        <div className="world-manager-presets" aria-label="Быстрые пресеты мира">
+          {WORLD_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              className="world-preset"
+              onClick={() => applyPreset(preset)}
+              disabled={locked}
+            >
+              <b>{preset.label}</b>
+              <span>{preset.description}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="world-manager-right">
+        <label className="world-field">
+          <span>Название истории</span>
+          <input
+            value={worldDraft.title}
+            onChange={(event) => updateWorldDraft("title", event.target.value)}
+            placeholder="Например: Пепельный Узел"
+            disabled={locked}
+          />
+        </label>
+
+        <div className="world-field-grid">
+          <label className="world-field">
+            <span>Жанр</span>
+            <input
+              value={worldDraft.genre}
+              onChange={(event) => updateWorldDraft("genre", event.target.value)}
+              placeholder="fantasy isekai"
+              disabled={locked}
+            />
+          </label>
+          <label className="world-field">
+            <span>Тон</span>
+            <input
+              value={worldDraft.tone}
+              onChange={(event) => updateWorldDraft("tone", event.target.value)}
+              placeholder="tense"
+              disabled={locked}
+            />
+          </label>
+        </div>
+
+        <div className="world-field-grid">
+          <label className="world-field">
+            <span>Масштаб</span>
+            <select
+              value={worldDraft.scale}
+              onChange={(event) => updateWorldDraft("scale", event.target.value)}
+              disabled={locked}
+            >
+              <option value="village">Деревня</option>
+              <option value="town">Городок</option>
+              <option value="city">Город</option>
+              <option value="outpost">Форпост</option>
+              <option value="region">Регион</option>
+            </select>
+          </label>
+          <label className="world-field">
+            <span>Seed</span>
+            <input
+              value={worldDraft.seed}
+              onChange={(event) => updateWorldDraft("seed", event.target.value)}
+              placeholder="пусто = случайный"
+              disabled={locked}
+            />
+          </label>
+        </div>
+
+        <label className="world-field">
+          <span>Бриф для игрока</span>
+          <textarea
+            value={worldDraft.storyBrief}
+            onChange={(event) => updateWorldDraft("storyBrief", event.target.value)}
+            placeholder="Коротко: где игрок, что произошло и почему ему есть дело."
+            rows={4}
+            disabled={locked}
+          />
+        </label>
+
+        <label className="world-field">
+          <span>Публичная завязка мира</span>
+          <textarea
+            value={worldDraft.publicIntro}
+            onChange={(event) => updateWorldDraft("publicIntro", event.target.value)}
+            placeholder="Что известно о мире без скрытых секретов GM."
+            rows={4}
+            disabled={locked}
+          />
+        </label>
+
+        {loreRows.length > 0 && (
+          <section className="world-lore-preview" aria-label="Черновик библии мира">
+            <div className="world-lore-preview-head">
+              <span>библия мира</span>
+              <b>{textValue(worldPayload.worldLore?.name) || worldPayload.title}</b>
+            </div>
+            <div className="world-lore-preview-rows">
+              {loreRows.slice(0, 9).map(([label, value]) => (
+                <div key={label} className="world-lore-preview-row">
+                  <span>{label}</span>
+                  <p>{value}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <button type="submit" className="btn primary chat-new" disabled={worldCreateLocked}>
+          Создать мир и чат
+        </button>
+        <p className="world-manager-note">
+          Создание доступно только после черновика архитектора: библия мира станет рамками канона для GM и генератора локаций.
+        </p>
+      </div>
     </form>
   );
 }
