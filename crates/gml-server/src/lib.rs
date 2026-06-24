@@ -16,6 +16,7 @@
 
 pub mod openai_key;
 pub mod payload;
+pub mod sys_tokens;
 pub mod tls;
 
 use std::collections::HashMap;
@@ -205,6 +206,28 @@ fn body_str(map: &Map<String, Value>, key: &str) -> String {
         .to_string()
 }
 
+fn body_cache_id(map: &Map<String, Value>, key: &str) -> Option<String> {
+    let value = body_str(map, key);
+    normalize_cache_id(&value)
+}
+
+fn normalize_cache_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let id: String = trimmed
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.'))
+        .take(128)
+        .collect();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
 /// Build a [`WorldSpec`] for the procedural campaign route from optional body
 /// fields. A blank/absent field falls back to the spec default; the seed
 /// defaults to a fresh non-zero value so two procedural campaigns differ unless
@@ -378,6 +401,9 @@ fn placeholder_html() -> String {
 }
 
 async fn get_state(State(state): State<AppState>) -> Response {
+    // Best-effort, once per process: sharpen the system-prompt token baseline via
+    // OpenAI's input-token counter when a dev key is configured (else no-op).
+    sys_tokens::ensure(&state.http);
     let cfg = state.config.clone();
     let settings = state.settings.clone();
     match with_active(&state, move |rt| payload::state(rt, &cfg, &settings)).await {
@@ -442,19 +468,45 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
         .unwrap_or_default();
     let draft = data.get("draft").cloned().unwrap_or(Value::Null);
     let client = (state.make_client)();
+    let fallback_cache_id = body_cache_id(&data, "cache_id");
+    let cache_session_id = body_cache_id(&data, "cache_session_id")
+        .or_else(|| body_cache_id(&data, "architect_session_id"))
+        .or_else(|| fallback_cache_id.clone());
+    let cache_thread_id = body_cache_id(&data, "cache_thread_id")
+        .or_else(|| body_cache_id(&data, "architect_thread_id"))
+        .or(fallback_cache_id);
+    client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
     match gml_agents::world_architect_turn(client.as_ref(), &history, &draft, &message).await {
         Ok(output) => ok_json(&json!({
             "ok": true,
             "reply": output.reply,
             "draft": output.draft,
+            "user_message": output.user_msg,
+            "assistant_history_message": output.assistant_history_msg,
             "assistant_message": output.assistant_msg,
             "calls": output.calls,
+            "cache_session_id": client.session_id(),
+            "cache_thread_id": client.thread_id(),
+            "usage": architect_usage(&output.stats),
+            "stats": output.stats,
+            "thinking": output.thinking,
+            "request_messages": output.request_messages,
         })),
         Err(e) => json_response(
             StatusCode::BAD_GATEWAY,
             &json!({"ok": false, "error": e.to_string()}),
         ),
     }
+}
+
+/// Normalize a call's `_meta` stats into the `{in, out, cached, tokens}` shape
+/// the architect token-usage readout consumes (mirrors the main chat usage).
+fn architect_usage(stats: &serde_json::Map<String, Value>) -> Value {
+    let n = |key: &str| stats.get(key).and_then(Value::as_i64).unwrap_or(0);
+    let input = n("prompt_eval_count");
+    let output = n("eval_count");
+    let cached = n("cached_tokens");
+    json!({ "in": input, "out": output, "cached": cached, "tokens": input + output })
 }
 
 async fn get_settings(State(state): State<AppState>) -> Response {
@@ -606,15 +658,22 @@ async fn get_openai_key() -> Response {
 }
 
 /// `POST /debug/openai_key {key}` — store the key (server-side), return status.
-async fn post_openai_key(body: Bytes) -> Response {
+async fn post_openai_key(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     openai_key::save_key(data.get("key").and_then(Value::as_str).unwrap_or(""));
+    // A new/changed key can change the accurate baseline — drop it and re-warm.
+    gml_orchestrator::compact::clear_sys_tokens_override();
+    sys_tokens::reset();
+    sys_tokens::ensure(&state.http);
     openai_key_ok()
 }
 
 /// `POST /debug/openai_key/delete`.
 async fn post_openai_key_delete() -> Response {
     openai_key::delete_key();
+    // No key → fall back to the chars/token estimate.
+    gml_orchestrator::compact::clear_sys_tokens_override();
+    sys_tokens::reset();
     ok_json(&json!({"ok": true, "saved": false, "hint": ""}))
 }
 

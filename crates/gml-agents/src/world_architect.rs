@@ -6,9 +6,9 @@
 //! committing that draft into an actual campaign remains the `/chats`
 //! procedural create path.
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
-use gml_llm::{Backend, BackendError};
+use gml_llm::{Backend, BackendError, NullSink};
 use gml_types::Role;
 
 const WORLD_ARCHITECT_SYSTEM: &str = r#"You are the GM-Lab world architect, a specialist AI that helps a user create a
@@ -78,21 +78,39 @@ Example draft shape:
 pub struct WorldArchitectOutput {
     pub reply: String,
     pub draft: Option<Value>,
+    pub user_msg: Value,
+    pub assistant_history_msg: Value,
     pub assistant_msg: Value,
     pub calls: Vec<Value>,
+    /// Cleaned reasoning text from the model call (for the debug view).
+    pub thinking: String,
+    /// Normalized `_meta` stats for the call (cached_tokens, prompt_eval_count,
+    /// eval_count, durations) — drives the architect token-usage readout.
+    pub stats: Map<String, Value>,
+    /// The exact messages array sent to the model (for the debug view).
+    pub request_messages: Value,
 }
 
 pub fn world_architect_messages(history: &[Value], draft: &Value, user_text: &str) -> Vec<Value> {
-    let mut messages = vec![json!({"role": "system", "content": WORLD_ARCHITECT_SYSTEM})];
-    messages.extend(history.iter().filter_map(history_message).take(30));
+    let user_msg = world_architect_user_message(draft, user_text);
+    world_architect_messages_with_user(history, user_msg)
+}
+
+pub fn world_architect_user_message(draft: &Value, user_text: &str) -> Value {
     let draft_json = serde_json::to_string(draft).unwrap_or_else(|_| "null".to_string());
-    messages.push(json!({
+    json!({
         "role": "user",
         "content": format!(
             "## Current Draft JSON\n{draft_json}\n\n## User Message\n{}\n\nAnswer now. Ask questions if needed; call draft_world_bible if the draft should be updated.",
             user_text.trim()
         )
-    }));
+    })
+}
+
+fn world_architect_messages_with_user(history: &[Value], user_msg: Value) -> Vec<Value> {
+    let mut messages = vec![json!({"role": "system", "content": WORLD_ARCHITECT_SYSTEM})];
+    messages.extend(history.iter().filter_map(history_message));
+    messages.push(user_msg);
     messages
 }
 
@@ -134,10 +152,24 @@ pub async fn world_architect_turn(
     draft: &Value,
     user_text: &str,
 ) -> Result<WorldArchitectOutput, BackendError> {
-    let messages = Value::Array(world_architect_messages(history, draft, user_text));
+    let user_msg = world_architect_user_message(draft, user_text);
+    let messages = Value::Array(world_architect_messages_with_user(
+        history,
+        user_msg.clone(),
+    ));
     let tools = Value::Array(world_architect_tools());
+    // Use the streaming path (deltas discarded) so the call's usage `stats` come
+    // back for the architect token-usage readout; the architect UI is request/
+    // response, not streamed, so a NullSink is fine.
+    let mut sink = NullSink;
     let output = client
-        .chat(&messages, Some(&tools), Some(true), Role::Gm.as_str())
+        .chat_stream(
+            &messages,
+            Some(&tools),
+            Some(true),
+            Role::Gm.as_str(),
+            &mut sink,
+        )
         .await?;
     let draft_call = output
         .calls
@@ -165,11 +197,17 @@ pub async fn world_architect_turn(
             })
         })
         .collect();
+    let assistant_history_msg = json!({"role": "assistant", "content": reply});
     Ok(WorldArchitectOutput {
         reply,
         draft: draft_call,
+        user_msg,
+        assistant_history_msg,
         assistant_msg: output.assistant_msg,
         calls,
+        thinking: output.thinking,
+        stats: output.stats,
+        request_messages: messages,
     })
 }
 

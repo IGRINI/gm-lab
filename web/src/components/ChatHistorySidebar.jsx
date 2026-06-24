@@ -58,6 +58,7 @@ export default function ChatHistorySidebar({
   onClose,
   onCreate,
   onCreateWorld,
+  onShowWorldCreator,
   onShowChats,
   onActivate,
   onDelete,
@@ -191,7 +192,14 @@ export default function ChatHistorySidebar({
           <button
             type="button"
             className={"chat-sidebar-tab" + (isWorldTab ? " active" : "")}
-            onClick={() => setTab("world")}
+            onClick={() => {
+              // Only flip the tab when the main view will actually switch — otherwise the
+              // sidebar would say "Миры" while the chat pane stays open (openWorldCreator
+              // is a no-op while a turn/chat action is in flight).
+              if (locked) return;
+              setTab("world");
+              onShowWorldCreator?.();
+            }}
             role="tab"
             aria-selected={isWorldTab}
           >

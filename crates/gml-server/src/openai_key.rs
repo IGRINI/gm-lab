@@ -33,6 +33,15 @@ fn key_path() -> PathBuf {
     home.join(".config").join("gm-lab").join("openai-key.json")
 }
 
+/// Path to a sibling file in the same dir as the OpenAI key (the gm-lab config
+/// dir). Used for small dev caches that live next to the key.
+pub fn sibling_path(name: &str) -> PathBuf {
+    match key_path().parent() {
+        Some(parent) => parent.join(name),
+        None => PathBuf::from(name),
+    }
+}
+
 /// `load_key()` — env var wins, else the saved file (empty on any failure).
 pub fn load_key() -> String {
     if let Ok(env) = std::env::var("OPENAI_API_KEY") {

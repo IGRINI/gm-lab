@@ -863,6 +863,7 @@ export default function App() {
           onClose={closeChats}
           onCreate={onCreateChat}
           onCreateWorld={openWorldCreator}
+          onShowWorldCreator={openWorldCreator}
           onShowChats={showChatView}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
@@ -870,7 +871,6 @@ export default function App() {
         {mainView === "world" ? (
           <main className="world-creation-pane">
             <WorldArchitectPanel
-              className="world-manager-main"
               locked={interactionBusy}
               onCreateWorld={onCreateWorld}
               onArchitectTurn={onWorldArchitectTurn}

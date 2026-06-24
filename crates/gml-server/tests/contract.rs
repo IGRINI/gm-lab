@@ -17,13 +17,145 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 use tower::ServiceExt; // oneshot
 
 use gml_config::{Config, RuntimeSettings};
-use gml_llm::{Backend, MockClient};
+use gml_llm::{
+    Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput, MockClient,
+};
 use gml_persistence::DialogStore;
 use gml_server::{build_router, AppState};
+
+#[derive(Default)]
+struct IdentitySpyState {
+    session_id: String,
+    thread_id: String,
+    messages: Vec<Value>,
+}
+
+struct IdentitySpyBackend {
+    state: Arc<std::sync::Mutex<IdentitySpyState>>,
+}
+
+#[async_trait::async_trait]
+impl Backend for IdentitySpyBackend {
+    fn model(&self) -> String {
+        "identity-spy".to_string()
+    }
+
+    fn set_model(&self, _model: &str) {}
+
+    fn set_session_identity(&self, session_id: Option<&str>, thread_id: Option<&str>) {
+        let mut state = self.state.lock().expect("identity spy lock");
+        if let Some(session_id) = session_id {
+            if !session_id.trim().is_empty() {
+                state.session_id = session_id.trim().to_string();
+            }
+        }
+        if let Some(thread_id) = thread_id {
+            if !thread_id.trim().is_empty() {
+                state.thread_id = thread_id.trim().to_string();
+            }
+        }
+    }
+
+    fn session_id(&self) -> String {
+        self.state
+            .lock()
+            .expect("identity spy lock")
+            .session_id
+            .clone()
+    }
+
+    fn thread_id(&self) -> String {
+        self.state
+            .lock()
+            .expect("identity spy lock")
+            .thread_id
+            .clone()
+    }
+
+    async fn list_models(&self) -> Vec<Value> {
+        vec![json!({"id": "identity-spy", "name": "identity-spy", "supported": true})]
+    }
+
+    async fn chat(
+        &self,
+        messages: &Value,
+        _tools: Option<&Value>,
+        _think: Option<bool>,
+        _reasoning_role: &str,
+    ) -> Result<ChatOutput, BackendError> {
+        self.state
+            .lock()
+            .expect("identity spy lock")
+            .messages
+            .push(messages.clone());
+        Ok(ChatOutput {
+            thinking: String::new(),
+            content: "Ответ архитектора".to_string(),
+            calls: Vec::new(),
+            assistant_msg: json!({"role": "assistant", "content": "Ответ архитектора"}),
+        })
+    }
+
+    async fn chat_json(
+        &self,
+        _messages: &Value,
+        _schema: &Value,
+        _think: Option<bool>,
+        _reasoning_role: &str,
+    ) -> Result<Map<String, Value>, BackendError> {
+        Ok(Map::new())
+    }
+
+    async fn summarize(
+        &self,
+        _text: &str,
+        _proper_nouns: &[String],
+    ) -> Result<String, BackendError> {
+        Ok(String::new())
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: &Value,
+        _tools: Option<&Value>,
+        _think: Option<bool>,
+        _reasoning_role: &str,
+        _sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<ChatStreamOutput, BackendError> {
+        // Mirror `chat`: the world-architect handler now drives `chat_stream`, so
+        // the spy must record the sent messages and return the same canned reply.
+        self.state
+            .lock()
+            .expect("identity spy lock")
+            .messages
+            .push(messages.clone());
+        Ok(ChatStreamOutput {
+            thinking: String::new(),
+            content: "Ответ архитектора".to_string(),
+            calls: Vec::new(),
+            assistant_msg: json!({"role": "assistant", "content": "Ответ архитектора"}),
+            stats: Map::new(),
+        })
+    }
+
+    async fn chat_json_stream(
+        &self,
+        _messages: &Value,
+        _schema: &Value,
+        _think: Option<bool>,
+        _reasoning_role: &str,
+        _sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<JsonStreamOutput, BackendError> {
+        Ok(JsonStreamOutput {
+            data: Map::new(),
+            stats: Map::new(),
+        })
+    }
+}
 
 /// Build an [`AppState`] with the mock backend and a fresh temp DB.
 fn mock_state(tmp: &tempfile::TempDir) -> AppState {
@@ -654,6 +786,76 @@ async fn world_architect_chat_returns_structured_draft() {
         "Старшие Духи Порогов"
     );
     assert_eq!(got["calls"][0]["name"], "draft_world_bible");
+    // The architect now surfaces per-call usage (for the token readout) and the
+    // raw request/stats (for the debug view).
+    assert_eq!(got["usage"]["in"], 760);
+    assert_eq!(got["usage"]["out"], 120);
+    assert_eq!(got["usage"]["tokens"], 880);
+    assert_eq!(got["stats"]["eval_count"], 120);
+    assert!(got["request_messages"].is_array());
+}
+
+#[tokio::test]
+async fn world_architect_chat_restores_cache_identity_and_returns_model_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = mock_state(&tmp);
+    let spy = Arc::new(std::sync::Mutex::new(IdentitySpyState::default()));
+    let spy_factory = spy.clone();
+    state.make_client = Arc::new(move || {
+        Arc::new(IdentitySpyBackend {
+            state: spy_factory.clone(),
+        }) as Arc<dyn Backend>
+    });
+
+    let prior_user = gml_agents::world_architect_user_message(
+        &json!({"title": "Первый черновик"}),
+        "Собери основу мира.",
+    );
+    let (status, body) = post(
+        &state,
+        "/world-architect/chat",
+        json!({
+            "message": "Добавь религии.",
+            "history": [
+                prior_user,
+                {"role": "assistant", "content": "Собрал первый черновик."}
+            ],
+            "draft": {"title": "Второй черновик"},
+            "cache_session_id": "world-architect:test-session",
+            "cache_thread_id": "world-architect:test-thread"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["cache_session_id"], "world-architect:test-session");
+    assert_eq!(got["cache_thread_id"], "world-architect:test-thread");
+    assert_eq!(got["user_message"]["role"], "user");
+    assert!(got["user_message"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Current Draft JSON"));
+    assert_eq!(got["assistant_history_message"]["role"], "assistant");
+    assert_eq!(
+        got["assistant_history_message"]["content"],
+        "Ответ архитектора"
+    );
+
+    let spy = spy.lock().expect("identity spy lock");
+    assert_eq!(spy.session_id, "world-architect:test-session");
+    assert_eq!(spy.thread_id, "world-architect:test-thread");
+    let sent = spy.messages.last().unwrap().as_array().unwrap();
+    assert_eq!(sent[0]["role"], "system");
+    assert!(sent[1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Первый черновик"));
+    assert!(sent.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("Второй черновик"));
 }
 
 #[tokio::test]

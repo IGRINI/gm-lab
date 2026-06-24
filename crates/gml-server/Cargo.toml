@@ -47,9 +47,11 @@ local-ip-address = { workspace = true }
 # utilities
 thiserror = { workspace = true }
 urlencoding = { workspace = true }
+sha2 = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

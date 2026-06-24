@@ -706,3 +706,53 @@ fn world_architect_has_static_prompt_and_draft_tool() {
     );
     assert!(tools[0]["function"]["parameters"]["properties"]["world_lore"].is_object());
 }
+
+#[test]
+fn world_architect_model_history_keeps_prior_user_message_stable() {
+    use serde_json::json;
+
+    let first_user =
+        agents::world_architect_user_message(&json!({"title": "Первый"}), "Собери основу мира.");
+    let history = vec![
+        first_user.clone(),
+        json!({"role": "assistant", "content": "Собрал первый черновик."}),
+    ];
+    let messages = agents::world_architect_messages(
+        &history,
+        &json!({"title": "Второй"}),
+        "Теперь добавь власть и религию.",
+    );
+
+    assert_eq!(messages[1], first_user);
+    assert!(messages[1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"Первый\""));
+    assert!(!messages[1]["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"Второй\""));
+    assert!(messages.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"Второй\""));
+}
+
+#[test]
+fn world_architect_model_history_is_not_windowed() {
+    use serde_json::json;
+
+    let history: Vec<_> = (0..36)
+        .map(|index| json!({"role": "user", "content": format!("history-{index}")}))
+        .collect();
+    let messages =
+        agents::world_architect_messages(&history, &json!({"title": "Черновик"}), "Продолжай.");
+
+    assert_eq!(messages.len(), history.len() + 2);
+    assert_eq!(messages[1]["content"], "history-0");
+    assert_eq!(messages[36]["content"], "history-35");
+    assert!(messages.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("Current Draft JSON"));
+}

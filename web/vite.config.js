@@ -22,6 +22,8 @@ const API_PATHS = [
   "/debug",
   "/chats",
   "/stories",
+  "/world-architect",
+  "/sidecar",
 ];
 
 // Optional LAN + HTTPS dev so a phone can connect WITH hot-reload (and mic,

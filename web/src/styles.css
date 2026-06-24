@@ -29,9 +29,8 @@ a{color:var(--acc)}
    instead of letting the drawer cover them — desktop only (narrow screens overlay). */
 @media(min-width:1024px){.app-body.debug-open{margin-right:var(--drawer-w)}}
 .chat-pane{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;position:relative}
-.world-creation-pane{flex:1;min-width:0;min-height:0;overflow:auto;padding:22px 24px;
-  display:flex;background:linear-gradient(180deg,rgba(20,20,32,.98),rgba(12,12,20,.98));
-  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.world-creation-pane{flex:1;min-width:0;min-height:0;overflow:hidden;padding:16px 18px;
+  display:flex;justify-content:center;background:linear-gradient(180deg,rgba(20,20,32,.98),rgba(12,12,20,.98))}
 .world-hud{position:absolute;top:14px;right:18px;z-index:3;width:220px;
   display:flex;flex-direction:column;gap:8px;padding:10px 11px;
   background:rgba(24,24,37,.86);border:1px solid rgba(255,255,255,.1);
@@ -257,46 +256,124 @@ header h1 b{color:var(--acc)}
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .story-picker .chat-sidebar-status{white-space:normal}
 .story-picker .chat-sidebar-empty.inline{margin:0;padding:7px 9px;font-size:12px}
-.world-manager{flex:none;display:flex;flex-direction:column;gap:10px;padding:10px 12px;
-  border-bottom:1px solid rgba(255,255,255,.055)}
-.world-manager-main{flex:1;width:min(1180px,100%);margin:0 auto;padding:0;border-bottom:0;
-  display:grid;grid-template-columns:minmax(360px,1.18fr) minmax(320px,.82fr);gap:14px 18px;
-  align-content:start}
-.world-manager-main .world-manager-left,.world-manager-main .world-manager-right{min-width:0;display:flex;flex-direction:column;gap:12px}
-.world-manager-main .world-architect{flex:1;min-height:min(620px,calc(100vh - 156px))}
-.world-manager-main .world-architect-log{max-height:min(48vh,520px)}
-.world-manager-main .world-architect-msg{font-size:13.5px}
-.world-manager-main .world-architect-input-row textarea{font-size:14px;min-height:112px}
-.world-manager-main .world-manager-presets{grid-template-columns:repeat(3,minmax(0,1fr));align-self:start}
-.world-manager-main .world-manager-right>.chat-new{margin-top:2px}
-.world-architect{display:grid;gap:8px;padding:10px;border:1px solid rgba(156,207,216,.18);
-  border-radius:8px;background:rgba(156,207,216,.045)}
-.world-architect-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.world-architect-head div{display:grid;gap:2px;min-width:0}
+/* ===== World creator — "Студия миров": full-height two-pane workspace =====
+   The pane is a non-scrolling flex host (mirrors .chat-pane). On desktop there
+   are exactly two scroll containers: the architect log (left) and the inspector
+   body (right). Every ancestor carries min-height:0 so overflow lands on those
+   two elements instead of bubbling up to the pane (the old triple-scroll bug). */
+.world-studio{flex:0 1 auto;min-width:0;min-height:0;width:min(1240px,100%);
+  display:flex;flex-direction:column;gap:12px}
+
+/* slim pane header — never scrolls, never shrinks */
+.world-studio-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:12px 14px;border:1px solid var(--line);border-radius:10px;
+  background:linear-gradient(180deg,rgba(156,207,216,.07),var(--bg2))}
+.world-studio-id{display:flex;align-items:center;gap:12px;min-width:0}
+.world-studio-emblem{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  width:38px;height:38px;border-radius:10px;border:1px solid rgba(156,207,216,.32);
+  background:rgba(156,207,216,.1);color:var(--acc);font-size:18px;line-height:1}
+.world-studio-title{display:grid;gap:1px;min-width:0}
+.world-studio-kicker{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.9px;text-transform:uppercase}
+.world-studio-title b{color:var(--tx);font-size:17px;line-height:1.2}
+.world-studio-sub{margin:1px 0 0;color:var(--mut);font-size:12px;line-height:1.35}
+.world-studio-chip{flex:none;align-self:center;padding:5px 11px;border-radius:999px;
+  border:1px solid var(--line);background:var(--bg3);color:var(--mut);
+  font-size:11px;font-weight:700;letter-spacing:.4px;white-space:nowrap}
+.world-studio-chip.ready{border-color:rgba(166,203,160,.5);background:rgba(166,203,160,.12);color:var(--gm)}
+
+/* two-pane body fills the rest; min-height:0 lets the columns own the scroll */
+.world-studio-body{flex:1;min-height:0;display:grid;
+  grid-template-columns:minmax(360px,1.1fr) minmax(340px,.9fr);gap:14px;align-items:stretch}
+.world-studio-pane{min-width:0;min-height:0;display:flex;flex-direction:column;
+  border:1px solid var(--line);border-radius:10px;background:var(--bg2);overflow:hidden}
+
+/* ---- LEFT: architect chat — head / scrolling log / pinned input ---- */
+.world-architect{border-color:rgba(156,207,216,.22);background:rgba(156,207,216,.045)}
+.world-architect-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:11px 13px;border-bottom:1px solid rgba(156,207,216,.14)}
+.world-architect-head-id{display:grid;gap:2px;min-width:0}
 .world-architect-head span{color:var(--acc);font-size:10px;text-transform:uppercase;letter-spacing:.75px}
-.world-architect-head b{color:var(--tx);font-size:13px;line-height:1.25}
+.world-architect-head b{color:var(--tx);font-size:13.5px;line-height:1.25}
 .world-architect-help{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;
   border:1px solid rgba(156,207,216,.32);border-radius:50%;color:var(--acc);font-size:12px;font-weight:800}
-.world-architect-log{display:grid;gap:7px;max-height:230px;overflow:auto;padding-right:2px;
-  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
-.world-architect-msg{padding:7px 8px;border-radius:8px;font-size:12.5px;line-height:1.35;white-space:pre-wrap}
+.world-architect-tools{display:flex;align-items:center;gap:8px;flex:none}
+.world-architect-tools .world-architect-usage{cursor:default;font-size:11px;font-weight:700;letter-spacing:0;
+  text-transform:none;color:var(--mut);white-space:nowrap;padding:3px 8px;border:1px solid var(--line);
+  border-radius:999px;background:var(--bg3)}
+.world-architect-tools .world-architect-debug{cursor:pointer;font:inherit;font-size:11px;font-weight:700;
+  letter-spacing:.3px;text-transform:uppercase;color:var(--acc);background:transparent;
+  border:1px solid rgba(156,207,216,.32);border-radius:8px;padding:3px 9px}
+.world-architect-tools .world-architect-debug:hover{background:rgba(156,207,216,.08)}
+.world-architect-tools .world-architect-debug:disabled{opacity:.45;cursor:default}
+
+/* architect debug modal (dev "history debug" toggle) */
+.arch-debug{display:flex;flex-direction:column;gap:14px}
+.arch-debug-sec{display:grid;gap:6px}
+.arch-debug-sec h4{margin:0;color:var(--acc);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+.arch-debug-usage{display:flex;flex-wrap:wrap;gap:8px}
+.arch-debug-usage span{padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg3);
+  color:var(--mut);font-size:12px}
+.arch-debug-usage b{color:var(--tx);font-weight:700;margin-left:4px}
+.arch-debug-sec pre{margin:0;max-height:280px;overflow:auto;padding:10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--bg);color:var(--sub);font-size:12px;line-height:1.45;
+  white-space:pre-wrap;word-break:break-word;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.world-architect-log{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px;
+  padding:13px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.world-architect-msg{padding:7px 9px;border-radius:8px;font-size:13px;line-height:1.4;white-space:pre-wrap}
 .world-architect-msg.assistant{background:rgba(255,255,255,.045);color:var(--sub);
   border:1px solid rgba(255,255,255,.07)}
 .world-architect-msg.user{margin-left:18px;background:rgba(137,220,235,.1);color:var(--tx);
   border:1px solid rgba(137,220,235,.18)}
-.world-architect-input-row{display:grid;gap:7px}
+.world-architect-input-row{flex:none;display:grid;gap:8px;
+  padding:10px 13px;border-top:1px solid rgba(156,207,216,.14);background:rgba(18,18,28,.55)}
 .world-architect-input-row textarea{width:100%;min-width:0;background:var(--bg);color:var(--tx);
-  border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;font-size:12.5px;
-  line-height:1.35;resize:vertical;outline:none}
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;
+  line-height:1.4;resize:vertical;min-height:64px;max-height:168px;outline:none}
 .world-architect-input-row textarea:focus{border-color:var(--acc)}
 .world-architect-input-row textarea:disabled{opacity:.58;cursor:default}
-.world-manager-presets{display:grid;gap:7px}
+.world-architect .chat-sidebar-error.inline{flex:none;margin:0 13px 11px}
+
+/* ---- RIGHT: inspector — head / scrolling body / sticky footer ---- */
+.world-inspector-head{flex:none;display:grid;gap:2px;padding:11px 13px;border-bottom:1px solid var(--line)}
+.world-inspector-kicker{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.9px;text-transform:uppercase}
+.world-inspector-head b{color:var(--tx);font-size:13.5px;line-height:1.25;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.world-inspector-body{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:12px;
+  padding:13px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.world-inspector-section{display:grid;gap:7px}
+.world-inspector-label{color:var(--acc);font-size:10px;font-weight:700;letter-spacing:.75px;text-transform:uppercase}
+.world-inspector-foot{flex:none;display:grid;gap:7px;padding:11px 13px;
+  border-top:1px solid var(--line);background:var(--bg3)}
+.world-create-btn{width:100%}
+.world-inspector .world-manager-note{margin:0;color:var(--mut);font-size:11.5px;line-height:1.35}
+.world-card-empty{padding:16px;border:1px dashed var(--line);border-radius:8px;
+  color:var(--mut);font-size:12.5px;line-height:1.45;text-align:center}
+
+/* manual / architect-filled world bible (collapsible editor) */
+.world-bible{display:grid;gap:8px;padding:8px 9px;border:1px solid var(--line);border-radius:8px;
+  background:rgba(255,255,255,.02)}
+.world-inspector.is-live .world-bible{border-color:rgba(166,203,160,.28);background:rgba(166,203,160,.05)}
+.world-bible-toggle{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+  cursor:pointer;background:transparent;border:0;padding:2px;color:var(--tx);font:inherit;text-align:left}
+.world-bible-toggle:disabled{opacity:.6;cursor:default}
+.world-bible-toggle-label{display:grid;gap:1px;min-width:0}
+.world-bible-toggle-label b{font-size:12.5px;line-height:1.2;color:var(--tx)}
+.world-bible-toggle-label small{font-size:11px;line-height:1.25;color:var(--mut)}
+.world-bible-caret{flex:none;color:var(--mut);font-size:12px}
+.world-bible-fields{display:grid;gap:9px;padding-top:3px;border-top:1px solid rgba(255,255,255,.06)}
+.world-bible-hint{margin:0;color:var(--mut);font-size:11.5px;line-height:1.35}
+.world-bible-fields .world-field textarea{min-height:46px}
+
+/* presets — readable 3-up cards promoted to the top of the inspector */
+.world-manager-presets{display:grid;gap:8px;grid-template-columns:repeat(3,minmax(0,1fr))}
 .world-preset{cursor:pointer;text-align:left;display:grid;gap:4px;padding:9px 10px;border-radius:8px;
   border:1px solid var(--line);background:rgba(255,255,255,.025);color:var(--tx);font:inherit}
 .world-preset:hover{border-color:rgba(156,207,216,.45);background:rgba(156,207,216,.06)}
 .world-preset:disabled{opacity:.55;cursor:default}
-.world-preset b{font-size:12.5px;line-height:1.2;color:var(--tx)}
-.world-preset span{font-size:11.5px;line-height:1.35;color:var(--mut)}
+.world-preset b{font-size:12px;line-height:1.2;color:var(--tx)}
+.world-preset span{font-size:11px;line-height:1.35;color:var(--mut)}
+
+/* form fields */
 .world-field-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
 .world-field{display:flex;flex-direction:column;gap:5px;min-width:0}
 .world-field span{color:var(--acc);font-size:10px;text-transform:uppercase;letter-spacing:.75px}
@@ -306,23 +383,43 @@ header h1 b{color:var(--acc)}
 .world-field textarea{resize:vertical;min-height:74px;line-height:1.35}
 .world-field input:focus,.world-field select:focus,.world-field textarea:focus{border-color:var(--acc)}
 .world-field input:disabled,.world-field select:disabled,.world-field textarea:disabled{opacity:.58;cursor:default}
-.world-lore-preview{display:grid;gap:8px;padding:9px 10px;border:1px solid rgba(255,255,255,.1);
+
+/* lore preview — flows inside the inspector scroll (no nested scrollbar) */
+.world-lore-preview{display:grid;gap:8px;padding:10px 11px;border:1px solid rgba(255,255,255,.1);
   border-radius:8px;background:rgba(255,255,255,.025)}
+.world-inspector.is-live .world-lore-preview{border-color:rgba(166,203,160,.28);background:rgba(166,203,160,.05)}
 .world-lore-preview-head{display:grid;gap:2px}
 .world-lore-preview-head span{color:var(--acc);font-size:10px;text-transform:uppercase;letter-spacing:.75px}
 .world-lore-preview-head b{color:var(--tx);font-size:13px;line-height:1.25}
-.world-lore-preview-rows{display:grid;gap:7px;max-height:260px;overflow:auto;
-  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.world-lore-preview-rows{display:grid;gap:7px}
 .world-lore-preview-row{display:grid;gap:2px;padding-top:7px;border-top:1px solid rgba(255,255,255,.065)}
 .world-lore-preview-row:first-child{padding-top:0;border-top:0}
 .world-lore-preview-row span{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.65px}
-.world-lore-preview-row p{margin:0;color:var(--sub);font-size:12px;line-height:1.38}
+.world-lore-preview-row p{margin:0;color:var(--sub);font-size:12px;line-height:1.38;overflow-wrap:anywhere}
 .world-manager-note{margin:0;color:var(--mut);font-size:12px;line-height:1.35}
+
+/* tablet/narrow: stack the panes; the whole studio becomes the single scroller.
+   The body must drop to content-height (flex:none) and the panes must stop
+   clipping (overflow:visible), otherwise the stacked inspector gets squished by
+   the flex column and clips its fields + the Create button out of reach. */
 @media(max-width:980px){
-  .world-creation-pane{padding:14px}
-  .world-manager-main{display:flex;flex-direction:column;gap:12px}
-  .world-manager-main .world-architect{min-height:0}
-  .world-manager-main .world-manager-presets{grid-template-columns:1fr}
+  .world-creation-pane{padding:12px}
+  .world-studio{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+  .world-studio-body{flex:none;display:flex;flex-direction:column;gap:12px}
+  .world-studio-pane{overflow:visible}
+  .world-architect{min-height:360px}
+  .world-architect-log{flex:none;max-height:46vh}
+  .world-inspector-body{flex:none;overflow:visible}
+  .world-manager-presets{grid-template-columns:1fr}
+}
+/* mobile drawer: tighten chrome, keep the chat usable */
+@media(max-width:700px){
+  .world-creation-pane{padding:10px}
+  .world-studio{gap:10px}
+  .world-studio-title b{font-size:15px}
+  .world-studio-sub{display:none}
+  .world-architect-log{max-height:40vh}
+  .world-field-grid{grid-template-columns:1fr}
 }
 .chat-list{flex:1;min-height:0;overflow:auto;padding:10px 8px 12px;display:flex;flex-direction:column;gap:6px;
   scrollbar-width:thin;scrollbar-color:var(--line) transparent}

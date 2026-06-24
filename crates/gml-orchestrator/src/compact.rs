@@ -1,6 +1,8 @@
 //! Token estimation, `_meta` / `_meta_total`, run-usage accounting, GM/NPC
 //! compaction, and `context_usage` — ports from `orchestrator.py`.
 
+use std::sync::atomic::{AtomicI64, Ordering};
+
 use serde_json::{json, Map, Value};
 
 use gml_llm::Backend;
@@ -12,6 +14,24 @@ use crate::session::Session;
 /// value; the golden fixtures use the default (3).
 pub const CHARS_PER_TOKEN: i64 = 3;
 
+/// Accurate system-prompt token count, set by the server when an OpenAI dev key
+/// is configured (real `/v1/responses/input_tokens`, disk-cached by SHA of the
+/// system prompt). `-1` = unset → fall back to the chars/CHARS_PER_TOKEN
+/// estimate. DISPLAY ONLY: `sys_est()` feeds `context_usage` / `meta_total`,
+/// never compaction decisions, so overriding it cannot change game behavior.
+static SYS_TOKENS_OVERRIDE: AtomicI64 = AtomicI64::new(-1);
+
+/// Set the accurate system-prompt token count used as the starting context
+/// baseline. Clamped to `>= 0`.
+pub fn set_sys_tokens_override(tokens: i64) {
+    SYS_TOKENS_OVERRIDE.store(tokens.max(0), Ordering::Relaxed);
+}
+
+/// Clear the override — `sys_est()` returns to the chars/token estimate.
+pub fn clear_sys_tokens_override() {
+    SYS_TOKENS_OVERRIDE.store(-1, Ordering::Relaxed);
+}
+
 /// `_estimate_tokens(text)` = `max(0, len(text) // CHARS_PER_TOKEN)` using
 /// `.chars().count()` (NOT bytes — critical for Cyrillic).
 pub fn estimate_tokens(text: &str) -> i64 {
@@ -19,8 +39,14 @@ pub fn estimate_tokens(text: &str) -> i64 {
     (chars / CHARS_PER_TOKEN).max(0)
 }
 
-/// `_SYS_EST = len(prompts.GM_SYSTEM) // CHARS_PER_TOKEN`.
+/// `_SYS_EST = len(prompts.GM_SYSTEM) // CHARS_PER_TOKEN`, unless an accurate
+/// real-token count has been set via [`set_sys_tokens_override`] (OpenAI dev
+/// key path) — then the real count is used as the starting baseline.
 pub fn sys_est() -> i64 {
+    let override_tokens = SYS_TOKENS_OVERRIDE.load(Ordering::Relaxed);
+    if override_tokens >= 0 {
+        return override_tokens;
+    }
     estimate_tokens(gml_prompts::GM_SYSTEM)
 }
 
@@ -545,4 +571,26 @@ pub fn context_usage(session: &mut Session) -> Value {
         "npc": npc_obj,
         "npcs": npc_entries,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sys_est_uses_override_then_falls_back_to_estimate() {
+        let estimate = estimate_tokens(gml_prompts::GM_SYSTEM);
+        // Default: the chars/token estimate.
+        clear_sys_tokens_override();
+        assert_eq!(sys_est(), estimate);
+        // With an override (dev-key real count): the override wins.
+        set_sys_tokens_override(12345);
+        assert_eq!(sys_est(), 12345);
+        // Negative inputs clamp to 0.
+        set_sys_tokens_override(-50);
+        assert_eq!(sys_est(), 0);
+        // Cleared: back to the estimate (don't leak global state to other tests).
+        clear_sys_tokens_override();
+        assert_eq!(sys_est(), estimate);
+    }
 }

@@ -57,7 +57,10 @@ pub use tools::{
     build_gm_tools_for_native_tool_search, build_npc_tools, gm_tool_catalog, initial_gm_tool_names,
     load_gm_tool_schema, search_gm_tools, CANON_GM_TOOL_NAMES,
 };
-pub use world_architect::{world_architect_messages, world_architect_tools, world_architect_turn};
+pub use world_architect::{
+    world_architect_messages, world_architect_tools, world_architect_turn,
+    world_architect_user_message,
+};
 
 /// `world._public_gender(value)` — RU grammatical-gender label, faithful port
 /// of `world.py::_public_gender` (which gml-world keeps private). Used by the
