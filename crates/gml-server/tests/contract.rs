@@ -268,6 +268,8 @@ async fn get_chats_shape() {
     assert!(got["chats"].is_array());
     // get_active creates one default chat on first access.
     assert!(!got["chats"].as_array().unwrap().is_empty());
+    assert_eq!(got["chats"][0]["story_id"], "procedural");
+    assert_eq!(got["chats"][0]["kind"], "world");
     assert!(got["active_chat_id"]
         .as_str()
         .map(|s| !s.is_empty())

@@ -33,6 +33,12 @@ function sameChatId(a, b) {
   return a != null && b != null && String(a) === String(b);
 }
 
+function chatKind(chat) {
+  const kind = typeof chat?.kind === "string" ? chat.kind.trim() : "";
+  if (kind) return kind;
+  return chat?.story_id === "procedural" ? "world" : "chat";
+}
+
 function storyDescription(story) {
   return story?.story_brief?.trim?.() || story?.description?.trim?.() || "";
 }
@@ -73,6 +79,10 @@ export default function ChatHistorySidebar({
     ? sortedChats.find((chat) => sameChatId(chat.id, confirmId)) || null
     : null;
   const isWorldTab = tab === "world";
+  const visibleChats = useMemo(
+    () => sortedChats.filter((chat) => (isWorldTab ? chatKind(chat) === "world" : chatKind(chat) !== "world")),
+    [isWorldTab, sortedChats]
+  );
 
   const cancelDelete = () => {
     if (!deleting) setConfirmId(null);
@@ -257,12 +267,12 @@ export default function ChatHistorySidebar({
         {error && <div className="chat-sidebar-error">{error}</div>}
 
         <nav className="chat-list" aria-label={isWorldTab ? "Сохранённые миры" : "Предыдущие чаты"}>
-          {sortedChats.length === 0 && !loading ? (
+          {visibleChats.length === 0 && !loading ? (
             <div className="chat-sidebar-empty">
               {isWorldTab ? "Сохранённых миров пока нет." : "Сохранённых чатов пока нет."}
             </div>
           ) : (
-            sortedChats.map((chat) => {
+            visibleChats.map((chat) => {
               const active = chat.active || sameChatId(chat.id, activeChatId);
               return (
                 <div

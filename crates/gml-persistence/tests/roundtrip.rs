@@ -13,6 +13,7 @@ use gml_config::Config;
 use gml_llm::{Backend, MockClient};
 use gml_orchestrator::{ClientFactory, Session};
 use gml_persistence::{DialogRuntime, DialogStore, SCHEMA_VERSION};
+use gml_world::World;
 
 fn factory() -> ClientFactory {
     Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>)
@@ -185,6 +186,8 @@ fn crud_create_save_load_list_delete() {
     assert_eq!(chats[0]["id"], json!(chat_id));
     assert_eq!(chats[0]["title"], json!("Моя игра"));
     assert_eq!(chats[0]["active"], json!(true));
+    assert_eq!(chats[0]["story_id"], json!("procedural"));
+    assert_eq!(chats[0]["kind"], json!("world"));
 
     // mutate via with_runtime + save
     store
@@ -208,8 +211,20 @@ fn crud_create_save_load_list_delete() {
     assert_eq!(reloaded.turn_count, 7);
 
     // create a second chat
+    let mut static_world = World::from_seed_with_dice_seed(&json!({}), 123);
+    static_world.story_id = "frozen-harbor".to_string();
+    static_world.story_title = "Ледяная гавань".to_string();
+    let static_session = Session::with_world(client(), static_world, factory());
     let chat2 = store
-        .create_chat(guest, None, None, 0, Some("Вторая"), None, true)
+        .create_chat(
+            guest,
+            Some(static_session),
+            None,
+            0,
+            Some("Вторая"),
+            None,
+            true,
+        )
         .expect("create_chat 2");
     let chats = store.list_chats(guest).expect("list2");
     assert_eq!(chats.len(), 2);
@@ -223,6 +238,13 @@ fn crud_create_save_load_list_delete() {
         chats.iter().filter_map(|c| c["id"].as_str()).collect();
     assert!(ids.contains(chat_id.as_str()), "first chat present in list");
     assert!(ids.contains(chat2.as_str()), "second chat present in list");
+    let static_row = chats
+        .iter()
+        .find(|chat| chat["id"] == json!(chat2))
+        .expect("static chat row");
+    assert_eq!(static_row["story_id"], json!("frozen-harbor"));
+    assert_eq!(static_row["story_title"], json!("Ледяная гавань"));
+    assert_eq!(static_row["kind"], json!("chat"));
     // creating with activate=true makes chat2 the active chat
     assert_eq!(
         store.active_chat_id(guest).unwrap().as_deref(),

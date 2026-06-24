@@ -232,12 +232,12 @@ impl DialogStore {
     pub fn list_chats(&self, guest_id: &str) -> Result<Vec<Value>, StoreError> {
         let con = self.connect()?;
         let mut stmt = con.prepare(
-            "SELECT chat_id, title, preview, turn_count, created_at, updated_at
+            "SELECT chat_id, title, preview, turn_count, payload, created_at, updated_at
              FROM dialog_chats
              WHERE guest_id = ?1
              ORDER BY updated_at DESC, created_at DESC, chat_id DESC",
         )?;
-        let rows: Vec<(String, String, String, i64, String, String)> = stmt
+        let rows: Vec<(String, String, String, i64, String, String, String)> = stmt
             .query_map([guest_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -246,6 +246,7 @@ impl DialogStore {
                     row.get::<_, Option<i64>>(3)?.unwrap_or(0),
                     row.get::<_, Option<String>>(4)?.unwrap_or_default(),
                     row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(6)?.unwrap_or_default(),
                 ))
             })?
             .collect::<Result<_, _>>()?;
@@ -267,15 +268,20 @@ impl DialogStore {
         let active_id = active.unwrap_or_default();
         Ok(rows
             .into_iter()
-            .map(|(id, title, preview, turn_count, created_at, updated_at)| {
+            .map(|(id, title, preview, turn_count, payload, created_at, updated_at)| {
+                let active = id == active_id;
+                let meta = chat_list_meta_from_payload(&payload);
                 json!({
                     "id": id,
                     "title": if title.is_empty() { DEFAULT_CHAT_TITLE.to_string() } else { title },
                     "preview": preview,
                     "turn_count": turn_count,
+                    "story_id": meta.story_id,
+                    "story_title": meta.story_title,
+                    "kind": meta.kind,
                     "created_at": created_at,
                     "updated_at": updated_at,
-                    "active": id == active_id,
+                    "active": active,
                 })
             })
             .collect())
@@ -768,6 +774,43 @@ fn latest_chat_id(con: &Connection, guest_id: &str) -> Result<Option<String>, St
         )
         .optional()?;
     Ok(row.filter(|s| !s.is_empty()))
+}
+
+struct ChatListMeta {
+    story_id: String,
+    story_title: String,
+    kind: &'static str,
+}
+
+fn chat_list_meta_from_payload(payload: &str) -> ChatListMeta {
+    let data: Value = match serde_json::from_str(payload) {
+        Ok(value) => value,
+        Err(_) => Value::Null,
+    };
+    let world = data
+        .get("session")
+        .and_then(|session| session.get("world"))
+        .unwrap_or(&Value::Null);
+    let story_id = world
+        .get("story_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let story_title = world
+        .get("story_title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let kind = if story_id == "procedural" {
+        "world"
+    } else {
+        "chat"
+    };
+    ChatListMeta {
+        story_id,
+        story_title,
+        kind,
+    }
 }
 
 fn chat_exists(con: &Connection, guest_id: &str, chat_id: &str) -> Result<bool, StoreError> {
