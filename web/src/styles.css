@@ -328,7 +328,8 @@ header h1 b{color:var(--acc)}
   padding:10px 13px;border-top:1px solid rgba(156,207,216,.14);background:rgba(18,18,28,.55)}
 .world-architect-input-row textarea{width:100%;min-width:0;background:var(--bg);color:var(--tx);
   border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;
-  line-height:1.4;resize:vertical;min-height:64px;max-height:168px;outline:none}
+  line-height:1.4;resize:none;min-height:56px;max-height:320px;overflow-y:auto;outline:none;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
 .world-architect-input-row textarea:focus{border-color:var(--acc)}
 .world-architect-input-row textarea:disabled{opacity:.58;cursor:default}
 .world-architect .chat-sidebar-error.inline{flex:none;margin:0 13px 11px}

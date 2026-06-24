@@ -1,6 +1,7 @@
-import { useContext, useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import Modal from "./Modal.jsx";
+import ToolCard from "./ToolCard.jsx";
 import { fmtK } from "../util.js";
 import { VisibilityContext } from "../devSettings.js";
 
@@ -87,6 +88,14 @@ const DEFAULT_WORLD_DRAFT = {
   worldLore: null,
 };
 
+const DEFAULT_ARCHITECT_MESSAGES = [
+  {
+    role: "assistant",
+    content:
+      "Опиши мир свободно — или дай направление, а детали я соберу сам.\n\nЧто особенно полезно:\n\n1. Жанр и настроение.\n2. Насколько большой мир и сколько в нём жителей примерно.\n3. Кто его населяет: люди, расы, виды, культуры, фракции.\n4. Какие законы реальности работают: магия, технологии, боги, смерть, дороги.\n5. Что в мире точно должно быть.\n6. Чего нельзя добавлять без причины.\n7. Какие скрытые истины должен знать только GM.\n\nСтартовую сцену, роль игрока и квест сейчас не придумываем — это будет отдельный шаг истории.",
+  },
+];
+
 const LORE_PREVIEW_FIELDS = [
   ["dogmas", "Догматы"],
   ["world_laws", "Законы мира"],
@@ -109,7 +118,6 @@ const LORE_PREVIEW_FIELDS = [
   ["hidden_secrets", "Секреты GM"],
   ["location_rules", "Правила локаций"],
   ["prohibited_elements", "Нельзя без причины"],
-  ["open_questions", "Открытые вопросы"],
 ];
 
 function textValue(value) {
@@ -147,6 +155,67 @@ function cleanWorldDraft(draft) {
   };
 }
 
+function worldDraftFromSaved(world) {
+  if (!world || typeof world !== "object") return { ...DEFAULT_WORLD_DRAFT };
+  const isDraft = textValue(world.status) === "draft";
+  const savedTitle = textValue(world.title);
+  const title = isDraft && savedTitle === "Новый мир" ? "" : savedTitle;
+  return {
+    title: title || textValue(world.world_lore?.name),
+    genre: textValue(world.genre) || DEFAULT_WORLD_DRAFT.genre,
+    tone: textValue(world.tone) || DEFAULT_WORLD_DRAFT.tone,
+    worldSize: textValue(world.world_size),
+    population: textValue(world.population),
+    publicPremise: textValue(world.public_premise) || textValue(world.world_lore?.public_premise),
+    worldLore: world.world_lore && typeof world.world_lore === "object" ? world.world_lore : null,
+  };
+}
+
+function normalizeVisibleMessage(value) {
+  if (!value || typeof value !== "object") return null;
+  const role = textValue(value.role);
+  if (role === "tool") {
+    const name = textValue(value.name);
+    if (!name) return null;
+    return {
+      role: "tool",
+      name,
+      args: value.args && typeof value.args === "object" ? value.args : {},
+    };
+  }
+  if (role !== "user" && role !== "assistant") return null;
+  const content = textValue(value.content);
+  if (!content) return null;
+  return { role, content };
+}
+
+function architectMessagesFromWorld(world) {
+  const messages = Array.isArray(world?.architect_messages)
+    ? world.architect_messages.map(normalizeVisibleMessage).filter(Boolean)
+    : [];
+  return messages.length > 0 ? messages : DEFAULT_ARCHITECT_MESSAGES;
+}
+
+function modelMessagesFromWorld(world) {
+  return Array.isArray(world?.architect_model_history)
+    ? world.architect_model_history.map(normalizeModelMessage).filter(Boolean)
+    : [];
+}
+
+function architectCacheFromWorld(world) {
+  const sessionId = textValue(world?.architect_cache_session_id);
+  const threadId = textValue(world?.architect_cache_thread_id);
+  if (sessionId || threadId) {
+    const fallback = sessionId || threadId;
+    return {
+      sessionId: sessionId || fallback,
+      threadId: threadId || fallback,
+    };
+  }
+  const id = createArchitectCacheId();
+  return { sessionId: id, threadId: id };
+}
+
 function mergeArchitectDraft(current, draft) {
   if (!draft || typeof draft !== "object") return current;
   const lore = draft.world_lore && typeof draft.world_lore === "object" ? draft.world_lore : null;
@@ -170,9 +239,6 @@ function normalizeWorldLore(lore, draft) {
   if (!textValue(next.world_size)) next.world_size = textValue(draft.world_size);
   if (!textValue(next.population)) next.population = textValue(draft.population);
   if (!textValue(next.public_premise)) next.public_premise = textValue(draft.public_premise);
-  if (!Array.isArray(next.open_questions) && Array.isArray(draft.open_questions)) {
-    next.open_questions = draft.open_questions;
-  }
   return next;
 }
 
@@ -227,6 +293,9 @@ function finalizeWorldLore(payload) {
       else delete lore[field];
     }
   }
+  // Open questions are conversational (the architect asks them in chat), never a
+  // stored bible field.
+  delete lore.open_questions;
   const hidden = textValue(lore.hidden_premise);
   if (hidden) lore.hidden_premise = hidden;
   else delete lore.hidden_premise;
@@ -241,20 +310,11 @@ function finalizeWorldLore(payload) {
   return lore;
 }
 
-export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitectTurn, className = "" }) {
-  const [architectCache, setArchitectCache] = useState(() => {
-    const id = createArchitectCacheId();
-    return { sessionId: id, threadId: id };
-  });
-  const [worldDraft, setWorldDraft] = useState(DEFAULT_WORLD_DRAFT);
-  const [messages, setMessages] = useState([
-    {
-      role: "assistant",
-      content:
-        "Опиши мир свободно — или дай направление, а детали я соберу сам.\n\nЧто особенно полезно:\n\n1. Жанр и настроение.\n2. Насколько большой мир и сколько в нём жителей примерно.\n3. Кто его населяет: люди, расы, виды, культуры, фракции.\n4. Какие законы реальности работают: магия, технологии, боги, смерть, дороги.\n5. Что в мире точно должно быть.\n6. Чего нельзя добавлять без причины.\n7. Какие скрытые истины должен знать только GM.\n\nСтартовую сцену, роль игрока и квест сейчас не придумываем — это будет отдельный шаг истории.",
-    },
-  ]);
-  const [modelMessages, setModelMessages] = useState([]);
+export default function WorldArchitectPanel({ world, locked, onCreateWorld, onArchitectTurn, className = "" }) {
+  const [architectCache, setArchitectCache] = useState(() => architectCacheFromWorld(world));
+  const [worldDraft, setWorldDraft] = useState(() => worldDraftFromSaved(world));
+  const [messages, setMessages] = useState(() => architectMessagesFromWorld(world));
+  const [modelMessages, setModelMessages] = useState(() => modelMessagesFromWorld(world));
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
@@ -262,6 +322,7 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
   const [architectUsage, setArchitectUsage] = useState(EMPTY_ARCHITECT_USAGE);
   const [architectDebug, setArchitectDebug] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  const inputRef = useRef(null);
   const vis = useContext(VisibilityContext);
   const worldPayload = useMemo(() => cleanWorldDraft(worldDraft), [worldDraft]);
   const loreFilled = useMemo(() => loreHasContent(worldPayload.worldLore), [worldPayload.worldLore]);
@@ -277,11 +338,34 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
     !loreReady;
   const architectLocked = locked || architectBusy;
 
+  useEffect(() => {
+    const nextDraft = worldDraftFromSaved(world);
+    setArchitectCache(architectCacheFromWorld(world));
+    setWorldDraft(nextDraft);
+    setMessages(architectMessagesFromWorld(world));
+    setModelMessages(modelMessagesFromWorld(world));
+    setInput("");
+    setArchitectError("");
+    setArchitectUsage(EMPTY_ARCHITECT_USAGE);
+    setArchitectDebug(null);
+    setDebugOpen(false);
+    setBibleOpen(loreHasContent(nextDraft.worldLore));
+  }, [world?.id]);
+
   // Reveal the bible editor the first time real lore appears (architect draft or
   // manual entry); the user can still collapse it afterwards.
   useEffect(() => {
     if (loreFilled) setBibleOpen(true);
   }, [loreFilled]);
+
+  // Auto-grow the architect input with its content (CSS max-height caps it at
+  // ~15 lines and switches to an inner scroll). Resets to one line on send.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
 
   const updateWorldDraft = (field, value) => {
     setWorldDraft((current) => ({ ...current, [field]: value }));
@@ -313,15 +397,17 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
     if (!text || architectLocked) return;
     const history = modelMessages;
     const userMessage = { role: "user", content: text };
+    const visibleMessages = [...messages, userMessage];
     setInput("");
     setArchitectError("");
     setArchitectBusy(true);
-    setMessages((current) => [...current, userMessage]);
+    setMessages(visibleMessages);
     try {
       const data = await onArchitectTurn?.({
         message: text,
         history,
         draft: worldPayload,
+        visible_messages: visibleMessages,
         cache_session_id: architectCache.sessionId,
         cache_thread_id: architectCache.threadId,
       });
@@ -362,7 +448,16 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
       if (modelUserMessage) {
         setModelMessages((current) => [...current, modelUserMessage, modelAssistantMessage]);
       }
-      setMessages((current) => [...current, { role: "assistant", content: reply }]);
+      // Surface tool calls (e.g. draft_world_bible) inline in the chat, like the
+      // main GM chat — rendered only in debug mode (vis.toolCalls).
+      const toolEntries = (Array.isArray(data.calls) ? data.calls : [])
+        .filter((call) => textValue(call?.name))
+        .map((call) => ({
+          role: "tool",
+          name: textValue(call.name),
+          args: call.arguments && typeof call.arguments === "object" ? call.arguments : {},
+        }));
+      setMessages((current) => [...current, ...toolEntries, { role: "assistant", content: reply }]);
     } catch (error) {
       const message = error?.message || "Не удалось вызвать архитектора";
       setArchitectError(message);
@@ -445,19 +540,33 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
             </div>
           </div>
           <div className="world-architect-log" aria-live="polite">
-            {messages.map((message, index) => (
-              <div key={`${message.role}-${index}`} className={`world-architect-msg ${message.role}`}>
-                {message.content}
-              </div>
-            ))}
+            {messages.map((message, index) => {
+              if (message.role === "tool") {
+                if (!vis.toolCalls) return null;
+                return (
+                  <ToolCard
+                    key={`tool-${index}`}
+                    name={message.name}
+                    args={message.args}
+                    mode="full"
+                  />
+                );
+              }
+              return (
+                <div key={`${message.role}-${index}`} className={`world-architect-msg ${message.role}`}>
+                  {message.content}
+                </div>
+              );
+            })}
             {architectBusy && <div className="world-architect-msg assistant">Думаю над черновиком...</div>}
           </div>
           <div className="world-architect-input-row">
             <textarea
+              ref={inputRef}
               value={input}
               onChange={(event) => setInput(event.target.value)}
               placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги..."
-              rows={3}
+              rows={2}
               disabled={architectLocked}
             />
             <button type="button" className="btn" onClick={sendArchitectMessage} disabled={architectLocked || !input.trim()}>

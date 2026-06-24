@@ -21,6 +21,8 @@ the world-level canon that later constrains the GM and location generator.
 Write in Russian. Keep the conversation practical and concrete. If the user is
 underspecified, ask 3-6 focused questions instead of inventing everything. If
 there is enough information, summarize the direction and call draft_world_bible.
+Ask any open or unresolved questions directly to the user in your chat reply, as
+concrete questions — never park them in a separate field or tool argument.
 
 ## What a complete world bible must cover
 - Core promise: what kind of story this world makes possible.
@@ -41,7 +43,6 @@ there is enough information, summarize the direction and call draft_world_bible.
 - Prohibited elements: things that should not appear without a special reason.
 - World tensions: reusable conflicts that can support later stories without
   defining a specific start.
-- Open questions: what still needs user choice later.
 
 ## Tool use
 Use draft_world_bible only when you have a coherent draft or a meaningful update
@@ -82,8 +83,7 @@ Example draft shape:
     "story_hooks": ["..."],
     "hidden_secrets": ["..."],
     "location_rules": ["..."],
-    "prohibited_elements": ["..."],
-    "open_questions": ["..."]
+    "prohibited_elements": ["..."]
   }
 }"#;
 
@@ -146,11 +146,6 @@ pub fn world_architect_tools() -> Vec<Value> {
                         "type": "object",
                         "additionalProperties": true,
                         "description": "Structured canon world bible. Include public and hidden fields, lists of rules, faiths, regions, powers, cultures, history, economy, daily life, secrets, generation rules, and prohibited elements."
-                    },
-                    "open_questions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Questions still worth asking the user later."
                     }
                 }
             }

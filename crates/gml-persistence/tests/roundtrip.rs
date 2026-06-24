@@ -327,6 +327,76 @@ fn worlds_are_stored_separately_from_chats() {
 }
 
 #[test]
+fn update_world_preserves_architect_history() {
+    let (store, _dir) = temp_store();
+    let guest = "world-update-guest";
+
+    let world = store
+        .create_world(
+            guest,
+            json!({
+                "status": "draft",
+                "genre": "fantasy",
+                "architect_messages": [
+                    {"role": "assistant", "content": "Опиши мир."},
+                    {"role": "user", "content": "Хочу мир клятв."}
+                ],
+                "architect_model_history": [
+                    {"role": "user", "content": "## Current Draft JSON\n{}"},
+                    {"role": "assistant", "content": "Собираю основу."}
+                ],
+                "architect_cache_session_id": "world-architect:test-session",
+                "architect_cache_thread_id": "world-architect:test-thread"
+            }),
+        )
+        .expect("create draft world");
+    let world_id = world["id"].as_str().expect("world id");
+
+    let updated = store
+        .update_world(
+            guest,
+            world_id,
+            json!({
+                "status": "ready",
+                "title": "Порог Второго Неба",
+                "genre": "fantasy isekai",
+                "tone": "tense hopeful",
+                "world_size": "Континент с несколькими королевствами",
+                "population": "Десятки миллионов жителей",
+                "public_premise": "Клятвы и долги имеют силу закона и магии.",
+                "world_lore": {
+                    "name": "Порог Второго Неба",
+                    "world_laws": ["магия требует имени, цены или признанного права"]
+                }
+            }),
+        )
+        .expect("update world");
+
+    assert_eq!(updated["id"], json!(world_id));
+    assert_eq!(updated["status"], json!("ready"));
+    assert_eq!(updated["title"], json!("Порог Второго Неба"));
+    assert_eq!(
+        updated["architect_messages"][1]["content"],
+        "Хочу мир клятв."
+    );
+    assert_eq!(
+        updated["architect_model_history"][1]["content"],
+        "Собираю основу."
+    );
+    assert_eq!(
+        updated["architect_cache_session_id"],
+        "world-architect:test-session"
+    );
+    assert_eq!(
+        store
+            .active_chat_id(guest)
+            .expect("active after update world"),
+        None,
+        "updating a world must not create or activate a chat"
+    );
+}
+
+#[test]
 fn get_active_creates_when_empty() {
     let (store, _dir) = temp_store();
     let guest = "fresh";

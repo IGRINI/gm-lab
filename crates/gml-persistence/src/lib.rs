@@ -35,6 +35,8 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("chat not found: {0}")]
     ChatNotFound(String),
+    #[error("world not found: {0}")]
+    WorldNotFound(String),
     #[error("unsupported schema version: {0}")]
     SchemaVersion(String),
     #[error("invalid payload: {0}")]
@@ -356,6 +358,59 @@ impl DialogStore {
         con.commit_implicit()?;
         Ok(world_row_response(
             &world_id,
+            &title,
+            &preview,
+            &serde_json::to_string(&payload).unwrap_or_default(),
+            saved.0.as_deref().unwrap_or_default(),
+            saved.1.as_deref().unwrap_or_default(),
+        ))
+    }
+
+    /// Update a reusable world bible payload in place. The patch is a shallow
+    /// object merge so saved architect history/cache fields survive a later
+    /// "ready" save that only sends the manual world-bible fields.
+    pub fn update_world(
+        &self,
+        guest_id: &str,
+        world_id: &str,
+        patch: Value,
+    ) -> Result<Value, StoreError> {
+        let world_id = world_id.trim();
+        if world_id.is_empty() {
+            return Err(StoreError::WorldNotFound(world_id.to_string()));
+        }
+
+        let con = self.connect()?;
+        let existing: Option<String> = con
+            .query_row(
+                "SELECT payload FROM worlds WHERE guest_id = ?1 AND world_id = ?2",
+                rusqlite::params![guest_id, world_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let existing = existing.ok_or_else(|| StoreError::WorldNotFound(world_id.to_string()))?;
+        let base = serde_json::from_str::<Value>(&existing).unwrap_or(Value::Object(Map::new()));
+        let payload = normalize_world_payload(merge_world_payload(base, patch));
+        let title = world_title_from_payload(&payload);
+        let preview = world_preview_from_payload(&payload, &title);
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|e| StoreError::Payload(format!("world payload serialize: {e}")))?;
+
+        con.execute(
+            "UPDATE worlds
+             SET title = ?3, preview = ?4, payload = ?5, updated_at = datetime('now')
+             WHERE guest_id = ?1 AND world_id = ?2",
+            rusqlite::params![guest_id, world_id, title, preview, payload_json],
+        )?;
+        let saved: (Option<String>, Option<String>) = con.query_row(
+            "SELECT created_at, updated_at FROM worlds
+             WHERE guest_id = ?1 AND world_id = ?2",
+            rusqlite::params![guest_id, world_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        con.commit_implicit()?;
+        Ok(world_row_response(
+            world_id,
             &title,
             &preview,
             &serde_json::to_string(&payload).unwrap_or_default(),
@@ -990,6 +1045,21 @@ fn normalize_world_payload(payload: Value) -> Value {
     Value::Object(object)
 }
 
+fn merge_world_payload(base: Value, patch: Value) -> Value {
+    let mut base = match base {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    if let Value::Object(patch) = patch {
+        for (key, value) in patch {
+            if !value.is_null() {
+                base.insert(key, value);
+            }
+        }
+    }
+    Value::Object(base)
+}
+
 fn world_row_response(
     world_id: &str,
     title: &str,
@@ -1056,6 +1126,24 @@ fn world_preview_from_payload(payload: &Value, title: &str) -> String {
         let preview = clean_metadata_text(text, 180);
         if !preview.is_empty() {
             return preview;
+        }
+    }
+    if let Some(messages) = payload.get("architect_messages").and_then(Value::as_array) {
+        for message in messages.iter().rev() {
+            let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+            if role != "user" {
+                continue;
+            }
+            let preview = clean_metadata_text(
+                message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                180,
+            );
+            if !preview.is_empty() {
+                return preview;
+            }
         }
     }
     clean_metadata_text(title, 180)

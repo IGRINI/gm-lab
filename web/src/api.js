@@ -37,6 +37,8 @@ export const api = {
 
   createWorld: (body) => _post("/worlds", body),
 
+  updateWorld: (worldId, body) => _post(`/worlds/${encodeURIComponent(worldId)}`, body),
+
   worldArchitectChat: (body) => _post("/world-architect/chat", body),
 
   activateChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/activate`),

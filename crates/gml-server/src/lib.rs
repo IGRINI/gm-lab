@@ -121,6 +121,7 @@ pub fn build_router(state: AppState) -> Router {
         // POST
         .route("/chats/{id}/activate", post(post_activate_chat))
         .route("/chats/{id}/delete", post(post_delete_chat))
+        .route("/worlds/{id}", post(post_update_world))
         .route("/worlds/{id}/delete", post(post_delete_world))
         .route("/model", post(post_model))
         .route("/cmd", post(post_cmd))
@@ -282,6 +283,12 @@ fn required_world_lore_from_body(
 }
 
 fn reusable_world_payload_from_body(map: &Map<String, Value>) -> Result<Value, String> {
+    let draft = bool_from_body(map.get("draft"), false)
+        || body_str(map, "status").eq_ignore_ascii_case("draft");
+    world_payload_from_body(map, draft)
+}
+
+fn world_payload_from_body(map: &Map<String, Value>, draft_mode: bool) -> Result<Value, String> {
     for key in [
         "activate",
         "seed",
@@ -300,54 +307,163 @@ fn reusable_world_payload_from_body(map: &Map<String, Value>) -> Result<Value, S
         }
     }
 
-    let title = body_str(map, "title");
-    let genre = body_str(map, "genre");
-    let tone = body_str(map, "tone");
-    let world_size = body_str(map, "world_size");
-    let population = body_str(map, "population");
-    if title.is_empty() {
+    let title = body_str_any(map, &["title"]);
+    let genre = body_str_any(map, &["genre"]);
+    let tone = body_str_any(map, &["tone"]);
+    let world_size = body_str_any(map, &["world_size", "worldSize"]);
+    let population = body_str_any(map, &["population"]);
+    if !draft_mode && title.is_empty() {
         return Err("title is required".to_string());
     }
-    if genre.is_empty() {
+    if !draft_mode && genre.is_empty() {
         return Err("genre is required".to_string());
     }
-    if tone.is_empty() {
+    if !draft_mode && tone.is_empty() {
         return Err("tone is required".to_string());
     }
-    if world_size.is_empty() {
+    if !draft_mode && world_size.is_empty() {
         return Err("world_size is required".to_string());
     }
-    if population.is_empty() {
+    if !draft_mode && population.is_empty() {
         return Err("population is required".to_string());
     }
 
     let world_lore = map
         .get("world_lore")
-        .ok_or_else(|| "world_lore is required".to_string())?;
-    if !world_lore.is_object() {
+        .or_else(|| map.get("worldLore"))
+        .unwrap_or(&Value::Null);
+    if !draft_mode && world_lore.is_null() {
+        return Err("world_lore is required".to_string());
+    }
+    if !world_lore.is_null() && !world_lore.is_object() {
         return Err("world_lore must be an object".to_string());
     }
-    if !value_has_text(world_lore) {
+    if !draft_mode && !value_has_text(world_lore) {
         return Err("world_lore must not be empty".to_string());
     }
 
     let mut payload = Map::new();
-    payload.insert("title".to_string(), Value::String(title));
-    payload.insert("genre".to_string(), Value::String(genre));
-    payload.insert("tone".to_string(), Value::String(tone));
-    payload.insert("world_size".to_string(), Value::String(world_size));
-    payload.insert("population".to_string(), Value::String(population));
-    if let Some(public_premise) = map.get("public_premise").and_then(Value::as_str) {
-        let trimmed = public_premise.trim();
-        if !trimmed.is_empty() {
-            payload.insert(
-                "public_premise".to_string(),
-                Value::String(trimmed.to_string()),
-            );
+    insert_string_field(&mut payload, "title", title);
+    insert_string_field(&mut payload, "genre", genre);
+    insert_string_field(&mut payload, "tone", tone);
+    insert_string_field(&mut payload, "world_size", world_size);
+    insert_string_field(&mut payload, "population", population);
+    insert_string_field(
+        &mut payload,
+        "public_premise",
+        body_str_any(map, &["public_premise", "publicPremise"]),
+    );
+    if world_lore.is_object() {
+        payload.insert("world_lore".to_string(), world_lore.clone());
+    }
+    let status = body_str(map, "status");
+    if status.eq_ignore_ascii_case("draft") || draft_mode {
+        payload.insert("status".to_string(), Value::String("draft".to_string()));
+    } else if status.eq_ignore_ascii_case("ready") {
+        payload.insert("status".to_string(), Value::String("ready".to_string()));
+    }
+    insert_architect_persistence_fields(&mut payload, map);
+    Ok(Value::Object(payload))
+}
+
+fn body_str_any(map: &Map<String, Value>, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| map.get(*key).and_then(Value::as_str))
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn insert_string_field(payload: &mut Map<String, Value>, key: &str, value: String) {
+    if !value.trim().is_empty() {
+        payload.insert(key.to_string(), Value::String(value.trim().to_string()));
+    }
+}
+
+fn insert_architect_persistence_fields(payload: &mut Map<String, Value>, map: &Map<String, Value>) {
+    if let Some(messages) = clean_architect_visible_messages(map.get("architect_messages")) {
+        payload.insert("architect_messages".to_string(), Value::Array(messages));
+    }
+    if let Some(history) = clean_architect_model_history(map.get("architect_model_history")) {
+        payload.insert("architect_model_history".to_string(), Value::Array(history));
+    }
+    for (key, source) in [
+        ("architect_cache_session_id", "architect_cache_session_id"),
+        ("architect_cache_thread_id", "architect_cache_thread_id"),
+    ] {
+        let value = body_str(map, source);
+        if !value.is_empty() {
+            payload.insert(key.to_string(), Value::String(value));
         }
     }
-    payload.insert("world_lore".to_string(), world_lore.clone());
-    Ok(Value::Object(payload))
+}
+
+fn clean_architect_visible_messages(value: Option<&Value>) -> Option<Vec<Value>> {
+    let array = value?.as_array()?;
+    let mut out = Vec::new();
+    for message in array {
+        let Some(object) = message.as_object() else {
+            continue;
+        };
+        let role = object
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match role {
+            "user" | "assistant" => {
+                let content = object
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                if !content.is_empty() {
+                    out.push(json!({"role": role, "content": content}));
+                }
+            }
+            "tool" => {
+                let name = object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                if !name.is_empty() {
+                    out.push(json!({
+                        "role": "tool",
+                        "name": name,
+                        "args": object.get("args").cloned().unwrap_or_else(|| json!({})),
+                    }));
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+fn clean_architect_model_history(value: Option<&Value>) -> Option<Vec<Value>> {
+    let array = value?.as_array()?;
+    let mut out = Vec::new();
+    for message in array {
+        let Some(object) = message.as_object() else {
+            continue;
+        };
+        let role = object
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let content = object
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if !content.is_empty() {
+            out.push(json!({"role": role, "content": content}));
+        }
+    }
+    Some(out)
 }
 
 fn value_has_text(value: &Value) -> bool {
@@ -547,7 +663,6 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
         .cloned()
         .unwrap_or_default();
     let draft = data.get("draft").cloned().unwrap_or(Value::Null);
-    let client = (state.make_client)();
     let fallback_cache_id = body_cache_id(&data, "cache_id");
     let cache_session_id = body_cache_id(&data, "cache_session_id")
         .or_else(|| body_cache_id(&data, "architect_session_id"))
@@ -555,27 +670,219 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
     let cache_thread_id = body_cache_id(&data, "cache_thread_id")
         .or_else(|| body_cache_id(&data, "architect_thread_id"))
         .or(fallback_cache_id);
+    let world_id = body_str(&data, "world_id");
+    let world_id = if world_id.is_empty() {
+        None
+    } else {
+        Some(world_id)
+    };
+    let visible_messages = visible_architect_messages_for_request(&data, &message);
+    let initial_payload = architect_world_payload(
+        &draft,
+        visible_messages.clone(),
+        history.clone(),
+        cache_session_id.as_deref(),
+        cache_thread_id.as_deref(),
+    );
+    let (mut world, mut worlds) =
+        match persist_world_payload(&state, world_id, initial_payload).await {
+            Ok(saved) => saved,
+            Err(resp) => return resp,
+        };
+    let persisted_world_id = world
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let client = (state.make_client)();
     client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
     match gml_agents::world_architect_turn(client.as_ref(), &history, &draft, &message).await {
-        Ok(output) => ok_json(&json!({
-            "ok": true,
-            "reply": output.reply,
-            "draft": output.draft,
-            "user_message": output.user_msg,
-            "assistant_history_message": output.assistant_history_msg,
-            "assistant_message": output.assistant_msg,
-            "calls": output.calls,
-            "cache_session_id": client.session_id(),
-            "cache_thread_id": client.thread_id(),
-            "usage": architect_usage(&output.stats),
-            "stats": output.stats,
-            "thinking": output.thinking,
-            "request_messages": output.request_messages,
-        })),
+        Ok(output) => {
+            let mut visible_after = visible_messages;
+            visible_after.extend(architect_tool_messages(&output.calls));
+            visible_after.push(json!({"role": "assistant", "content": output.reply.clone()}));
+            let mut model_history_after = history;
+            model_history_after.push(output.user_msg.clone());
+            model_history_after.push(output.assistant_history_msg.clone());
+            let final_payload = architect_world_payload(
+                output.draft.as_ref().unwrap_or(&Value::Null),
+                visible_after,
+                model_history_after,
+                Some(client.session_id().as_str()),
+                Some(client.thread_id().as_str()),
+            );
+            match persist_world_payload(&state, Some(persisted_world_id.clone()), final_payload)
+                .await
+            {
+                Ok((saved_world, saved_worlds)) => {
+                    world = saved_world;
+                    worlds = saved_worlds;
+                }
+                Err(resp) => return resp,
+            }
+            ok_json(&json!({
+                "ok": true,
+                "reply": output.reply,
+                "draft": output.draft,
+                "user_message": output.user_msg,
+                "assistant_history_message": output.assistant_history_msg,
+                "assistant_message": output.assistant_msg,
+                "calls": output.calls,
+                "cache_session_id": client.session_id(),
+                "cache_thread_id": client.thread_id(),
+                "usage": architect_usage(&output.stats),
+                "stats": output.stats,
+                "thinking": output.thinking,
+                "request_messages": output.request_messages,
+                "world_id": persisted_world_id,
+                "world": world,
+                "worlds": worlds,
+            }))
+        }
         Err(e) => json_response(
             StatusCode::BAD_GATEWAY,
-            &json!({"ok": false, "error": e.to_string()}),
+            &json!({
+                "ok": false,
+                "error": e.to_string(),
+                "world_id": persisted_world_id,
+                "world": world,
+                "worlds": worlds,
+            }),
         ),
+    }
+}
+
+fn visible_architect_messages_for_request(map: &Map<String, Value>, message: &str) -> Vec<Value> {
+    let mut visible = clean_architect_visible_messages(map.get("visible_messages"))
+        .or_else(|| clean_architect_visible_messages(map.get("architect_messages")))
+        .unwrap_or_default();
+    let has_current_user = visible.iter().rev().any(|item| {
+        item.get("role").and_then(Value::as_str) == Some("user")
+            && item
+                .get("content")
+                .and_then(Value::as_str)
+                .map(|content| content.trim() == message.trim())
+                .unwrap_or(false)
+    });
+    if !has_current_user {
+        visible.push(json!({"role": "user", "content": message.trim()}));
+    }
+    visible
+}
+
+fn architect_world_payload(
+    draft: &Value,
+    visible_messages: Vec<Value>,
+    model_history: Vec<Value>,
+    cache_session_id: Option<&str>,
+    cache_thread_id: Option<&str>,
+) -> Value {
+    let mut payload = draft_payload_fields(draft);
+    payload.insert("status".to_string(), json!("draft"));
+    payload.insert(
+        "architect_messages".to_string(),
+        Value::Array(visible_messages),
+    );
+    payload.insert(
+        "architect_model_history".to_string(),
+        Value::Array(
+            clean_architect_model_history(Some(&Value::Array(model_history))).unwrap_or_default(),
+        ),
+    );
+    if let Some(cache_session_id) = cache_session_id.and_then(normalize_cache_id) {
+        payload.insert(
+            "architect_cache_session_id".to_string(),
+            Value::String(cache_session_id),
+        );
+    }
+    if let Some(cache_thread_id) = cache_thread_id.and_then(normalize_cache_id) {
+        payload.insert(
+            "architect_cache_thread_id".to_string(),
+            Value::String(cache_thread_id),
+        );
+    }
+    Value::Object(payload)
+}
+
+fn draft_payload_fields(draft: &Value) -> Map<String, Value> {
+    let mut payload = Map::new();
+    let Some(map) = draft.as_object() else {
+        return payload;
+    };
+    insert_string_field(&mut payload, "title", body_str_any(map, &["title"]));
+    insert_string_field(&mut payload, "genre", body_str_any(map, &["genre"]));
+    insert_string_field(&mut payload, "tone", body_str_any(map, &["tone"]));
+    insert_string_field(
+        &mut payload,
+        "world_size",
+        body_str_any(map, &["world_size", "worldSize"]),
+    );
+    insert_string_field(
+        &mut payload,
+        "population",
+        body_str_any(map, &["population"]),
+    );
+    insert_string_field(
+        &mut payload,
+        "public_premise",
+        body_str_any(map, &["public_premise", "publicPremise"]),
+    );
+    if let Some(lore) = map.get("world_lore").or_else(|| map.get("worldLore")) {
+        if lore.is_object() {
+            payload.insert("world_lore".to_string(), lore.clone());
+        }
+    }
+    payload
+}
+
+fn architect_tool_messages(calls: &[Value]) -> Vec<Value> {
+    calls
+        .iter()
+        .filter_map(|call| {
+            let name = call.get("name").and_then(Value::as_str)?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "role": "tool",
+                "name": name,
+                "args": call.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            }))
+        })
+        .collect()
+}
+
+async fn persist_world_payload(
+    state: &AppState,
+    world_id: Option<String>,
+    payload: Value,
+) -> Result<(Value, Vec<Value>), Response> {
+    let scope = chat_scope_id();
+    let store = state.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let world = match world_id {
+            Some(world_id) => store.update_world(&scope, &world_id, payload)?,
+            None => store.create_world(&scope, payload)?,
+        };
+        let worlds = store.list_worlds(&scope)?;
+        Ok::<(Value, Vec<Value>), gml_persistence::StoreError>((world, worlds))
+    })
+    .await;
+    match res {
+        Ok(Ok(saved)) => Ok(saved),
+        Ok(Err(gml_persistence::StoreError::WorldNotFound(id))) => Err(json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": format!("world not found: {id}")}),
+        )),
+        Ok(Err(e)) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        )),
+        Err(e) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        )),
     }
 }
 
@@ -897,6 +1204,54 @@ async fn post_create_world(State(state): State<AppState>, body: Bytes) -> Respon
     })
     .await;
     join_json(res)
+}
+
+async fn post_update_world(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    body: Bytes,
+) -> Response {
+    let world_id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let data = parse_body(&body);
+    let payload = match reusable_world_payload_from_body(&data) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            )
+        }
+    };
+
+    let scope = chat_scope_id();
+    let store = state.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let world = store.update_world(&scope, &world_id, payload)?;
+        let worlds = store.list_worlds(&scope)?;
+        Ok::<Value, gml_persistence::StoreError>(json!({
+            "ok": true,
+            "world": world,
+            "worlds": worlds,
+        }))
+    })
+    .await;
+    match res {
+        Ok(Ok(v)) => ok_json(&v),
+        Ok(Err(gml_persistence::StoreError::WorldNotFound(id))) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": format!("world not found: {id}")}),
+        ),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
 }
 
 async fn get_models(State(state): State<AppState>) -> Response {

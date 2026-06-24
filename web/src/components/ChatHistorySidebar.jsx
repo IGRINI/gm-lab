@@ -56,6 +56,7 @@ export default function ChatHistorySidebar({
   chats,
   worlds,
   activeChatId,
+  selectedWorldId,
   open,
   busy,
   loading,
@@ -72,6 +73,7 @@ export default function ChatHistorySidebar({
   onCreateWorld,
   onShowWorldCreator,
   onShowChats,
+  onSelectWorld,
   onActivate,
   onDelete,
   onDeleteWorld,
@@ -305,12 +307,19 @@ export default function ChatHistorySidebar({
             </div>
           ) : null}
           {isWorldTab
-            ? visibleWorlds.map((world) => (
-                <div key={world.id} className="chat-history-item world-history-item">
-                  <div
-                    className="chat-history-row world-history-row"
-                    role="group"
-                    aria-label={`Мир: ${worldTitle(world)}`}
+            ? visibleWorlds.map((world) => {
+              const active = sameChatId(world.id, selectedWorldId);
+              return (
+                <div
+                  key={world.id}
+                  className={"chat-history-item world-history-item" + (active ? " active" : "")}
+                >
+                  <button
+                    type="button"
+                    className={"chat-history-row world-history-row" + (active ? " active" : "")}
+                    onClick={() => onSelectWorld?.(world.id)}
+                    disabled={worldLocked}
+                    aria-current={active ? "page" : undefined}
                   >
                     <span className="chat-row-head">
                       <span className="chat-row-title">{worldTitle(world)}</span>
@@ -319,8 +328,9 @@ export default function ChatHistorySidebar({
                     <span className="chat-row-preview">{worldPreview(world)}</span>
                     <span className="chat-row-meta">
                       <span>{worldMeta(world)}</span>
+                      {active && <span>открыт</span>}
                     </span>
-                  </div>
+                  </button>
                   <Tooltip
                     className="tooltip-wrap"
                     tipClassName="ui-tip-wrap"
@@ -344,7 +354,8 @@ export default function ChatHistorySidebar({
                     </button>
                   </Tooltip>
                 </div>
-              ))
+              );
+            })
             : (
             visibleChats.map((chat) => {
               const active = chat.active || sameChatId(chat.id, activeChatId);

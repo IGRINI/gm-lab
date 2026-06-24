@@ -302,6 +302,7 @@ export default function App() {
   const [worlds, setWorlds] = useState([]);
   const [worldsLoading, setWorldsLoading] = useState(false);
   const [worldsError, setWorldsError] = useState("");
+  const [selectedWorldId, setSelectedWorldId] = useState("");
   const [chatActionBusy, setChatActionBusy] = useState(false);
   const [stories, setStories] = useState([]);
   const [selectedStoryId, setSelectedStoryId] = useState("");
@@ -310,6 +311,10 @@ export default function App() {
   const [playerOptions, setPlayerOptions] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const [mainView, setMainView] = useState("chat");
+  const selectedWorld = useMemo(
+    () => (Array.isArray(worlds) ? worlds : []).find((world) => sameChatId(world.id, selectedWorldId)) || null,
+    [worlds, selectedWorldId]
+  );
 
   // Auto-generate TTS as GM/NPC lines finalize, read live inside the stream closure.
   const ttsEnabledRef = useRef(false);
@@ -386,6 +391,13 @@ export default function App() {
       setWorldsLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!selectedWorldId) return;
+    if (!worlds.some((world) => sameChatId(world.id, selectedWorldId))) {
+      setSelectedWorldId("");
+    }
+  }, [worlds, selectedWorldId]);
 
   useEffect(() => {
     let stopped = false;
@@ -613,13 +625,34 @@ export default function App() {
     }
   }, []);
 
-  const openWorldCreator = useCallback(() => {
+  const showWorldCreator = useCallback(() => {
     if (busy || chatActionBusy) return;
     setPlayerOptions(null);
     setStatus("");
     setMainView("world");
     closeChatsOnMobile();
   }, [busy, chatActionBusy, closeChatsOnMobile]);
+
+  const openNewWorldCreator = useCallback(() => {
+    if (busy || chatActionBusy) return;
+    setSelectedWorldId("");
+    setPlayerOptions(null);
+    setStatus("");
+    setMainView("world");
+    closeChatsOnMobile();
+  }, [busy, chatActionBusy, closeChatsOnMobile]);
+
+  const onSelectWorld = useCallback(
+    (worldId) => {
+      if (!worldId || busy || chatActionBusy) return;
+      setSelectedWorldId(worldId);
+      setPlayerOptions(null);
+      setStatus("");
+      setMainView("world");
+      closeChatsOnMobile();
+    },
+    [busy, chatActionBusy, closeChatsOnMobile]
+  );
 
   // Remember the collapse/expand choice across reloads.
   useEffect(() => {
@@ -683,14 +716,18 @@ export default function App() {
         population: textValue(draft?.population),
         public_premise: textValue(draft?.publicPremise),
         world_lore: draft?.worldLore && typeof draft.worldLore === "object" ? draft.worldLore : null,
+        status: "ready",
       };
       setChatActionBusy(true);
       setStatus("Сохраняю мир...");
       try {
-        const data = await api.createWorld(payload);
+        const data = selectedWorldId
+          ? await api.updateWorld(selectedWorldId, payload)
+          : await api.createWorld(payload);
         if (!data.ok) throw new Error(data.error || "мир не создан");
         if (Array.isArray(data.worlds)) setWorlds(data.worlds);
         else await refreshWorlds();
+        if (data.world?.id) setSelectedWorldId(data.world.id);
         setMainView("world");
       } catch (e) {
         store.dispatch({ kind: "error", agent: "мир", data: e.message });
@@ -699,10 +736,21 @@ export default function App() {
         setStatus("");
       }
     },
-    [busy, chatActionBusy, store, refreshWorlds]
+    [busy, chatActionBusy, selectedWorldId, store, refreshWorlds]
   );
 
-  const onWorldArchitectTurn = useCallback(async (body) => api.worldArchitectChat(body), []);
+  const onWorldArchitectTurn = useCallback(
+    async (body) => {
+      const data = await api.worldArchitectChat({
+        ...body,
+        ...(selectedWorldId ? { world_id: selectedWorldId } : {}),
+      });
+      if (Array.isArray(data.worlds)) setWorlds(data.worlds);
+      if (data.world?.id) setSelectedWorldId(data.world.id);
+      return data;
+    },
+    [selectedWorldId]
+  );
 
   const onActivateChat = useCallback(
     async (chatId) => {
@@ -757,13 +805,14 @@ export default function App() {
       try {
         const data = await api.deleteWorld(worldId);
         if (!data.ok) throw new Error(data.error || "мир не удалён");
+        if (sameChatId(worldId, selectedWorldId)) setSelectedWorldId("");
         if (Array.isArray(data.worlds)) setWorlds(data.worlds);
         else await refreshWorlds();
       } catch (e) {
         store.dispatch({ kind: "error", agent: "мир", data: e.message });
       }
     },
-    [refreshWorlds, store]
+    [refreshWorlds, selectedWorldId, store]
   );
 
   const send = useCallback(
@@ -881,6 +930,7 @@ export default function App() {
           chats={chats}
           worlds={worlds}
           activeChatId={activeChatId}
+          selectedWorldId={selectedWorldId}
           open={chatsOpen}
           busy={interactionBusy}
           loading={chatsLoading}
@@ -894,9 +944,10 @@ export default function App() {
           onSelectStory={setSelectedStoryId}
           onClose={closeChats}
           onCreate={onCreateChat}
-          onCreateWorld={openWorldCreator}
-          onShowWorldCreator={openWorldCreator}
+          onCreateWorld={openNewWorldCreator}
+          onShowWorldCreator={showWorldCreator}
           onShowChats={showChatView}
+          onSelectWorld={onSelectWorld}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
           onDeleteWorld={onDeleteWorld}
@@ -904,6 +955,7 @@ export default function App() {
         {mainView === "world" ? (
           <main className="world-creation-pane">
             <WorldArchitectPanel
+              world={selectedWorld}
               locked={interactionBusy}
               onCreateWorld={onCreateWorld}
               onArchitectTurn={onWorldArchitectTurn}

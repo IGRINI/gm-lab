@@ -912,6 +912,128 @@ async fn world_architect_chat_returns_structured_draft() {
 }
 
 #[tokio::test]
+async fn world_architect_chat_creates_world_and_persists_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let visible_messages = json!([
+        {"role": "assistant", "content": "Опиши мир."},
+        {"role": "user", "content": "Хочу фентезийный иссекай с богами и клятвами."}
+    ]);
+    let (status, body) = post(
+        &state,
+        "/world-architect/chat",
+        json!({
+            "message": "Хочу фентезийный иссекай с богами и клятвами.",
+            "history": [],
+            "draft": {"genre": "fantasy isekai"},
+            "visible_messages": visible_messages,
+            "cache_session_id": "world-architect:test-session",
+            "cache_thread_id": "world-architect:test-thread"
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    let world_id = got["world"]["id"].as_str().expect("world id");
+    assert_eq!(got["world_id"], json!(world_id));
+    assert_eq!(got["world"]["status"], json!("draft"));
+    assert_eq!(got["world"]["title"], json!("Порог Второго Неба"));
+    assert_eq!(
+        got["world"]["architect_messages"][1]["content"],
+        "Хочу фентезийный иссекай с богами и клятвами."
+    );
+    assert_eq!(
+        got["world"]["architect_messages"][2]["name"],
+        "draft_world_bible"
+    );
+    assert!(got["world"]["architect_messages"][3]["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Порог Второго Неба"));
+    assert_eq!(
+        got["world"]["architect_model_history"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        got["world"]["architect_cache_session_id"],
+        "world-architect:test-session"
+    );
+    assert_eq!(got["worlds"].as_array().unwrap().len(), 1);
+
+    let (status, body) = get(&state, "/worlds").await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(listed["worlds"][0]["id"], json!(world_id));
+    assert_eq!(
+        listed["worlds"][0]["architect_model_history"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn update_world_marks_ready_and_preserves_architect_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(
+        &state,
+        "/world-architect/chat",
+        json!({
+            "message": "Хочу мир клятв.",
+            "history": [],
+            "draft": {"genre": "fantasy"},
+            "visible_messages": [{"role": "user", "content": "Хочу мир клятв."}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let world_id = created["world"]["id"].as_str().expect("world id");
+
+    let (status, body) = post(
+        &state,
+        &format!("/worlds/{world_id}"),
+        json!({
+            "status": "ready",
+            "title": "Порог Второго Неба",
+            "genre": "fantasy isekai",
+            "tone": "tense hopeful",
+            "world_size": "Континент с несколькими королевствами",
+            "population": "Десятки миллионов жителей",
+            "public_premise": "Клятвы и долги имеют силу закона и магии.",
+            "world_lore": {
+                "name": "Порог Второго Неба",
+                "world_laws": ["магия требует имени, цены или признанного права"]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let updated: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(updated["ok"], true);
+    assert_eq!(updated["world"]["id"], json!(world_id));
+    assert_eq!(updated["world"]["status"], json!("ready"));
+    assert_eq!(
+        updated["world"]["architect_messages"][0]["content"],
+        "Хочу мир клятв."
+    );
+    assert_eq!(
+        updated["world"]["architect_model_history"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
 async fn world_architect_chat_restores_cache_identity_and_returns_model_history() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = mock_state(&tmp);
