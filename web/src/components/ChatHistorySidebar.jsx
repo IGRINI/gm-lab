@@ -33,6 +33,10 @@ function sameChatId(a, b) {
   return a != null && b != null && String(a) === String(b);
 }
 
+function storyDescription(story) {
+  return story?.story_brief?.trim?.() || story?.description?.trim?.() || "";
+}
+
 export default function ChatHistorySidebar({
   chats,
   activeChatId,
@@ -40,20 +44,35 @@ export default function ChatHistorySidebar({
   busy,
   loading,
   error,
+  stories,
+  selectedStoryId,
+  storiesLoading,
+  storiesError,
+  onSelectStory,
   onClose,
+  onCreate,
   onCreateWorld,
+  onShowChats,
   onActivate,
   onDelete,
 }) {
   const closeRef = useRef(null);
+  const createChatRef = useRef(null);
   const createWorldRef = useRef(null);
   const [confirmId, setConfirmId] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [tab, setTab] = useState("chats");
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
+  const storyOptions = useMemo(() => (Array.isArray(stories) ? stories : []), [stories]);
+  const selectedStory = storyOptions.find((story) => sameChatId(story.id, selectedStoryId)) || null;
+  const hasStories = storyOptions.length > 0;
   const locked = busy || loading;
+  const storyLocked = locked || storiesLoading || Boolean(storiesError) || !hasStories;
+  const createLocked = locked || storyLocked || !selectedStoryId;
   const confirmChat = confirmId
     ? sortedChats.find((chat) => sameChatId(chat.id, confirmId)) || null
     : null;
+  const isWorldTab = tab === "world";
 
   const cancelDelete = () => {
     if (!deleting) setConfirmId(null);
@@ -101,7 +120,7 @@ export default function ChatHistorySidebar({
 
     document.addEventListener("keydown", onKeyDown);
     const raf = window.requestAnimationFrame(() => {
-      const target = closeRef.current || createWorldRef.current;
+      const target = closeRef.current || (isWorldTab ? createWorldRef.current : createChatRef.current);
       target?.focus({ preventScroll: true });
     });
 
@@ -112,7 +131,7 @@ export default function ChatHistorySidebar({
         previousFocus.focus({ preventScroll: true });
       }
     };
-  }, [open, onClose]);
+  }, [open, onClose, isWorldTab]);
 
   return (
     <>
@@ -122,48 +141,126 @@ export default function ChatHistorySidebar({
         onMouseDown={onClose}
         onClick={onClose}
         tabIndex={open ? 0 : -1}
-        aria-label="Закрыть список миров"
+        aria-label="Закрыть боковую панель"
         aria-hidden={!open}
       />
       <aside
         id="chat-history-sidebar"
         className={"chat-sidebar" + (open ? " is-open" : "")}
-        aria-label="Список миров"
+        aria-label="Чаты и миры"
       >
         <div className="chat-sidebar-head">
           <div>
-            <span>Миры</span>
-            <h2>Список миров</h2>
+            <span>{isWorldTab ? "Миры" : "История"}</span>
+            <h2>{isWorldTab ? "Миры" : "Чаты"}</h2>
           </div>
           <button
             ref={closeRef}
             type="button"
             className="icon-btn chat-sidebar-close"
             onClick={onClose}
-            aria-label="Закрыть список миров"
+            aria-label="Закрыть боковую панель"
           >
             x
           </button>
         </div>
 
-        <div className="chat-sidebar-actions world-sidebar-actions">
+        <div className="chat-sidebar-tabs" role="tablist" aria-label="Режим боковой панели">
           <button
-            ref={createWorldRef}
             type="button"
-            className="btn primary chat-new"
-            onClick={onCreateWorld}
-            disabled={locked}
+            className={"chat-sidebar-tab" + (!isWorldTab ? " active" : "")}
+            onClick={() => {
+              setTab("chats");
+              onShowChats?.();
+            }}
+            role="tab"
+            aria-selected={!isWorldTab}
           >
-            + Создать мир
+            Чаты
           </button>
-          {loading && <span className="chat-sidebar-status">Обновляю...</span>}
+          <button
+            type="button"
+            className={"chat-sidebar-tab" + (isWorldTab ? " active" : "")}
+            onClick={() => setTab("world")}
+            role="tab"
+            aria-selected={isWorldTab}
+          >
+            Миры
+          </button>
         </div>
+
+        {!isWorldTab ? (
+          <div className="chat-sidebar-actions">
+            <div className="story-picker">
+              <label htmlFor="new-chat-story">История</label>
+              {hasStories && (
+                <select
+                  id="new-chat-story"
+                  value={selectedStoryId || ""}
+                  onChange={(event) => onSelectStory(event.target.value)}
+                  disabled={storyLocked}
+                >
+                  {storyOptions.map((story) => (
+                    <option key={story.id} value={story.id}>
+                      {story.title}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {selectedStory && storyDescription(selectedStory) && (
+                <Tooltip
+                  as="p"
+                  tipClassName="ui-tip-wrap"
+                  content={
+                    <TipContent
+                      title={selectedStory.title || "История"}
+                      subtitle="Короткое описание стартовой истории."
+                      note={storyDescription(selectedStory)}
+                    />
+                  }
+                >
+                  {storyDescription(selectedStory)}
+                </Tooltip>
+              )}
+              {storiesLoading && <span className="chat-sidebar-status">Загружаю истории...</span>}
+              {storiesError && <span className="chat-sidebar-error inline">{storiesError}</span>}
+              {!storiesLoading && !storiesError && !hasStories && (
+                <span className="chat-sidebar-empty inline">Нет доступных историй.</span>
+              )}
+            </div>
+            <button
+              ref={createChatRef}
+              type="button"
+              className="btn primary chat-new"
+              onClick={onCreate}
+              disabled={createLocked}
+            >
+              + Новый чат
+            </button>
+            {loading && <span className="chat-sidebar-status">Обновляю...</span>}
+          </div>
+        ) : (
+          <div className="chat-sidebar-actions world-sidebar-actions">
+            <button
+              ref={createWorldRef}
+              type="button"
+              className="btn primary chat-new"
+              onClick={onCreateWorld}
+              disabled={locked}
+            >
+              + Создать мир
+            </button>
+            {loading && <span className="chat-sidebar-status">Обновляю...</span>}
+          </div>
+        )}
 
         {error && <div className="chat-sidebar-error">{error}</div>}
 
-        <nav className="chat-list" aria-label="Предыдущие миры">
+        <nav className="chat-list" aria-label={isWorldTab ? "Сохранённые миры" : "Предыдущие чаты"}>
           {sortedChats.length === 0 && !loading ? (
-            <div className="chat-sidebar-empty">Сохранённых миров пока нет.</div>
+            <div className="chat-sidebar-empty">
+              {isWorldTab ? "Сохранённых миров пока нет." : "Сохранённых чатов пока нет."}
+            </div>
           ) : (
             sortedChats.map((chat) => {
               const active = chat.active || sameChatId(chat.id, activeChatId);

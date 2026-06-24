@@ -627,8 +627,8 @@ export default function Header({
           focusable={false}
           content={
             <TipContent
-              title={chatsOpen ? "Скрыть список миров" : "Показать список миров"}
-              note={chatsOpen ? "Освободит место для текущей сцены и диалога." : "Откроет сохранённые миры слева."}
+              title={chatsOpen ? "Скрыть чаты и миры" : "Показать чаты и миры"}
+              note={chatsOpen ? "Освободит место для текущей сцены и диалога." : "Откроет боковую панель с чатами и мирами."}
             />
           }
         >
@@ -636,12 +636,12 @@ export default function Header({
             type="button"
             className={"btn btn-icon chat-toggle" + (chatsOpen ? " is-active" : "")}
             onClick={onToggleChats}
-            aria-label={chatsOpen ? "Свернуть список миров" : "Развернуть список миров"}
+            aria-label={chatsOpen ? "Свернуть чаты и миры" : "Развернуть чаты и миры"}
             aria-expanded={chatsOpen}
             aria-controls="chat-history-sidebar"
           >
             <span className="bi" aria-hidden="true">☰</span>
-            <span className="btn-label">Миры</span>
+            <span className="btn-label">Чаты</span>
           </button>
         </Tooltip>
       )}

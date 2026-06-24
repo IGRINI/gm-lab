@@ -583,6 +583,9 @@ export default function App() {
 
   const closeChats = useCallback(() => setChatsOpen(false), []);
   const toggleChats = useCallback(() => setChatsOpen((value) => !value), []);
+  const showChatView = useCallback(() => {
+    setMainView("chat");
+  }, []);
   // On desktop the sidebar is a docked, collapsible column, so it must stay open after
   // picking a chat; only the mobile drawer should auto-close on selection.
   const closeChatsOnMobile = useCallback(() => {
@@ -852,8 +855,15 @@ export default function App() {
           busy={interactionBusy}
           loading={chatsLoading}
           error={chatsError}
+          stories={stories}
+          selectedStoryId={selectedStoryId}
+          storiesLoading={storiesLoading}
+          storiesError={storiesError}
+          onSelectStory={setSelectedStoryId}
           onClose={closeChats}
+          onCreate={onCreateChat}
           onCreateWorld={openWorldCreator}
+          onShowChats={showChatView}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
         />
