@@ -565,6 +565,45 @@ async fn create_procedural_chat_is_canon_authoritative_and_turns() {
 }
 
 #[tokio::test]
+async fn create_procedural_chat_applies_world_manager_story_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(
+        &state,
+        "/chats",
+        serde_json::json!({
+            "story_id": "procedural",
+            "seed": "world-manager-seed",
+            "genre": "postapocalyptic machine world",
+            "tone": "bleak",
+            "scale": "outpost",
+            "title": "Пепельный Узел",
+            "story_brief": "Ты приходишь к форпосту у старого машинного узла.",
+            "public_intro": "Выжившие спорят за воду, энергию и право подходить к закрытому узлу."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["chat"]["title"], "Пепельный Узел");
+    assert_eq!(got["state"]["story_title"], "Пепельный Узел");
+    assert_eq!(
+        got["state"]["story_brief"]["text"],
+        "Ты приходишь к форпосту у старого машинного узла."
+    );
+
+    let (status, body) = get(&state, "/debug").await;
+    assert_eq!(status, StatusCode::OK);
+    let debug: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(debug["story"]["title"], "Пепельный Узел");
+    assert_eq!(
+        debug["story"]["public_intro"],
+        "Выжившие спорят за воду, энергию и право подходить к закрытому узлу."
+    );
+}
+
+#[tokio::test]
 async fn settings_update_persists_and_reflects() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);

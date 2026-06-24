@@ -637,6 +637,39 @@ export default function App() {
     closeChatsOnMobile,
   ]);
 
+  const onCreateWorld = useCallback(
+    async (draft) => {
+      if (busy || chatActionBusy) return;
+      const payload = {
+        activate: true,
+        story_id: "procedural",
+        title: textValue(draft?.title) || "Процедурный мир",
+        story_title: textValue(draft?.title) || "Процедурный мир",
+        seed: textValue(draft?.seed),
+        genre: textValue(draft?.genre) || "fantasy",
+        tone: textValue(draft?.tone) || "tense",
+        scale: textValue(draft?.scale) || "village",
+        story_brief: textValue(draft?.storyBrief),
+        public_intro: textValue(draft?.publicIntro),
+      };
+      setChatActionBusy(true);
+      setStatus("Создаю мир...");
+      try {
+        const data = await api.createChat(payload);
+        if (!data.ok) throw new Error(data.error || "мир не создан");
+        restoreChatSession(data);
+        await refreshChats();
+        closeChatsOnMobile();
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "мир", data: e.message });
+      } finally {
+        setChatActionBusy(false);
+        setStatus("");
+      }
+    },
+    [busy, chatActionBusy, store, restoreChatSession, refreshChats, closeChatsOnMobile]
+  );
+
   const onActivateChat = useCallback(
     async (chatId) => {
       if (!chatId || sameChatId(chatId, activeChatId) || busy || chatActionBusy) return;
@@ -801,6 +834,7 @@ export default function App() {
           onSelectStory={setSelectedStoryId}
           onClose={closeChats}
           onCreate={onCreateChat}
+          onCreateWorld={onCreateWorld}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
         />

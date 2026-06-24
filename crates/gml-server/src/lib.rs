@@ -817,7 +817,21 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         // canon-authoritative — its scene is rebuilt from the start place.
         let spec = worldspec_from_body(&data);
         let client = (make_client)();
-        let world = World::from_worldgen(&spec);
+        let mut world = World::from_worldgen(&spec);
+        let story_title = body_str(&data, "story_title");
+        if !story_title.is_empty() {
+            world.set_story_title(&story_title);
+        } else if !title.is_empty() {
+            world.set_story_title(&title);
+        }
+        let story_brief = body_str(&data, "story_brief");
+        if !story_brief.is_empty() {
+            world.set_story_brief(&story_brief);
+        }
+        let public_intro = body_str(&data, "public_intro");
+        if !public_intro.is_empty() {
+            world.set_public_intro(&public_intro);
+        }
         story_session(client, world, &cfg, &model_hint)
     } else {
         let seed = match gml_stories::story_seed(&effective_story_id) {
