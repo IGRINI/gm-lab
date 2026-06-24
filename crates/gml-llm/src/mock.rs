@@ -70,6 +70,10 @@ impl MockClient {
     /// The synchronous body of `chat` — used by both `chat` and `chat_stream`.
     fn chat_impl(&self, messages: &Value) -> ChatOutput {
         self.remember("chat");
+        let system_text = join_role_contents(messages, "system");
+        if system_text.contains("GM-Lab world architect") {
+            return world_architect_chat_output();
+        }
         let n_tool = count_tool_messages(messages);
 
         if n_tool == 0 {
@@ -247,6 +251,150 @@ impl MockClient {
                 )]),
             ),
         ])
+    }
+}
+
+fn world_architect_chat_output() -> ChatOutput {
+    let world_lore = Value::Object(obj([
+        ("name", Value::String("Порог Второго Неба".to_string())),
+        ("genre", Value::String("fantasy isekai".to_string())),
+        ("tone", Value::String("tense hopeful".to_string())),
+        ("scale", Value::String("region".to_string())),
+        (
+            "public_premise",
+            Value::String(
+                "Мир держится на клятвах, духах мест и долгах между призванными чужаками и местными домами."
+                    .to_string(),
+            ),
+        ),
+        (
+            "hidden_premise",
+            Value::String(
+                "Призванные появляются потому, что старый договор мира треснул и ищет внешнюю переменную."
+                    .to_string(),
+            ),
+        ),
+        (
+            "dogmas",
+            Value::Array(vec![
+                Value::String("имя и клятва имеют юридическую и мистическую силу".to_string()),
+                Value::String("духи мест помнят долги лучше людей".to_string()),
+            ]),
+        ),
+        (
+            "world_laws",
+            Value::Array(vec![
+                Value::String("магия требует имени, цены или признанного права".to_string()),
+                Value::String("дальняя дорога меняет слухи и баланс сил".to_string()),
+            ]),
+        ),
+        (
+            "regions",
+            Value::Array(vec![Value::String(
+                "Семь земель под Осколочной Луной".to_string(),
+            )]),
+        ),
+        (
+            "power_centers",
+            Value::Array(vec![Value::String(
+                "Корона Второго Неба и храмовые суды".to_string(),
+            )]),
+        ),
+        (
+            "religions",
+            Value::Array(vec![Value::String(
+                "культ дорожных духов и официальная вера клятв".to_string(),
+            )]),
+        ),
+        (
+            "gods",
+            Value::Array(vec![Value::String(
+                "Старшие Духи Порогов".to_string(),
+            )]),
+        ),
+        (
+            "cultures",
+            Value::Array(vec![Value::String(
+                "родовые дома, гильдии рунников и призванные чужаки".to_string(),
+            )]),
+        ),
+        (
+            "history",
+            Value::Array(vec![Value::String(
+                "После войны семи клятв границы стали держаться на договорах с духами."
+                    .to_string(),
+            )]),
+        ),
+        (
+            "economy",
+            Value::Array(vec![Value::String(
+                "долги, дорожные пошлины, рунические замки и сезонные караваны".to_string(),
+            )]),
+        ),
+        (
+            "daily_life",
+            Value::Array(vec![Value::String(
+                "люди боятся нарушить клятву публично и ценят свидетелей сделки".to_string(),
+            )]),
+        ),
+        (
+            "hidden_secrets",
+            Value::Array(vec![Value::String(
+                "часть пророчеств написана прошлыми призванными".to_string(),
+            )]),
+        ),
+        (
+            "location_rules",
+            Value::Array(vec![Value::String(
+                "каждая новая локация должна иметь связь с долгом, властью, дорогой или духом места"
+                    .to_string(),
+            )]),
+        ),
+        (
+            "prohibited_elements",
+            Value::Array(vec![Value::String(
+                "технологический постапокалипсис без объяснения как чужеродный артефакт"
+                    .to_string(),
+            )]),
+        ),
+    ]));
+    let calls = vec![ParsedCall::new(
+        "draft_world_bible",
+        obj([
+            ("title", Value::String("Порог Второго Неба".to_string())),
+            ("genre", Value::String("fantasy isekai".to_string())),
+            ("tone", Value::String("tense hopeful".to_string())),
+            ("scale", Value::String("region".to_string())),
+            (
+                "story_brief",
+                Value::String(
+                    "Ты приходишь в мир, где имя, клятва и долг перед духами значат больше силы."
+                        .to_string(),
+                ),
+            ),
+            (
+                "public_intro",
+                Value::String(
+                    "Местные знают: старые договоры с духами снова дают трещину, а появление чужака редко бывает случайным."
+                        .to_string(),
+                ),
+            ),
+            ("world_lore", world_lore),
+            (
+                "open_questions",
+                Value::Array(vec![Value::String(
+                    "Каким должен быть первый регион: деревня, город или пограничный тракт?"
+                        .to_string(),
+                )]),
+            ),
+        ]),
+        "mock_world_architect0",
+    )];
+    ChatOutput {
+        thinking: "Собираю структурированную библию мира.".to_string(),
+        content: String::new(),
+        assistant_msg: toolmsg(&calls),
+        calls,
     }
 }
 

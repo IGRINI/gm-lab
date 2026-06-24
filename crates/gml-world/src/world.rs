@@ -342,11 +342,31 @@ impl World {
             .seed
             .parse::<u128>()
             .unwrap_or_else(|_| Self::new_dice_seed());
-        Self::from_worldgen_with_dice_seed(spec, dice_seed)
+        Self::from_worldgen_with_lore_and_dice_seed(spec, None, dice_seed)
+    }
+
+    /// [`World::from_worldgen`] with a model-authored top-level world bible.
+    pub fn from_worldgen_with_lore(
+        spec: &crate::canon::WorldSpec,
+        lore: crate::canon::WorldLore,
+    ) -> Self {
+        let dice_seed = spec
+            .seed
+            .parse::<u128>()
+            .unwrap_or_else(|_| Self::new_dice_seed());
+        Self::from_worldgen_with_lore_and_dice_seed(spec, Some(lore), dice_seed)
     }
 
     /// [`World::from_worldgen`] with an explicit dice seed (deterministic tests).
     pub fn from_worldgen_with_dice_seed(spec: &crate::canon::WorldSpec, dice_seed: u128) -> Self {
+        Self::from_worldgen_with_lore_and_dice_seed(spec, None, dice_seed)
+    }
+
+    fn from_worldgen_with_lore_and_dice_seed(
+        spec: &crate::canon::WorldSpec,
+        lore: Option<crate::canon::WorldLore>,
+        dice_seed: u128,
+    ) -> Self {
         let mut world = World::skeleton(dice_seed);
         world.story_id = "procedural".to_string();
         world.story_title = "Процедурный мир".to_string();
@@ -360,7 +380,7 @@ impl World {
         world.time.absolute_minutes = 480;
 
         // Generate the canon — the source of truth — and derive everything else.
-        world.world_canon = crate::canon::worldgen::generate(spec);
+        world.world_canon = crate::canon::worldgen::generate_with_lore(spec, lore);
         world.world_canon.clock_minutes = world.time.absolute_minutes;
         world.derive_legacy_from_canon();
         world

@@ -53,7 +53,7 @@ pub use rumor::{
 pub use transition::Transition;
 pub use travel::{roll_travel_situation, TravelRoll, TravelSituation};
 pub use validator::{Rejection, Validator};
-pub use worldgen::{generate, WorldSpec};
+pub use worldgen::{generate, generate_with_lore, WorldSpec};
 
 use std::collections::BTreeMap;
 

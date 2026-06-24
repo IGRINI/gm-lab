@@ -36,7 +36,7 @@ use gml_config::{Config, RuntimeSettings};
 use gml_llm::Backend;
 use gml_orchestrator::{run_turn_into, CompactionThresholds, Session};
 use gml_persistence::{DialogRuntime, DialogStore};
-use gml_world::{World, WorldSpec};
+use gml_world::{World, WorldLore, WorldSpec};
 
 /// Reserved `story_id` that routes campaign creation through the living-world
 /// canon generator (`World::from_worldgen`) instead of the static story
@@ -112,6 +112,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/transcript", get(get_transcript))
         .route("/stories", get(get_stories))
         .route("/chats", get(get_chats).post(post_create_chat))
+        .route("/world-architect/chat", post(post_world_architect_chat))
         .route("/export", get(get_export))
         .route("/codex/status", get(get_codex_status))
         .route("/sidecar/status", get(get_sidecar_status))
@@ -230,6 +231,29 @@ fn worldspec_from_body(map: &Map<String, Value>) -> WorldSpec {
         spec.scale = scale;
     }
     spec
+}
+
+fn world_lore_from_body(
+    map: &Map<String, Value>,
+    spec: &WorldSpec,
+) -> Result<Option<WorldLore>, String> {
+    let Some(raw) = map.get("world_lore") else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    if !raw.is_object() {
+        return Err("world_lore must be an object".to_string());
+    }
+    let mut lore: WorldLore =
+        serde_json::from_value(raw.clone()).map_err(|e| format!("invalid world_lore: {e}"))?;
+    lore.normalize_for_worldgen(&spec.seed, &spec.genre, &spec.tone, &spec.scale);
+    if lore.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(lore))
+    }
 }
 
 /// Resolve the active chat id, self-healing/creating as needed (`get_active`).
@@ -400,6 +424,37 @@ async fn get_stories() -> Response {
         "default_story_id": PROCEDURAL_STORY_ID,
         "stories": stories,
     }))
+}
+
+async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -> Response {
+    let data = parse_body(&body);
+    let message = body_str(&data, "message");
+    if message.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "message is required"}),
+        );
+    }
+    let history = data
+        .get("history")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let draft = data.get("draft").cloned().unwrap_or(Value::Null);
+    let client = (state.make_client)();
+    match gml_agents::world_architect_turn(client.as_ref(), &history, &draft, &message).await {
+        Ok(output) => ok_json(&json!({
+            "ok": true,
+            "reply": output.reply,
+            "draft": output.draft,
+            "assistant_message": output.assistant_msg,
+            "calls": output.calls,
+        })),
+        Err(e) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
 }
 
 async fn get_settings(State(state): State<AppState>) -> Response {
@@ -816,13 +871,28 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         // derive the legacy-facing World from it. The resulting session is
         // canon-authoritative — its scene is rebuilt from the start place.
         let spec = worldspec_from_body(&data);
+        let world_lore = match world_lore_from_body(&data, &spec) {
+            Ok(v) => v,
+            Err(error) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": error}),
+                );
+            }
+        };
         let client = (make_client)();
-        let mut world = World::from_worldgen(&spec);
+        let mut world = match world_lore {
+            Some(lore) => World::from_worldgen_with_lore(&spec, lore),
+            None => World::from_worldgen(&spec),
+        };
         let story_title = body_str(&data, "story_title");
         if !story_title.is_empty() {
             world.set_story_title(&story_title);
         } else if !title.is_empty() {
             world.set_story_title(&title);
+        } else if !world.world_canon.world_lore.name.is_empty() {
+            let lore_name = world.world_canon.world_lore.name.clone();
+            world.set_story_title(&lore_name);
         }
         let story_brief = body_str(&data, "story_brief");
         if !story_brief.is_empty() {
@@ -831,6 +901,9 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         let public_intro = body_str(&data, "public_intro");
         if !public_intro.is_empty() {
             world.set_public_intro(&public_intro);
+        } else if !world.world_canon.world_lore.public_premise.is_empty() {
+            let public_premise = world.world_canon.world_lore.public_premise.clone();
+            world.set_public_intro(&public_premise);
         }
         story_session(client, world, &cfg, &model_hint)
     } else {

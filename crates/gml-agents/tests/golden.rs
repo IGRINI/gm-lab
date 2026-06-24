@@ -657,3 +657,31 @@ fn norm_npc_coercion() {
     assert_eq!(empty["beats"], json!([]));
     assert_eq!(empty["claims"], json!([]));
 }
+
+#[test]
+fn world_architect_has_static_prompt_and_draft_tool() {
+    use serde_json::json;
+
+    let messages = agents::world_architect_messages(
+        &[json!({"role": "user", "content": "Хочу иссекай про клятвы."})],
+        &json!({"title": "Черновик"}),
+        "Добавь богов и историю.",
+    );
+    assert_eq!(messages[0]["role"], "system");
+    let system = messages[0]["content"].as_str().unwrap();
+    assert!(system.contains("GM-Lab world architect"));
+    assert!(system.contains("Religions/creeds"));
+    assert!(system.contains("History"));
+    assert!(messages.last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .contains("Current Draft JSON"));
+
+    let tools = agents::world_architect_tools();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(
+        tools[0]["function"]["name"], "draft_world_bible",
+        "architect has its own draft tool"
+    );
+    assert!(tools[0]["function"]["parameters"]["properties"]["world_lore"].is_object());
+}

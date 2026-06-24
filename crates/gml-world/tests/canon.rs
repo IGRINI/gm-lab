@@ -448,6 +448,41 @@ fn worldgen_lore_tracks_genre_guardrails() {
 }
 
 #[test]
+fn provided_world_lore_overrides_heuristic_lore() {
+    use gml_world::canon::{WorldLore, WorldSpec};
+
+    let world = World::from_worldgen_with_lore(
+        &WorldSpec {
+            seed: "architect-lore".to_string(),
+            genre: "fantasy isekai".to_string(),
+            tone: "tense".to_string(),
+            scale: "region".to_string(),
+        },
+        WorldLore {
+            name: "Город Железных Снов".to_string(),
+            public_premise: "Люди живут в тени спящего машинного бога.".to_string(),
+            religions: vec!["церковь Спящего Механизма".to_string()],
+            gods: vec!["Машинный Бог под городом".to_string()],
+            regions: vec!["Нижние кольца города".to_string()],
+            location_rules: vec![
+                "новые места должны показывать связь с машинным культом".to_string()
+            ],
+            ..Default::default()
+        },
+    );
+
+    let lore = &world.world_canon.world_lore;
+    assert_eq!(lore.name, "Город Железных Снов");
+    assert_eq!(lore.genre, "fantasy isekai");
+    assert!(!lore.lore_id.is_empty());
+    let context = world.canon_world_context();
+    assert!(context.contains("Город Железных Снов"));
+    assert!(context.contains("Religions/creeds"));
+    assert!(context.contains("Машинный Бог"));
+    assert!(context.contains("Location generation rules"));
+}
+
+#[test]
 fn from_worldgen_is_deterministic() {
     use gml_world::canon::WorldSpec;
     let a = World::from_worldgen_with_dice_seed(&WorldSpec::from_seed("det"), 7);

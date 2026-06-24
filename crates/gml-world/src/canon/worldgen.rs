@@ -65,13 +65,28 @@ impl WorldSpec {
 /// reachable via a transition (a dungeon entry — lazy interior on first entry),
 /// a couple of actors at the start, one faction, and an initial history.
 pub fn generate(spec: &WorldSpec) -> WorldCanon {
+    generate_with_lore(spec, None)
+}
+
+/// Generate a complete starting [`WorldCanon`], optionally using a
+/// model-authored world bible as the top-level lore layer. The structural
+/// region/settlement/place graph remains deterministic from `spec.seed`; the
+/// provided lore only constrains what the GM and later generators consider
+/// plausible.
+pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> WorldCanon {
     let seed = spec.seed.clone();
     let mut canon = WorldCanon {
         world_seed: seed.clone(),
         generator_version: GENERATOR_VERSION.to_string(),
         ..Default::default()
     };
-    canon.world_lore = build_world_lore(spec, &seed);
+    canon.world_lore = match world_lore {
+        Some(mut lore) if !lore.is_empty() => {
+            lore.normalize_for_worldgen(&seed, &spec.genre, &spec.tone, &spec.scale);
+            lore
+        }
+        _ => build_world_lore(spec, &seed),
+    };
 
     let prov = || Provenance::by("worldgen", "procedural generation", 0);
 
@@ -493,6 +508,7 @@ fn machine_apocalypse_lore(spec: &WorldSpec, seed: &str, rng: &mut ids::DetRng) 
             "изобилие топлива, еды и чистой воды без источника",
         ]),
         provenance: Provenance::by("worldgen", "world lore", 0),
+        ..Default::default()
     }
 }
 
@@ -585,6 +601,7 @@ fn fantasy_isekai_lore(spec: &WorldSpec, seed: &str, rng: &mut ids::DetRng) -> W
             "случайные монстры, не связанные с местом или историей",
         ]),
         provenance: Provenance::by("worldgen", "world lore", 0),
+        ..Default::default()
     }
 }
 
@@ -678,6 +695,7 @@ fn frontier_lore(spec: &WorldSpec, seed: &str, rng: &mut ids::DetRng) -> WorldLo
             "поселения без экономики, власти, конфликта или маршрута",
         ]),
         provenance: Provenance::by("worldgen", "world lore", 0),
+        ..Default::default()
     }
 }
 

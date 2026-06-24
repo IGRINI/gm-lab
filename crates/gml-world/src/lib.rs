@@ -25,7 +25,7 @@ pub use canon::{
     Account, Action, Actor, CanonEvent, Containment, Faction, MemoryAccess, MemoryInjectionState,
     MemoryStore, MemoryTier, MemoryTruthStatus, MemoryUnit, Place, PlayerView, ProposedAction,
     Provenance, Region, Rejection, Scope, Settlement, Transition, Truthfulness, Validator,
-    WorldCanon, WorldSpec, GENERATOR_VERSION,
+    WorldCanon, WorldLore, WorldSpec, GENERATOR_VERSION,
 };
 pub use model::{
     FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem,

@@ -651,6 +651,7 @@ export default function App() {
         scale: textValue(draft?.scale) || "village",
         story_brief: textValue(draft?.storyBrief),
         public_intro: textValue(draft?.publicIntro),
+        world_lore: draft?.worldLore && typeof draft.worldLore === "object" ? draft.worldLore : null,
       };
       setChatActionBusy(true);
       setStatus("Создаю мир...");
@@ -669,6 +670,8 @@ export default function App() {
     },
     [busy, chatActionBusy, store, restoreChatSession, refreshChats, closeChatsOnMobile]
   );
+
+  const onWorldArchitectTurn = useCallback(async (body) => api.worldArchitectChat(body), []);
 
   const onActivateChat = useCallback(
     async (chatId) => {
@@ -835,6 +838,7 @@ export default function App() {
           onClose={closeChats}
           onCreate={onCreateChat}
           onCreateWorld={onCreateWorld}
+          onWorldArchitectTurn={onWorldArchitectTurn}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
         />

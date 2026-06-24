@@ -33,6 +33,8 @@ export const api = {
 
   createChat: (body) => _post("/chats", body),
 
+  worldArchitectChat: (body) => _post("/world-architect/chat", body),
+
   activateChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/activate`),
 
   deleteChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/delete`),

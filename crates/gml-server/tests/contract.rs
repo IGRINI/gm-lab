@@ -604,6 +604,73 @@ async fn create_procedural_chat_applies_world_manager_story_fields() {
 }
 
 #[tokio::test]
+async fn world_architect_chat_returns_structured_draft() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(
+        &state,
+        "/world-architect/chat",
+        serde_json::json!({
+            "message": "Хочу фентезийный иссекай с богами и клятвами.",
+            "history": [],
+            "draft": {"genre": "fantasy isekai"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert!(got["reply"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Порог Второго Неба"));
+    assert_eq!(got["draft"]["title"], "Порог Второго Неба");
+    assert_eq!(
+        got["draft"]["world_lore"]["gods"][0],
+        "Старшие Духи Порогов"
+    );
+    assert_eq!(got["calls"][0]["name"], "draft_world_bible");
+}
+
+#[tokio::test]
+async fn create_procedural_chat_accepts_world_lore_from_architect() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(
+        &state,
+        "/chats",
+        serde_json::json!({
+            "story_id": "procedural",
+            "seed": "architect-lore-server",
+            "genre": "fantasy isekai",
+            "tone": "tense",
+            "scale": "region",
+            "world_lore": {
+                "name": "Город Железных Снов",
+                "public_premise": "Люди живут в тени спящего машинного бога.",
+                "religions": ["церковь Спящего Механизма"],
+                "gods": ["Машинный Бог под городом"],
+                "location_rules": ["новые места должны показывать связь с машинным культом"]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["state"]["story_title"], "Город Железных Снов");
+
+    let (status, body) = get(&state, "/debug").await;
+    assert_eq!(status, StatusCode::OK);
+    let debug: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(debug["story"]["title"], "Город Железных Снов");
+    assert_eq!(
+        debug["story"]["public_intro"],
+        "Люди живут в тени спящего машинного бога."
+    );
+}
+
+#[tokio::test]
 async fn settings_update_persists_and_reflects() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
