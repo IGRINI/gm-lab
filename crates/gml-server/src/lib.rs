@@ -233,15 +233,15 @@ fn worldspec_from_body(map: &Map<String, Value>) -> WorldSpec {
     spec
 }
 
-fn world_lore_from_body(
+fn required_world_lore_from_body(
     map: &Map<String, Value>,
     spec: &WorldSpec,
-) -> Result<Option<WorldLore>, String> {
+) -> Result<WorldLore, String> {
     let Some(raw) = map.get("world_lore") else {
-        return Ok(None);
+        return Err("world_lore is required for procedural worlds".to_string());
     };
     if raw.is_null() {
-        return Ok(None);
+        return Err("world_lore is required for procedural worlds".to_string());
     }
     if !raw.is_object() {
         return Err("world_lore must be an object".to_string());
@@ -250,9 +250,9 @@ fn world_lore_from_body(
         serde_json::from_value(raw.clone()).map_err(|e| format!("invalid world_lore: {e}"))?;
     lore.normalize_for_worldgen(&spec.seed, &spec.genre, &spec.tone, &spec.scale);
     if lore.is_empty() {
-        Ok(None)
+        Err("world_lore must not be empty".to_string())
     } else {
-        Ok(Some(lore))
+        Ok(lore)
     }
 }
 
@@ -871,7 +871,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         // derive the legacy-facing World from it. The resulting session is
         // canon-authoritative — its scene is rebuilt from the start place.
         let spec = worldspec_from_body(&data);
-        let world_lore = match world_lore_from_body(&data, &spec) {
+        let world_lore = match required_world_lore_from_body(&data, &spec) {
             Ok(v) => v,
             Err(error) => {
                 return json_response(
@@ -881,10 +881,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             }
         };
         let client = (make_client)();
-        let mut world = match world_lore {
-            Some(lore) => World::from_worldgen_with_lore(&spec, lore),
-            None => World::from_worldgen(&spec),
-        };
+        let mut world = World::from_worldgen_with_lore(&spec, world_lore);
         let story_title = body_str(&data, "story_title");
         if !story_title.is_empty() {
             world.set_story_title(&story_title);

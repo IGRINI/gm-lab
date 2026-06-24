@@ -150,7 +150,12 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
   const worldPayload = useMemo(() => cleanWorldDraft(worldDraft), [worldDraft]);
   const loreRows = useMemo(() => lorePreviewRows(worldPayload.worldLore), [worldPayload.worldLore]);
   const worldCreateLocked =
-    locked || !worldPayload.title || !worldPayload.genre || !worldPayload.tone || !worldPayload.scale;
+    locked ||
+    !worldPayload.title ||
+    !worldPayload.genre ||
+    !worldPayload.tone ||
+    !worldPayload.scale ||
+    !worldPayload.worldLore;
   const architectLocked = locked || architectBusy;
 
   const updateWorldDraft = (field, value) => {
@@ -358,7 +363,7 @@ export default function WorldArchitectPanel({ locked, onCreateWorld, onArchitect
         Создать мир и чат
       </button>
       <p className="world-manager-note">
-        Жанр, тон, масштаб и библия мира станут рамками канона для GM и генератора локаций.
+        Создание доступно только после черновика архитектора: библия мира станет рамками канона для GM и генератора локаций.
       </p>
     </form>
   );

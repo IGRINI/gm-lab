@@ -356,14 +356,8 @@ fn from_worldgen_derives_legacy_world_from_canon() {
     assert_eq!(world.time_export()["time_of_day"], "08:00");
     assert_eq!(world.world_canon.clock_minutes, world.time.absolute_minutes);
     assert!(
-        !world.world_canon.world_lore.is_empty(),
-        "procedural worlds must start with high-level lore guardrails"
-    );
-    assert!(
-        world
-            .canon_world_context()
-            .contains("Location generation rules"),
-        "GM/generator context must include world lore rules"
+        world.world_canon.world_lore.is_empty(),
+        "plain worldgen must not infer heuristic lore"
     );
     let player_place = world.world_canon.player_place_id.clone();
     assert!(!player_place.is_empty());
@@ -392,7 +386,7 @@ fn from_worldgen_derives_legacy_world_from_canon() {
 }
 
 #[test]
-fn worldgen_lore_tracks_genre_guardrails() {
+fn plain_worldgen_does_not_infer_lore_from_genre() {
     use gml_world::canon::WorldSpec;
 
     let machine = World::from_worldgen_with_dice_seed(
@@ -416,39 +410,12 @@ fn worldgen_lore_tracks_genre_guardrails() {
 
     let machine_lore = &machine.world_canon.world_lore;
     let fantasy_lore = &fantasy.world_canon.world_lore;
-    assert_ne!(machine_lore.name, fantasy_lore.name);
-    assert!(
-        machine_lore
-            .creatures
-            .iter()
-            .any(|item| item.contains("дрон") || item.contains("платформ")),
-        "{machine_lore:#?}"
-    );
-    assert!(
-        machine_lore
-            .prohibited_elements
-            .iter()
-            .any(|item| item.contains("магия")),
-        "{machine_lore:#?}"
-    );
-    assert!(
-        fantasy_lore
-            .creatures
-            .iter()
-            .any(|item| item.contains("духи") || item.contains("демоны")),
-        "{fantasy_lore:#?}"
-    );
-    assert!(
-        fantasy_lore
-            .prohibited_elements
-            .iter()
-            .any(|item| item.contains("дроны") || item.contains("дата-центры")),
-        "{fantasy_lore:#?}"
-    );
+    assert!(machine_lore.is_empty(), "{machine_lore:#?}");
+    assert!(fantasy_lore.is_empty(), "{fantasy_lore:#?}");
 }
 
 #[test]
-fn provided_world_lore_overrides_heuristic_lore() {
+fn provided_world_lore_populates_canon_lore() {
     use gml_world::canon::{WorldLore, WorldSpec};
 
     let world = World::from_worldgen_with_lore(

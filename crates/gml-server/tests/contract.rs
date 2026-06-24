@@ -120,6 +120,19 @@ fn reference(name: &str) -> Value {
     serde_json::from_str(&text).unwrap()
 }
 
+fn architect_lore_json() -> Value {
+    serde_json::json!({
+        "name": "Порог Второго Неба",
+        "public_premise": "Мир держится на клятвах, духах мест и долгах между призванными чужаками и местными домами.",
+        "dogmas": ["имя и клятва имеют юридическую и мистическую силу"],
+        "world_laws": ["магия требует имени, цены или признанного права"],
+        "regions": ["Семь земель под Осколочной Луной"],
+        "religions": ["культ дорожных духов"],
+        "gods": ["Старшие Духи Порогов"],
+        "location_rules": ["каждая новая локация должна иметь связь с долгом, властью, дорогой или духом места"]
+    })
+}
+
 #[tokio::test]
 async fn get_settings_matches_reference() {
     let tmp = tempfile::tempdir().unwrap();
@@ -454,15 +467,17 @@ async fn transcribe_is_400_when_backend_not_codex() {
 }
 
 #[tokio::test]
-async fn create_chat_without_story_uses_procedural_default() {
+async fn create_chat_without_story_requires_world_lore() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
     let (status, body) = post(&state, "/chats", serde_json::json!({})).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let got: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(got["ok"], true);
-    assert_eq!(got["state"]["story_id"], "procedural");
-    assert!(got["state"]["scene"].is_object());
+    assert_eq!(got["ok"], false);
+    assert!(got["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("world_lore is required"));
 }
 
 #[tokio::test]
@@ -486,7 +501,8 @@ async fn create_chat_with_story_id_returns_state() {
 #[tokio::test]
 async fn create_procedural_chat_is_canon_authoritative_and_turns() {
     // Locked decision #4: a procedural campaign is built from the living-world
-    // canon (World::from_worldgen) and is fully playable through a normal turn.
+    // canon plus an explicit architect-authored world_lore, and is fully playable
+    // through a normal turn.
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
 
@@ -494,7 +510,12 @@ async fn create_procedural_chat_is_canon_authoritative_and_turns() {
     let (status, body) = post(
         &state,
         "/chats",
-        serde_json::json!({"story_id": "procedural", "seed": "12345", "activate": true}),
+        serde_json::json!({
+            "story_id": "procedural",
+            "seed": "12345",
+            "activate": true,
+            "world_lore": architect_lore_json()
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "procedural create should succeed");
@@ -579,7 +600,8 @@ async fn create_procedural_chat_applies_world_manager_story_fields() {
             "scale": "outpost",
             "title": "Пепельный Узел",
             "story_brief": "Ты приходишь к форпосту у старого машинного узла.",
-            "public_intro": "Выжившие спорят за воду, энергию и право подходить к закрытому узлу."
+            "public_intro": "Выжившие спорят за воду, энергию и право подходить к закрытому узлу.",
+            "world_lore": architect_lore_json()
         }),
     )
     .await;

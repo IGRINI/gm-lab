@@ -102,7 +102,10 @@ function normalizeStory(story) {
 
 function normalizeStories(data) {
   if (!Array.isArray(data?.stories)) return [];
-  return data.stories.map(normalizeStory).filter(Boolean);
+  return data.stories
+    .map(normalizeStory)
+    .filter(Boolean)
+    .filter((story) => story.id !== "procedural");
 }
 
 function activeChatIdFrom(data) {

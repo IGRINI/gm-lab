@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 use gml_agents as agents;
-use gml_world::{MemoryUnit, World};
+use gml_world::{MemoryUnit, World, WorldLore};
 
 const PLAYER_TEXT: &str = "Я осматриваю площадь и подхожу к воротам.";
 const DICE_SEED: u128 = 424242;
@@ -44,6 +44,21 @@ fn dumps_compact(value: &Value) -> String {
 fn build_world() -> World {
     let seed = gml_stories::story_seed(gml_stories::DEFAULT_STORY_ID).expect("default seed");
     World::from_seed_with_dice_seed(&seed, DICE_SEED)
+}
+
+fn test_world_lore() -> WorldLore {
+    WorldLore {
+        name: "Пепельная Сеть".to_string(),
+        public_premise: "Машинный постапокалипсис, где люди выживают вокруг старых узлов."
+            .to_string(),
+        location_rules: vec![
+            "каждая новая локация должна учитывать доступ к энергии, воде, деталям или сигналу"
+                .to_string(),
+        ],
+        prohibited_elements: vec!["классическая магия без технологического объяснения".to_string()],
+        creatures: vec!["ремонтные дроны".to_string()],
+        ..Default::default()
+    }
 }
 
 /// Rewrite the fixture with the produced output when `GML_BLESS=1` is set
@@ -101,7 +116,10 @@ fn gm_turn_context_opts_byte_identical() {
 fn worldgen_world_surfaces_canon_world_context_to_the_gm() {
     // A procedurally generated world must reach the GM: its region / settlement
     // / factions appear in the turn context (not just legacy public facts).
-    let mut w = World::from_worldgen(&gml_world::canon::WorldSpec::from_seed("777"));
+    let mut w = World::from_worldgen_with_lore(
+        &gml_world::canon::WorldSpec::from_seed("777"),
+        test_world_lore(),
+    );
     let ctx = agents::gm_turn_context(&mut w, PLAYER_TEXT, false);
     assert!(
         ctx.contains("CANON WORLD"),
@@ -125,7 +143,7 @@ fn location_generator_receives_world_lore_guardrails() {
         tone: "bleak".to_string(),
         scale: "outpost".to_string(),
     };
-    let mut w = World::from_worldgen(&spec);
+    let mut w = World::from_worldgen_with_lore(&spec, test_world_lore());
     let messages = agents::location_generator_messages(
         &mut w,
         &json!({
@@ -140,7 +158,10 @@ fn location_generator_receives_world_lore_guardrails() {
         .and_then(|message| message.get("content"))
         .and_then(Value::as_str)
         .expect("last user message");
-    assert!(user.contains("машин") || user.contains("Machine"), "{user}");
+    assert!(
+        user.to_lowercase().contains("машин") || user.contains("Machine"),
+        "{user}"
+    );
     assert!(user.contains("Do not add without cause"), "{user}");
     assert!(user.contains("классическая магия"), "{user}");
     assert!(user.contains("ремонтные дроны"), "{user}");
