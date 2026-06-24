@@ -6,21 +6,22 @@
 //! prefix byte-identity depends on.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-use gml_config::{Config, RuntimeSettings};
-use gml_llm::build_payload;
+use gml_config::{Config, Role, RuntimeSettings};
+use gml_llm::{build_payload, OpenAICompatClient};
 use serde_json::Value;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Build a Config + RuntimeSettings with a fresh temp settings file. Settings
 /// start from defaults: max_output_tokens=0, tool_choice=auto,
-/// parallel_tool_calls=true, gm/npc reasoning effort=low, compact=none.
+/// parallel_tool_calls=true, gm/npc/location reasoning effort=low, compact=none.
 fn fixture(cfg: Config) -> (Config, RuntimeSettings) {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let path = std::env::temp_dir().join(format!("gml_llm_payload_test_{n}.json"));
     let _ = std::fs::remove_file(&path);
-    for role in ["GM", "NPC", "COMPACT"] {
+    for role in ["GM", "NPC", "COMPACT", "LOCATION"] {
         std::env::remove_var(format!("GM_{role}_REASONING_EFFORT"));
         std::env::remove_var(format!("GM_{role}_REASONING_SUMMARY"));
     }
@@ -51,7 +52,17 @@ fn messages() -> Value {
 fn payload_base_keys_and_order_no_think() {
     let (cfg, rs) = fixture(base_cfg());
     // think=None -> no reasoning/sampling block at all.
-    let p = build_payload(&cfg, &rs, "test-model", &messages(), None, None, None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "test-model",
+        &messages(),
+        None,
+        None,
+        None,
+        false,
+        "gm",
+    );
     let s = serde_json::to_string(&p).unwrap();
     assert_eq!(
         s,
@@ -68,6 +79,47 @@ fn payload_cache_keys_absent_when_empty() {
     assert!(!obj.contains_key("prompt_cache_retention"));
 }
 
+#[tokio::test]
+async fn openai_client_uses_compact_model_only_for_compact_role() {
+    let mut cfg = base_cfg();
+    cfg.model = "main-model".to_string();
+    cfg.compact_model = "compact-model".to_string();
+    let (cfg, rs) = fixture(cfg);
+    let cfg = Arc::new(cfg);
+    let rs = Arc::new(rs);
+    let client = OpenAICompatClient::new(cfg, rs).await;
+
+    let gm = client.payload(
+        &messages(),
+        None,
+        Some(false),
+        None,
+        false,
+        Role::Gm.as_str(),
+    );
+    assert_eq!(gm.get("model").unwrap(), "main-model");
+
+    let compact = client.payload(
+        &messages(),
+        None,
+        Some(true),
+        None,
+        false,
+        Role::Compact.as_str(),
+    );
+    assert_eq!(compact.get("model").unwrap(), "compact-model");
+
+    let location = client.payload(
+        &messages(),
+        None,
+        Some(true),
+        None,
+        false,
+        Role::Location.as_str(),
+    );
+    assert_eq!(location.get("model").unwrap(), "main-model");
+}
+
 #[test]
 fn payload_cache_keys_present_when_set() {
     let mut cfg = base_cfg();
@@ -76,12 +128,21 @@ fn payload_cache_keys_present_when_set() {
     let (cfg, rs) = fixture(cfg);
     let p = build_payload(&cfg, &rs, "m", &messages(), None, None, None, false, "gm");
     let obj = p.as_object().unwrap();
-    assert_eq!(obj.get("prompt_cache_key"), Some(&Value::from("thread-xyz")));
+    assert_eq!(
+        obj.get("prompt_cache_key"),
+        Some(&Value::from("thread-xyz"))
+    );
     assert_eq!(obj.get("prompt_cache_retention"), Some(&Value::from("24h")));
     let keys: Vec<&String> = obj.keys().collect();
     assert_eq!(
         keys,
-        vec!["model", "messages", "stream", "prompt_cache_key", "prompt_cache_retention"]
+        vec![
+            "model",
+            "messages",
+            "stream",
+            "prompt_cache_key",
+            "prompt_cache_retention"
+        ]
     );
 }
 
@@ -95,14 +156,27 @@ fn payload_max_tokens_gating() {
     m.insert("max_output_tokens".into(), Value::from(512));
     rs.update(Some(&m));
     let p2 = build_payload(&cfg, &rs, "m", &messages(), None, None, None, false, "gm");
-    assert_eq!(p2.as_object().unwrap().get("max_tokens"), Some(&Value::from(512)));
+    assert_eq!(
+        p2.as_object().unwrap().get("max_tokens"),
+        Some(&Value::from(512))
+    );
 }
 
 #[test]
 fn payload_tools_block() {
     let (cfg, rs) = fixture(base_cfg());
     let tools = serde_json::json!([{"type": "function", "function": {"name": "roll_dice"}}]);
-    let p = build_payload(&cfg, &rs, "m", &messages(), Some(&tools), None, None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        Some(&tools),
+        None,
+        None,
+        false,
+        "gm",
+    );
     let obj = p.as_object().unwrap();
     assert!(obj.contains_key("tools"));
     assert_eq!(obj.get("tool_choice"), Some(&Value::from("auto")));
@@ -113,7 +187,17 @@ fn payload_tools_block() {
 fn payload_tools_absent_when_empty() {
     let (cfg, rs) = fixture(base_cfg());
     let empty = serde_json::json!([]);
-    let p = build_payload(&cfg, &rs, "m", &messages(), Some(&empty), None, None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        Some(&empty),
+        None,
+        None,
+        false,
+        "gm",
+    );
     let obj = p.as_object().unwrap();
     assert!(!obj.contains_key("tools"));
     assert!(!obj.contains_key("tool_choice"));
@@ -127,7 +211,17 @@ fn payload_parallel_false_when_tool_choice_none() {
     m.insert("tool_choice".into(), Value::from("none"));
     rs.update(Some(&m));
     let tools = serde_json::json!([{"type": "function", "function": {"name": "x"}}]);
-    let p = build_payload(&cfg, &rs, "m", &messages(), Some(&tools), None, None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        Some(&tools),
+        None,
+        None,
+        false,
+        "gm",
+    );
     let obj = p.as_object().unwrap();
     assert_eq!(obj.get("tool_choice"), Some(&Value::from("none")));
     assert_eq!(obj.get("parallel_tool_calls"), Some(&Value::from(false)));
@@ -138,7 +232,17 @@ fn payload_non_llama_sampling_subset() {
     // USE_LLAMA_TEMPLATE_KWARGS=false: only temperature/top_p/presence_penalty,
     // NO chat_template_kwargs / top_k / min_p / n_cache_reuse.
     let (cfg, rs) = fixture(base_cfg());
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, Some(true), None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        None,
+        Some(true),
+        None,
+        false,
+        "gm",
+    );
     let obj = p.as_object().unwrap();
     assert!(!obj.contains_key("chat_template_kwargs"));
     assert!(!obj.contains_key("top_k"));
@@ -155,7 +259,17 @@ fn payload_llama_full_sampling_and_cache_reuse_gating() {
     cfg.use_llama_template_kwargs = true;
     cfg.llama_cache_reuse = 0;
     let (cfg, rs) = fixture(cfg);
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, Some(true), None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        None,
+        Some(true),
+        None,
+        false,
+        "gm",
+    );
     let obj = p.as_object().unwrap();
     assert_eq!(
         obj.get("chat_template_kwargs"),
@@ -175,8 +289,21 @@ fn payload_n_cache_reuse_present_when_positive() {
     cfg.use_llama_template_kwargs = true;
     cfg.llama_cache_reuse = 256;
     let (cfg, rs) = fixture(cfg);
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, Some(true), None, false, "gm");
-    assert_eq!(p.as_object().unwrap().get("n_cache_reuse"), Some(&Value::from(256)));
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        None,
+        Some(true),
+        None,
+        false,
+        "gm",
+    );
+    assert_eq!(
+        p.as_object().unwrap().get("n_cache_reuse"),
+        Some(&Value::from(256))
+    );
 }
 
 #[test]
@@ -185,7 +312,17 @@ fn payload_n_cache_reuse_absent_when_not_llama_even_if_positive() {
     cfg.use_llama_template_kwargs = false;
     cfg.llama_cache_reuse = 256;
     let (cfg, rs) = fixture(cfg);
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, Some(true), None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        None,
+        Some(true),
+        None,
+        false,
+        "gm",
+    );
     assert!(!p.as_object().unwrap().contains_key("n_cache_reuse"));
 }
 
@@ -194,7 +331,17 @@ fn payload_min_p_is_integer_zero_in_wire_bytes() {
     let mut cfg = base_cfg();
     cfg.use_llama_template_kwargs = true;
     let (cfg, rs) = fixture(cfg);
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, Some(false), None, false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        None,
+        Some(false),
+        None,
+        false,
+        "gm",
+    );
     let s = serde_json::to_string(&p).unwrap();
     assert!(s.contains(r#""min_p":0,"#), "min_p must be int 0 in: {s}");
     assert!(!s.contains("0.0"));
@@ -209,7 +356,17 @@ fn payload_effective_think_disabled_uses_plain_sampling() {
     let mut cfg = base_cfg();
     cfg.use_llama_template_kwargs = true;
     let (cfg, rs) = fixture(cfg);
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, Some(true), None, false, "compact");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        None,
+        Some(true),
+        None,
+        false,
+        "compact",
+    );
     let obj = p.as_object().unwrap();
     assert_eq!(
         obj.get("chat_template_kwargs"),
@@ -234,7 +391,17 @@ fn payload_stream_options_when_stream() {
 fn payload_response_format_present() {
     let (cfg, rs) = fixture(base_cfg());
     let rf = serde_json::json!({"type": "json_object"});
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, Some(false), Some(&rf), false, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        None,
+        Some(false),
+        Some(&rf),
+        false,
+        "gm",
+    );
     let obj = p.as_object().unwrap();
     assert_eq!(obj.get("response_format"), Some(&rf));
 }
@@ -247,7 +414,17 @@ fn payload_full_key_order_with_tools_and_llama_thinking() {
     cfg.prompt_cache_key = "k".to_string();
     let (cfg, rs) = fixture(cfg);
     let tools = serde_json::json!([{"type": "function", "function": {"name": "x"}}]);
-    let p = build_payload(&cfg, &rs, "m", &messages(), Some(&tools), Some(true), None, true, "gm");
+    let p = build_payload(
+        &cfg,
+        &rs,
+        "m",
+        &messages(),
+        Some(&tools),
+        Some(true),
+        None,
+        true,
+        "gm",
+    );
     let keys: Vec<&str> = p.as_object().unwrap().keys().map(|s| s.as_str()).collect();
     assert_eq!(
         keys,

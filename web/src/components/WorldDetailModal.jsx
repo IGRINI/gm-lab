@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import Modal from "./Modal.jsx";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 
 // Player-facing detail modal for the world HUD: shows either the current
 // location (scene) or the player's own character sheet. All data comes from
@@ -156,11 +157,26 @@ function StatBlocks({ data }) {
       {entries.map(([k, v]) => {
         const mod = abilityMod(v);
         return (
-          <div className={"wd-stat tone-" + modTone(mod)} key={k} title={abilityFull(k)}>
+          <Tooltip
+            as="div"
+            className={"wd-stat tone-" + modTone(mod)}
+            tipClassName="ui-tip-wrap"
+            key={k}
+            content={
+              <TipContent
+                title={abilityFull(k)}
+                subtitle="Характеристика персонажа"
+                rows={[
+                  ["значение", String(v)],
+                  ["модификатор", mod == null ? "—" : fmtMod(mod)],
+                ]}
+              />
+            }
+          >
             <span className="wd-stat-k">{abilityShort(k)}</span>
             <b className="wd-stat-v">{String(v)}</b>
             {mod != null && <span className="wd-stat-mod">{fmtMod(mod)}</span>}
-          </div>
+          </Tooltip>
         );
       })}
     </div>

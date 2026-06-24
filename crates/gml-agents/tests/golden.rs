@@ -5,10 +5,10 @@
 
 use std::collections::BTreeSet;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use gml_agents as agents;
-use gml_world::World;
+use gml_world::{MemoryUnit, World};
 
 const PLAYER_TEXT: &str = "Я осматриваю площадь и подхожу к воротам.";
 const DICE_SEED: u128 = 424242;
@@ -46,14 +46,33 @@ fn build_world() -> World {
     World::from_seed_with_dice_seed(&seed, DICE_SEED)
 }
 
+/// Rewrite the fixture with the produced output when `GML_BLESS=1` is set
+/// (after an intentional behaviour change). Returns true when it blessed.
+fn maybe_bless(content: &str, fixture: &str) -> bool {
+    if std::env::var("GML_BLESS").as_deref() == Ok("1") {
+        std::fs::write(ref_path(fixture), content)
+            .unwrap_or_else(|e| panic!("bless {fixture}: {e}"));
+        true
+    } else {
+        false
+    }
+}
+
 fn assert_text_eq(got: &str, fixture: &str) {
+    if maybe_bless(got, fixture) {
+        return;
+    }
     let expected = read_fixture_str(fixture);
     assert_eq!(got, expected, "text mismatch vs {fixture}");
 }
 
 fn assert_json_indent2(got: &Value, fixture: &str) {
+    let rendered = dumps_indent2(got);
+    if maybe_bless(&rendered, fixture) {
+        return;
+    }
     let expected = read_fixture_str(fixture);
-    assert_eq!(dumps_indent2(got), expected, "indent2 json mismatch vs {fixture}");
+    assert_eq!(rendered, expected, "indent2 json mismatch vs {fixture}");
 }
 
 // --- GM assembly -----------------------------------------------------------
@@ -76,6 +95,84 @@ fn gm_turn_context_opts_byte_identical() {
     let mut w = build_world();
     let got = agents::gm_turn_context(&mut w, PLAYER_TEXT, true);
     assert_text_eq(&got, "gm_turn_context_opts.txt");
+}
+
+#[test]
+fn worldgen_world_surfaces_canon_world_context_to_the_gm() {
+    // A procedurally generated world must reach the GM: its region / settlement
+    // / factions appear in the turn context (not just legacy public facts).
+    let mut w = World::from_worldgen(&gml_world::canon::WorldSpec::from_seed("777"));
+    let ctx = agents::gm_turn_context(&mut w, PLAYER_TEXT, false);
+    assert!(
+        ctx.contains("CANON WORLD"),
+        "GM context must surface the structured canon world"
+    );
+    assert!(
+        ctx.contains("Region:") || ctx.contains("Settlement:") || ctx.contains("Factions:"),
+        "canon world must include region/settlement/faction, got:\n{ctx}"
+    );
+    assert!(
+        ctx.contains("World:") && ctx.contains("Location generation rules"),
+        "canon world must include high-level world lore guardrails, got:\n{ctx}"
+    );
+}
+
+#[test]
+fn location_generator_receives_world_lore_guardrails() {
+    let spec = gml_world::canon::WorldSpec {
+        seed: "loc-lore".to_string(),
+        genre: "postapocalyptic machine world".to_string(),
+        tone: "bleak".to_string(),
+        scale: "outpost".to_string(),
+    };
+    let mut w = World::from_worldgen(&spec);
+    let messages = agents::location_generator_messages(
+        &mut w,
+        &json!({
+            "reason": "player follows a road into an unknown place",
+            "kind": "road_stop"
+        }),
+        &[],
+        &[],
+    );
+    let user = messages
+        .last()
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .expect("last user message");
+    assert!(user.contains("машин") || user.contains("Machine"), "{user}");
+    assert!(user.contains("Do not add without cause"), "{user}");
+    assert!(user.contains("классическая магия"), "{user}");
+    assert!(user.contains("ремонтные дроны"), "{user}");
+}
+
+#[test]
+fn gm_turn_context_includes_access_gated_living_memory_snapshot() {
+    let mut w = World::from_worldgen(&gml_world::canon::WorldSpec::from_seed("778"));
+    w.add_memory_unit(MemoryUnit {
+        memory_id: "visible_memory".to_string(),
+        owner_scope: "public".to_string(),
+        summary: "GM_CONTEXT_MEMORY_SENTINEL travelers saw fresh hoofprints.".to_string(),
+        ..Default::default()
+    });
+    w.add_memory_unit(MemoryUnit {
+        memory_id: "hidden_memory".to_string(),
+        owner_scope: "gm_private".to_string(),
+        summary: "GM_CONTEXT_HIDDEN_SENTINEL the ambush is already prepared.".to_string(),
+        ..Default::default()
+    });
+
+    let ctx = agents::gm_turn_context(&mut w, PLAYER_TEXT, false);
+    let canon = ctx.find("CANON WORLD").expect("canon block");
+    let memory = ctx.find("LIVING MEMORY SNAPSHOT").expect("memory block");
+    let entity = ctx.find("ENTITY REFERENCE MARKUP").expect("entity refs");
+    assert!(
+        canon < memory && memory < entity,
+        "memory snapshot belongs in late context between canon and entity refs"
+    );
+    assert!(ctx.contains("GM_CONTEXT_MEMORY_SENTINEL"), "{ctx}");
+    assert!(!ctx.contains("GM_CONTEXT_HIDDEN_SENTINEL"), "{ctx}");
+    assert!(!ctx.contains("visible_memory"), "{ctx}");
 }
 
 #[test]
@@ -135,8 +232,12 @@ fn gm_tools_byte_identical_indent2() {
 #[test]
 fn gm_tools_byte_identical_compact() {
     let tools = Value::Array(agents::build_gm_tools());
+    let rendered = dumps_compact(&tools);
+    if maybe_bless(&rendered, "gm_tools.compact.json") {
+        return;
+    }
     let expected = read_fixture_str("gm_tools.compact.json");
-    assert_eq!(dumps_compact(&tools), expected, "compact gm_tools mismatch");
+    assert_eq!(rendered, expected, "compact gm_tools mismatch");
 }
 
 #[test]
@@ -144,7 +245,10 @@ fn gm_tools_have_no_dynamic_enums_or_roster() {
     let tools = agents::build_gm_tools();
     let json = serde_json::to_string(&Value::Array(tools.clone())).unwrap();
     // No human-readable roster injected into descriptions.
-    assert!(!json.contains("Available NPCs"), "tools leak Available NPCs prose");
+    assert!(
+        !json.contains("Available NPCs"),
+        "tools leak Available NPCs prose"
+    );
     // The only enums present are closed engine types — none may contain a live
     // npc id / location id / item id.
     let live_ids = ["borin", "lysa", "mareth", "grey_griffon"];
@@ -186,7 +290,10 @@ fn gm_tools_have_no_dynamic_enums_or_roster() {
 #[test]
 fn initial_gm_tool_names_byte_identical() {
     let names: Vec<String> = agents::initial_gm_tool_names(false).into_iter().collect();
-    assert_json_indent2(&serde_json::to_value(&names).unwrap(), "initial_gm_tool_names.json");
+    assert_json_indent2(
+        &serde_json::to_value(&names).unwrap(),
+        "initial_gm_tool_names.json",
+    );
 }
 
 #[test]
@@ -200,36 +307,183 @@ fn initial_gm_tool_names_with_player_byte_identical() {
 
 #[test]
 fn build_for_model_filters_loaded_set() {
-    // None -> all (minus ask_player when player options off).
+    // The full catalog is the static tools PLUS living-world canon tools and
+    // the stable loader/invoker tools appended at the end.
     let all = agents::build_gm_tools_for_model(None, false);
-    assert_eq!(all.len(), 12); // 13 tools minus ask_player
+    assert_eq!(all.len(), 18); // 19 catalog tools minus ask_player
     let all_with = agents::build_gm_tools_for_model(None, true);
-    assert_eq!(all_with.len(), 13);
-    // Loaded set: only initial 8 + loaded extras visible.
+    assert_eq!(all_with.len(), 19);
+    // Hidden loaded names no longer mutate top-level tools; move_player is a
+    // PRIMARY/initial tool, world_debug and move_npc are invoked through the
+    // stable schema loader path.
     let loaded: BTreeSet<String> = ["move_npc".to_string()].into_iter().collect();
     let visible = agents::build_gm_tools_for_model(Some(&loaded), false);
     let names: BTreeSet<String> = visible
         .iter()
         .map(|t| t["function"]["name"].as_str().unwrap().to_string())
         .collect();
-    assert!(names.contains("move_npc"));
+    assert!(
+        !names.contains("move_npc"),
+        "loaded hidden tools must not change top-level tools"
+    );
     assert!(names.contains("ask_npc"));
+    assert!(
+        names.contains("move_player"),
+        "move_player is a primary/initial tool"
+    );
+    assert!(
+        names.contains("get_memory"),
+        "get_memory is a primary/initial memory tool"
+    );
+    assert!(
+        names.contains("note_memory"),
+        "note_memory is a primary/initial memory tool"
+    );
+    assert!(
+        !names.contains("npc_remember"),
+        "npc_remember is not a GM tool; NPCs use remember"
+    );
+    assert!(
+        !names.contains("world_debug"),
+        "world_debug is search-loaded only"
+    );
+    assert!(!names.contains("consolidate_memory"));
     assert!(!names.contains("set_scene"));
+    assert!(!names.contains("update_world_state"));
+    assert!(!names.contains("query_world_state"));
     assert!(!names.contains("ask_player"));
 }
 
 #[test]
-fn search_select_and_keyword() {
-    // select: exact loading.
-    let res = agents::search_gm_tools("select:move_npc,set_scene", 5, None, false);
-    let loaded: Vec<&str> = res["loaded_tools"]
-        .as_array()
-        .unwrap()
+fn native_tool_search_catalog_is_cache_stable() {
+    let native = agents::build_gm_tools_for_native_tool_search(false);
+    let function_names: BTreeSet<String> = native
         .iter()
-        .map(|v| v.as_str().unwrap())
+        .filter_map(|tool| {
+            tool.pointer("/function/name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
         .collect();
-    assert!(loaded.contains(&"move_npc"));
-    assert!(loaded.contains(&"set_scene"));
+    assert!(function_names.contains("ask_npc"));
+    assert!(function_names.contains("move_player"));
+    assert!(function_names.contains("get_memory"));
+    assert!(function_names.contains("note_memory"));
+    assert!(!function_names.contains("npc_remember"));
+    assert!(!function_names.contains("tool_search"));
+    assert!(!function_names.contains("load_tool_schema"));
+    assert!(!function_names.contains("invoke_loaded_tool"));
+    assert!(!function_names.contains("move_npc"));
+    assert!(!function_names.contains("set_scene"));
+
+    assert!(native
+        .iter()
+        .any(|tool| tool.get("type").and_then(Value::as_str) == Some("tool_search")));
+    let namespace = native
+        .iter()
+        .find(|tool| tool.get("type").and_then(Value::as_str) == Some("namespace"))
+        .expect("deferred namespace");
+    assert_eq!(namespace.get("name").unwrap(), "gm_deferred");
+    let deferred = namespace.get("tools").and_then(Value::as_array).unwrap();
+    let deferred_names: BTreeSet<String> = deferred
+        .iter()
+        .map(|tool| {
+            tool.pointer("/function/name")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert!(deferred_names.contains("move_npc"));
+    assert!(deferred_names.contains("set_scene"));
+    assert!(deferred_names.contains("world_debug"));
+    assert!(deferred_names.contains("consolidate_memory"));
+    assert!(!function_names.contains("update_world_state"));
+    assert!(!function_names.contains("query_world_state"));
+    assert!(!deferred_names.contains("update_world_state"));
+    assert!(!deferred_names.contains("query_world_state"));
+    for tool in deferred {
+        assert_eq!(tool.get("defer_loading").unwrap(), &json!(true));
+    }
+}
+
+#[test]
+fn npc_tool_catalog_has_only_actor_bound_tools() {
+    let tools = agents::build_npc_tools();
+    let names: Vec<String> = tools
+        .iter()
+        .filter_map(|tool| {
+            tool.pointer("/function/name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec!["remember", "npc_note_memory", "npc_recall_relationship"]
+    );
+    for tool in &tools {
+        let schema = &tool["function"]["parameters"];
+        assert!(
+            schema.pointer("/properties/npc_id").is_none(),
+            "NPC cannot choose another actor identity: {tool}"
+        );
+    }
+    assert!(tools[0]["function"]["parameters"]
+        .pointer("/properties/query")
+        .and_then(Value::as_object)
+        .is_some());
+    assert!(tools[1]["function"]["parameters"]
+        .pointer("/properties/text")
+        .and_then(Value::as_object)
+        .is_some());
+    assert!(tools[2]["function"]["parameters"]
+        .pointer("/properties/target")
+        .and_then(Value::as_object)
+        .is_some());
+}
+
+#[test]
+fn search_select_and_keyword() {
+    // select: exact catalog lookup; schema loading is a separate step.
+    let res = agents::search_gm_tools("select:move_npc,set_scene", 5, None, false);
+    assert!(
+        res.get("loaded_tools").is_none(),
+        "tool_search must not load schemas"
+    );
+    let matches = res["matches"].as_array().unwrap();
+    let names: Vec<&str> = matches
+        .iter()
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"move_npc"));
+    assert!(names.contains(&"set_scene"));
+    for row in matches {
+        assert!(row.get("title").and_then(Value::as_str).is_some());
+        assert!(row.get("description").and_then(Value::as_str).is_some());
+        assert!(row.get("keywords").and_then(Value::as_array).is_some());
+        assert!(row.get("aliases").and_then(Value::as_array).is_some());
+        assert!(row.get("capabilities").and_then(Value::as_array).is_some());
+        assert_eq!(row["load_tool"], "load_tool_schema");
+        assert_eq!(row["load_schema"]["tool"], "load_tool_schema");
+        assert!(row.get("schema").is_none());
+        assert!(row.get("function").is_none());
+        assert!(row.get("parameters").is_none());
+    }
+
+    let loaded_schema = agents::load_gm_tool_schema("move_npc", None, false);
+    assert_eq!(loaded_schema["status"], "loaded_schema");
+    assert_eq!(loaded_schema["loaded_schema"], "move_npc");
+    assert_eq!(loaded_schema["invoke_tool"], "invoke_loaded_tool");
+    assert!(loaded_schema.get("loaded_tools").is_none());
+    assert_eq!(
+        loaded_schema["schema"]["function"]["name"]
+            .as_str()
+            .unwrap(),
+        "move_npc"
+    );
+
     // keyword search hits the move_npc hint.
     let res2 = agents::search_gm_tools("персонаж входит в сцену", 5, None, false);
     assert!(!res2["matches"].as_array().unwrap().is_empty());
@@ -239,6 +493,17 @@ fn search_select_and_keyword() {
     assert_eq!(
         res3["message"].as_str().unwrap(),
         "Запрос пустой. Используй keywords или select:tool_name."
+    );
+
+    let legacy = agents::search_gm_tools(
+        "select:update_world_state,query_world_state",
+        5,
+        None,
+        false,
+    );
+    assert!(
+        legacy["matches"].as_array().unwrap().is_empty(),
+        "legacy flat world-state tools must not be discoverable by tool_search"
     );
 }
 
@@ -361,14 +626,34 @@ fn norm_npc_coercion() {
         "extra": "dropped",
     }));
     assert_eq!(out["reasoning"], "думаю");
+    assert_eq!(out["response"], "123 и говорит: «Привет»");
+    assert_eq!(
+        out["beats"],
+        json!([
+            {"kind": "action", "text": "123"},
+            {"kind": "speech", "text": "Привет"}
+        ])
+    );
     assert_eq!(out["speech"], "Привет");
     assert_eq!(out["action"], "123");
     assert_eq!(out["claims"], json!(["a", "b", "7"]));
-    // exactly the four canonical keys, in order.
+    // Primary current keys first, followed by compatibility fields.
     let keys: Vec<&String> = out.keys().collect();
-    assert_eq!(keys, vec!["reasoning", "speech", "action", "claims"]);
+    assert_eq!(
+        keys,
+        vec![
+            "reasoning",
+            "response",
+            "beats",
+            "speech",
+            "action",
+            "claims"
+        ]
+    );
     // non-dict input -> all-empty shape.
     let empty = agents::norm_npc(&json!("not an object"));
     assert_eq!(empty["reasoning"], "");
+    assert_eq!(empty["response"], "");
+    assert_eq!(empty["beats"], json!([]));
     assert_eq!(empty["claims"], json!([]));
 }

@@ -256,64 +256,75 @@ fn rstrip_slash(s: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct Config {
     // --- Модель ---
-    pub model: String,                 // GM_MODEL, default ""
-    pub llama_host: String,            // LLAMA_HOST
-    pub api_base: String,              // GM_API_BASE (rstrip '/')
-    pub api_key: String,               // GM_API_KEY
-    pub max_tokens: i64,               // GM_MAX_TOKENS, "0" or "0"
-    pub max_output_tokens_cap: i64,    // GM_MAX_OUTPUT_TOKENS_CAP, 200000
-    pub backend: String,               // GM_BACKEND, "codex"
+    pub model: String,                   // GM_MODEL, default ""
+    pub llama_host: String,              // LLAMA_HOST
+    pub api_base: String,                // GM_API_BASE (rstrip '/')
+    pub api_key: String,                 // GM_API_KEY
+    pub max_tokens: i64,                 // GM_MAX_TOKENS, "0" or "0"
+    pub max_output_tokens_cap: i64,      // GM_MAX_OUTPUT_TOKENS_CAP, 200000
+    pub backend: String,                 // GM_BACKEND, "codex"
     pub use_llama_template_kwargs: bool, // GM_LLAMA_TEMPLATE_KWARGS, default (backend=="llamacpp")
-    pub stream_gm_content: bool,       // GM_STREAM_GM_CONTENT, true
+    pub stream_gm_content: bool,         // GM_STREAM_GM_CONTENT, true
 
     // --- History / compaction ---
-    pub gm_history_tokens: i64,        // GM_HISTORY_TOKENS, 100000
-    pub gm_keep_turns: i64,            // GM_KEEP_TURNS, 3
-    pub npc_history_tokens: i64,       // NPC_HISTORY_TOKENS, 64000
-    pub npc_keep_exchanges: i64,       // NPC_KEEP_EXCHANGES, 6
-    pub events_cap: i64,               // GM_EVENTS_CAP, 400
-    pub rumors_cap: i64,               // GM_RUMORS_CAP, 80
-    pub chars_per_token: i64,          // GM_CHARS_PER_TOKEN, 3
-    pub compact_input_chars: i64,      // GM_COMPACT_INPUT_CHARS, 12000
-    pub prelude_callbrief_chars: i64,  // GM_PRELUDE_CALLBRIEF_CHARS, 4000
+    pub gm_history_tokens: i64,       // GM_HISTORY_TOKENS, 100000
+    pub gm_keep_turns: i64,           // GM_KEEP_TURNS, 3
+    pub npc_history_tokens: i64,      // NPC_HISTORY_TOKENS, 64000
+    pub npc_keep_exchanges: i64,      // NPC_KEEP_EXCHANGES, 6
+    pub compact_model: String,        // GM_COMPACT_MODEL, "" = use main model
+    pub events_cap: i64,              // GM_EVENTS_CAP, 400
+    pub rumors_cap: i64,              // GM_RUMORS_CAP, 80
+    pub chars_per_token: i64,         // GM_CHARS_PER_TOKEN, 3
+    pub compact_input_chars: i64,     // GM_COMPACT_INPUT_CHARS, 12000
+    pub prelude_callbrief_chars: i64, // GM_PRELUDE_CALLBRIEF_CHARS, 4000
 
     // --- RAG / embeddings ---
-    pub rag_enabled: bool,             // GM_RAG_ENABLED, true
-    pub rag_embeddings_url: String,    // GM_RAG_EMBEDDINGS_URL
-    pub rag_embeddings_model: String,  // GM_RAG_EMBEDDINGS_MODEL
-    pub rag_encoding_format: String,   // GM_RAG_ENCODING_FORMAT, base64
-    pub rag_cache_path: String,        // GM_RAG_CACHE_PATH
-    pub rag_batch_size: i64,           // GM_RAG_BATCH_SIZE, 16
-    pub rag_timeout_seconds: f64,      // GM_RAG_TIMEOUT_SECONDS, 20
-    pub rag_top_k: i64,                // GM_RAG_TOP_K, 6
-    pub rag_min_dense_score: f64,      // GM_RAG_MIN_DENSE_SCORE, 0.60
-    pub rag_rrf_k: i64,                // GM_RAG_RRF_K, 60
-    pub rag_keyword_tiebreak: f64,     // GM_RAG_KEYWORD_TIEBREAK, 0.002
-    pub rag_dense_tiebreak: f64,       // GM_RAG_DENSE_TIEBREAK, 0.001
-    pub rag_status_boost: f64,         // GM_RAG_STATUS_BOOST, 1.04
-    pub rag_fact_select_k: i64,        // GM_RAG_FACT_SELECT_K, 4
+    pub rag_enabled: bool,            // GM_RAG_ENABLED, true
+    pub rag_embeddings_url: String,   // GM_RAG_EMBEDDINGS_URL
+    pub rag_embeddings_model: String, // GM_RAG_EMBEDDINGS_MODEL
+    pub rag_encoding_format: String,  // GM_RAG_ENCODING_FORMAT, base64
+    pub rag_cache_path: String,       // GM_RAG_CACHE_PATH
+    pub rag_batch_size: i64,          // GM_RAG_BATCH_SIZE, 16
+    pub rag_timeout_seconds: f64,     // GM_RAG_TIMEOUT_SECONDS, 20
+    pub rag_top_k: i64,               // GM_RAG_TOP_K, 4 (final facts to the prompt)
+    pub rag_min_dense_score: f64,     // GM_RAG_MIN_DENSE_SCORE, 0.60
+    pub rag_rrf_k: i64,               // GM_RAG_RRF_K, 60
+    pub rag_keyword_tiebreak: f64,    // GM_RAG_KEYWORD_TIEBREAK, 0.002
+    pub rag_dense_tiebreak: f64,      // GM_RAG_DENSE_TIEBREAK, 0.001
+    pub rag_status_boost: f64,        // GM_RAG_STATUS_BOOST, 1.04
+    pub rag_fact_select_k: i64,       // GM_RAG_FACT_SELECT_K, 4
+    pub rag_rerank_url: String,       // GM_RAG_RERANK_URL (unified sidecar /rerank)
+    pub rag_rerank_model: String,     // GM_RAG_RERANK_MODEL
+    pub rag_rerank_enabled: bool,     // GM_RAG_RERANK_ENABLED, true
+    pub rag_rerank_candidates: i64, // GM_RAG_RERANK_CANDIDATES, 64 (RRF top-N fed to the reranker)
+
+    // --- Unified inference sidecar ---
+    pub infer_base_url: String, // GM_INFER_URL — single source for the sidecar URLs
+    pub embedder_quant: String, // GM_EMBEDDER_QUANT, bf16 | nf4 (default bf16)
+    pub reranker_quant: String, // GM_RERANKER_QUANT, bf16 | nf4 (default bf16)
 
     // --- Prompt cache hints ---
-    pub prompt_cache_key: String,      // GM_PROMPT_CACHE_KEY, ""
+    pub prompt_cache_key: String,       // GM_PROMPT_CACHE_KEY, ""
     pub prompt_cache_retention: String, // GM_PROMPT_CACHE_RETENTION, ""
-    pub llama_cache_reuse: i64,        // GM_LLAMA_CACHE_REUSE, 0
+    pub llama_cache_reuse: i64,         // GM_LLAMA_CACHE_REUSE, 0
 
     // --- ChatGPT Codex OAuth ---
-    pub codex_base_url: String,        // GM_CODEX_BASE_URL (rstrip '/')
-    pub codex_client_id: String,       // GM_CODEX_CLIENT_ID
-    pub codex_client_version: String,  // GM_CODEX_CLIENT_VERSION
-    pub codex_originator: String,      // GM_CODEX_ORIGINATOR
-    pub codex_user_agent: String,      // GM_CODEX_USER_AGENT, default codex_cli_rs/{ver} (GM-Lab)
-    pub codex_auth_port: i64,          // GM_CODEX_AUTH_PORT, 1455
-    pub codex_auto_open_browser: bool, // GM_CODEX_AUTO_OPEN_BROWSER, true
-    pub codex_model: String,           // GM_CODEX_MODEL, gpt-5.4-mini
-    pub codex_reasoning_effort: String, // GM_CODEX_REASONING_EFFORT, "low"
+    pub codex_base_url: String,          // GM_CODEX_BASE_URL (rstrip '/')
+    pub codex_client_id: String,         // GM_CODEX_CLIENT_ID
+    pub codex_client_version: String,    // GM_CODEX_CLIENT_VERSION
+    pub codex_originator: String,        // GM_CODEX_ORIGINATOR
+    pub codex_user_agent: String,        // GM_CODEX_USER_AGENT, default codex_cli_rs/{ver} (GM-Lab)
+    pub codex_auth_port: i64,            // GM_CODEX_AUTH_PORT, 1455
+    pub codex_auto_open_browser: bool,   // GM_CODEX_AUTO_OPEN_BROWSER, true
+    pub codex_model: String,             // GM_CODEX_MODEL, gpt-5.4-mini
+    pub codex_compact_model: String,     // GM_CODEX_COMPACT_MODEL, default COMPACT_MODEL
+    pub codex_reasoning_effort: String,  // GM_CODEX_REASONING_EFFORT, "low"
     pub codex_reasoning_summary: String, // GM_CODEX_REASONING_SUMMARY, "auto"
-    pub codex_prompt_cache_key: String, // GM_CODEX_PROMPT_CACHE_KEY, default PROMPT_CACHE_KEY
+    pub codex_prompt_cache_key: String,  // GM_CODEX_PROMPT_CACHE_KEY, default PROMPT_CACHE_KEY
 
     // --- Reasoning toggles by role ---
-    pub gm_think: bool,                // GM_THINK, true
-    pub npc_think: bool,               // NPC_THINK, false
+    pub gm_think: bool,  // GM_THINK, true
+    pub npc_think: bool, // NPC_THINK, false
 }
 
 impl Config {
@@ -324,8 +335,7 @@ impl Config {
         let max_output_tokens_cap = env_int_or("GM_MAX_OUTPUT_TOKENS_CAP", 200_000);
 
         let backend = env_str("GM_BACKEND", "codex");
-        let use_llama_template_kwargs =
-            env_bool("GM_LLAMA_TEMPLATE_KWARGS", backend == "llamacpp");
+        let use_llama_template_kwargs = env_bool("GM_LLAMA_TEMPLATE_KWARGS", backend == "llamacpp");
 
         let prompt_cache_key = env_str("GM_PROMPT_CACHE_KEY", "");
 
@@ -357,14 +367,18 @@ impl Config {
             }
         };
 
-        let codex_prompt_cache_key =
-            env_str("GM_CODEX_PROMPT_CACHE_KEY", &prompt_cache_key);
+        let codex_prompt_cache_key = env_str("GM_CODEX_PROMPT_CACHE_KEY", &prompt_cache_key);
 
         // RAG_CACHE_PATH default: str(Path(__file__).with_name("gm_lab_embeddings.sqlite3"))
         let rag_cache_path = match env::var("GM_RAG_CACHE_PATH") {
             Ok(v) => v,
             Err(_) => default_data_path("gm_lab_embeddings.sqlite3"),
         };
+
+        // Single source of truth for the unified sidecar location: the embeddings
+        // and rerank URLs default off this base, so moving GM_INFER_URL moves both.
+        let infer_base_url = rstrip_slash(&env_str("GM_INFER_URL", "http://127.0.0.1:8077"));
+        let compact_model = env_str("GM_COMPACT_MODEL", "");
 
         Config {
             model: env_str("GM_MODEL", ""),
@@ -381,6 +395,7 @@ impl Config {
             gm_keep_turns: env_int_strict("GM_KEEP_TURNS", 3),
             npc_history_tokens: env_int_strict("NPC_HISTORY_TOKENS", 64_000),
             npc_keep_exchanges: env_int_strict("NPC_KEEP_EXCHANGES", 6),
+            compact_model: compact_model.clone(),
             events_cap: env_int_strict("GM_EVENTS_CAP", 400),
             rumors_cap: env_int_strict("GM_RUMORS_CAP", 80),
             chars_per_token: env_int_or("GM_CHARS_PER_TOKEN", 3),
@@ -388,25 +403,47 @@ impl Config {
             prelude_callbrief_chars: env_int_or("GM_PRELUDE_CALLBRIEF_CHARS", 4_000),
 
             rag_enabled: env_bool("GM_RAG_ENABLED", true),
+            // Unified inference sidecar (serve.py) hosts embeddings + rerank; both
+            // URLs default off GM_INFER_URL so they always agree on host:port.
             rag_embeddings_url: env_str(
                 "GM_RAG_EMBEDDINGS_URL",
-                "http://127.0.0.1:8080/v1/embeddings",
+                &format!("{infer_base_url}/v1/embeddings"),
             ),
-            rag_embeddings_model: env_str(
-                "GM_RAG_EMBEDDINGS_MODEL",
-                "qwen3-embedding-4b-q4",
-            ),
+            rag_embeddings_model: env_str("GM_RAG_EMBEDDINGS_MODEL", "Qwen/Qwen3-Embedding-0.6B"),
             rag_encoding_format: env_str("GM_RAG_ENCODING_FORMAT", "base64"),
             rag_cache_path,
             rag_batch_size: env_int_or("GM_RAG_BATCH_SIZE", 16),
             rag_timeout_seconds: env_float_or("GM_RAG_TIMEOUT_SECONDS", 20.0),
-            rag_top_k: env_int_or("GM_RAG_TOP_K", 6),
+            rag_top_k: env_int_or("GM_RAG_TOP_K", 4),
             rag_min_dense_score: env_float_or("GM_RAG_MIN_DENSE_SCORE", 0.60),
             rag_rrf_k: env_int_or("GM_RAG_RRF_K", 60),
             rag_keyword_tiebreak: env_float_or("GM_RAG_KEYWORD_TIEBREAK", 0.002),
             rag_dense_tiebreak: env_float_or("GM_RAG_DENSE_TIEBREAK", 0.001),
             rag_status_boost: env_float_or("GM_RAG_STATUS_BOOST", 1.04),
             rag_fact_select_k: env_int_or("GM_RAG_FACT_SELECT_K", 4),
+            rag_rerank_url: env_str("GM_RAG_RERANK_URL", &format!("{infer_base_url}/rerank")),
+            rag_rerank_model: env_str("GM_RAG_RERANK_MODEL", "jinaai/jina-reranker-v3"),
+            rag_rerank_enabled: env_bool("GM_RAG_RERANK_ENABLED", true),
+            rag_rerank_candidates: env_int_or("GM_RAG_RERANK_CANDIDATES", 64),
+            infer_base_url,
+
+            // Per-model quant for the unified sidecar; only bf16 | nf4 (int8 dropped).
+            embedder_quant: {
+                let v = env_str("GM_EMBEDDER_QUANT", "bf16").trim().to_lowercase();
+                if v == "nf4" {
+                    "nf4".to_string()
+                } else {
+                    "bf16".to_string()
+                }
+            },
+            reranker_quant: {
+                let v = env_str("GM_RERANKER_QUANT", "bf16").trim().to_lowercase();
+                if v == "nf4" {
+                    "nf4".to_string()
+                } else {
+                    "bf16".to_string()
+                }
+            },
 
             prompt_cache_key,
             prompt_cache_retention: env_str("GM_PROMPT_CACHE_RETENTION", ""),
@@ -416,16 +453,14 @@ impl Config {
                 "GM_CODEX_BASE_URL",
                 "https://chatgpt.com/backend-api/codex",
             )),
-            codex_client_id: env_str(
-                "GM_CODEX_CLIENT_ID",
-                "app_EMoamEEZ73f0CkXaXp7hrann",
-            ),
+            codex_client_id: env_str("GM_CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann"),
             codex_client_version,
             codex_originator: env_str("GM_CODEX_ORIGINATOR", "codex_cli_rs"),
             codex_user_agent,
             codex_auth_port: env_int_or("GM_CODEX_AUTH_PORT", 1455),
             codex_auto_open_browser: env_bool("GM_CODEX_AUTO_OPEN_BROWSER", true),
             codex_model: env_str("GM_CODEX_MODEL", "gpt-5.4-mini"),
+            codex_compact_model: env_str("GM_CODEX_COMPACT_MODEL", &compact_model),
             codex_reasoning_effort,
             codex_reasoning_summary,
             codex_prompt_cache_key,
@@ -466,6 +501,30 @@ pub fn default_data_path(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes tests that read/mutate overlapping process-global env vars via
+    /// `Config::from_env`. Without this, parallel runs race: one test removes a
+    /// var to assert the default while another sets it, producing intermittent
+    /// failures. Tests that only touch uniquely-named vars don't need the guard.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Snapshot the current values of `keys`, run `f`, then restore each key to
+    /// its original state (re-set if it was present, remove if it was absent).
+    /// Keeps env mutation from leaking into other tests.
+    fn with_env_snapshot<F: FnOnce()>(keys: &[&str], f: F) {
+        // Poisoning is irrelevant here (the guarded data is `()`), so recover.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> =
+            keys.iter().map(|&k| (k, env::var(k).ok())).collect();
+        f();
+        for (k, v) in saved {
+            match v {
+                Some(val) => env::set_var(k, val),
+                None => env::remove_var(k),
+            }
+        }
+    }
 
     #[test]
     fn env_bool_false_set_and_truthiness() {
@@ -516,7 +575,10 @@ EXPORTSPACED=export   spaced
         // key trimmed
         assert_eq!(map.get("BAZ").map(String::as_str), Some("qux"));
         // surrounding single quotes stripped, inner content kept verbatim
-        assert_eq!(map.get("QUOTED").map(String::as_str), Some("he said \"hi\""));
+        assert_eq!(
+            map.get("QUOTED").map(String::as_str),
+            Some("he said \"hi\"")
+        );
         assert_eq!(map.get("DQUOTED").map(String::as_str), Some("a b c"));
         // inline " #" comment stripped + trimmed
         assert_eq!(map.get("INLINE").map(String::as_str), Some("value"));
@@ -557,13 +619,15 @@ EXPORTSPACED=export   spaced
 
     #[test]
     fn config_defaults_match_python() {
-        // Build with a clean-ish env: remove the vars we assert on.
-        for k in [
+        // Vars this test removes to assert defaults. Snapshot+restore them and
+        // hold ENV_LOCK so concurrent `from_env` tests don't race on them.
+        const KEYS: &[&str] = &[
             "GM_MODEL",
             "GM_HISTORY_TOKENS",
             "GM_KEEP_TURNS",
             "NPC_HISTORY_TOKENS",
             "NPC_KEEP_EXCHANGES",
+            "GM_COMPACT_MODEL",
             "GM_EVENTS_CAP",
             "GM_RUMORS_CAP",
             "GM_CHARS_PER_TOKEN",
@@ -574,50 +638,72 @@ EXPORTSPACED=export   spaced
             "NPC_THINK",
             "GM_MAX_OUTPUT_TOKENS_CAP",
             "GM_CODEX_MODEL",
+            "GM_CODEX_COMPACT_MODEL",
             "GM_CODEX_REASONING_EFFORT",
             "GM_CODEX_REASONING_SUMMARY",
             "GM_RAG_MIN_DENSE_SCORE",
             "GM_RAG_STATUS_BOOST",
-        ] {
-            env::remove_var(k);
-        }
-        let c = Config::from_env();
-        assert_eq!(c.model, "");
-        assert_eq!(c.gm_history_tokens, 100_000);
-        assert_eq!(c.gm_keep_turns, 3);
-        assert_eq!(c.npc_history_tokens, 64_000);
-        assert_eq!(c.npc_keep_exchanges, 6);
-        assert_eq!(c.events_cap, 400);
-        assert_eq!(c.rumors_cap, 80);
-        assert_eq!(c.chars_per_token, 3);
-        assert_eq!(c.compact_input_chars, 12_000);
-        assert_eq!(c.prelude_callbrief_chars, 4_000);
-        assert_eq!(c.backend, "codex");
-        assert!(c.gm_think);
-        assert!(!c.npc_think);
-        assert_eq!(c.max_output_tokens_cap, 200_000);
-        assert_eq!(c.codex_model, "gpt-5.4-mini");
-        assert_eq!(c.codex_reasoning_effort, "low");
-        assert_eq!(c.codex_reasoning_summary, "auto");
-        assert_eq!(c.codex_user_agent, "codex_cli_rs/0.133.0 (GM-Lab)");
-        assert!((c.rag_min_dense_score - 0.60).abs() < 1e-12);
-        assert!((c.rag_status_boost - 1.04).abs() < 1e-12);
-        // default for use_llama_template_kwargs follows backend=="llamacpp"
-        assert!(!c.use_llama_template_kwargs);
+            // also read by from_env with a backend-dependent default
+            "GM_LLAMA_TEMPLATE_KWARGS",
+            "GM_CODEX_USER_AGENT",
+            "GM_CODEX_CLIENT_VERSION",
+        ];
+        with_env_snapshot(KEYS, || {
+            // Build with a clean-ish env: remove the vars we assert on.
+            for k in KEYS {
+                env::remove_var(k);
+            }
+            let c = Config::from_env();
+            assert_eq!(c.model, "");
+            assert_eq!(c.gm_history_tokens, 100_000);
+            assert_eq!(c.gm_keep_turns, 3);
+            assert_eq!(c.npc_history_tokens, 64_000);
+            assert_eq!(c.npc_keep_exchanges, 6);
+            assert_eq!(c.compact_model, "");
+            assert_eq!(c.events_cap, 400);
+            assert_eq!(c.rumors_cap, 80);
+            assert_eq!(c.chars_per_token, 3);
+            assert_eq!(c.compact_input_chars, 12_000);
+            assert_eq!(c.prelude_callbrief_chars, 4_000);
+            assert_eq!(c.backend, "codex");
+            assert!(c.gm_think);
+            assert!(!c.npc_think);
+            assert_eq!(c.max_output_tokens_cap, 200_000);
+            assert_eq!(c.codex_model, "gpt-5.4-mini");
+            assert_eq!(c.codex_compact_model, "");
+            assert_eq!(c.codex_reasoning_effort, "low");
+            assert_eq!(c.codex_reasoning_summary, "auto");
+            assert_eq!(c.codex_user_agent, "codex_cli_rs/0.133.0 (GM-Lab)");
+            assert!((c.rag_min_dense_score - 0.60).abs() < 1e-12);
+            assert!((c.rag_status_boost - 1.04).abs() < 1e-12);
+            // default for use_llama_template_kwargs follows backend=="llamacpp"
+            assert!(!c.use_llama_template_kwargs);
+        });
     }
 
     #[test]
     fn config_env_overrides() {
-        env::set_var("GM_BACKEND", "llamacpp");
-        env::remove_var("GM_LLAMA_TEMPLATE_KWARGS");
-        env::set_var("GM_HISTORY_TOKENS", "5");
-        let c = Config::from_env();
-        assert_eq!(c.backend, "llamacpp");
-        // default now true because backend == llamacpp
-        assert!(c.use_llama_template_kwargs);
-        assert_eq!(c.gm_history_tokens, 5);
-        env::remove_var("GM_BACKEND");
-        env::remove_var("GM_HISTORY_TOKENS");
+        const KEYS: &[&str] = &[
+            "GM_BACKEND",
+            "GM_LLAMA_TEMPLATE_KWARGS",
+            "GM_HISTORY_TOKENS",
+            "GM_COMPACT_MODEL",
+            "GM_CODEX_COMPACT_MODEL",
+        ];
+        with_env_snapshot(KEYS, || {
+            env::set_var("GM_BACKEND", "llamacpp");
+            env::remove_var("GM_LLAMA_TEMPLATE_KWARGS");
+            env::set_var("GM_HISTORY_TOKENS", "5");
+            env::set_var("GM_COMPACT_MODEL", "gpt-5.4-mini");
+            env::set_var("GM_CODEX_COMPACT_MODEL", "gpt-5.4-mini-codex");
+            let c = Config::from_env();
+            assert_eq!(c.backend, "llamacpp");
+            // default now true because backend == llamacpp
+            assert!(c.use_llama_template_kwargs);
+            assert_eq!(c.gm_history_tokens, 5);
+            assert_eq!(c.compact_model, "gpt-5.4-mini");
+            assert_eq!(c.codex_compact_model, "gpt-5.4-mini-codex");
+        });
     }
 
     #[test]

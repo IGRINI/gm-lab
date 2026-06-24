@@ -327,6 +327,24 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
             }
         }
     };
+    let story_brief = {
+        let brief = get_str(&seed_map, "story_brief");
+        if !brief.is_empty() {
+            brief
+        } else {
+            let brief = get_str(&seed_map, "player_brief");
+            if !brief.is_empty() {
+                brief
+            } else {
+                let brief = get_str(&seed_map, "brief");
+                if !brief.is_empty() {
+                    brief
+                } else {
+                    public_intro.clone()
+                }
+            }
+        }
+    };
     let hidden_truth = {
         let ht = get_str(&seed_map, "hidden_truth");
         if !ht.is_empty() {
@@ -335,8 +353,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
             get_str(&seed_map, "canon")
         }
     };
-    let state_records =
-        first_present_list(&seed_map_or_src(&seed_map, &src), &["state_records"]);
+    let state_records = first_present_list(&seed_map_or_src(&seed_map, &src), &["state_records"]);
     let scene_id = {
         let sid = get_str(&seed_map, "scene_id");
         if !sid.is_empty() {
@@ -355,6 +372,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
 
     let mut out = Map::new();
     out.insert("public_intro".to_string(), json!(public_intro));
+    out.insert("story_brief".to_string(), json!(story_brief));
     out.insert("hidden_truth".to_string(), json!(hidden_truth));
     out.insert("proper_nouns".to_string(), json!(proper_nouns));
     out.insert("public_facts".to_string(), json!(public_facts));

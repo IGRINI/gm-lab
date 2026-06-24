@@ -16,6 +16,7 @@ import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
 import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
 import WorldDetailModal from "./components/WorldDetailModal.jsx";
+import Tooltip, { TipContent } from "./components/Tooltip.jsx";
 import { normalizeEntities } from "./entityContext.js";
 import { useDevSettings, computeVisibility, VisibilityContext, isMessageVisible } from "./devSettings.js";
 
@@ -23,6 +24,7 @@ const EMPTY_SRV = {
   backend: "",
   model: "",
   stream_gm_content: false,
+  storyBrief: null,
   scene: "",
   time: null,
   playerCharacter: null,
@@ -62,6 +64,15 @@ const EMPTY_CONTEXT_USAGE = {
   npcs: [],
 };
 
+const EMPTY_SIDECAR_STATUS = {
+  ok: false,
+  enabled: false,
+  ready: false,
+  state: "disabled",
+  manager_state: "disabled",
+  components: {},
+};
+
 function sameChatId(a, b) {
   return a != null && b != null && String(a) === String(b);
 }
@@ -80,11 +91,13 @@ function normalizeStory(story) {
   if (!id) return null;
   const title = textValue(story?.title) || textValue(story?.name) || id;
   const description =
+    textValue(story?.story_brief) ||
     textValue(story?.description) ||
     textValue(story?.summary) ||
     textValue(story?.public_intro) ||
     "";
-  return { ...story, id, story_id: id, title, description };
+  const storyBrief = textValue(story?.story_brief);
+  return { ...story, id, story_id: id, title, description, story_brief: storyBrief };
 }
 
 function normalizeStories(data) {
@@ -178,14 +191,26 @@ function WorldHud({ time, scene, playerCharacter, npcs, statusLabels }) {
         <div className="world-hud-row">
           <span>сцена</span>
           {sceneClickable ? (
-            <button
-              type="button"
-              className="world-hud-link"
-              onClick={() => setDetail("scene")}
-              title="Подробнее о локации"
+            <Tooltip
+              className="world-hud-tip"
+              tipClassName="ui-tip-wrap"
+              focusable={false}
+              content={
+                <TipContent
+                  title="Локация"
+                  subtitle={sceneTitle || "Текущая сцена"}
+                  note="Открыть подробности: описание, персонажи, выходы и предметы."
+                />
+              }
             >
-              {sceneTitle || "—"}
-            </button>
+              <button
+                type="button"
+                className="world-hud-link"
+                onClick={() => setDetail("scene")}
+              >
+                {sceneTitle || "—"}
+              </button>
+            </Tooltip>
           ) : (
             <b>{sceneTitle || "—"}</b>
           )}
@@ -194,14 +219,26 @@ function WorldHud({ time, scene, playerCharacter, npcs, statusLabels }) {
           <div className="world-hud-row">
             <span>персонаж</span>
             {pcClickable ? (
-              <button
-                type="button"
-                className="world-hud-link"
-                onClick={() => setDetail("character")}
-                title="Открыть лист персонажа"
+              <Tooltip
+                className="world-hud-tip"
+                tipClassName="ui-tip-wrap"
+                focusable={false}
+                content={
+                  <TipContent
+                    title="Персонаж игрока"
+                    subtitle={pcName}
+                    note="Открыть лист персонажа: характеристики, навыки, инвентарь и особенности."
+                  />
+                }
               >
-                {pcName}
-              </button>
+                <button
+                  type="button"
+                  className="world-hud-link"
+                  onClick={() => setDetail("character")}
+                >
+                  {pcName}
+                </button>
+              </Tooltip>
             ) : (
               <b>{pcName}</b>
             )}
@@ -238,6 +275,7 @@ export default function App() {
   const [runUsage, setRunUsage] = useState(EMPTY_RUN_USAGE);
   const [contextUsage, setContextUsage] = useState(EMPTY_CONTEXT_USAGE);
   const [models, setModels] = useState([]);
+  const [sidecarStatus, setSidecarStatus] = useState(EMPTY_SIDECAR_STATUS);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [chats, setChats] = useState([]);
@@ -284,6 +322,7 @@ export default function App() {
       backend: s.backend,
       model: s.model,
       stream_gm_content: s.stream_gm_content,
+      storyBrief: s.story_brief || null,
       scene: s.scene || s.public,
       time: s.time || null,
       playerCharacter: s.player_character || null,
@@ -323,6 +362,37 @@ export default function App() {
       setChatsLoading(false);
     }
   }, [setChatsFromServer]);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer = null;
+
+    const poll = async () => {
+      let delay = 5000;
+      try {
+        const data = await api.sidecarStatus();
+        if (stopped) return;
+        setSidecarStatus(data || EMPTY_SIDECAR_STATUS);
+        const loading = data?.enabled && !data?.ready && data?.state !== "failed";
+        delay = loading ? 1000 : 5000;
+      } catch (e) {
+        if (stopped) return;
+        setSidecarStatus({
+          ...EMPTY_SIDECAR_STATUS,
+          enabled: true,
+          state: "unavailable",
+          error: e.message || "статус sidecar недоступен",
+        });
+      }
+      timer = window.setTimeout(poll, delay);
+    };
+
+    poll();
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
 
   const loadStories = useCallback(async () => {
     setStoriesLoading(true);
@@ -425,7 +495,7 @@ export default function App() {
             const emit = (key, segs) => (auto ? ttsAutoEnqueue(key, segs) : ttsPrime(key, segs));
             if (ev.kind === "gm_narration" && typeof ev.data === "string" && ev.data.trim())
               emit(`${ev.sid}:narration`, gmSegments(ev.data));
-            else if (ev.kind === "npc_speech" && ev.data?.speech) {
+            else if (ev.kind === "npc_speech" && (ev.data?.response || ev.data?.speech || ev.data?.action)) {
               const npc = (npcsRef.current || []).find(
                 (n) => (ev.data.npc_id && n.id === ev.data.npc_id) || n.name === ev.agent
               );
@@ -433,6 +503,8 @@ export default function App() {
                 `${ev.sid}:npc`,
                 npcSegments({
                   name: ev.agent,
+                  response: ev.data.response,
+                  beats: ev.data.beats,
                   speech: ev.data.speech,
                   action: ev.data.action,
                   voice: genderVoice(npc?.pronouns ?? npc?.gender),
@@ -696,6 +768,7 @@ export default function App() {
         onToggleChats={toggleChats}
         chatsOpen={chatsOpen}
         srv={srv}
+        sidecarStatus={sidecarStatus}
         models={models}
         settings={settings}
         settingsOptions={settingsOptions}
@@ -735,6 +808,7 @@ export default function App() {
           <Chat
             key={activeChatId || "active-chat"}
             messages={visibleMessages}
+            storyBrief={srv.storyBrief}
             scene={srv.scene}
             npcs={srv.npcs}
             entities={srv.entities}

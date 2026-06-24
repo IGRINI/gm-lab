@@ -157,9 +157,15 @@ fn gm_compaction_resets_world_query_cache_and_keeps_records() {
             "scope": "gm",
         }]}),
     );
-    let first = query_world_state(&mut s, &json!({"scope": "gm", "query": "QUERY_CACHE_SENTINEL"}));
+    let first = query_world_state(
+        &mut s,
+        &json!({"scope": "gm", "query": "QUERY_CACHE_SENTINEL"}),
+    );
     assert_eq!(first["status"], "known");
-    assert!(!s.world_query_seen.is_empty(), "world_query_seen should be primed");
+    assert!(
+        !s.world_query_seen.is_empty(),
+        "world_query_seen should be primed"
+    );
 
     // Force the GM compaction thresholds down (Python: config.GM_HISTORY_TOKENS=1,
     // config.GM_KEEP_TURNS=1) and stuff the GM history with >1 user boundary.
@@ -176,7 +182,10 @@ fn gm_compaction_resets_world_query_cache_and_keeps_records() {
     assert!(!s.world_query_seen.is_empty());
     tokio_block_on(maybe_compact(&mut s, client.as_ref()));
     // reset_world_query_cache fires AFTER GM compaction.
-    assert!(s.world_query_seen.is_empty(), "GM compaction must reset world_query_seen");
+    assert!(
+        s.world_query_seen.is_empty(),
+        "GM compaction must reset world_query_seen"
+    );
 
     // Summary applied; only the last GM_KEEP_TURNS=1 user-boundary kept verbatim.
     assert_eq!(s.gm_summary, "compact summary");
@@ -187,7 +196,10 @@ fn gm_compaction_resets_world_query_cache_and_keeps_records() {
     );
 
     // The stored gm record survives compaction and is deliverable again.
-    let after = query_world_state(&mut s, &json!({"scope": "gm", "query": "QUERY_CACHE_SENTINEL"}));
+    let after = query_world_state(
+        &mut s,
+        &json!({"scope": "gm", "query": "QUERY_CACHE_SENTINEL"}),
+    );
     assert_eq!(after["status"], "known");
     assert!(serde_json::to_string(&after)
         .unwrap()
@@ -209,7 +221,10 @@ fn gm_compaction_requires_token_gate_and_boundary_gate() {
     s.gm_messages = vec![umsg("a"), umsg("b"), umsg("c")];
     let before = s.gm_messages.clone();
     tokio_block_on(maybe_compact(&mut s, client.as_ref()));
-    assert_eq!(s.gm_messages, before, "no compaction when token gate not met");
+    assert_eq!(
+        s.gm_messages, before,
+        "no compaction when token gate not met"
+    );
     assert_eq!(s.gm_summary, "");
 
     // (b) Boundary gate not met -> no compaction even past the token threshold.
@@ -227,7 +242,10 @@ fn gm_compaction_requires_token_gate_and_boundary_gate() {
     ];
     let before = s.gm_messages.clone();
     tokio_block_on(maybe_compact(&mut s, client.as_ref()));
-    assert_eq!(s.gm_messages, before, "no compaction when boundaries <= keep_turns");
+    assert_eq!(
+        s.gm_messages, before,
+        "no compaction when boundaries <= keep_turns"
+    );
     assert_eq!(s.gm_summary, "");
 }
 
@@ -281,8 +299,14 @@ fn summary_text_asymmetry_gm_strips_player_action_npc_does_not() {
     // GM summary strips everything up to and including the PLAYER ACTION marker.
     let gm = msg_text_for_summary(&user);
     assert!(gm.contains("Я осматриваюсь."));
-    assert!(!gm.contains("CONTEXT PREAMBLE"), "GM summary must strip preamble: {gm}");
-    assert!(!gm.contains("PLAYER ACTION"), "GM summary must strip marker: {gm}");
+    assert!(
+        !gm.contains("CONTEXT PREAMBLE"),
+        "GM summary must strip preamble: {gm}"
+    );
+    assert!(
+        !gm.contains("PLAYER ACTION"),
+        "GM summary must strip marker: {gm}"
+    );
 
     // NPC summary uses the plain msg_text — preamble and marker are preserved.
     let npc = msg_text(&user);
@@ -336,11 +360,7 @@ fn gm_compaction_clips_summarize_input_by_chars() {
         ) -> Result<Map<String, Value>, BackendError> {
             Ok(Map::new())
         }
-        async fn summarize(
-            &self,
-            text: &str,
-            _pn: &[String],
-        ) -> Result<String, BackendError> {
+        async fn summarize(&self, text: &str, _pn: &[String]) -> Result<String, BackendError> {
             *self.seen_chars.lock().unwrap() = text.chars().count();
             Ok("ok".to_string())
         }
@@ -391,7 +411,10 @@ fn gm_compaction_clips_summarize_input_by_chars() {
     s.gm_messages = vec![umsg(&old_user), amsg("a"), umsg("keep")];
     tokio_block_on(maybe_compact(&mut s, client.as_ref()));
     let seen = *recorder.seen_chars.lock().unwrap();
-    assert_eq!(seen, 100, "summarize input must be clipped to 100 CHARS, saw {seen}");
+    assert_eq!(
+        seen, 100,
+        "summarize input must be clipped to 100 CHARS, saw {seen}"
+    );
 }
 
 // =========================================================================
@@ -419,7 +442,7 @@ fn npc_compaction_requires_both_gates_and_does_not_reset_world_query_cache() {
     let before = s.npc_messages.get("borin").cloned().unwrap();
     tokio_block_on(maybe_compact_npc(&mut s, "borin", client.as_ref()));
     assert_eq!(s.npc_messages.get("borin").cloned().unwrap(), before);
-    assert!(s.npc_summaries.get("borin").is_none());
+    assert!(!s.npc_summaries.contains_key("borin"));
 
     // (b) boundary gate not met -> no NPC compaction.
     s.compaction.npc_history_tokens = 1;
@@ -450,7 +473,10 @@ fn npc_compaction_requires_both_gates_and_does_not_reset_world_query_cache() {
     assert_eq!(kept[0]["content"].as_str().unwrap(), "u2 keep ".repeat(20));
     // World-query cache untouched by NPC compaction.
     assert!(
-        s.world_query_seen.get("gm").map(|x| x.contains("primed")).unwrap_or(false),
+        s.world_query_seen
+            .get("gm")
+            .map(|x| x.contains("primed"))
+            .unwrap_or(false),
         "NPC compaction must NOT reset world_query_seen"
     );
 }

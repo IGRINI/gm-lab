@@ -7,9 +7,10 @@
 //! **byte-for-byte** so a round-trip through `serde_json` (with `preserve_order`)
 //! reproduces `DialogStore.save`'s compact payload exactly.
 //!
-//! Session is NOT serde-derived (it holds `Arc<dyn Backend>` + a `ClientFactory`
-//! + transient fields), so these methods are the canonical (de)serialization
-//! home — they live in this crate because `Session` and `World` do.
+//! Session is NOT serde-derived (it holds an `Arc<dyn Backend>`, a
+//! `ClientFactory`, and transient fields), so these methods are the canonical
+//! (de)serialization home — they live in this crate because `Session` and
+//! `World` do.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -130,10 +131,7 @@ impl Session {
         m.insert("client_thread_id".into(), json!(thread_id));
 
         m.insert("world".into(), world_to_payload(&self.world));
-        m.insert(
-            "gm_messages".into(),
-            Value::Array(self.gm_messages.clone()),
-        );
+        m.insert("gm_messages".into(), Value::Array(self.gm_messages.clone()));
         m.insert("gm_summary".into(), json!(self.gm_summary));
 
         let mut npc_messages = Map::new();
@@ -162,6 +160,32 @@ impl Session {
             );
         }
         m.insert("npc_client_state".into(), Value::Object(npc_client_state));
+
+        if !self.location_generator_client_state.model.is_empty()
+            || !self.location_generator_client_state.session_id.is_empty()
+            || !self.location_generator_client_state.thread_id.is_empty()
+        {
+            m.insert(
+                "location_generator_client_state".into(),
+                json!({
+                    "model": self.location_generator_client_state.model.clone(),
+                    "session_id": self.location_generator_client_state.session_id.clone(),
+                    "thread_id": self.location_generator_client_state.thread_id.clone(),
+                }),
+            );
+        }
+        if !self.location_generator_anti_repeat.is_empty() {
+            m.insert(
+                "location_generator_anti_repeat".into(),
+                json!(self.location_generator_anti_repeat),
+            );
+        }
+        if !self.location_generator_messages.is_empty() {
+            m.insert(
+                "location_generator_messages".into(),
+                Value::Array(self.location_generator_messages.clone()),
+            );
+        }
 
         let mut world_query_seen = Map::new();
         for (scope, keys) in &self.world_query_seen {
@@ -200,6 +224,17 @@ impl Session {
             commitments.insert(npc_id.clone(), json!(blocks));
         }
         m.insert("commitments".into(), Value::Object(commitments));
+
+        if !self.npc_last_contact_minutes.is_empty() {
+            let mut last_contact = Map::new();
+            for (npc_id, minutes) in &self.npc_last_contact_minutes {
+                last_contact.insert(npc_id.clone(), json!(*minutes));
+            }
+            m.insert(
+                "npc_last_contact_minutes".into(),
+                Value::Object(last_contact),
+            );
+        }
 
         Value::Object(m)
     }
@@ -263,6 +298,21 @@ impl Session {
         }
         session.npc_client_state = npc_client_state;
 
+        let generator_state = json_dict(data.get("location_generator_client_state"));
+        if !generator_state.is_empty() {
+            session.location_generator_client_state = NpcClientState {
+                model: s(&generator_state, "model"),
+                session_id: s(&generator_state, "session_id"),
+                thread_id: s(&generator_state, "thread_id"),
+            };
+        }
+        session.location_generator_anti_repeat =
+            str_list(data.get("location_generator_anti_repeat"));
+        session.location_generator_messages = json_list(
+            data.get("location_generator_messages")
+                .unwrap_or(&Value::Null),
+        );
+
         let mut world_query_seen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (scope, keys) in json_dict(data.get("world_query_seen")) {
             let set: BTreeSet<String> = json_list(&keys)
@@ -303,6 +353,12 @@ impl Session {
         }
         session.commitments = commitments;
 
+        let mut last_contact: BTreeMap<String, i64> = BTreeMap::new();
+        for (k, v) in json_dict(data.get("npc_last_contact_minutes")) {
+            last_contact.insert(k, v.as_i64().unwrap_or(0));
+        }
+        session.npc_last_contact_minutes = last_contact;
+
         Ok(session)
     }
 }
@@ -313,15 +369,24 @@ impl Session {
 
 fn event_to_payload(e: &WorldEvent) -> Value {
     let witnesses: Vec<String> = e.witnesses.iter().cloned().collect();
-    json!({
-        "seq": e.seq,
-        "turn": e.turn,
-        "actor": e.actor,
-        "kind": e.kind,
-        "speech": e.speech,
-        "action": e.action,
-        "witnesses": witnesses,
-    })
+    let mut out = Map::new();
+    out.insert("seq".to_string(), json!(e.seq));
+    out.insert("turn".to_string(), json!(e.turn));
+    if e.time_minutes != 0 {
+        out.insert("time_minutes".to_string(), json!(e.time_minutes));
+    }
+    out.insert("actor".to_string(), json!(e.actor));
+    out.insert("kind".to_string(), json!(e.kind));
+    if !e.response.is_empty() {
+        out.insert("response".to_string(), json!(e.response));
+    }
+    if !e.beats.is_empty() {
+        out.insert("beats".to_string(), json!(e.beats));
+    }
+    out.insert("speech".to_string(), json!(e.speech));
+    out.insert("action".to_string(), json!(e.action));
+    out.insert("witnesses".to_string(), json!(witnesses));
+    Value::Object(out)
 }
 
 fn event_from_payload(v: &Value) -> WorldEvent {
@@ -329,8 +394,15 @@ fn event_from_payload(v: &Value) -> WorldEvent {
     WorldEvent {
         seq: i(&m, "seq"),
         turn: i(&m, "turn"),
+        time_minutes: i(&m, "time_minutes"),
         actor: s(&m, "actor"),
         kind: s(&m, "kind"),
+        response: s(&m, "response"),
+        beats: m
+            .get("beats")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default(),
         speech: s(&m, "speech"),
         action: s(&m, "action"),
         witnesses: str_list(m.get("witnesses")).into_iter().collect(),
@@ -341,18 +413,30 @@ fn pending_to_payload(pending: &BTreeMap<String, PendingDraft>) -> Value {
     let mut out = Map::new();
     for (npc_id, row) in pending {
         let witnesses: Vec<String> = row.witnesses.iter().cloned().collect();
-        out.insert(
-            npc_id.clone(),
-            json!({
-                "seq": row.seq,
-                "speech": row.speech,
-                "action": row.action,
-                "claims": row.claims,
-                "witnesses": witnesses,
-                "user_message": row.user_message.clone().unwrap_or(Value::Null),
-                "assistant_message": row.assistant_message.clone().unwrap_or(Value::Null),
-            }),
+        let mut pending_row = Map::new();
+        pending_row.insert("seq".to_string(), json!(row.seq));
+        if row.time_minutes != 0 {
+            pending_row.insert("time_minutes".to_string(), json!(row.time_minutes));
+        }
+        if !row.response.is_empty() {
+            pending_row.insert("response".to_string(), json!(row.response));
+        }
+        if !row.beats.is_empty() {
+            pending_row.insert("beats".to_string(), json!(row.beats));
+        }
+        pending_row.insert("speech".to_string(), json!(row.speech));
+        pending_row.insert("action".to_string(), json!(row.action));
+        pending_row.insert("claims".to_string(), json!(row.claims));
+        pending_row.insert("witnesses".to_string(), json!(witnesses));
+        pending_row.insert(
+            "user_message".to_string(),
+            row.user_message.clone().unwrap_or(Value::Null),
         );
+        pending_row.insert(
+            "assistant_message".to_string(),
+            row.assistant_message.clone().unwrap_or(Value::Null),
+        );
+        out.insert(npc_id.clone(), Value::Object(pending_row));
     }
     Value::Object(out)
 }
@@ -376,6 +460,13 @@ fn pending_from_payload(v: Option<&Value>) -> BTreeMap<String, PendingDraft> {
             npc_id,
             PendingDraft {
                 seq: i(&m, "seq"),
+                time_minutes: i(&m, "time_minutes"),
+                response: s(&m, "response"),
+                beats: m
+                    .get("beats")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default(),
                 speech: s(&m, "speech"),
                 action: s(&m, "action"),
                 claims: str_list(m.get("claims")),
@@ -408,7 +499,11 @@ fn rng_state_from_payload(v: Option<&Value>) -> Option<RngState> {
     };
     let internal_u64: Vec<u64> = internal
         .iter()
-        .map(|x| x.as_u64().or_else(|| x.as_i64().map(|n| n as u64)).unwrap_or(0))
+        .map(|x| {
+            x.as_u64()
+                .or_else(|| x.as_i64().map(|n| n as u64))
+                .unwrap_or(0)
+        })
         .collect();
     let version = m
         .get("version")
@@ -431,10 +526,14 @@ fn world_to_payload(world: &World) -> Value {
     let mut m = Map::new();
     m.insert("story_id".into(), json!(world.story_id));
     m.insert("story_title".into(), json!(world.story_title));
+    m.insert("story_brief".into(), json!(world.story_brief));
     m.insert("dice_seed".into(), json!(world.dice_seed as u64));
     m.insert(
         "forced_die_next".into(),
-        world.forced_die_next.map(Value::from).unwrap_or(Value::Null),
+        world
+            .forced_die_next
+            .map(Value::from)
+            .unwrap_or(Value::Null),
     );
     m.insert(
         "forced_die_all".into(),
@@ -478,6 +577,18 @@ fn world_to_payload(world: &World) -> Value {
         .map(state_record_to_payload)
         .collect();
     m.insert("state_records".into(), Value::Array(state_records));
+
+    // Living-world canon (Place/Transition graph). Emitted as a trailing
+    // `world_canon` key ONLY when non-empty so pre-canon saves stay
+    // byte-identical (the golden_payload_roundtrip gate). The canon types are
+    // serde-derived with BTreeMap ordering, so the subtree is deterministic and
+    // round-trip-stable. (Key is `world_canon`, distinct from the legacy
+    // `canon` hidden-truth string above.)
+    if !world.world_canon.is_empty() {
+        if let Ok(canon) = serde_json::to_value(&world.world_canon) {
+            m.insert("world_canon".into(), canon);
+        }
+    }
 
     Value::Object(m)
 }
@@ -524,6 +635,7 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
 
     world.story_id = s(&data, "story_id");
     world.story_title = s(&data, "story_title");
+    world.story_brief = s(&data, "story_brief");
     world.hidden_events = str_list(data.get("hidden_events"));
     world.rumors = json_list(data.get("rumors").unwrap_or(&Value::Null))
         .iter()
@@ -543,6 +655,9 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
     }
     world.npcs = npcs;
     world.public = s(&data, "public");
+    if world.story_brief.is_empty() {
+        world.story_brief = world.public.clone();
+    }
     world.canon = s(&data, "canon");
     world.time = time_from_payload(data.get("time"));
     world.player_character = player_character_from_payload(data.get("player_character"));
@@ -565,10 +680,12 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
         world.npc_whereabouts = wb;
     }
 
+    // `fact_records` must be PRESENT (enforced in `required` above) but may be
+    // EMPTY: a canon-authoritative world (e.g. a procedural campaign derived
+    // from worldgen) legitimately carries no legacy public facts — those live in
+    // the canon now. The old "non-empty" Python-byte-compat invariant is dropped
+    // (locked decision #7: canon is core).
     let facts = json_list(data.get("fact_records").unwrap_or(&Value::Null));
-    if facts.is_empty() {
-        return Err("unsupported world payload: fact_records is required".to_string());
-    }
     world.fact_records = facts.iter().map(fact_from_payload).collect();
 
     world.state_records = json_list(data.get("state_records").unwrap_or(&Value::Null))
@@ -579,6 +696,20 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
 
     world.ensure_npc_whereabouts();
 
+    // Living-world canon: the canon is now CORE, so it is part of every save.
+    // Locked decision #5: only DEFAULT when the `world_canon` key is ABSENT (a
+    // pre-canon save). When the key is PRESENT but fails to deserialize, RETURN
+    // AN ERROR rather than silently defaulting — a malformed canon means data
+    // loss, and the canon is the source of truth. (No lazy rebuild on load: that
+    // would change the re-serialized bytes; canon is derived at seed/worldgen
+    // time for new campaigns instead.)
+    world.world_canon = match data.get("world_canon") {
+        None => Default::default(),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            format!("unsupported world payload: world_canon present but malformed: {e}")
+        })?,
+    };
+
     world.dice_seed = data
         .get("dice_seed")
         .and_then(|v| v.as_u64())
@@ -586,6 +717,15 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
         .unwrap_or(0);
     world.forced_die_next = int_or_none(data.get("forced_die_next"));
     world.forced_die_all = int_or_none(data.get("forced_die_all"));
+    if !world.world_canon.is_empty() {
+        world.migrate_legacy_state_records_to_memory();
+    }
+
+    // Canon is the source of truth: after restore, rebuild the live scene FROM
+    // the canon so /state, the GM context and the UI reflect the canonical
+    // player place — not the stale persisted legacy scene. No-op for pre-canon
+    // saves (empty canon), where the loaded legacy scene is kept as-is.
+    world.refresh_scene_from_canon();
 
     Ok(world)
 }
@@ -594,12 +734,22 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
 
 fn rumor_to_payload(r: &Rumor) -> Value {
     let witnesses: Vec<String> = r.witnesses.iter().cloned().collect();
+    let known_in: Vec<String> = r.known_in.iter().cloned().collect();
+    let carriers: Vec<String> = r.carriers.iter().cloned().collect();
     json!({
+        "rumor_id": r.rumor_id,
         "seq": r.seq,
         "turn": r.turn,
         "speaker": r.speaker,
         "text": r.text,
         "witnesses": witnesses,
+        "origin_scope": r.origin_scope,
+        "known_in": known_in,
+        "carriers": carriers,
+        "strength": r.strength,
+        "distortion": r.distortion,
+        "created_minutes": r.created_minutes,
+        "last_spread_minutes": r.last_spread_minutes,
         "confirmed": r.confirmed,
     })
 }
@@ -607,11 +757,19 @@ fn rumor_to_payload(r: &Rumor) -> Value {
 fn rumor_from_payload(v: &Value) -> Rumor {
     let m = json_dict(Some(v));
     Rumor {
+        rumor_id: s(&m, "rumor_id"),
         seq: i(&m, "seq"),
         turn: i(&m, "turn"),
         speaker: s(&m, "speaker"),
         text: s(&m, "text"),
         witnesses: str_list(m.get("witnesses")).into_iter().collect(),
+        origin_scope: s(&m, "origin_scope"),
+        known_in: str_list(m.get("known_in")).into_iter().collect(),
+        carriers: str_list(m.get("carriers")).into_iter().collect(),
+        strength: i(&m, "strength"),
+        distortion: i(&m, "distortion"),
+        created_minutes: i(&m, "created_minutes"),
+        last_spread_minutes: i(&m, "last_spread_minutes"),
         confirmed: b(&m, "confirmed", false),
     }
 }
@@ -647,7 +805,9 @@ fn time_from_payload(v: Option<&Value>) -> WorldTime {
         hours_per_day: int_or_none(m.get("hours_per_day")).unwrap_or(24).max(1),
         day_names: str_list(m.get("day_names")),
         month_names: str_list(m.get("month_names")),
-        last_advance_minutes: int_or_none(m.get("last_advance_minutes")).unwrap_or(0).max(0),
+        last_advance_minutes: int_or_none(m.get("last_advance_minutes"))
+            .unwrap_or(0)
+            .max(0),
         last_advance_reason: s(&m, "last_advance_reason"),
     }
 }
@@ -1050,7 +1210,9 @@ fn state_record_from_payload(v: &Value) -> StateRecord {
 /// `int(data.get("card_revision") or 0)` with the TypeError/ValueError guard.
 fn card_revision(m: &Map<String, Value>) -> i64 {
     match m.get("card_revision") {
-        Some(Value::Number(n)) => n.as_i64().unwrap_or_else(|| n.as_f64().map(|f| f as i64).unwrap_or(0)),
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .unwrap_or_else(|| n.as_f64().map(|f| f as i64).unwrap_or(0)),
         Some(Value::String(s)) => s.trim().parse::<i64>().unwrap_or(0),
         _ => 0,
     }

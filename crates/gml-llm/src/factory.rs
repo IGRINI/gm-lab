@@ -82,9 +82,7 @@ pub async fn make_client(
                 "codex backend selected but no codex constructor hook was provided",
             )),
         },
-        BackendKind::OpenAiCompat => {
-            Ok(Arc::new(OpenAICompatClient::new(cfg, settings).await))
-        }
+        BackendKind::OpenAiCompat => Ok(Arc::new(OpenAICompatClient::new(cfg, settings).await)),
     }
 }
 
@@ -96,9 +94,15 @@ mod tests {
     fn backend_kind_classification() {
         assert_eq!(BackendKind::from_backend("mock"), BackendKind::Mock);
         assert_eq!(BackendKind::from_backend("codex"), BackendKind::Codex);
-        assert_eq!(BackendKind::from_backend("llamacpp"), BackendKind::OpenAiCompat);
+        assert_eq!(
+            BackendKind::from_backend("llamacpp"),
+            BackendKind::OpenAiCompat
+        );
         assert_eq!(BackendKind::from_backend(""), BackendKind::OpenAiCompat);
-        assert_eq!(BackendKind::from_backend("openai"), BackendKind::OpenAiCompat);
+        assert_eq!(
+            BackendKind::from_backend("openai"),
+            BackendKind::OpenAiCompat
+        );
     }
 
     #[tokio::test]
@@ -141,7 +145,9 @@ mod tests {
         ));
         let hook: Box<CodexHook> =
             Box::new(|_c, _s| Ok(Arc::new(MockClient::new()) as Arc<dyn Backend>));
-        let client = make_client(cfg, settings, Some(hook.as_ref())).await.unwrap();
+        let client = make_client(cfg, settings, Some(hook.as_ref()))
+            .await
+            .unwrap();
         // hook returned a MockClient stand-in
         assert_eq!(client.model(), "mock");
     }

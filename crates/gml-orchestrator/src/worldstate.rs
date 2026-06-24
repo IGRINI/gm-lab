@@ -5,7 +5,10 @@
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
-use gml_world::{state_record_hash, StateRecord, StateRecordQuery, World};
+use gml_world::{
+    state_record_hash, MemoryInjectionState, MemoryTier, MemoryTruthStatus, MemoryUnit,
+    StateRecord, StateRecordQuery, World,
+};
 
 use crate::helpers::{
     clean_list, clean_text, clip_text, compact_sources, drop_empty, short_hash, visibility,
@@ -66,6 +69,214 @@ fn record_participant_ids(record: &StateRecord) -> BTreeSet<String> {
     ids
 }
 
+fn is_world_state_memory(unit: &MemoryUnit) -> bool {
+    !unit.source_state_record_ids.is_empty()
+        && matches!(
+            unit.created_by.as_str(),
+            "legacy_state_record_migration" | "world_state_memory"
+        )
+}
+
+fn string_array_meta(unit: &MemoryUnit, key: &str) -> Vec<String> {
+    unit.metadata
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn state_record_from_memory(unit: &MemoryUnit) -> Option<StateRecord> {
+    if !is_world_state_memory(unit) {
+        return None;
+    }
+    let mut record_id = memory_meta_string(unit, "record_id");
+    if record_id.is_empty() {
+        record_id = unit.source_state_record_ids.first()?.clone();
+    }
+    let known_name = memory_meta_string(unit, "known_name");
+    let mut metadata = Map::new();
+    if !known_name.is_empty() {
+        metadata.insert("known_name".to_string(), json!(known_name));
+    }
+    Some(StateRecord {
+        record_id,
+        kind: {
+            let kind = memory_meta_string(unit, "legacy_kind");
+            if kind.is_empty() {
+                "fact".to_string()
+            } else {
+                kind
+            }
+        },
+        text: unit.summary.clone(),
+        scope: {
+            let scope = memory_meta_string(unit, "legacy_scope");
+            if scope.is_empty() {
+                "public".to_string()
+            } else {
+                scope
+            }
+        },
+        active: unit.injection_state != MemoryInjectionState::Archived,
+        owner: memory_meta_string(unit, "owner"),
+        subject: memory_meta_string(unit, "subject"),
+        source: memory_meta_string(unit, "source"),
+        status: {
+            let status = memory_meta_string(unit, "status");
+            if status.is_empty() {
+                "known".to_string()
+            } else {
+                status
+            }
+        },
+        tags: string_array_meta(unit, "tags"),
+        entity_id: memory_meta_string(unit, "entity_id"),
+        source_npc: memory_meta_string(unit, "source_npc"),
+        participants: string_array_meta(unit, "participants"),
+        location_id: memory_meta_string(unit, "location_id"),
+        location_name: memory_meta_string(unit, "location_name"),
+        region_id: memory_meta_string(unit, "region_id"),
+        region_name: memory_meta_string(unit, "region_name"),
+        scene_id: memory_meta_string(unit, "scene_id"),
+        importance: memory_meta_string(unit, "importance"),
+        aliases: string_array_meta(unit, "aliases"),
+        metadata,
+    })
+}
+
+fn state_record_hash_for_id(world: &World, record_id: &str) -> Option<String> {
+    let wanted = record_id.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    for unit in world.world_canon.memory.units.values() {
+        if !is_world_state_memory(unit) {
+            continue;
+        }
+        let id = memory_meta_string(unit, "record_id");
+        if id == wanted || unit.source_state_record_ids.iter().any(|src| src == wanted) {
+            let hash = memory_meta_string(unit, "hash");
+            return Some(if hash.is_empty() {
+                state_record_from_memory(unit)
+                    .map(|record| state_record_hash(&record))
+                    .unwrap_or_default()
+            } else {
+                hash
+            });
+        }
+    }
+    None
+}
+
+fn world_state_records(world: &World) -> Vec<StateRecord> {
+    world
+        .world_canon
+        .memory
+        .units
+        .values()
+        .filter_map(state_record_from_memory)
+        .collect()
+}
+
+fn record_matches_query(record: &StateRecord, query: &StateRecordQuery) -> bool {
+    if let Some(active) = query.active {
+        if record.active != active {
+            return false;
+        }
+    }
+    if let Some(kinds) = query.kinds.as_ref() {
+        let allowed: BTreeSet<String> = kinds
+            .iter()
+            .map(|kind| gml_world::state_record::state_record_kind(kind))
+            .collect();
+        if !allowed.contains(&gml_world::state_record::state_record_kind(&record.kind)) {
+            return false;
+        }
+    }
+    if let Some(scopes) = query.scopes.as_ref() {
+        let allowed: BTreeSet<String> = scopes
+            .iter()
+            .map(|scope| gml_world::state_record::state_record_scope(scope))
+            .collect();
+        if !allowed.contains(&gml_world::state_record::state_record_scope(&record.scope)) {
+            return false;
+        }
+    }
+    let actor_key = |raw: &str| gml_world::helpers::actor_key(raw);
+    if !query.owner.is_empty() && actor_key(&record.owner) != actor_key(query.owner) {
+        return false;
+    }
+    if !query.subject.is_empty() && actor_key(&record.subject) != actor_key(query.subject) {
+        return false;
+    }
+    if !query.entity_id.is_empty() && actor_key(&record.entity_id) != actor_key(query.entity_id) {
+        return false;
+    }
+    if !query.source_npc.is_empty() && actor_key(&record.source_npc) != actor_key(query.source_npc)
+    {
+        return false;
+    }
+    if !query.location_id.is_empty()
+        && actor_key(&record.location_id) != actor_key(query.location_id)
+    {
+        return false;
+    }
+    if !query.region_id.is_empty() && actor_key(&record.region_id) != actor_key(query.region_id) {
+        return false;
+    }
+    if !query.scene_id.is_empty() && actor_key(&record.scene_id) != actor_key(query.scene_id) {
+        return false;
+    }
+    gml_world::state_record::state_record_visible_to(record, query.actor_id)
+}
+
+fn world_state_records_for(world: &World, query: &StateRecordQuery) -> Vec<StateRecord> {
+    world_state_records(world)
+        .into_iter()
+        .filter(|record| record_matches_query(record, query))
+        .collect()
+}
+
+fn apply_update_value(record: &mut StateRecord, key: &str, value: &Value) {
+    match key {
+        "kind" => record.kind = clean_text(value),
+        "text" => record.text = clean_text(value),
+        "scope" => record.scope = clean_text(value),
+        "owner" => record.owner = clean_text(value),
+        "subject" => record.subject = clean_text(value),
+        "source" => record.source = clean_text(value),
+        "status" => record.status = clean_text(value),
+        "tags" => record.tags = clean_list(value),
+        "entity_id" => record.entity_id = clean_text(value),
+        "source_npc" => record.source_npc = clean_text(value),
+        "participants" => record.participants = clean_list(value),
+        "location_id" => record.location_id = clean_text(value),
+        "location_name" => record.location_name = clean_text(value),
+        "region_id" => record.region_id = clean_text(value),
+        "region_name" => record.region_name = clean_text(value),
+        "scene_id" => record.scene_id = clean_text(value),
+        "importance" => record.importance = clean_text(value),
+        "aliases" => record.aliases = clean_list(value),
+        "metadata" => {
+            if let Some(map) = value.as_object() {
+                record.metadata = map.clone();
+            }
+        }
+        "active" => {
+            record.active = value
+                .as_bool()
+                .unwrap_or_else(|| clean_text(value).to_lowercase() != "false");
+        }
+        _ => {}
+    }
+}
+
 /// `_find_mergeable_state_record(world, kind, text, scope, owner, entity_id,
 /// source_npc, location_id, region_id, scene_id)` — returns the `record_id` of an
 /// active, identical-text, same-anchors record of the same kind/scope/owner.
@@ -93,7 +304,7 @@ fn find_mergeable_state_record(
     let wanted_scope = gml_world::state_record::state_record_scope(scope);
     let want_kind = gml_world::state_record::state_record_kind(kind);
     let lc = |s: &str| clean_text(&Value::String(s.to_string())).to_lowercase();
-    for record in &world.state_records {
+    for record in world_state_records(world) {
         if !record.active {
             continue;
         }
@@ -153,8 +364,7 @@ fn resolve_participants(world: &World, raw: &Value) -> (Vec<String>, String) {
         let actor_id = if key == "player" || key == "игрок" {
             "player".to_string()
         } else {
-            let (id, error) =
-                resolve_npc_id(world, &Value::String(item.clone()));
+            let (id, error) = resolve_npc_id(world, &Value::String(item.clone()));
             if !error.is_empty() {
                 return (
                     Vec::new(),
@@ -182,11 +392,6 @@ fn resolve_actor_target(world: &World, raw: &str) -> String {
         return "player".to_string();
     }
     world.resolve(target).unwrap_or_default()
-}
-
-fn supports_state_records(_world: &World) -> bool {
-    // gml-world always implements add_state_records (callable in Python check).
-    true
 }
 
 // =========================================================================
@@ -263,17 +468,8 @@ fn apply_world_state_item(
         item_type = "goal".to_string();
     }
     if op == "delete" {
-        if supports_state_records(&session.world) {
-            return apply_state_record_item(session, index, &op, &item_type, &text, "player", &source, item);
-        }
-        return (
-            None,
-            Some(err_row(&[
-                ("index", json!(index)),
-                ("op", json!(op)),
-                ("type", json!(item_type)),
-                ("error", json!("delete requires state-record support")),
-            ])),
+        return apply_state_record_item(
+            session, index, &op, &item_type, &text, "player", &source, item,
         );
     }
     if !item_type.is_empty()
@@ -323,7 +519,9 @@ fn apply_world_state_item(
         None => item.get("visibility").cloned().unwrap_or(Value::Null),
     };
     let scope = visibility(&scope_value, default_scope);
-    apply_state_record_item(session, index, &op, &item_type, &text, &scope, &source, item)
+    apply_state_record_item(
+        session, index, &op, &item_type, &text, &scope, &source, item,
+    )
 }
 
 /// `_apply_state_record_item(...)` — faithful port (add/update/delete with merge,
@@ -366,14 +564,18 @@ fn apply_state_record_item(
             if !expected.is_empty() && expected.to_lowercase() != h.to_lowercase() {
                 return (
                     None,
-                    Some(hash_conflict_error(&session.world, index, op, item_type, &record_id, &expected)),
+                    Some(hash_conflict_error(
+                        &session.world,
+                        index,
+                        op,
+                        item_type,
+                        &record_id,
+                        &expected,
+                    )),
                 );
             }
         }
-        let deleted = session
-            .world
-            .delete_state_records(&json!([record_id.clone()]), false);
-        if deleted == 0 {
+        if !session.world.archive_state_record_memory(&record_id) {
             return (
                 None,
                 Some(err_row(&[
@@ -403,7 +605,9 @@ fn apply_state_record_item(
     // validation suite for these paths lives in dedicated contract tests
     // (followups). We implement the common add path and a direct update path.
     if op == "update" {
-        return apply_state_record_update(session, index, op, item_type, text, scope, source, item, &record_id);
+        return apply_state_record_update(
+            session, index, op, item_type, text, scope, source, item, &record_id,
+        );
     }
 
     apply_state_record_add(session, index, op, item_type, text, scope, source, item)
@@ -419,16 +623,65 @@ fn expected_hash(item: &Value) -> String {
     String::new()
 }
 
-fn record_by_id<'a>(world: &'a World, record_id: &str) -> Option<&'a StateRecord> {
+fn record_by_id(world: &World, record_id: &str) -> Option<StateRecord> {
     let wanted = record_id.trim();
     if wanted.is_empty() {
         return None;
     }
-    world.state_records.iter().find(|r| r.record_id == wanted)
+    world_state_records(world)
+        .into_iter()
+        .find(|record| record.record_id == wanted)
 }
 
 fn record_hash_by_id(world: &World, record_id: &str) -> Option<String> {
-    record_by_id(world, record_id).map(state_record_hash)
+    state_record_hash_for_id(world, record_id)
+        .or_else(|| record_by_id(world, record_id).map(|record| state_record_hash(&record)))
+}
+
+fn world_state_record_ids(world: &World) -> BTreeSet<String> {
+    world_state_records(world)
+        .into_iter()
+        .map(|record| record.record_id)
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn unique_world_state_record_id(
+    world: &World,
+    preferred_id: &str,
+    kind: &str,
+    text: &str,
+    scope: &str,
+    owner: &str,
+    target: &str,
+    entity_id: &str,
+) -> String {
+    let existing = world_state_record_ids(world);
+    let base = {
+        let preferred = clean_text(&Value::String(preferred_id.to_string()));
+        if preferred.is_empty() {
+            format!(
+                "state_{}_{}",
+                gml_world::state_record::state_record_kind(kind),
+                short_hash(&format!(
+                    "{kind}|{scope}|{owner}|{target}|{entity_id}|{text}"
+                ))
+            )
+        } else {
+            preferred
+        }
+    };
+    if !existing.contains(&base) {
+        return base;
+    }
+    let mut suffix = 2usize;
+    loop {
+        let candidate = format!("{base}_{suffix}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
 }
 
 fn hash_conflict_error(
@@ -440,7 +693,7 @@ fn hash_conflict_error(
     expected: &str,
 ) -> Value {
     let record = record_by_id(world, record_id);
-    let actual_hash = record.map(state_record_hash).unwrap_or_default();
+    let actual_hash = record_hash_by_id(world, record_id).unwrap_or_default();
     let (kind, owner, subject, location_id, region_id, scene_id, scope) = match record {
         Some(r) => (
             r.kind.clone(),
@@ -504,25 +757,65 @@ fn apply_state_record_add(
     let scene_id = clean_text(item.get("scene_id").unwrap_or(&Value::Null));
     let importance = clean_text(item.get("importance").unwrap_or(&Value::Null));
     let aliases = clean_list(item.get("aliases").unwrap_or(&Value::Null));
-    let (participants, error) = resolve_participants(world, item.get("participants").unwrap_or(&Value::Null));
+    let (participants, error) =
+        resolve_participants(world, item.get("participants").unwrap_or(&Value::Null));
     if !error.is_empty() {
-        return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!(error))])));
+        return (
+            None,
+            Some(err_row(&[
+                ("index", json!(index)),
+                ("op", json!(op)),
+                ("type", json!(item_type)),
+                ("error", json!(error)),
+            ])),
+        );
     }
     if !source_npc.is_empty() {
         let (id, e) = resolve_npc_id(world, &Value::String(source_npc.clone()));
         if !e.is_empty() {
-            return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!(e))])));
+            return (
+                None,
+                Some(err_row(&[
+                    ("index", json!(index)),
+                    ("op", json!(op)),
+                    ("type", json!(item_type)),
+                    ("error", json!(e)),
+                ])),
+            );
         }
         source_npc = id;
     }
     let mut entity_id = entity_id;
     if !known_name.is_empty() {
         if entity_id.is_empty() {
-            return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!("entity_id is required when setting known_name"))])));
+            return (
+                None,
+                Some(err_row(&[
+                    ("index", json!(index)),
+                    ("op", json!(op)),
+                    ("type", json!(item_type)),
+                    (
+                        "error",
+                        json!("entity_id is required when setting known_name"),
+                    ),
+                ])),
+            );
         }
         let (id, e) = resolve_npc_id(world, &Value::String(entity_id.clone()));
         if !e.is_empty() {
-            return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("entity_id", json!(entity_id)), ("error", json!("known_name requires entity_id to be an NPC id"))])));
+            return (
+                None,
+                Some(err_row(&[
+                    ("index", json!(index)),
+                    ("op", json!(op)),
+                    ("type", json!(item_type)),
+                    ("entity_id", json!(entity_id)),
+                    (
+                        "error",
+                        json!("known_name requires entity_id to be an NPC id"),
+                    ),
+                ])),
+            );
         }
         entity_id = id;
     }
@@ -531,12 +824,29 @@ fn apply_state_record_add(
     if needs_npc {
         let (id, e) = resolve_npc_id(world, item.get("npc_id").unwrap_or(&Value::Null));
         if !e.is_empty() {
-            return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!(e))])));
+            return (
+                None,
+                Some(err_row(&[
+                    ("index", json!(index)),
+                    ("op", json!(op)),
+                    ("type", json!(item_type)),
+                    ("error", json!(e)),
+                ])),
+            );
         }
         owner = id;
     }
     if item_type == "relationship" && target.is_empty() {
-        return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("npc_id", json!(owner)), ("error", json!("target is required for relationship"))])));
+        return (
+            None,
+            Some(err_row(&[
+                ("index", json!(index)),
+                ("op", json!(op)),
+                ("type", json!(item_type)),
+                ("npc_id", json!(owner)),
+                ("error", json!("target is required for relationship")),
+            ])),
+        );
     }
     if !target.is_empty() && scope == "shared" {
         let actor = resolve_actor_target(world, &target);
@@ -546,7 +856,18 @@ fn apply_state_record_add(
         target = actor;
     }
     if scope == "shared" && target.is_empty() && participants.is_empty() {
-        return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!("target or participants is required for shared scope"))])));
+        return (
+            None,
+            Some(err_row(&[
+                ("index", json!(index)),
+                ("op", json!(op)),
+                ("type", json!(item_type)),
+                (
+                    "error",
+                    json!("target or participants is required for shared scope"),
+                ),
+            ])),
+        );
     }
 
     // `_find_mergeable_state_record` — merge participants of an identical active
@@ -564,8 +885,9 @@ fn apply_state_record_add(
         &scene_id,
     );
     // `record_by_id` is guaranteed to resolve `mergeable_id` (it came from the
-    // same `world.state_records`); the `if let` keeps the borrow checker happy.
-    if let Some(existing) = mergeable_id.and_then(|id| record_by_id(world, &id).cloned()) {
+    // same memory-backed state projection); the `if let` keeps the borrow
+    // checker happy.
+    if let Some(existing) = mergeable_id.and_then(|id| record_by_id(world, &id)) {
         let existing_participants = record_participant_ids(&existing);
         let mut wanted_participants: BTreeSet<String> =
             participants.iter().map(|p| p.to_lowercase()).collect();
@@ -590,12 +912,9 @@ fn apply_state_record_add(
             existing.participants.iter().cloned().collect();
         let merged_set: BTreeSet<String> = merged_participants.iter().cloned().collect();
         if current_participants != merged_set {
-            let update_payload = json!({
-                "id": existing.record_id,
-                "participants": merged_participants,
-            });
-            let updated = world.update_state_records(&Value::Array(vec![update_payload]));
-            let rec = updated.into_iter().next().unwrap_or(existing);
+            let mut rec = existing.clone();
+            rec.participants = merged_participants;
+            let _ = world.upsert_state_record_memory(&rec, "world_state_memory");
             let row = json!({
                 "index": index,
                 "op": "update",
@@ -627,7 +946,7 @@ fn apply_state_record_add(
         return (None, Some(err));
     }
 
-    // Relationship-already-exists branch (via state_records_for).
+    // Relationship-already-exists branch (via memory-backed projection).
     if item_type == "relationship" {
         let kinds = vec!["relationship".to_string()];
         let scopes = vec![gml_world::state_record::state_record_scope(scope)];
@@ -639,7 +958,7 @@ fn apply_state_record_add(
         query.subject = &subject_owned;
         query.scopes = Some(&scopes);
         let existing: Option<StateRecord> =
-            world.state_records_for(&query).first().map(|r| (*r).clone());
+            world_state_records_for(world, &query).into_iter().next();
         if let Some(rec) = existing {
             let err = json!({
                 "index": index,
@@ -673,60 +992,54 @@ fn apply_state_record_add(
         query.kinds = Some(&kinds);
         let owner_owned = owner.clone();
         query.owner = &owner_owned;
-        let existing_ids: Vec<String> = world
-            .state_records_for(&query)
-            .iter()
-            .map(|r| r.record_id.clone())
+        let existing_ids: Vec<String> = world_state_records_for(world, &query)
+            .into_iter()
+            .map(|r| r.record_id)
             .collect();
-        if !existing_ids.is_empty() {
-            let ids: Vec<Value> = existing_ids.into_iter().map(Value::String).collect();
-            world.delete_state_records(&Value::Array(ids), false);
+        for id in existing_ids {
+            let _ = world.archive_state_record_memory(&id);
         }
     }
 
-    let status = if item_type == "rumor" { "unconfirmed" } else { "known" };
-    let mut record_payload = Map::new();
-    record_payload.insert("kind".to_string(), json!(state_record_kind_local(item_type)));
-    record_payload.insert("text".to_string(), json!(text));
-    record_payload.insert("scope".to_string(), json!(state_record_scope_local(scope)));
-    record_payload.insert("owner".to_string(), json!(owner));
-    record_payload.insert("subject".to_string(), json!(target));
-    record_payload.insert(
-        "source".to_string(),
-        json!(if source.is_empty() { "gm_tool" } else { source }),
-    );
-    record_payload.insert("status".to_string(), json!(status));
-    record_payload.insert("entity_id".to_string(), json!(entity_id));
-    record_payload.insert("source_npc".to_string(), json!(source_npc));
-    if !participants.is_empty() {
-        record_payload.insert("participants".to_string(), json!(participants));
-    }
-    for (key, value) in [
-        ("location_id", &location_id),
-        ("location_name", &location_name),
-        ("region_id", &region_id),
-        ("region_name", &region_name),
-        ("scene_id", &scene_id),
-        ("importance", &importance),
-    ] {
-        if !value.is_empty() {
-            record_payload.insert(key.to_string(), json!(value));
-        }
-    }
-    if !aliases.is_empty() {
-        record_payload.insert("aliases".to_string(), json!(aliases));
-    }
-    if !known_name.is_empty() {
-        record_payload.insert("metadata".to_string(), json!({"known_name": known_name}));
-    }
-
-    let added = world.add_state_records(&Value::Array(vec![Value::Object(record_payload)]));
-    let record = match added.into_iter().next() {
-        Some(r) => r,
-        None => {
-            return (None, Some(err_row(&[("index", json!(index)), ("op", json!(op)), ("type", json!(item_type)), ("error", json!("state record was not stored"))])));
-        }
+    let status = if item_type == "rumor" {
+        "unconfirmed"
+    } else {
+        "known"
     };
+    let mut metadata = Map::new();
+    if !known_name.is_empty() {
+        metadata.insert("known_name".to_string(), json!(known_name));
+    }
+    let record = StateRecord {
+        record_id: unique_world_state_record_id(
+            world, "", item_type, text, scope, &owner, &target, &entity_id,
+        ),
+        kind: state_record_kind_local(item_type),
+        text: text.to_string(),
+        scope: state_record_scope_local(scope),
+        active: true,
+        owner: owner.clone(),
+        subject: target.clone(),
+        source: if source.is_empty() {
+            "gm_tool".to_string()
+        } else {
+            source.to_string()
+        },
+        status: status.to_string(),
+        tags: Vec::new(),
+        entity_id,
+        source_npc,
+        participants,
+        location_id,
+        location_name,
+        region_id,
+        region_name,
+        scene_id,
+        importance,
+        aliases,
+        metadata,
+    };
+    let _ = world.upsert_state_record_memory(&record, "world_state_memory");
     let row = json!({
         "index": index,
         "op": op,
@@ -801,14 +1114,24 @@ fn apply_state_record_update(
         }
     };
     let expected = expected_hash(item);
-    if !expected.is_empty() && expected.to_lowercase() != state_record_hash(&existing).to_lowercase() {
-        return (None, Some(hash_conflict_error(world, index, op, item_type, record_id, &expected)));
+    if !expected.is_empty()
+        && expected.to_lowercase() != state_record_hash(&existing).to_lowercase()
+    {
+        return (
+            None,
+            Some(hash_conflict_error(
+                world, index, op, item_type, record_id, &expected,
+            )),
+        );
     }
 
     let mut update_payload = Map::new();
     update_payload.insert("id".to_string(), json!(record_id));
     if !item_type.is_empty() {
-        update_payload.insert("kind".to_string(), json!(state_record_kind_local(item_type)));
+        update_payload.insert(
+            "kind".to_string(),
+            json!(state_record_kind_local(item_type)),
+        );
     }
     if !text.is_empty() {
         update_payload.insert("text".to_string(), json!(text));
@@ -850,7 +1173,10 @@ fn apply_state_record_update(
         if scope == "npc" && owner.is_empty() && existing_owner.is_empty() {
             return (
                 None,
-                Some(uerr(&[("error", json!("npc_id is required when changing scope to npc"))])),
+                Some(uerr(&[(
+                    "error",
+                    json!("npc_id is required when changing scope to npc"),
+                )])),
             );
         }
         if scope == "shared" {
@@ -908,7 +1234,10 @@ fn apply_state_record_update(
         if known_entity_id.is_empty() {
             return (
                 None,
-                Some(uerr(&[("error", json!("entity_id is required when setting known_name"))])),
+                Some(uerr(&[(
+                    "error",
+                    json!("entity_id is required when setting known_name"),
+                )])),
             );
         }
         // `_resolve_npc_id` returns ("", err) on failure — the Python error row
@@ -919,7 +1248,10 @@ fn apply_state_record_update(
                 None,
                 Some(uerr(&[
                     ("entity_id", json!(id)),
-                    ("error", json!("known_name requires entity_id to be an NPC id")),
+                    (
+                        "error",
+                        json!("known_name requires entity_id to be an NPC id"),
+                    ),
                 ])),
             );
         }
@@ -974,13 +1306,11 @@ fn apply_state_record_update(
         update_payload.insert("active".to_string(), active.clone());
     }
 
-    let updated = world.update_state_records(&Value::Array(vec![Value::Object(update_payload)]));
-    let record = match updated.into_iter().next() {
-        Some(r) => r,
-        None => {
-            return (None, Some(uerr(&[("error", json!("record id not found"))])));
-        }
-    };
+    let mut record = existing.clone();
+    for (key, value) in update_payload {
+        apply_update_value(&mut record, &key, &value);
+    }
+    let _ = world.upsert_state_record_memory(&record, "world_state_memory");
     let row = json!({
         "index": index,
         "op": op,
@@ -1120,7 +1450,10 @@ fn score_query_text(query: &str, terms: &[String], text: &str) -> i64 {
 fn query_row(kind: &str, text: &str, extra: &[(&str, Value)]) -> Value {
     let mut row = Map::new();
     row.insert("kind".to_string(), json!(kind));
-    row.insert("text".to_string(), json!(clip_text(&Value::String(text.to_string()), 700)));
+    row.insert(
+        "text".to_string(),
+        json!(clip_text(&Value::String(text.to_string()), 700)),
+    );
     for (k, v) in extra {
         row.insert((*k).to_string(), v.clone());
     }
@@ -1133,9 +1466,25 @@ fn scored_rows(query: &str, rows: &[Value], limit: usize) -> Vec<Value> {
     let mut scored: Vec<(i64, Value)> = Vec::new();
     for row in rows {
         let search_text = [
-            "kind", "id", "npc_id", "target", "entity_id", "source_npc", "participants",
-            "known_name", "location_id", "location_name", "region_id", "region_name",
-            "scene_id", "importance", "aliases", "scope", "visibility", "status", "text",
+            "kind",
+            "id",
+            "npc_id",
+            "target",
+            "entity_id",
+            "source_npc",
+            "participants",
+            "known_name",
+            "location_id",
+            "location_name",
+            "region_id",
+            "region_name",
+            "scene_id",
+            "importance",
+            "aliases",
+            "scope",
+            "visibility",
+            "status",
+            "text",
         ]
         .iter()
         .filter_map(|key| {
@@ -1157,36 +1506,99 @@ fn scored_rows(query: &str, rows: &[Value], limit: usize) -> Vec<Value> {
     scored.into_iter().take(limit).map(|(_, r)| r).collect()
 }
 
+fn memory_meta_string(unit: &MemoryUnit, key: &str) -> String {
+    unit.metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn memory_meta_array(unit: &MemoryUnit, key: &str) -> Value {
+    unit.metadata
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .map(Value::Array)
+        .unwrap_or_else(|| Value::Array(Vec::new()))
+}
+
+fn memory_meta_joined_array(unit: &MemoryUnit, key: &str) -> String {
+    unit.metadata
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
 fn state_record_rows(world: &World, actor_id: &str) -> Vec<Value> {
-    let query = StateRecordQuery::new(actor_id);
+    let access = world.memory_access_for_actor(actor_id);
     let mut rows = Vec::new();
-    for record in world.state_records_for(&query) {
-        let known_name = record
-            .metadata
-            .get("known_name")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+    for unit in world.world_canon.memory.units.values() {
+        if !unit.injection_state.is_default_visible() || !unit.is_visible_to(&access) {
+            continue;
+        }
+        if !is_world_state_memory(unit) {
+            continue;
+        }
+        let record_id = memory_meta_string(unit, "record_id");
+        let mut legacy_kind = memory_meta_string(unit, "legacy_kind");
+        if legacy_kind.is_empty() {
+            legacy_kind = "memory".to_string();
+        }
+        let mut legacy_scope = memory_meta_string(unit, "legacy_scope");
+        if legacy_scope.is_empty() {
+            legacy_scope = "public".to_string();
+        }
+        let hash = {
+            let metadata_hash = memory_meta_string(unit, "hash");
+            if metadata_hash.is_empty() {
+                short_hash(&format!("{}:{}", unit.memory_id, unit.summary))
+            } else {
+                metadata_hash
+            }
+        };
         rows.push(query_row(
-            &format!("state_{}", record.kind),
-            &record.text,
+            &format!("state_{legacy_kind}"),
+            &unit.summary,
             &[
-                ("id", json!(record.record_id)),
-                ("npc_id", json!(record.owner)),
-                ("target", json!(record.subject)),
-                ("entity_id", json!(record.entity_id)),
-                ("source_npc", json!(record.source_npc)),
-                ("participants", json!(record.participants)),
-                ("known_name", json!(known_name)),
-                ("location_id", json!(record.location_id)),
-                ("location_name", json!(record.location_name)),
-                ("region_id", json!(record.region_id)),
-                ("region_name", json!(record.region_name)),
-                ("scene_id", json!(record.scene_id)),
-                ("importance", json!(record.importance)),
-                ("aliases", json!(record.aliases.join(", "))),
-                ("visibility", json!(state_visibility_from_scope(&record.scope))),
-                ("status", json!(record.status)),
-                ("hash", json!(state_record_hash(record))),
+                ("id", json!(record_id)),
+                ("memory_id", json!(unit.memory_id)),
+                ("npc_id", json!(memory_meta_string(unit, "owner"))),
+                ("target", json!(memory_meta_string(unit, "subject"))),
+                ("entity_id", json!(memory_meta_string(unit, "entity_id"))),
+                ("source_npc", json!(memory_meta_string(unit, "source_npc"))),
+                ("participants", memory_meta_array(unit, "participants")),
+                ("known_name", json!(memory_meta_string(unit, "known_name"))),
+                (
+                    "location_id",
+                    json!(memory_meta_string(unit, "location_id")),
+                ),
+                (
+                    "location_name",
+                    json!(memory_meta_string(unit, "location_name")),
+                ),
+                ("region_id", json!(memory_meta_string(unit, "region_id"))),
+                (
+                    "region_name",
+                    json!(memory_meta_string(unit, "region_name")),
+                ),
+                ("scene_id", json!(memory_meta_string(unit, "scene_id"))),
+                ("importance", json!(memory_meta_string(unit, "importance"))),
+                ("aliases", json!(memory_meta_joined_array(unit, "aliases"))),
+                (
+                    "visibility",
+                    json!(state_visibility_from_scope(&legacy_scope)),
+                ),
+                ("status", json!(memory_meta_string(unit, "status"))),
+                ("hash", json!(hash)),
             ],
         ));
     }
@@ -1265,16 +1677,36 @@ fn npc_query_rows(session: &Session, npc_id: &str) -> Vec<Value> {
         None => return Vec::new(),
     };
     let mut rows = state_record_rows(&session.world, npc_id);
-    rows.push(query_row("npc_goals", &npc.goals, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
-    rows.push(query_row("npc_knowledge", &npc.knowledge, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
-    rows.push(query_row("npc_secret", &npc.secret, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
+    rows.push(query_row(
+        "npc_goals",
+        &npc.goals,
+        &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+    ));
+    rows.push(query_row(
+        "npc_knowledge",
+        &npc.knowledge,
+        &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+    ));
+    rows.push(query_row(
+        "npc_secret",
+        &npc.secret,
+        &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+    ));
     if let Some(summary) = session.npc_summaries.get(npc_id) {
         if !summary.is_empty() {
-            rows.push(query_row("npc_summary", summary, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
+            rows.push(query_row(
+                "npc_summary",
+                summary,
+                &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+            ));
         }
     }
     if let Some(blocks) = session.commitments.get(npc_id) {
-        let tail = blocks.iter().rev().take(crate::session::COMMIT_BLOCKS).collect::<Vec<_>>();
+        let tail = blocks
+            .iter()
+            .rev()
+            .take(crate::session::COMMIT_BLOCKS)
+            .collect::<Vec<_>>();
         for (i, block) in tail.into_iter().rev().enumerate() {
             rows.push(query_row(
                 "npc_memory",
@@ -1293,7 +1725,11 @@ fn npc_query_rows(session: &Session, npc_id: &str) -> Vec<Value> {
 fn gm_query_rows(session: &Session) -> Vec<Value> {
     let world = &session.world;
     let mut rows = vec![
-        query_row("public_intro", &world.public, &[("visibility", json!("player"))]),
+        query_row(
+            "public_intro",
+            &world.public,
+            &[("visibility", json!("player"))],
+        ),
         query_row("gm_canon", &world.canon, &[("visibility", json!("gm"))]),
     ];
     rows.extend(state_record_rows(world, "debug"));
@@ -1301,21 +1737,35 @@ fn gm_query_rows(session: &Session) -> Vec<Value> {
         rows.push(query_row(
             "hidden_event",
             event_text,
-            &[("id", json!(format!("hidden:{}", i + 1))), ("visibility", json!("gm"))],
+            &[
+                ("id", json!(format!("hidden:{}", i + 1))),
+                ("visibility", json!("gm")),
+            ],
         ));
     }
     for record in &world.fact_records {
         if record.kind == "truth" && record.fact_id == "hidden_truth" {
             continue;
         }
-        let visibility = if record.kind == "truth" { "gm" } else { "player" };
+        let visibility = if record.kind == "truth" {
+            "gm"
+        } else {
+            "player"
+        };
         rows.push(query_row(
             &format!("{}_fact", record.kind),
             &record.text,
             &[
                 ("id", json!(record.fact_id)),
                 ("visibility", json!(visibility)),
-                ("status", json!(if record.confirmed { "known" } else { "unconfirmed" })),
+                (
+                    "status",
+                    json!(if record.confirmed {
+                        "known"
+                    } else {
+                        "unconfirmed"
+                    }),
+                ),
             ],
         ));
     }
@@ -1332,17 +1782,41 @@ fn gm_query_rows(session: &Session) -> Vec<Value> {
         ));
     }
     for (npc_id, npc) in &world.npcs {
-        rows.push(query_row("npc_role", &format!("{}: {}", npc.name, npc.role), &[("npc_id", json!(npc_id)), ("visibility", json!("player"))]));
-        rows.push(query_row("npc_goals", &npc.goals, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
-        rows.push(query_row("npc_knowledge", &npc.knowledge, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
-        rows.push(query_row("npc_secret", &npc.secret, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
+        rows.push(query_row(
+            "npc_role",
+            &format!("{}: {}", npc.name, npc.role),
+            &[("npc_id", json!(npc_id)), ("visibility", json!("player"))],
+        ));
+        rows.push(query_row(
+            "npc_goals",
+            &npc.goals,
+            &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+        ));
+        rows.push(query_row(
+            "npc_knowledge",
+            &npc.knowledge,
+            &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+        ));
+        rows.push(query_row(
+            "npc_secret",
+            &npc.secret,
+            &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+        ));
         if let Some(summary) = session.npc_summaries.get(npc_id) {
             if !summary.is_empty() {
-                rows.push(query_row("npc_summary", summary, &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))]));
+                rows.push(query_row(
+                    "npc_summary",
+                    summary,
+                    &[("npc_id", json!(npc_id)), ("visibility", json!("npc"))],
+                ));
             }
         }
         if let Some(blocks) = session.commitments.get(npc_id) {
-            let tail = blocks.iter().rev().take(crate::session::COMMIT_BLOCKS).collect::<Vec<_>>();
+            let tail = blocks
+                .iter()
+                .rev()
+                .take(crate::session::COMMIT_BLOCKS)
+                .collect::<Vec<_>>();
             for (i, block) in tail.into_iter().rev().enumerate() {
                 rows.push(query_row(
                     "npc_memory",
@@ -1357,7 +1831,11 @@ fn gm_query_rows(session: &Session) -> Vec<Value> {
         }
     }
     if !session.gm_summary.trim().is_empty() {
-        rows.push(query_row("gm_summary", &session.gm_summary, &[("visibility", json!("gm"))]));
+        rows.push(query_row(
+            "gm_summary",
+            &session.gm_summary,
+            &[("visibility", json!("gm"))],
+        ));
     }
     rows
 }
@@ -1370,7 +1848,10 @@ pub fn query_world_state(session: &mut Session, args: &Value) -> Value {
         return json!({"scope": scope, "status": "error", "error": "query is required"});
     }
     let limit = {
-        let raw = args.get("max_results").and_then(|v| v.as_i64()).unwrap_or(5);
+        let raw = args
+            .get("max_results")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(5);
         raw.clamp(1, 12) as usize
     };
 
@@ -1379,7 +1860,8 @@ pub fn query_world_state(session: &mut Session, args: &Value) -> Value {
     }
 
     if scope == "npc" {
-        let (npc_id, error) = resolve_npc_id(&session.world, args.get("npc_id").unwrap_or(&Value::Null));
+        let (npc_id, error) =
+            resolve_npc_id(&session.world, args.get("npc_id").unwrap_or(&Value::Null));
         if !error.is_empty() {
             return json!({"scope": scope, "status": "error", "error": error});
         }
@@ -1395,7 +1877,10 @@ pub fn query_world_state(session: &mut Session, args: &Value) -> Value {
                 query_row(
                     "public_lookup",
                     &public_text,
-                    &[("visibility", json!("player")), ("status", json!(public_status))],
+                    &[
+                        ("visibility", json!("player")),
+                        ("status", json!(public_status)),
+                    ],
                 ),
             );
         }
@@ -1447,5 +1932,649 @@ pub fn query_world_state(session: &mut Session, args: &Value) -> Value {
         "results": rows,
         "text": text,
         "already_delivered": delivered,
+    }))
+}
+
+fn memory_tier(raw: &Value, default: MemoryTier) -> MemoryTier {
+    match clean_text(raw).to_lowercase().as_str() {
+        "episode" => MemoryTier::Episode,
+        "arc" => MemoryTier::Arc,
+        "durable" | "long" | "long_term" => MemoryTier::Durable,
+        "raw" | "" => default,
+        _ => default,
+    }
+}
+
+fn memory_truth(raw: &Value) -> MemoryTruthStatus {
+    match clean_text(raw).to_lowercase().as_str() {
+        "actual" | "true" | "truth" => MemoryTruthStatus::Actual,
+        "claim" => MemoryTruthStatus::Claim,
+        "rumor" | "rumour" => MemoryTruthStatus::Rumor,
+        "belief" => MemoryTruthStatus::Belief,
+        "lie" | "false" => MemoryTruthStatus::Lie,
+        _ => MemoryTruthStatus::Unknown,
+    }
+}
+
+fn memory_limit(args: &Value, default: i64, max: i64) -> usize {
+    args.get("max_results")
+        .and_then(Value::as_i64)
+        .unwrap_or(default)
+        .clamp(1, max) as usize
+}
+
+fn bool_arg(args: &Value, key: &str) -> bool {
+    args.get(key).map(crate::truthy).unwrap_or(false)
+}
+
+fn memory_access_payload(
+    session: &Session,
+    args: &Value,
+) -> Result<(String, gml_world::MemoryAccess), String> {
+    let mut scope = clean_text(args.get("scope").unwrap_or(&Value::Null)).to_lowercase();
+    let npc_id = clean_text(args.get("npc_id").unwrap_or(&Value::Null));
+    if scope.is_empty() {
+        scope = if npc_id.is_empty() {
+            "player".to_string()
+        } else {
+            "actor".to_string()
+        };
+    }
+    match scope.as_str() {
+        "gm" | "debug" | "gm_private" | "true_canon" => {
+            Ok(("gm".to_string(), gml_world::MemoryAccess::gm()))
+        }
+        "npc" | "actor" => {
+            let (resolved, error) =
+                resolve_npc_id(&session.world, args.get("npc_id").unwrap_or(&Value::Null));
+            if !error.is_empty() {
+                return Err(error);
+            }
+            Ok((
+                format!("actor:{resolved}"),
+                session.world.memory_access_for_actor(&resolved),
+            ))
+        }
+        "player" => Ok((
+            "player".to_string(),
+            session.world.memory_access_for_player(),
+        )),
+        "public" => Ok((
+            "public".to_string(),
+            session.world.memory_access_for_public(),
+        )),
+        other => {
+            let scope_id = clean_text(args.get("scope_id").unwrap_or(&Value::Null));
+            let access = session.world.memory_access_for_scope(other, &scope_id)?;
+            let label = if scope_id.is_empty() {
+                other.to_string()
+            } else {
+                format!("{other}:{scope_id}")
+            };
+            Ok((label, access))
+        }
+    }
+}
+
+/// `get_memory(query, scope, ...)` — scoped memory lookup with access gate
+/// before ranking.
+pub fn get_memory(session: &mut Session, args: &Value) -> Value {
+    let query = clean_text(args.get("query").unwrap_or(&Value::Null));
+    if query.is_empty() {
+        return json!({"scope": "memory", "status": "error", "error": "query is required"});
+    }
+    let (scope_label, access) = match memory_access_payload(session, args) {
+        Ok(v) => v,
+        Err(error) => return json!({"scope": "memory", "status": "error", "error": error}),
+    };
+    let limit = memory_limit(args, 5, 12);
+    let include_cold = bool_arg(args, "include_cold");
+    let include_details = bool_arg(args, "include_details");
+    let retrieval_report = crate::rag::retrieve_memory_rows_report(
+        &session.world,
+        &access,
+        &query,
+        limit,
+        include_cold,
+        include_details,
+    );
+    let retrieval_status = retrieval_report.status;
+    let rows = retrieval_report.rows.unwrap_or_else(|| {
+        session
+            .world
+            .memory_rows_for_access(&access, &query, limit, include_cold, include_details)
+    });
+    let status = if rows.is_empty() { "unknown" } else { "known" };
+    drop_empty(&json!({
+        "scope": scope_label,
+        "status": status,
+        "query": query,
+        "include_cold": include_cold,
+        "include_details": include_details,
+        "retrieval": retrieval_status,
+        "results": rows,
+        "text": if status == "unknown" { "No scoped memory matched the query." } else { "" },
+    }))
+}
+
+/// Actor-bound memory recall for the NPC runtime tool `remember`.
+///
+/// The public tool schema never accepts `npc_id`; `turn.rs` injects the current
+/// actor before calling this helper.
+pub fn npc_memory_recall(session: &mut Session, args: &Value) -> Value {
+    let query = clean_text(args.get("query").unwrap_or(&Value::Null));
+    if query.is_empty() {
+        return json!({"scope": "npc", "status": "error", "error": "query is required"});
+    }
+    let (npc_id, error) =
+        resolve_npc_id(&session.world, args.get("npc_id").unwrap_or(&Value::Null));
+    if !error.is_empty() {
+        return json!({"scope": "npc", "status": "error", "error": error});
+    }
+    let access = session.world.memory_access_for_actor(&npc_id);
+    let limit = memory_limit(args, 5, 8);
+    let include_cold = bool_arg(args, "include_cold");
+    let retrieval_report = crate::rag::retrieve_memory_rows_report(
+        &session.world,
+        &access,
+        &query,
+        limit,
+        include_cold,
+        false,
+    );
+    let retrieval_status = retrieval_report.status;
+    let rows = retrieval_report.rows.unwrap_or_else(|| {
+        session
+            .world
+            .memory_rows_for_access(&access, &query, limit, include_cold, false)
+    });
+    let status = if rows.is_empty() { "unknown" } else { "known" };
+    drop_empty(&json!({
+        "scope": "npc",
+        "npc_id": npc_id,
+        "status": status,
+        "query": query,
+        "retrieval": retrieval_status,
+        "results": rows,
+        "text": if status == "unknown" { "This NPC has no accessible matching memory." } else { "" },
+    }))
+}
+
+/// `npc_note_memory(...)` — actor-bound write for the NPC runtime tool.
+///
+/// The tool schema does not expose `npc_id`; `turn.rs` injects the active actor.
+/// The note stays actor-private even if the NPC asks for shared/public privacy:
+/// public rumour spread is a separate GM/world-simulation action.
+pub fn npc_note_memory(session: &mut Session, args: &Value) -> Value {
+    let text = clip_text(args.get("text").unwrap_or(&Value::Null), 900);
+    if text.is_empty() {
+        return json!({"ok": false, "scope": "npc", "status": "error", "error": "text is required"});
+    }
+    let (npc_id, error) =
+        resolve_npc_id(&session.world, args.get("npc_id").unwrap_or(&Value::Null));
+    if !error.is_empty() {
+        return json!({"ok": false, "scope": "npc", "status": "error", "error": error});
+    }
+
+    let kind = {
+        let raw = clean_text(args.get("kind").unwrap_or(&Value::Null));
+        if raw.is_empty() {
+            "interaction".to_string()
+        } else {
+            raw
+        }
+    };
+    let about = clean_text(args.get("about").unwrap_or(&Value::Null));
+    let requested_privacy = {
+        let raw = clean_text(args.get("privacy").unwrap_or(&Value::Null));
+        if raw.is_empty() {
+            "private".to_string()
+        } else {
+            raw
+        }
+    };
+    let anchors = clean_list(args.get("anchors").unwrap_or(&Value::Null));
+    let now = session
+        .world
+        .world_canon
+        .clock_minutes
+        .max(session.world.time.absolute_minutes);
+    let current_place = session
+        .world
+        .world_canon
+        .actor(&npc_id)
+        .and_then(|actor| actor.location.place().map(ToString::to_string))
+        .unwrap_or_else(|| session.world.scene.location_id.clone());
+
+    let mut place_ids = BTreeSet::new();
+    if !current_place.is_empty() {
+        place_ids.insert(current_place);
+    }
+    let mut actor_ids = BTreeSet::new();
+    actor_ids.insert(npc_id.clone());
+    let mut faction_ids = BTreeSet::new();
+    let mut topic_tags = BTreeSet::new();
+    topic_tags.insert(kind.clone());
+    if !about.is_empty() {
+        topic_tags.insert(about.clone());
+    }
+    for anchor in &anchors {
+        let trimmed = anchor.trim();
+        if let Some(rest) = trimmed.strip_prefix("place:") {
+            if !rest.trim().is_empty() {
+                place_ids.insert(rest.trim().to_string());
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("actor:") {
+            if !rest.trim().is_empty() {
+                actor_ids.insert(rest.trim().to_string());
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("faction:") {
+            if !rest.trim().is_empty() {
+                faction_ids.insert(rest.trim().to_string());
+            }
+        } else if !trimmed.is_empty() {
+            topic_tags.insert(trimmed.to_string());
+        }
+    }
+    let mut metadata = Map::new();
+    metadata.insert("kind".to_string(), json!(kind));
+    metadata.insert("requested_privacy".to_string(), json!(requested_privacy));
+    if !about.is_empty() {
+        metadata.insert("about".to_string(), json!(about));
+    }
+    if !anchors.is_empty() {
+        metadata.insert("anchors".to_string(), json!(anchors));
+    }
+
+    let id = session.world.add_memory_unit(MemoryUnit {
+        tier: MemoryTier::Raw,
+        owner_scope: format!("actor:{npc_id}"),
+        visibility_scopes: vec![format!("actor:{npc_id}")],
+        summary: text,
+        time_start: now,
+        time_end: now,
+        place_ids: place_ids.into_iter().collect(),
+        actor_ids: actor_ids.into_iter().collect(),
+        faction_ids: faction_ids.into_iter().collect(),
+        topic_tags: topic_tags.into_iter().collect(),
+        metadata,
+        truth_status: MemoryTruthStatus::Belief,
+        injection_state: MemoryInjectionState::Hot,
+        created_by: format!("npc_tool:{npc_id}"),
+        ..Default::default()
+    });
+    let row = session
+        .world
+        .world_canon
+        .memory
+        .get(&id)
+        .map(|unit| unit.to_row(false))
+        .unwrap_or_else(|| json!({}));
+    drop_empty(&json!({
+        "ok": true,
+        "scope": "npc",
+        "npc_id": npc_id,
+        "status": "stored",
+        "memory_id": id,
+        "result": row,
+        "privacy_note": "Stored as this NPC's private memory. Public rumour spread is handled separately.",
+    }))
+}
+
+/// `npc_recall_relationship(target)` — actor-bound relationship recall.
+pub fn npc_recall_relationship(session: &mut Session, args: &Value) -> Value {
+    let (npc_id, error) =
+        resolve_npc_id(&session.world, args.get("npc_id").unwrap_or(&Value::Null));
+    if !error.is_empty() {
+        return json!({"scope": "npc", "status": "error", "error": error});
+    }
+    let raw_target = clean_text(args.get("target").unwrap_or(&Value::Null));
+    if raw_target.is_empty() {
+        return json!({"scope": "npc", "status": "error", "error": "target is required"});
+    }
+    let target = if raw_target.eq_ignore_ascii_case("player")
+        || raw_target.eq_ignore_ascii_case("игрок")
+    {
+        "player".to_string()
+    } else {
+        let (resolved, resolve_error) =
+            resolve_npc_id(&session.world, &Value::String(raw_target.clone()));
+        if resolve_error.is_empty() {
+            resolved
+        } else {
+            raw_target
+        }
+    };
+    let limit = memory_limit(args, 5, 8);
+    let access = session.world.memory_access_for_actor(&npc_id);
+    let query = format!("relationship {npc_id} {target} отношения {target}");
+    let retrieval_report = crate::rag::retrieve_memory_rows_report(
+        &session.world,
+        &access,
+        &query,
+        limit,
+        false,
+        false,
+    );
+    let retrieval_status = retrieval_report.status;
+    let rows = retrieval_report.rows.unwrap_or_else(|| {
+        session
+            .world
+            .memory_rows_for_access(&access, &query, limit, false, false)
+    });
+    let canon_attitude = session
+        .world
+        .world_canon
+        .actor(&npc_id)
+        .map(|actor| {
+            if target == "player" {
+                actor.attitude_to_player
+            } else {
+                actor.relations.get(&target).copied().unwrap_or(0)
+            }
+        })
+        .unwrap_or(0);
+    let scene_attitude = session
+        .world
+        .scene
+        .presence
+        .get(&npc_id)
+        .map(|presence| presence.attitude.clone())
+        .unwrap_or_default();
+    let status = if rows.is_empty() && canon_attitude == 0 && scene_attitude.trim().is_empty() {
+        "unknown"
+    } else {
+        "known"
+    };
+    drop_empty(&json!({
+        "scope": "npc",
+        "npc_id": npc_id,
+        "target": target,
+        "status": status,
+        "canon_attitude": canon_attitude,
+        "scene_attitude": scene_attitude,
+        "retrieval": retrieval_status,
+        "results": rows,
+        "text": if status == "unknown" {
+            "This NPC has no specific accessible relationship memory for the target."
+        } else {
+            ""
+        },
+    }))
+}
+
+fn build_memory_unit_from_args(
+    args: &Value,
+    default_tier: MemoryTier,
+) -> Result<MemoryUnit, String> {
+    let summary = clip_text(args.get("summary").unwrap_or(&Value::Null), 900);
+    if summary.is_empty() {
+        return Err("summary is required".to_string());
+    }
+    let owner_scope = clean_text(args.get("owner_scope").unwrap_or(&Value::Null));
+    if owner_scope.is_empty() {
+        return Err("owner_scope is required".to_string());
+    }
+    let confidence = args
+        .get("confidence")
+        .and_then(Value::as_i64)
+        .map(|n| n.clamp(0, 100) as u8);
+    let mut metadata = Map::new();
+    for key in ["entity_id", "known_name"] {
+        let value = clean_text(args.get(key).unwrap_or(&Value::Null));
+        if !value.is_empty() {
+            metadata.insert(key.to_string(), json!(value));
+        }
+    }
+    Ok(MemoryUnit {
+        tier: memory_tier(args.get("tier").unwrap_or(&Value::Null), default_tier),
+        owner_scope,
+        visibility_scopes: clean_list(args.get("visibility_scopes").unwrap_or(&Value::Null)),
+        summary,
+        details: clip_text(args.get("details").unwrap_or(&Value::Null), 4000),
+        facts_claimed: clean_list(args.get("facts_claimed").unwrap_or(&Value::Null)),
+        uncertainties: clean_list(args.get("uncertainties").unwrap_or(&Value::Null)),
+        source_event_ids: clean_list(args.get("source_event_ids").unwrap_or(&Value::Null)),
+        source_account_ids: clean_list(args.get("source_account_ids").unwrap_or(&Value::Null)),
+        source_state_record_ids: clean_list(
+            args.get("source_state_record_ids").unwrap_or(&Value::Null),
+        ),
+        source_memory_ids: clean_list(args.get("source_memory_ids").unwrap_or(&Value::Null)),
+        time_start: 0,
+        time_end: 0,
+        place_ids: clean_list(args.get("place_ids").unwrap_or(&Value::Null)),
+        actor_ids: clean_list(args.get("actor_ids").unwrap_or(&Value::Null)),
+        faction_ids: clean_list(args.get("faction_ids").unwrap_or(&Value::Null)),
+        topic_tags: clean_list(args.get("topic_tags").unwrap_or(&Value::Null)),
+        metadata,
+        confidence,
+        truth_status: memory_truth(args.get("truth_status").unwrap_or(&Value::Null)),
+        created_by: "gm_tool".to_string(),
+        ..Default::default()
+    })
+}
+
+fn validate_memory_owner(session: &Session, unit: &MemoryUnit) -> Result<(), String> {
+    let owner = gml_world::canon::canonical_scope(&unit.owner_scope, "");
+    if let Some(actor_id) = owner.strip_prefix("actor:") {
+        if !session.world.npcs.contains_key(actor_id)
+            && !session.world.world_canon.actors.contains_key(actor_id)
+        {
+            return Err(format!("unknown actor owner_scope: {actor_id}"));
+        }
+    }
+    if let Some(place_id) = owner.strip_prefix("place:") {
+        if !session.world.world_canon.places.contains_key(place_id) {
+            return Err(format!("unknown place owner_scope: {place_id}"));
+        }
+    }
+    if let Some(faction_id) = owner.strip_prefix("faction:") {
+        if !session.world.world_canon.factions.contains_key(faction_id) {
+            return Err(format!("unknown faction owner_scope: {faction_id}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_memory_identity(session: &mut Session, unit: &mut MemoryUnit) -> Result<(), String> {
+    let known_name = unit
+        .metadata
+        .get("known_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if known_name.is_empty() {
+        return Ok(());
+    }
+    let raw_entity = unit
+        .metadata
+        .get("entity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if raw_entity.is_empty() {
+        return Err("entity_id is required when setting known_name".to_string());
+    }
+    let (entity_id, error) = resolve_npc_id(&session.world, &Value::String(raw_entity));
+    if !error.is_empty() {
+        return Err("known_name requires entity_id to be an NPC id".to_string());
+    }
+    unit.metadata
+        .insert("entity_id".to_string(), json!(entity_id.clone()));
+    unit.metadata
+        .insert("known_name".to_string(), json!(known_name));
+    if !unit.actor_ids.contains(&entity_id) {
+        unit.actor_ids.push(entity_id);
+    }
+    if !unit.topic_tags.iter().any(|tag| tag == "known_name") {
+        unit.topic_tags.push("known_name".to_string());
+    }
+    Ok(())
+}
+
+fn validate_consolidation_sources(
+    session: &Session,
+    unit: &mut MemoryUnit,
+    source_ids: &[String],
+    args: &Value,
+) -> Result<(), String> {
+    let mut sources = Vec::with_capacity(source_ids.len());
+    for id in source_ids {
+        let Some(source) = session.world.world_canon.memory.get(id) else {
+            return Err("unknown source_memory_ids".to_string());
+        };
+        sources.push(source);
+    }
+    let Some(first) = sources.first() else {
+        return Err("source_memory_ids is required".to_string());
+    };
+
+    let owner = gml_world::canon::canonical_scope(&unit.owner_scope, "");
+    if owner != first.owner_scope {
+        return Err("source memories must match the crystal owner_scope".to_string());
+    }
+    unit.owner_scope = owner;
+
+    for source in &sources {
+        if source.owner_scope != first.owner_scope {
+            return Err("source memories must share one owner_scope".to_string());
+        }
+        if source.truth_status != first.truth_status {
+            return Err("source memories must share one truth_status".to_string());
+        }
+        if source.visibility_scopes != first.visibility_scopes {
+            return Err("source memories must share one visibility scope set".to_string());
+        }
+    }
+
+    let truth_supplied = !clean_text(args.get("truth_status").unwrap_or(&Value::Null)).is_empty();
+    if truth_supplied && unit.truth_status != first.truth_status {
+        return Err("crystal truth_status must match its source memories".to_string());
+    }
+    unit.truth_status = first.truth_status.clone();
+
+    let visibility_supplied = matches!(args.get("visibility_scopes"), Some(Value::Array(_)));
+    if visibility_supplied {
+        unit.visibility_scopes = unit
+            .visibility_scopes
+            .iter()
+            .map(|scope| gml_world::canon::canonical_scope(scope, ""))
+            .filter(|scope| !scope.is_empty())
+            .collect();
+        if unit.visibility_scopes != first.visibility_scopes {
+            return Err("crystal visibility_scopes must match its source memories".to_string());
+        }
+    }
+    unit.visibility_scopes = first.visibility_scopes.clone();
+    Ok(())
+}
+
+/// `note_memory(...)` — write one scoped memory card.
+pub fn note_memory(session: &mut Session, args: &Value) -> Value {
+    let mut unit = match build_memory_unit_from_args(args, MemoryTier::Raw) {
+        Ok(unit) => unit,
+        Err(error) => {
+            return json!({"ok": false, "status": "error", "error": error, "errors": [{"type": "memory", "status": "error", "error": error}]});
+        }
+    };
+    if let Err(error) = validate_memory_owner(session, &unit) {
+        return json!({"ok": false, "status": "error", "error": error, "errors": [{"type": "memory", "status": "error", "error": error}]});
+    }
+    if let Err(error) = validate_memory_identity(session, &mut unit) {
+        return json!({"ok": false, "status": "error", "error": error, "errors": [{"type": "memory", "status": "error", "error": error}]});
+    }
+    let now = session
+        .world
+        .world_canon
+        .clock_minutes
+        .max(session.world.time.absolute_minutes);
+    unit.time_start = now;
+    unit.time_end = now;
+    let id = session.world.add_memory_unit(unit);
+    let row = session
+        .world
+        .world_canon
+        .memory
+        .get(&id)
+        .map(|unit| unit.to_row(false))
+        .unwrap_or_else(|| json!({}));
+    drop_empty(&json!({
+        "ok": true,
+        "status": "stored",
+        "memory_id": id,
+        "applied": [{
+            "op": "add",
+            "type": "memory",
+            "id": id,
+            "scope": row.get("owner_scope").cloned().unwrap_or(Value::Null),
+            "status": "stored",
+            "tier": row.get("tier").cloned().unwrap_or(Value::Null),
+        }],
+        "result": row,
+    }))
+}
+
+/// `consolidate_memory(...)` — derive a higher-tier memory and keep sources.
+pub fn consolidate_memory(session: &mut Session, args: &Value) -> Value {
+    let source_ids = clean_list(args.get("source_memory_ids").unwrap_or(&Value::Null));
+    if source_ids.is_empty() {
+        return json!({"ok": false, "status": "error", "error": "source_memory_ids is required", "errors": [{"type": "memory", "status": "error", "error": "source_memory_ids is required"}]});
+    }
+    let mut missing = Vec::new();
+    for id in &source_ids {
+        if session.world.world_canon.memory.get(id).is_none() {
+            missing.push(id.clone());
+        }
+    }
+    if !missing.is_empty() {
+        return json!({"ok": false, "status": "error", "error": "unknown source_memory_ids", "missing": missing, "errors": [{"type": "memory", "status": "error", "error": "unknown source_memory_ids"}]});
+    }
+    let mut unit = match build_memory_unit_from_args(args, MemoryTier::Episode) {
+        Ok(unit) => unit,
+        Err(error) => {
+            return json!({"ok": false, "status": "error", "error": error, "errors": [{"type": "memory", "status": "error", "error": error}]});
+        }
+    };
+    if let Err(error) = validate_memory_owner(session, &unit) {
+        return json!({"ok": false, "status": "error", "error": error, "errors": [{"type": "memory", "status": "error", "error": error}]});
+    }
+    if let Err(error) = validate_consolidation_sources(session, &mut unit, &source_ids, args) {
+        return json!({"ok": false, "status": "error", "error": error, "errors": [{"type": "memory", "status": "error", "error": error}]});
+    }
+    unit.source_memory_ids = source_ids.clone();
+    let now = session
+        .world
+        .world_canon
+        .clock_minutes
+        .max(session.world.time.absolute_minutes);
+    unit.time_start = now;
+    unit.time_end = now;
+    let (crystal_id, consumed_source_ids) = session.world.consolidate_memory_unit(unit);
+    let row = session
+        .world
+        .world_canon
+        .memory
+        .get(&crystal_id)
+        .map(|unit| unit.to_row(false))
+        .unwrap_or_else(|| json!({}));
+    drop_empty(&json!({
+        "ok": true,
+        "status": "stored",
+        "crystal_id": crystal_id,
+        "memory_id": crystal_id,
+        "source_memory_ids": source_ids,
+        "consumed_source_ids": consumed_source_ids,
+        "not_deleted": true,
+        "applied": [{
+            "op": "consolidate",
+            "type": "memory",
+            "id": crystal_id,
+            "scope": row.get("owner_scope").cloned().unwrap_or(Value::Null),
+            "status": "stored",
+            "tier": row.get("tier").cloned().unwrap_or(Value::Null),
+        }],
+        "result": row,
     }))
 }

@@ -3,12 +3,13 @@
   "turn_count": 1,
   "session": {
     "client_model": "mock",
-    "client_backend": "mock",
+    "client_backend": "codex",
     "client_session_id": "",
     "client_thread_id": "",
     "world": {
       "story_id": "turnvale-murder",
       "story_title": "Убийство в Тёрнвейле",
+      "story_brief": "Ты — Дарра, вольная сыщица, и в Тёрнвейле тебя застало убийство купца Алдрика. Утро начинается в трактире «Серый грифон»: стража уже нервничает, торговцы шепчутся, а люди боятся сказать лишнее. От тебя ждут не красивой версии, а фактов: понять, кто врёт, где оборвалась ночь Алдрика и почему город так быстро пытается замолчать.",
       "dice_seed": 20260622,
       "forced_die_next": null,
       "forced_die_all": null,
@@ -644,20 +645,8 @@
         "gauss": null
       },
       "hidden_events": [],
-      "rumors": [
-        {
-          "seq": 2,
-          "turn": 1,
-          "speaker": "borin",
-          "text": "Сейчас, дружище, эль принесу, обожди-ка.",
-          "witnesses": [
-            "borin",
-            "player"
-          ],
-          "confirmed": false
-        }
-      ],
-      "rumor_seq": 1,
+      "rumors": [],
+      "rumor_seq": 0,
       "npcs": {
         "borin": {
           "npc_id": "borin",
@@ -825,8 +814,8 @@
       "canon": "Прошлой ночью в городе Тёрнвейл убили купца Алдрика. Он не был случайной жертвой: Алдрик вёз через город контрабандные специи и вёл вторую книгу долгов, где отмечал выплаты людям Гильдии воров. Когда он попытался продать эти записи капитану Марет в обмен на защиту, гильдия приказала убрать его до рассвета. Убийца вошёл через задний двор лавки, забрал часть записей и оставил ложный след к дорожным грабителям. Борин — осведомитель Гильдии воров: он передал людям гильдии, что Алдрик ищет встречи со стражей, и теперь понимает, что стал соучастником. Борин знает кличку посредника, место тайника под пивной бочкой и то, что Лиза видела фигуру в капюшоне. Лиза не знает всей схемы, но заметила запах чёрного шафрана и серебряную пряжку на плаще. Марет подозревает гильдию и своего информатора, но без книги долгов любой арест развалится и городская знать обвинит стражу в охоте на слухи.",
       "time": {
         "calendar_name": "",
-        "absolute_minutes": 0,
-        "current_date_label": "День 1",
+        "absolute_minutes": 480,
+        "current_date_label": "Утро после убийства",
         "minutes_per_hour": 60,
         "hours_per_day": 24,
         "day_names": [],
@@ -1240,559 +1229,391 @@
             "known_name": "Капитан Марет"
           }
         }
-      ]
-    },
-    "gm_messages": [
-      {
-        "role": "user",
-        "content": "CURRENT TURN CONTEXT (latest engine state snapshot):\n\nTIME STATE:\nCurrent world time: День 1, 00:00\nPrevious player turn elapsed: 0 minutes\nINTERNAL NPC ROSTER (tool ids; internal_name is GM-only unless player_label matches it):\n- id=borin; internal_name=Борин; player_label=Борин; role=трактирщик; род=мужской род\n- id=lysa; internal_name=Лиза; player_label=служанка; role=служанка; род=женский род\n- id=mareth; internal_name=Капитан Марет; player_label=Капитан Марет; role=капитан стражи; род=женский род\n\nCURRENT PUBLIC FACTS:\n- Алдрик был небогатым купцом: торговал специями, сушёными травами и редкими настойками, время от времени возил товары через Тёрнвейл. Его считали скрытным и нелюдимым; долги он записывал сам и не любил, когда приказчики трогали его книги. Прошлой ночью его нашли мёртвым рядом с лавкой.\n- Тёрнвейл — небольшой торговый городок на большой дороге; он живёт за счёт проезжих купцов, сезонной ярмарки и налогов с караванов. Местные знают, что плохая слава быстро перекрывает дорогу лучше любого шлагбаума.\n- «Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин. Здесь ночуют караванщики, играют в кости возчики и чаще всего появляются слухи, прежде чем попасть к страже.\n- Говорят, на большой дороге действует гильдия воров: караваны теряют тюки, сборщики пошлин забывают лица, а свидетели потом отказываются от слов. Официальных доказательств нет.\n- Городская стража небольшая; расследованием убийства занимается Капитан Марет. Она держит лавку Алдрика под печатью и запрещает толпе трогать следы, но людей для полного оцепления у неё мало.\n- Купцы с утреннего каравана требуют открыть дорогу до полудня: если стража задержит обозы, Тёрнвейл потеряет деньги и репутацию.\n- Лавка Алдрика стоит в двух переулках от «Серого грифона». Горожане спорят, слышали ли ночью тележные колёса, собачий лай или просто ветер в ставнях.\n- Чёрный шафран редко продают открыто: он дорогой, едкий на запах и оставляет тёмную пыль на ткани. В Тёрнвейле его знают скорее как купеческую диковину, чем как обычную приправу.\n\nPLAYER CHARACTER CARD (current sheet; GM-only notes may be present):\nName: Дарра\nPronouns: F\nClass/role: странствующая сыщица\nLevel: 2\nBackground: вольная сыщица, что ездит от города к городу и продаёт умение находить правду\nAge: Фактически 34 года; выглядит чуть моложе.\nType/size/appearance: невысокая жилистая женщина в дорожном платье\nDistinctive features: цепкий взгляд, кривая усмешка, серебряное кольцо-печатка от прежнего нанимателя, потёртая записная книжка\nLife status: alive\nCondition: в дороге, собрана, чует, что влипла в чужую беду\nPersonality: остра на язык, наблюдательна, недоверчива к властям, легко сходится с простым людом\nValues: правда, расплата за тех, кого заставили замолчать, своя независимость, не оставаться в долгу\nMechanics: {\"abilities\":{\"CHA\":15,\"CON\":11,\"DEX\":13,\"INT\":13,\"STR\":9,\"WIS\":14},\"ac\":13,\"hp\":{\"current\":16,\"max\":16},\"languages\":\"Общий; воровское арго\",\"passive_perception\":14,\"saving_throws\":{\"CHA\":4,\"WIS\":4},\"senses\":\"обычное зрение; чует ложь и недосказанность в разговоре\",\"skills\":{\"Deception\":4,\"Insight\":4,\"Investigation\":3,\"Perception\":4,\"Persuasion\":4},\"speed\":\"30 ft\"}\nInventory: дорожный плащ; кинжал; потайной фонарь; записная книжка с карандашом; лупа; набор отмычек; кости со свинцом для своих игр; кошель монет на подкуп\nEquipment: проклёпанная кожаная куртка\nFeatures: Глаз дознавателя: ловишь несостыковки в чужих рассказах; Язык без костей: разговоришь почти любого завсегдатая; Тихие пальцы: вскроешь простой замок без шума\nGM notes: Дарра попала в «Серый грифон» проездом: искала ночлег и оказалась в городе, где ночью убили купца Алдрика. Власти стражи у неё нет — только репутация сыщицы, которая умеет слушать и складывать мелочи. Капитан Марет терпит её, пока она приносит факты, а не слухи; людям гильдии удобнее, чтобы она уехала с утренним караваном до полудня.\nCard revision: 0\n\nCURRENT SCENE STATE:\nScene: Трактир «Серый грифон»\nLocation: grey_griffon\nWorld time: День 1, 00:00\nDescription: Утро в общем зале трактира тяжёлое и серое. Дым от очага стелется низко, на мокром полу темнеют свежие следы, а у дальнего стола караванщики спорят шёпотом, не решаясь назвать гильдию вслух. Стойка, боковая дверь на кухню, лестница к комнатам и главный вход хорошо видны игроку; за окнами в переулке мелькают копья городской стражи.\nPresent named NPCs: Борин (borin, трактирщик), крупный пожилой человек, condition: устал, насторожен, внешне здоров, род: мужской род at за стойкой, служанка (lysa, служанка), молодая быстрая женщина, condition: напугана, но держится на работе, род: женский род at между столами\nKnown offscreen NPC whereabouts: - Капитан Марет (mareth, капитан стражи); NOT in current scene; status: likely; location: служба городской стражи; details: расследует убийство Алдрика; если точное место не установлено, её логично искать в караульной, у городских ворот или у места находки тела\nVisible objects: стойка, кружки, бочки с элем, мокрые следы с тёмной пылью, остывшая миска похлёбки Алдрика, доска объявлений с караванными расписками, зола с обрывком синей сургучной печати\nVisible exits: главная дверь -> улица Тёрнвейла, дверь на кухню -> кухня и задний двор трактира, лестница к комнатам -> гостевые комнаты второго этажа, люк в погреб -> погреб под трактиром\nTension: В зале тесно и нервно: каждый боится убийцы, но ещё больше боится оказаться свидетелем, которого потом заставят молчать.\n\nENTITY REFERENCE MARKUP:\nAvailable player-safe entity refs (use exact labels for specific listed entities):\nNPCs: [[npc:borin|Борин]], [[npc:lysa|служанка]], [[npc:mareth|Капитан Марет]]\nLocations: [[loc:grey_griffon|Трактир «Серый грифон»]], [[loc:main_door_destination|улица Тёрнвейла]], [[loc:kitchen_door_destination|кухня и задний двор трактира]], [[loc:stairs_destination|гостевые комнаты второго этажа]], [[loc:cellar_hatch_destination|погреб под трактиром]], [[loc:town_guard_duty|служба городской стражи]]\n\nSCENE CONSTRAINTS (must enforce when reviewing NPC responses):\n- В общем зале полно посетителей: пересечь зал, выйти, драться или незаметно возиться с предметами почти невозможно. Тихие слова, сказанные вплотную, по умолчанию остаются приватными; другие могут заметить жесты, позу или близость, но не содержание разговора, если явно не подслушивают.\n- Люк в погреб находится за стойкой: без согласия Борина туда нельзя пройти незаметно.\n- Стражники в переулке следят за толпой, но не слышат тихие разговоры внутри трактира.\n- Караванщики нервничают и могут вмешаться, если решат, что расследование задержит их обоз.\n\nPLAYER OPTION SUGGESTIONS:\nenabled. After resolving all needed tools for this player action, call ask_player as the last tool before final narration with 4-8 useful Russian quick replies. This is mandatory for every completed turn while the feature is enabled: do not finish with narration only. Do not call more tools after ask_player unless the ask_player result reports invalid arguments. After the ask_player tool result confirms the buttons were shown, write the final player-facing narration and stop. The engine does not create fallback buttons. Do not put a textual choice menu in final narration; the quick-reply buttons handle it. Each option needs a short label and a fuller message that can be sent as the player's next action. Keep free text input available by offering suggestions, not commands.\n\n<system-reminder>\nTURN RESOLUTION CHECK:\n- First verify material possibility from PLAYER CHARACTER CARD and\n  CURRENT SCENE STATE: required inventory/equipment/features, spells, tools, training,\n  authority, body access, scene objects, materials, time, and position must exist.\n  If the action rests on a missing or unsupported premise, stop with a reality correction:\n  say what cannot happen and why, mention possible established remainders, and do not call\n  roll_dice, ask_npc, advance_time, or state-update tools for that attempted premise.\n  Only after the player deliberately continues with a physically possible remainder may you\n  resolve that remainder; the missing item/spell/feature/expertise/effect stays absent.\n- Before final narration, decide whether the latest player action needs roll_dice.\n  Active observation/search/listening, including \"я осматриваюсь\", \"смотрю вокруг\",\n  \"прислушиваюсь\", or \"ищу\", must roll Perception/Investigation/etc before hidden or\n  non-obvious clues/details are revealed. Without the roll, reveal only obvious visible\n  facts.\n- Respect resolved rolls. A success gives a real benefit; a critical success gives the\n  best plausible benefit. If the player asks why a strong roll did not produce the\n  expected effect, explain the established constraint clearly and never invent a new\n  post-roll reason to cancel the success.\n- If any in-world time passed, call advance_time once before final narration. advance_time\n  records elapsed time only; it does not replace a needed roll, NPC reaction, scene\n  update, memory update, or player-sheet update.\n</system-reminder>\n\n\nPLAYER ACTION (latest user input, free roleplay text):\nГромко заявляю Борину: «Я знаю про убийство Алдрика!»"
-      },
-      {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-          {
-            "id": "mock0",
-            "type": "function",
-            "function": {
-              "name": "ask_npc",
-              "arguments": "{\"npc_id\":\"borin\",\"situation\":\"Игрок громко обвиняет Борина в убийстве.\"}"
+      ],
+      "world_canon": {
+        "world_seed": "20260622",
+        "generator_version": "living-world/1",
+        "regions": {},
+        "settlements": {},
+        "places": {
+          "grey_griffon": {
+            "place_id": "grey_griffon",
+            "name": "Трактир «Серый грифон»",
+            "kind": "scene",
+            "parent": "",
+            "region_id": "",
+            "default_description": "Утро в общем зале трактира тяжёлое и серое. Дым от очага стелется низко, на мокром полу темнеют свежие следы, а у дальнего стола караванщики спорят шёпотом, не решаясь назвать гильдию вслух. Стойка, боковая дверь на кухню, лестница к комнатам и главный вход хорошо видны игроку; за окнами в переулке мелькают копья городской стражи.",
+            "state_flags": [
+              "visited"
+            ],
+            "features": [],
+            "transition_ids": [
+              "main_door",
+              "kitchen_door",
+              "stairs",
+              "cellar_hatch"
+            ],
+            "occupant_ids": [
+              "borin",
+              "lysa"
+            ],
+            "item_ids": [
+              "counter",
+              "mugs",
+              "ale_barrels",
+              "wet_tracks",
+              "unfinished_stew",
+              "notice_board",
+              "hearth_ash"
+            ],
+            "event_ids": [],
+            "fact_ids": [],
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
             }
           }
-        ]
-      },
-      {
-        "role": "tool",
-        "tool_call_id": "mock0",
-        "content": "NPC RESULT\nnpc: Борин (borin)\nspeech: Я... э-э, мне на кухню надо, отойду на минутку.\naction: пытается незаметно выскользнуть через заднюю дверь трактира\nalready_emitted: yes\nfinal_narration: only new non-NPC consequences; ask_npc for another named NPC reaction.\n\n<system-reminder>\nAfter this NPC response, do a state-update pass before final narration. If the exchange changed durable testimony, rumor, npc_memory, relationship, goal, what an NPC knows/remembers, what the player learned privately, an attitude, promise, threat, lead, suspicion, clue, or known_name, call query_world_state first when a matching record may exist, then call update_world_state; update an existing relationship/goal/memory instead of duplicating the same thread. Consolidate one testimony or clue block into one record; use participants for extra listeners instead of copying the same memory per actor. Private leads from an NPC to the player are usually shared rumor plus npc_memory, not public fact. Call update_player_character for player-sheet changes or GM-only player notes. If time passed, call advance_time. If nothing durable changed, do not write filler memory. Do not restate NPC speech.\n</system-reminder>\n\n<system-reminder>\nThe player has already seen prior assistant content and player-facing tool output from this same turn. Treat those prior messages as visible scene beats, not drafts or source material. Continue after them; do not recap, rewrite, restage, or quote them. If another tool is needed, any new assistant content before that tool must only cover new visible changes since the last visible beat.\n</system-reminder>"
-      },
-      {
-        "role": "assistant",
-        "content": "",
-        "tool_calls": [
-          {
-            "id": "mock1",
-            "type": "function",
-            "function": {
-              "name": "ask_npc",
-              "arguments": "{\"npc_id\":\"borin\",\"situation\":\"Игрок громко обвиняет Борина в убийстве.\",\"correction\":\"Задней двери у «Грифона» нет — выход только через зал, на виду. Так не улизнёшь, отыграй иначе.\"}"
-            }
-          }
-        ]
-      },
-      {
-        "role": "tool",
-        "tool_call_id": "mock1",
-        "content": "NPC RESULT\nnpc: Борин (borin)\nspeech: Сейчас, дружище, эль принесу, обожди-ка.\naction: медленно бредёт к бочкам, не сводя глаз с гостя\nalready_emitted: yes\nfinal_narration: only new non-NPC consequences; ask_npc for another named NPC reaction.\n\n<system-reminder>\nAfter this NPC response, do a state-update pass before final narration. If the exchange changed durable testimony, rumor, npc_memory, relationship, goal, what an NPC knows/remembers, what the player learned privately, an attitude, promise, threat, lead, suspicion, clue, or known_name, call query_world_state first when a matching record may exist, then call update_world_state; update an existing relationship/goal/memory instead of duplicating the same thread. Consolidate one testimony or clue block into one record; use participants for extra listeners instead of copying the same memory per actor. Private leads from an NPC to the player are usually shared rumor plus npc_memory, not public fact. Call update_player_character for player-sheet changes or GM-only player notes. If time passed, call advance_time. If nothing durable changed, do not write filler memory. Do not restate NPC speech.\n</system-reminder>\n\n<system-reminder>\nThe player has already seen prior assistant content and player-facing tool output from this same turn. Treat those prior messages as visible scene beats, not drafts or source material. Continue after them; do not recap, rewrite, restage, or quote them. If another tool is needed, any new assistant content before that tool must only cover new visible changes since the last visible beat.\n</system-reminder>"
-      },
-      {
-        "role": "assistant",
-        "content": "Борин мнётся за стойкой, так и не сумев улизнуть. Зал притих и смотрит на вас."
-      }
-    ],
-    "gm_summary": "",
-    "npc_messages": {
-      "borin": [
-        {
-          "role": "user",
-          "content": "NPC PERCEPTION BRIEF RULES:\n- CURRENT SITUATION is what this NPC can see/hear/know or plausibly infer right now, not\n  a GM truth dump.\n- If CURRENT SITUATION contains author certainty about hidden truth, player sheet\n  validation, whether the player is bluffing/lying, lacks proof, lacks a spell/item/weapon,\n  or whether a threat is truly impossible, treat that certainty as unknown unless it is\n  directly observable in YOUR CURRENT SCENE SLICE or already in your memory/card.\n- Roll/check outcomes sent by the GM are authoritative for how strongly the attempt lands\n  on you. Follow the grade, margin, and stakes as your social pressure, fear, doubt,\n  credibility, confidence, or apparent danger. A strong intimidation/deception result can\n  make a threat or claim feel credible even when you cannot verify the truth.\n\n\nCURRENT SITUATION (what's happening now, what you react to): Игрок громко обвиняет Борина в убийстве.\n\nYOUR CURRENT SCENE SLICE (what is actually around you):\nYou are in: Трактир «Серый грифон»\nYour name/gender marker: Борин (M = мужской род)\nYour position: за стойкой\nYour current activity: медленно вытирает кружку и следит, кто прислушивается к разговорам\nYour attitude right now: насторожен, если спрашивают про Алдрика, шафран, задний двор или гильдию\nOther visible named NPCs: Лиза (служанка; род: женский род) at между столами\nVisible objects: стойка at общий зал, кружки at на стойке, owner: borin, бочки с элем at за стойкой, owner: borin, мокрые следы с тёмной пылью at у задней двери, остывшая миска похлёбки Алдрика at крайний стол, доска объявлений с караванными расписками at у входа, зола с обрывком синей сургучной печати at у очага\nVisible exits: главная дверь, дверь на кухню, лестница к комнатам, люк в погреб\nPublic facts you may know:\n- Алдрик был небогатым купцом: торговал специями, сушёными травами и редкими настойками, время от времени возил товары через Тёрнвейл. Его считали скрытным и нелюдимым; долги он записывал сам и не любил, когда приказчики трогали его книги. Прошлой ночью его нашли мёртвым рядом с лавкой.\n- Тёрнвейл — небольшой торговый городок на большой дороге; он живёт за счёт проезжих купцов, сезонной ярмарки и налогов с караванов. Местные знают, что плохая слава быстро перекрывает дорогу лучше любого шлагбаума.\n- «Серый грифон» — главный трактир Тёрнвейла; его держит трактирщик Борин. Здесь ночуют караванщики, играют в кости возчики и чаще всего появляются слухи, прежде чем попасть к страже.\n- Говорят, на большой дороге действует гильдия воров: караваны теряют тюки, сборщики пошлин забывают лица, а свидетели потом отказываются от слов. Официальных доказательств нет.\n- Городская стража небольшая; расследованием убийства занимается Капитан Марет. Она держит лавку Алдрика под печатью и запрещает толпе трогать следы, но людей для полного оцепления у неё мало.\n- Купцы с утреннего каравана требуют открыть дорогу до полудня: если стража задержит обозы, Тёрнвейл потеряет деньги и репутацию.\n- Лавка Алдрика стоит в двух переулках от «Серого грифона». Горожане спорят, слышали ли ночью тележные колёса, собачий лай или просто ветер в ставнях.\n- Чёрный шафран редко продают открыто: он дорогой, едкий на запах и оставляет тёмную пыль на ткани. В Тёрнвейле его знают скорее как купеческую диковину, чем как обычную приправу.\nActor-visible state memory:\n- fact: Игрок из публичных сведений знает, что трактирщика «Серого грифона» зовут Борин.\n- fact: Игрок из публичных сведений знает, что расследованием занимается Капитан Марет.\nPhysical limits:\n- В общем зале полно посетителей: пересечь зал, выйти, драться или незаметно возиться с предметами почти невозможно. Тихие слова, сказанные вплотную, по умолчанию остаются приватными; другие могут заметить жесты, позу или близость, но не содержание разговора, если явно не подслушивают.\n- Люк в погреб находится за стойкой: без согласия Борина туда нельзя пройти незаметно.\n- Стражники в переулке следят за толпой, но не слышат тихие разговоры внутри трактира.\n- Караванщики нервничают и могут вмешаться, если решат, что расследование задержит их обоз.\nEntity refs for visible text:\nAvailable player-safe entity refs (use exact labels for specific listed entities):\nNPCs: [[npc:borin|Борин]], [[npc:lysa|служанка]], [[npc:mareth|Капитан Марет]]\nLocations: [[loc:grey_griffon|Трактир «Серый грифон»]], [[loc:main_door_destination|улица Тёрнвейла]], [[loc:kitchen_door_destination|кухня и задний двор трактира]], [[loc:stairs_destination|гостевые комнаты второго этажа]], [[loc:cellar_hatch_destination|погреб под трактиром]], [[loc:town_guard_duty|служба городской стражи]]\n\nVISIBLE SCENE LIMITS (physical facts you must obey):\n- В общем зале полно посетителей: пересечь зал, выйти, драться или незаметно возиться с предметами почти невозможно. Тихие слова, сказанные вплотную, по умолчанию остаются приватными; другие могут заметить жесты, позу или близость, но не содержание разговора, если явно не подслушивают.\n- Люк в погреб находится за стойкой: без согласия Борина туда нельзя пройти незаметно.\n- Стражники в переулке следят за толпой, но не слышат тихие разговоры внутри трактира.\n- Караванщики нервничают и могут вмешаться, если решат, что расследование задержит их обоз.\n\nYOUR MEMORY (what you've already said/done — stay consistent):\n(nothing yet)\n\nWHAT YOU SAW/HEARD EARLIER:\n(nothing)\n\nGM NOTE — your previous action did not pass: Задней двери у «Грифона» нет — выход только через зал, на виду. Так не улизнёшь, отыграй иначе.\nREDO: give a new reaction that takes the note into account."
         },
-        {
-          "role": "assistant",
-          "content": "{\"reasoning\": \"Чёрт, незаметно не выйти. Придётся тянуть время.\", \"speech\": \"Сейчас, дружище, эль принесу, обожди-ка.\", \"action\": \"медленно бредёт к бочкам, не сводя глаз с гостя\", \"claims\": []}"
+        "transitions": {
+          "cellar_hatch": {
+            "transition_id": "cellar_hatch",
+            "source_exit_id": "cellar_hatch",
+            "from_place": "grey_griffon",
+            "to_place": "",
+            "destination_hint": "погреб под трактиром",
+            "label": "люк в погреб",
+            "kind": "",
+            "visible": true,
+            "passable": true,
+            "conditions": [],
+            "blocked_by": "",
+            "time_cost": 2,
+            "risk": "none: бытовой переход без дорожной ситуации",
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
+            }
+          },
+          "kitchen_door": {
+            "transition_id": "kitchen_door",
+            "source_exit_id": "kitchen_door",
+            "from_place": "grey_griffon",
+            "to_place": "",
+            "destination_hint": "кухня и задний двор трактира",
+            "label": "дверь на кухню",
+            "kind": "",
+            "visible": true,
+            "passable": true,
+            "conditions": [],
+            "blocked_by": "",
+            "time_cost": 1,
+            "risk": "none: бытовой переход без дорожной ситуации",
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
+            }
+          },
+          "main_door": {
+            "transition_id": "main_door",
+            "source_exit_id": "main_door",
+            "from_place": "grey_griffon",
+            "to_place": "",
+            "destination_hint": "улица Тёрнвейла",
+            "label": "главная дверь",
+            "kind": "",
+            "visible": true,
+            "passable": true,
+            "conditions": [],
+            "blocked_by": "",
+            "time_cost": 1,
+            "risk": "none: бытовой переход без дорожной ситуации",
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
+            }
+          },
+          "stairs": {
+            "transition_id": "stairs",
+            "source_exit_id": "stairs",
+            "from_place": "grey_griffon",
+            "to_place": "",
+            "destination_hint": "гостевые комнаты второго этажа",
+            "label": "лестница к комнатам",
+            "kind": "",
+            "visible": true,
+            "passable": true,
+            "conditions": [],
+            "blocked_by": "",
+            "time_cost": 2,
+            "risk": "none: бытовой переход без дорожной ситуации",
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
+            }
+          }
+        },
+        "actors": {
+          "borin": {
+            "actor_id": "borin",
+            "public_label": "трактирщик",
+            "location": {
+              "where": "place",
+              "place_id": "grey_griffon"
+            },
+            "home_place_id": "grey_griffon",
+            "role": "трактирщик",
+            "attitude_to_player": 0,
+            "relations": {},
+            "faction_id": "",
+            "goals": [],
+            "agenda": "",
+            "knowledge_ids": [],
+            "secret_ids": [],
+            "resources": [],
+            "schedule": {},
+            "status": "alive",
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
+            }
+          },
+          "lysa": {
+            "actor_id": "lysa",
+            "public_label": "служанка",
+            "location": {
+              "where": "place",
+              "place_id": "grey_griffon"
+            },
+            "home_place_id": "grey_griffon",
+            "role": "служанка",
+            "attitude_to_player": 0,
+            "relations": {},
+            "faction_id": "",
+            "goals": [],
+            "agenda": "",
+            "knowledge_ids": [],
+            "secret_ids": [],
+            "resources": [],
+            "schedule": {},
+            "status": "alive",
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
+            }
+          },
+          "mareth": {
+            "actor_id": "mareth",
+            "public_label": "капитан стражи",
+            "location": {
+              "where": "out_of_play"
+            },
+            "home_place_id": "",
+            "role": "капитан стражи",
+            "attitude_to_player": 0,
+            "relations": {},
+            "faction_id": "",
+            "goals": [],
+            "agenda": "",
+            "knowledge_ids": [],
+            "secret_ids": [],
+            "resources": [],
+            "schedule": {},
+            "status": "alive",
+            "provenance": {
+              "origin": "seed",
+              "created_turn": 0,
+              "source_event": "",
+              "reason": "derived from starting scene",
+              "generator_version": "living-world/1"
+            }
+          }
+        },
+        "factions": {},
+        "event_log": {
+          "events": [],
+          "accounts": [],
+          "resolved": [],
+          "seq": 0
+        },
+        "facts": {},
+        "memory": {
+          "units": {
+            "legacy_state_record_known_name_borin": {
+              "memory_id": "legacy_state_record_known_name_borin",
+              "tier": "raw",
+              "owner_scope": "legacy_public",
+              "visibility_scopes": [
+                "legacy_public"
+              ],
+              "summary": "Игрок из публичных сведений знает, что трактирщика «Серого грифона» зовут Борин.",
+              "details": "Игрок из публичных сведений знает, что трактирщика «Серого грифона» зовут Борин.",
+              "facts_claimed": [],
+              "uncertainties": [],
+              "source_event_ids": [],
+              "source_account_ids": [],
+              "source_state_record_ids": [
+                "known_name_borin"
+              ],
+              "source_memory_ids": [],
+              "consumed_by": [],
+              "injection_state": "hot",
+              "time_start": 480,
+              "time_end": 480,
+              "place_ids": [],
+              "actor_ids": [
+                "borin"
+              ],
+              "faction_ids": [],
+              "topic_tags": [
+                "legacy_state_record",
+                "fact",
+                "known",
+                "known_name"
+              ],
+              "metadata": {
+                "known_name": "Борин",
+                "record_id": "known_name_borin",
+                "hash": "214718050f3f8f648470d47ff1ec29953d1903d9139a7ee37aed66e72de37239",
+                "legacy_kind": "fact",
+                "legacy_scope": "public",
+                "status": "known",
+                "owner": "",
+                "subject": "",
+                "source_npc": "",
+                "participants": [],
+                "location_id": "",
+                "location_name": "",
+                "region_id": "",
+                "region_name": "",
+                "scene_id": "",
+                "importance": "",
+                "aliases": [],
+                "entity_id": "borin"
+              },
+              "confidence": null,
+              "truth_status": "actual",
+              "created_by": "legacy_state_record_migration"
+            },
+            "legacy_state_record_known_name_mareth": {
+              "memory_id": "legacy_state_record_known_name_mareth",
+              "tier": "raw",
+              "owner_scope": "legacy_public",
+              "visibility_scopes": [
+                "legacy_public"
+              ],
+              "summary": "Игрок из публичных сведений знает, что расследованием занимается Капитан Марет.",
+              "details": "Игрок из публичных сведений знает, что расследованием занимается Капитан Марет.",
+              "facts_claimed": [],
+              "uncertainties": [],
+              "source_event_ids": [],
+              "source_account_ids": [],
+              "source_state_record_ids": [
+                "known_name_mareth"
+              ],
+              "source_memory_ids": [],
+              "consumed_by": [],
+              "injection_state": "hot",
+              "time_start": 480,
+              "time_end": 480,
+              "place_ids": [],
+              "actor_ids": [
+                "mareth"
+              ],
+              "faction_ids": [],
+              "topic_tags": [
+                "legacy_state_record",
+                "fact",
+                "known",
+                "known_name"
+              ],
+              "metadata": {
+                "known_name": "Капитан Марет",
+                "record_id": "known_name_mareth",
+                "hash": "e19da0c540fa17c6137a53f994d591fa5d703bf9aa928bc5bfbe709a73aeda5d",
+                "legacy_kind": "fact",
+                "legacy_scope": "public",
+                "status": "known",
+                "owner": "",
+                "subject": "",
+                "source_npc": "",
+                "participants": [],
+                "location_id": "",
+                "location_name": "",
+                "region_id": "",
+                "region_name": "",
+                "scene_id": "",
+                "importance": "",
+                "aliases": [],
+                "entity_id": "mareth"
+              },
+              "confidence": null,
+              "truth_status": "actual",
+              "created_by": "legacy_state_record_migration"
+            }
+          }
+        },
+        "clock_minutes": 480,
+        "player_place_id": "grey_griffon",
+        "gen_budget": {
+          "max_rooms_per_turn": 8,
+          "max_npcs_per_turn": 6,
+          "max_transitions_per_turn": 16,
+          "max_events_per_turn": 12
         }
-      ]
+      }
     },
+    "gm_messages": [],
+    "gm_summary": "",
+    "npc_messages": {},
     "npc_summaries": {},
     "run_usage": {
-      "turns": 1,
-      "calls": 7,
-      "in": 5320,
-      "out": 840,
+      "turns": 0,
+      "calls": 0,
+      "in": 0,
+      "out": 0,
       "cached": 0,
-      "tokens": 6160,
+      "tokens": 0,
       "secs": 0.0,
-      "peak_context": 760,
-      "gm_calls": 4,
-      "gm_tokens": 3520,
-      "npc_calls": 2,
-      "npc_tokens": 1760,
-      "other_calls": 1,
-      "other_tokens": 880
+      "peak_context": 0,
+      "gm_calls": 0,
+      "gm_tokens": 0,
+      "npc_calls": 0,
+      "npc_tokens": 0,
+      "other_calls": 0,
+      "other_tokens": 0
     },
-    "npc_client_state": {
-      "borin": {
-        "model": "mock",
-        "session_id": "",
-        "thread_id": ""
-      }
-    },
+    "npc_client_state": {},
     "world_query_seen": {},
-    "last_player_action": "Громко заявляю Борину: «Я знаю про убийство Алдрика!»",
-    "sid": 6,
-    "events": [
-      {
-        "seq": 1,
-        "turn": 1,
-        "actor": "player",
-        "kind": "speech",
-        "speech": "Громко заявляю Борину: «Я знаю про убийство Алдрика!»",
-        "action": "",
-        "witnesses": [
-          "borin",
-          "player"
-        ]
-      },
-      {
-        "seq": 2,
-        "turn": 1,
-        "actor": "borin",
-        "kind": "speech",
-        "speech": "Сейчас, дружище, эль принесу, обожди-ка.",
-        "action": "медленно бредёт к бочкам, не сводя глаз с гостя",
-        "witnesses": [
-          "borin",
-          "player"
-        ]
-      }
-    ],
-    "seq": 2,
-    "turn": 1,
-    "delivered": {
-      "borin": 2
-    },
+    "last_player_action": "",
+    "sid": 0,
+    "events": [],
+    "seq": 0,
+    "turn": 0,
+    "delivered": {},
     "shown": {},
     "pending": {},
-    "commitments": {
-      "borin": [
-        "Я сказал: Сейчас, дружище, эль принесу, обожди-ка.; сделал: медленно бредёт к бочкам, не сводя глаз с гостя"
-      ]
-    }
+    "commitments": {}
   },
-  "transcript": [
-    {
-      "kind": "player",
-      "agent": "Игрок",
-      "data": "Громко заявляю Борину: «Я знаю про убийство Алдрика!»",
-      "sid": null
-    },
-    {
-      "kind": "gm_thinking",
-      "agent": "ГМ",
-      "data": "Нужен Борин — зову ask_npc.",
-      "sid": "s1"
-    },
-    {
-      "kind": "meta",
-      "agent": "ГМ",
-      "data": {
-        "label": "ГМ — решение",
-        "scope": "gm",
-        "in": 760,
-        "out": 120,
-        "secs": 0.73,
-        "cached": 0,
-        "tps": 188,
-        "prompt_secs": 0.08,
-        "eval_secs": 0.64,
-        "load_secs": 0.0
-      },
-      "sid": "s1"
-    },
-    {
-      "kind": "gm_thinking",
-      "agent": "ГМ",
-      "data": "Нужен Борин — зову ask_npc.",
-      "sid": "s2"
-    },
-    {
-      "kind": "gm_tool_call",
-      "agent": "ГМ",
-      "data": {
-        "name": "ask_npc",
-        "arguments": {
-          "npc_id": "borin",
-          "situation": "Игрок громко обвиняет Борина в убийстве."
-        }
-      },
-      "sid": null
-    },
-    {
-      "kind": "npc_start",
-      "agent": "Борин",
-      "data": {
-        "npc_id": "borin"
-      },
-      "sid": "s3"
-    },
-    {
-      "kind": "npc_history",
-      "agent": "Борин",
-      "data": {
-        "npc_id": "borin",
-        "messages": 0,
-        "has_summary": false,
-        "text": "История NPC пока пустая."
-      },
-      "sid": null
-    },
-    {
-      "kind": "npc_thinking",
-      "agent": "Борин",
-      "data": "Надо предупредить своих, пока не поздно.",
-      "sid": "s3"
-    },
-    {
-      "kind": "npc_speech",
-      "agent": "Борин",
-      "data": {
-        "speech": "Я... э-э, мне на кухню надо, отойду на минутку.",
-        "action": "пытается незаметно выскользнуть через заднюю дверь трактира",
-        "claims": [
-          "В трактире есть задняя дверь"
-        ],
-        "npc_id": "borin"
-      },
-      "sid": "s3"
-    },
-    {
-      "kind": "meta",
-      "agent": "Борин",
-      "data": {
-        "label": "Борин",
-        "scope": "npc",
-        "in": 760,
-        "out": 120,
-        "secs": 0.73,
-        "cached": 0,
-        "tps": 188,
-        "prompt_secs": 0.08,
-        "eval_secs": 0.64,
-        "load_secs": 0.0
-      },
-      "sid": "s3"
-    },
-    {
-      "kind": "tool_result",
-      "agent": "ask_npc",
-      "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"speech_ru\":\"Я... э-э, мне на кухню надо, отойду на минутку.\",\"action_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
-      "sid": null
-    },
-    {
-      "kind": "gm_thinking",
-      "agent": "ГМ",
-      "data": "Борин рвётся в несуществующую заднюю дверь — возвращаю на переделку.",
-      "sid": "s4"
-    },
-    {
-      "kind": "meta",
-      "agent": "ГМ",
-      "data": {
-        "label": "ГМ — решение",
-        "scope": "gm",
-        "in": 760,
-        "out": 120,
-        "secs": 0.73,
-        "cached": 0,
-        "tps": 188,
-        "prompt_secs": 0.08,
-        "eval_secs": 0.64,
-        "load_secs": 0.0
-      },
-      "sid": "s4"
-    },
-    {
-      "kind": "gm_tool_call",
-      "agent": "ГМ",
-      "data": {
-        "name": "ask_npc",
-        "arguments": {
-          "npc_id": "borin",
-          "situation": "Игрок громко обвиняет Борина в убийстве.",
-          "correction": "Задней двери у «Грифона» нет — выход только через зал, на виду. Так не улизнёшь, отыграй иначе."
-        }
-      },
-      "sid": null
-    },
-    {
-      "kind": "gm_reject",
-      "agent": "Борин",
-      "data": "Задней двери у «Грифона» нет — выход только через зал, на виду. Так не улизнёшь, отыграй иначе.",
-      "sid": null
-    },
-    {
-      "kind": "npc_start",
-      "agent": "Борин",
-      "data": {
-        "npc_id": "borin"
-      },
-      "sid": "s5"
-    },
-    {
-      "kind": "npc_history",
-      "agent": "Борин",
-      "data": {
-        "npc_id": "borin",
-        "messages": 0,
-        "has_summary": false,
-        "text": "История NPC пока пустая."
-      },
-      "sid": null
-    },
-    {
-      "kind": "npc_thinking",
-      "agent": "Борин",
-      "data": "Чёрт, незаметно не выйти. Придётся тянуть время.",
-      "sid": "s5"
-    },
-    {
-      "kind": "npc_speech",
-      "agent": "Борин",
-      "data": {
-        "speech": "Сейчас, дружище, эль принесу, обожди-ка.",
-        "action": "медленно бредёт к бочкам, не сводя глаз с гостя",
-        "claims": [],
-        "npc_id": "borin"
-      },
-      "sid": "s5"
-    },
-    {
-      "kind": "meta",
-      "agent": "Борин",
-      "data": {
-        "label": "Борин",
-        "scope": "npc",
-        "in": 760,
-        "out": 120,
-        "secs": 0.73,
-        "cached": 0,
-        "tps": 188,
-        "prompt_secs": 0.08,
-        "eval_secs": 0.64,
-        "load_secs": 0.0
-      },
-      "sid": "s5"
-    },
-    {
-      "kind": "tool_result",
-      "agent": "ask_npc",
-      "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"speech_ru\":\"Сейчас, дружище, эль принесу, обожди-ка.\",\"action_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
-      "sid": null
-    },
-    {
-      "kind": "gm_thinking",
-      "agent": "ГМ",
-      "data": "NPC отыграл, завершаю сцену.",
-      "sid": "s6"
-    },
-    {
-      "kind": "meta",
-      "agent": "ГМ",
-      "data": {
-        "label": "ГМ — нарратив",
-        "scope": "gm",
-        "in": 760,
-        "out": 120,
-        "secs": 0.73,
-        "cached": 0,
-        "tps": 188,
-        "prompt_secs": 0.08,
-        "eval_secs": 0.64,
-        "load_secs": 0.0
-      },
-      "sid": "s6"
-    },
-    {
-      "kind": "gm_narration",
-      "agent": "ГМ",
-      "data": "Борин мнётся за стойкой, так и не сумев улизнуть. Зал притих и смотрит на вас.",
-      "sid": "s6"
-    },
-    {
-      "kind": "error",
-      "agent": "ГМ",
-      "data": "Модель завершила ход без ask_player, хотя варианты игрока включены.",
-      "sid": null
-    },
-    {
-      "kind": "meta_total",
-      "agent": null,
-      "data": {
-        "calls": [
-          {
-            "label": "ГМ — решение",
-            "scope": "gm",
-            "in": 760,
-            "out": 120,
-            "secs": 0.73,
-            "cached": 0,
-            "tps": 188,
-            "prompt_secs": 0.08,
-            "eval_secs": 0.64,
-            "load_secs": 0.0
-          },
-          {
-            "label": "ГМ — прелюдия",
-            "scope": "gm",
-            "in": 760,
-            "out": 120,
-            "secs": 0.73,
-            "cached": 0,
-            "tps": 188,
-            "prompt_secs": 0.08,
-            "eval_secs": 0.64,
-            "load_secs": 0.0
-          },
-          {
-            "label": "Борин",
-            "scope": "npc",
-            "in": 760,
-            "out": 120,
-            "secs": 0.73,
-            "cached": 0,
-            "tps": 188,
-            "prompt_secs": 0.08,
-            "eval_secs": 0.64,
-            "load_secs": 0.0
-          },
-          {
-            "label": "ГМ — решение",
-            "scope": "gm",
-            "in": 760,
-            "out": 120,
-            "secs": 0.73,
-            "cached": 0,
-            "tps": 188,
-            "prompt_secs": 0.08,
-            "eval_secs": 0.64,
-            "load_secs": 0.0
-          },
-          {
-            "label": "Борин",
-            "scope": "npc",
-            "in": 760,
-            "out": 120,
-            "secs": 0.73,
-            "cached": 0,
-            "tps": 188,
-            "prompt_secs": 0.08,
-            "eval_secs": 0.64,
-            "load_secs": 0.0
-          },
-          {
-            "label": "ГМ — нарратив",
-            "scope": "gm",
-            "in": 760,
-            "out": 120,
-            "secs": 0.73,
-            "cached": 0,
-            "tps": 188,
-            "prompt_secs": 0.08,
-            "eval_secs": 0.64,
-            "load_secs": 0.0
-          },
-          {
-            "label": "scene sync",
-            "scope": "other",
-            "in": 760,
-            "out": 120,
-            "secs": 0.73,
-            "cached": 0,
-            "tps": 188,
-            "prompt_secs": 0.08,
-            "eval_secs": 0.64,
-            "load_secs": 0.0
-          }
-        ],
-        "in": 5320,
-        "out": 840,
-        "cached": 0,
-        "tokens": 6160,
-        "peak_context": 760,
-        "secs": 0.0,
-        "sys_estimate": 12106,
-        "context": {
-          "current": 18741,
-          "world": 2485,
-          "next_compact": {
-            "scope": "npc",
-            "label": "Борин",
-            "used": 1910,
-            "limit": 64000,
-            "remaining": 62090
-          },
-          "gm": {
-            "active": 18741,
-            "history": 4150,
-            "summary": 0,
-            "limit": 100000,
-            "remaining": 95850
-          },
-          "npc": {
-            "id": "borin",
-            "name": "Борин",
-            "color": "#e6c08a",
-            "has_session": true,
-            "active": 4711,
-            "history": 1910,
-            "summary": 0,
-            "limit": 64000,
-            "remaining": 62090
-          },
-          "npcs": [
-            {
-              "id": "borin",
-              "name": "Борин",
-              "color": "#e6c08a",
-              "has_session": true,
-              "active": 4711,
-              "history": 1910,
-              "summary": 0,
-              "limit": 64000,
-              "remaining": 62090
-            },
-            {
-              "id": "mareth",
-              "name": "Капитан Марет",
-              "color": "#9ccfd8",
-              "has_session": false,
-              "active": 2741,
-              "history": 0,
-              "summary": 0,
-              "limit": 64000,
-              "remaining": 64000
-            },
-            {
-              "id": "lysa",
-              "name": "Лиза",
-              "color": "#c4a7e7",
-              "has_session": false,
-              "active": 2738,
-              "history": 0,
-              "summary": 0,
-              "limit": 64000,
-              "remaining": 64000
-            }
-          ]
-        },
-        "run": {
-          "turns": 1,
-          "calls": 7,
-          "in": 5320,
-          "out": 840,
-          "cached": 0,
-          "tokens": 6160,
-          "secs": 0.0,
-          "peak_context": 760,
-          "gm_calls": 4,
-          "gm_tokens": 3520,
-          "npc_calls": 2,
-          "npc_tokens": 1760,
-          "other_calls": 1,
-          "other_tokens": 880
-        }
-      },
-      "sid": null
-    }
-  ]
+  "transcript": []
 }

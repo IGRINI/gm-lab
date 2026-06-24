@@ -38,7 +38,13 @@ pub fn as_str(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
         Value::String(s) => s.trim().to_string(),
-        Value::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+        Value::Bool(b) => {
+            if *b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
         Value::Number(n) => n.to_string(),
         other => other.to_string().trim().to_string(),
     }

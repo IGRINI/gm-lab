@@ -60,8 +60,7 @@ impl MersenneTwister {
         while k > 0 {
             let prev = self.mt[i - 1];
             // mt[i] = (mt[i] ^ ((mt[i-1] ^ (mt[i-1] >> 30)) * 1664525)) + init_key[j] + j
-            self.mt[i] = (self.mt[i]
-                ^ (prev ^ (prev >> 30)).wrapping_mul(1_664_525))
+            self.mt[i] = (self.mt[i] ^ (prev ^ (prev >> 30)).wrapping_mul(1_664_525))
                 .wrapping_add(init_key[j])
                 .wrapping_add(j as u32);
             i += 1;
@@ -79,8 +78,7 @@ impl MersenneTwister {
         while k > 0 {
             let prev = self.mt[i - 1];
             // mt[i] = (mt[i] ^ ((mt[i-1] ^ (mt[i-1] >> 30)) * 1566083941)) - i
-            self.mt[i] = (self.mt[i]
-                ^ (prev ^ (prev >> 30)).wrapping_mul(1_566_083_941))
+            self.mt[i] = (self.mt[i] ^ (prev ^ (prev >> 30)).wrapping_mul(1_566_083_941))
                 .wrapping_sub(i as u32);
             i += 1;
             if i >= N {

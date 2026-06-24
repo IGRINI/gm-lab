@@ -63,21 +63,34 @@ fn pinned_session() -> Session {
 }
 
 fn load_json(path: &std::path::Path) -> Value {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-/// Meta/meta_total structural comparison: keep label/scope/in/out, drop timing.
+/// Meta/meta_total structural comparison: keep label/scope/in/out, drop timing
+/// AND prompt-size token estimates. The `context` block and `sys_estimate` are
+/// estimated token counts of the actual prompt TEXT; they legitimately shift
+/// whenever the GM context wording changes (e.g. exits now carry canon
+/// `transition_id`s) and are not a behavioural contract — the event skeleton,
+/// narration content, tool calls and scene updates remain fully asserted.
 fn strip_timing(v: &Value) -> Value {
     match v {
         Value::Object(m) => {
             let mut out = Map::new();
             for (k, child) in m {
-                // Drop wall-clock-derived fields anywhere in the meta payload.
+                // Drop wall-clock-derived fields and prompt-size estimates
+                // anywhere in the meta payload.
                 if matches!(
                     k.as_str(),
-                    "secs" | "tps" | "eval_secs" | "load_secs" | "prompt_secs" | "cached"
+                    "secs"
+                        | "tps"
+                        | "eval_secs"
+                        | "load_secs"
+                        | "prompt_secs"
+                        | "cached"
+                        | "context"
+                        | "sys_estimate"
                 ) {
                     continue;
                 }
@@ -141,7 +154,10 @@ fn run_case(name: &str, action: &str) {
         want_skeleton
     );
     for (i, (got, want)) in got_skeleton.iter().zip(want_skeleton.iter()).enumerate() {
-        assert_eq!(got, want, "[{name}] skeleton mismatch at non-delta index {i}");
+        assert_eq!(
+            got, want,
+            "[{name}] skeleton mismatch at non-delta index {i}"
+        );
     }
 
     // (b) deterministic data matches the full fixture for non-delta events.

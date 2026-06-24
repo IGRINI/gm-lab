@@ -17,8 +17,8 @@ fn reference_dir() -> PathBuf {
 
 fn load(name: &str) -> Value {
     let path = reference_dir().join(name);
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let raw =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&raw).unwrap()
 }
 
@@ -71,7 +71,10 @@ fn seed_state_and_roll_sequences_match_python() {
                 .map(|x| x.as_i64().unwrap())
                 .collect();
             let got: Vec<i64> = (0..expected.len()).map(|_| rng.randint(1, sides)).collect();
-            assert_eq!(got, expected, "randint(1,{sides}) mismatch for seed {seed_str}");
+            assert_eq!(
+                got, expected,
+                "randint(1,{sides}) mismatch for seed {seed_str}"
+            );
         }
 
         // state_after_rolls: getstate() after all sequences.

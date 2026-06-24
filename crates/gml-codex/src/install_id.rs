@@ -58,9 +58,17 @@ fn load_or_create() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Both tests read `installation_id()` / `load_or_create()`, which resolve the
+    // process-global `GM_CODEX_CREDENTIAL_PATH` env var and a shared install-id
+    // file. Running them concurrently lets one test's set/remove of that env var
+    // race the other's reads, so serialize them on a shared guard.
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     #[test]
     fn installation_id_is_stable_within_process() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let a = installation_id();
         let b = installation_id();
         assert_eq!(a, b);
@@ -70,6 +78,10 @@ mod tests {
 
     #[test]
     fn persisted_id_round_trips_via_env_override() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        // Save and restore any pre-existing override so we leave the process env
+        // exactly as we found it.
+        let prev = std::env::var_os("GM_CODEX_CREDENTIAL_PATH");
         // Point the credential path at a temp file so the install-id file lands
         // in a temp dir; verify a written id is read back.
         let dir = tempfile::tempdir().unwrap();
@@ -79,7 +91,10 @@ mod tests {
         // exercise load_or_create twice via the path helper instead).
         let first = load_or_create().unwrap();
         let second = load_or_create().unwrap();
+        match prev {
+            Some(v) => std::env::set_var("GM_CODEX_CREDENTIAL_PATH", v),
+            None => std::env::remove_var("GM_CODEX_CREDENTIAL_PATH"),
+        }
         assert_eq!(first, second, "second read returns the persisted id");
-        std::env::remove_var("GM_CODEX_CREDENTIAL_PATH");
     }
 }

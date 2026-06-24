@@ -31,12 +31,18 @@ use bytes::Bytes;
 use serde_json::{json, Map, Value};
 use tokio::sync::Mutex;
 
-use gml_audio::{cache_lookup, cache_store, compress_audio, tts_format, tts_synth};
+use gml_audio::{cache_lookup, cache_store, compress_audio, tts_format, tts_synth, Sidecar};
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::Backend;
 use gml_orchestrator::{run_turn_into, CompactionThresholds, Session};
 use gml_persistence::{DialogRuntime, DialogStore};
-use gml_world::World;
+use gml_world::{World, WorldSpec};
+
+/// Reserved `story_id` that routes campaign creation through the living-world
+/// canon generator (`World::from_worldgen`) instead of the static story
+/// catalog. Optional `seed`/`genre`/`tone`/`scale` body fields tune the
+/// [`gml_world::WorldSpec`]; everything else is derived from the canon.
+pub const PROCEDURAL_STORY_ID: &str = "procedural";
 
 /// `CHAT_SCOPE_ID` — the single shared chat scope (`GM_CHAT_SCOPE_ID`, default
 /// `"shared"`). All chats live under this guest id.
@@ -67,6 +73,8 @@ pub struct AppState {
     pub settings: Arc<RuntimeSettings>,
     /// HTTP client for the TTS sidecar proxy.
     pub http: reqwest::Client,
+    /// Unified inference sidecar manager (RAG embeddings + rerank + optional TTS).
+    pub sidecar: Option<Arc<Sidecar>>,
     /// Per-chat async locks — held across a streamed `/turn` (Python RLock).
     /// The outer map guard is a plain `std::sync::Mutex` (held briefly to
     /// get-or-create the per-chat lock); the per-chat locks are `tokio::Mutex`
@@ -106,6 +114,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/chats", get(get_chats).post(post_create_chat))
         .route("/export", get(get_export))
         .route("/codex/status", get(get_codex_status))
+        .route("/sidecar/status", get(get_sidecar_status))
         // POST
         .route("/chats/{id}/activate", post(post_activate_chat))
         .route("/chats/{id}/delete", post(post_delete_chat))
@@ -179,18 +188,54 @@ fn bool_from_body(value: Option<&Value>, default: bool) -> bool {
     match value {
         None | Some(Value::Null) => default,
         Some(Value::Bool(b)) => *b,
-        Some(Value::String(s)) => {
-            !matches!(s.trim().to_lowercase().as_str(), "0" | "false" | "no" | "off")
-        }
+        Some(Value::String(s)) => !matches!(
+            s.trim().to_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
         Some(other) => gml_orchestrator::truthy(other),
     }
 }
 
 fn body_str(map: &Map<String, Value>, key: &str) -> String {
-    map.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string()
+    map.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Build a [`WorldSpec`] for the procedural campaign route from optional body
+/// fields. A blank/absent field falls back to the spec default; the seed
+/// defaults to a fresh non-zero value so two procedural campaigns differ unless
+/// the caller pins a seed.
+fn worldspec_from_body(map: &Map<String, Value>) -> WorldSpec {
+    let mut spec = WorldSpec::default();
+    let seed = body_str(map, "seed");
+    spec.seed = if seed.is_empty() {
+        // A fresh dice seed gives a distinct, reproducible-by-value spec seed.
+        World::new_dice_seed().to_string()
+    } else {
+        seed
+    };
+    let genre = body_str(map, "genre");
+    if !genre.is_empty() {
+        spec.genre = genre;
+    }
+    let tone = body_str(map, "tone");
+    if !tone.is_empty() {
+        spec.tone = tone;
+    }
+    let scale = body_str(map, "scale");
+    if !scale.is_empty() {
+        spec.scale = scale;
+    }
+    spec
 }
 
 /// Resolve the active chat id, self-healing/creating as needed (`get_active`).
+// The `Err` is an axum `Response` (the established error channel in this crate);
+// boxing it would ripple through every handler for no real benefit.
+#[allow(clippy::result_large_err)]
 fn active_chat(state: &AppState) -> Result<String, Response> {
     let scope = chat_scope_id();
     state.store.get_active(&scope).map_err(|e| {
@@ -213,16 +258,14 @@ where
     let lock = state.chat_lock(&chat_id);
     let _guard = lock.lock().await;
     let store = state.store.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        store.with_runtime(&scope, &chat_id, f)
-    })
-    .await
-    .map_err(|e| {
-        json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &json!({"ok": false, "error": format!("join error: {e}")}),
-        )
-    })?;
+    let res = tokio::task::spawn_blocking(move || store.with_runtime(&scope, &chat_id, f))
+        .await
+        .map_err(|e| {
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("join error: {e}")}),
+            )
+        })?;
     match res {
         Ok(Some(v)) => Ok(v),
         Ok(None) => Err(json_response(
@@ -241,12 +284,18 @@ fn ensure_client(runtime: &mut DialogRuntime, state: &AppState) {
     let session = &mut runtime.session;
     let cfg = &state.config;
     let matches = session.client_backend.is_empty() || session.client_backend == cfg.backend;
+    let placeholder_client = cfg.backend != "mock"
+        && (session.client.model() == "mock" || session.client_model == "mock");
     // Replace the client only if it is the default placeholder (model "mock"
     // with a non-mock backend) OR the backend changed. The default Session
     // always holds a live client, so for fidelity we re-key identity when the
     // backend mismatches (Python: client is None -> rebuild).
-    if !matches {
-        session.client_model = String::new();
+    if !matches || placeholder_client {
+        if !matches {
+            session.client_model = String::new();
+        } else if session.client_model == "mock" {
+            session.client_model.clear();
+        }
         session.client_session_id = String::new();
         session.client_thread_id = String::new();
         session.npc_client_state.clear();
@@ -262,6 +311,8 @@ fn ensure_client(runtime: &mut DialogRuntime, state: &AppState) {
     session.client_thread_id = client.thread_id();
     if !session.client_model.is_empty() {
         client.set_model(&session.client_model);
+    } else {
+        session.client_model = client.model();
     }
 }
 
@@ -328,10 +379,26 @@ async fn get_transcript(State(state): State<AppState>) -> Response {
 }
 
 async fn get_stories() -> Response {
+    // Surface the living-world generator as a selectable "story" so the UI can
+    // offer a brief-less procedural campaign (locked decision #4).
+    let mut stories = gml_stories::list_stories();
+    let mut procedural = Map::new();
+    procedural.insert("id".into(), json!(PROCEDURAL_STORY_ID));
+    procedural.insert("title".into(), json!("Процедурный мир"));
+    procedural.insert(
+        "description".into(),
+        json!("Сгенерированный живой мир: место, люди рядом и ближайший конфликт. Канон — источник истины."),
+    );
+    procedural.insert(
+        "story_brief".into(),
+        json!("Ты начинаешь в живом, сгенерированном мире: рядом уже есть место, люди и первый источник напряжения. Осмотрись, выбери, кому верить, и реши, за какую нитку потянуть первым."),
+    );
+    procedural.insert("procedural".into(), json!(true));
+    stories.push(procedural);
     ok_json(&json!({
         "ok": true,
-        "default_story_id": gml_stories::DEFAULT_STORY_ID,
-        "stories": gml_stories::list_stories(),
+        "default_story_id": PROCEDURAL_STORY_ID,
+        "stories": stories,
     }))
 }
 
@@ -347,6 +414,125 @@ async fn get_settings(State(state): State<AppState>) -> Response {
 async fn get_codex_status(State(state): State<AppState>) -> Response {
     let _ = active_chat(&state);
     ok_json(&Value::Object(gml_codex::auth_status()))
+}
+
+async fn get_sidecar_status(State(state): State<AppState>) -> Response {
+    ok_json(&sidecar_status_payload(&state).await)
+}
+
+async fn sidecar_status_payload(state: &AppState) -> Value {
+    let rag_enabled = state.config.rag_enabled;
+    let reranker_enabled = state.config.rag_enabled && state.config.rag_rerank_enabled;
+    let tts_enabled = state.settings.tts_enabled(None);
+    let enabled = rag_enabled || tts_enabled;
+
+    let Some(sidecar) = &state.sidecar else {
+        return json!({
+            "ok": true,
+            "enabled": enabled,
+            "state": if enabled { "unavailable" } else { "disabled" },
+            "ready": false,
+            "pid": Value::Null,
+            "base_url": state.config.infer_base_url.clone(),
+            "components": sidecar_components(None, state, tts_enabled),
+            "error": if enabled { "sidecar manager is not attached" } else { "" },
+        });
+    };
+
+    let snapshot = sidecar.snapshot();
+    let health = sidecar.health_payload().await.ok();
+    let health_ready =
+        sidecar_health_ready(health.as_ref(), rag_enabled, reranker_enabled, tts_enabled);
+    let state_label = if health_ready {
+        "ready".to_string()
+    } else {
+        snapshot.state.as_str().to_string()
+    };
+
+    json!({
+        "ok": true,
+        "enabled": enabled,
+        "state": if enabled { state_label } else { "disabled".to_string() },
+        "manager_state": snapshot.state.as_str(),
+        "manager_ready": snapshot.ready,
+        "ready": enabled && health_ready,
+        "pid": snapshot.pid,
+        "base_url": snapshot.base_url,
+        "elapsed_ms": snapshot.started_elapsed.map(|d| d.as_millis()),
+        "ready_timeout_ms": snapshot.ready_timeout.as_millis(),
+        "components": sidecar_components(health.as_ref(), state, tts_enabled),
+    })
+}
+
+fn sidecar_health_ready(
+    health: Option<&Value>,
+    rag_enabled: bool,
+    reranker_enabled: bool,
+    tts_enabled: bool,
+) -> bool {
+    let Some(health) = health else {
+        return false;
+    };
+    let mut any = false;
+    for (enabled, key) in [
+        (rag_enabled, "embedder"),
+        (reranker_enabled, "reranker"),
+        (tts_enabled, "tts"),
+    ] {
+        if enabled {
+            any = true;
+            if !component_up(health, key) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
+fn component_up(health: &Value, key: &str) -> bool {
+    health
+        .get(key)
+        .and_then(|v| v.get("up"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn component_field<'a>(health: Option<&'a Value>, key: &str, field: &str) -> Option<&'a Value> {
+    health
+        .and_then(|body| body.get(key))
+        .and_then(|v| v.get(field))
+}
+
+fn sidecar_components(health: Option<&Value>, state: &AppState, tts_enabled: bool) -> Value {
+    json!({
+        "embedder": {
+            "enabled": state.config.rag_enabled,
+            "up": health.map(|body| component_up(body, "embedder")).unwrap_or(false),
+            "model": component_field(health, "embedder", "model")
+                .and_then(Value::as_str)
+                .unwrap_or(state.config.rag_embeddings_model.as_str()),
+            "quant": component_field(health, "embedder", "quant")
+                .and_then(Value::as_str)
+                .unwrap_or(state.config.embedder_quant.as_str()),
+            "dim": component_field(health, "embedder", "dim").cloned().unwrap_or(Value::Null),
+        },
+        "reranker": {
+            "enabled": state.config.rag_enabled && state.config.rag_rerank_enabled,
+            "up": health.map(|body| component_up(body, "reranker")).unwrap_or(false),
+            "model": component_field(health, "reranker", "model")
+                .and_then(Value::as_str)
+                .unwrap_or(state.config.rag_rerank_model.as_str()),
+            "quant": component_field(health, "reranker", "quant")
+                .and_then(Value::as_str)
+                .unwrap_or(state.config.reranker_quant.as_str()),
+        },
+        "tts": {
+            "enabled": tts_enabled,
+            "up": health.map(|body| component_up(body, "tts")).unwrap_or(false),
+            "model": component_field(health, "tts", "model").cloned().unwrap_or(Value::Null),
+            "voices": component_field(health, "tts", "voices").cloned().unwrap_or(Value::Array(vec![])),
+        },
+    })
 }
 
 // --- dev token counter (OpenAI /v1/responses/input_tokens) + key storage -----
@@ -382,7 +568,11 @@ async fn post_openai_key_delete() -> Response {
 /// count). Faithful port of `server.py`'s handler.
 async fn post_debug_tokenize(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
-    let text = data.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+    let text = data
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let model = data
         .get("model")
         .and_then(Value::as_str)
@@ -396,7 +586,11 @@ async fn post_debug_tokenize(State(state): State<AppState>, body: Bytes) -> Resp
     if text.is_empty() {
         return ok_json(&json!({"ok": false, "error": "Пустой текст."}));
     }
-    let model_req = if model.is_empty() { "gpt-4o-mini".to_string() } else { model.clone() };
+    let model_req = if model.is_empty() {
+        "gpt-4o-mini".to_string()
+    } else {
+        model.clone()
+    };
     let resp = state
         .http
         .post("https://api.openai.com/v1/responses/input_tokens")
@@ -524,7 +718,11 @@ async fn get_models(State(state): State<AppState>) -> Response {
     let models = list_models(client.as_ref(), &cfg).await;
     let current = {
         let m = client.model();
-        if m.is_empty() { cfg.model.clone() } else { m }
+        if m.is_empty() {
+            cfg.model.clone()
+        } else {
+            m
+        }
     };
     ok_json(&json!({
         "ok": true,
@@ -564,19 +762,19 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     let data = parse_body(&body);
     let brief = body_str(&data, "brief");
     let story_id = body_str(&data, "story_id");
+    let effective_story_id = if story_id.is_empty() {
+        PROCEDURAL_STORY_ID.to_string()
+    } else {
+        story_id.clone()
+    };
     let title = body_str(&data, "title");
     let activate = bool_from_body(data.get("activate"), true);
 
-    if !story_id.is_empty() && !gml_stories::story_ids().contains(&story_id) {
+    let is_procedural = effective_story_id == PROCEDURAL_STORY_ID;
+    if !story_id.is_empty() && !is_procedural && !gml_stories::story_ids().contains(&story_id) {
         return json_response(
             StatusCode::BAD_REQUEST,
             &json!({"ok": false, "error": format!("unknown story_id: {story_id}")}),
-        );
-    }
-    if brief.is_empty() && story_id.is_empty() {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": "story_id is required"}),
         );
     }
 
@@ -613,8 +811,16 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                 )
             }
         }
+    } else if is_procedural {
+        // Living-world canon path (locked decision #4): generate the canon and
+        // derive the legacy-facing World from it. The resulting session is
+        // canon-authoritative — its scene is rebuilt from the start place.
+        let spec = worldspec_from_body(&data);
+        let client = (make_client)();
+        let world = World::from_worldgen(&spec);
+        story_session(client, world, &cfg, &model_hint)
     } else {
-        let seed = match gml_stories::story_seed(&story_id) {
+        let seed = match gml_stories::story_seed(&effective_story_id) {
             Ok(s) => s,
             Err(e) => {
                 return json_response(
@@ -669,11 +875,10 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     join_json(res)
 }
 
-async fn post_activate_chat(
-    State(state): State<AppState>,
-    AxPath(id): AxPath<String>,
-) -> Response {
-    let chat_id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+async fn post_activate_chat(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    let chat_id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
     let scope = chat_scope_id();
     let cfg = state.config.clone();
     let settings = state.settings.clone();
@@ -715,7 +920,9 @@ async fn post_activate_chat(
 }
 
 async fn post_delete_chat(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
-    let chat_id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let chat_id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
     let scope = chat_scope_id();
     let cfg = state.config.clone();
     let settings = state.settings.clone();
@@ -929,7 +1136,11 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
                 }
                 let story_id = session.world.story_id.clone();
                 if !gml_stories::story_ids().contains(&story_id) {
-                    let label = if story_id.is_empty() { "unknown".to_string() } else { story_id };
+                    let label = if story_id.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        story_id
+                    };
                     return Err((
                         StatusCode::BAD_REQUEST,
                         format!("cannot reset non-catalog story: {label}"),
@@ -1049,20 +1260,23 @@ async fn post_turn(State(state): State<AppState>, body: Bytes) -> Response {
         while let Some(event) = ev_rx.recv().await {
             // Append non-delta? server.py appends EVERY event yielded by run_turn
             // (including deltas) to the transcript, then replay filters deltas.
-            rt.transcript.push(json!({"turn": turn_no, "event": &event}));
+            rt.transcript
+                .push(json!({"turn": turn_no, "event": &event}));
             // Stream to the client (ignore send errors = client gone).
             if tx.send(event).is_err() {
                 // client disconnected; keep draining so the turn finishes + saves.
             }
         }
-        let session = turn_handle.await.unwrap_or_else(|_| placeholder_session(&app));
+        let session = turn_handle
+            .await
+            .unwrap_or_else(|_| placeholder_session(&app));
         rt.session = session;
 
-        // Persist the dialog (DialogStore.save), best-effort.
+        // Persist the dialog and replace the cached runtime used by /state,
+        // /debug, and /transcript.
         let store = store.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let mut rt = rt;
-            let _ = store.save(&mut rt);
+            let _ = store.save_owned(rt);
         })
         .await;
         // tx drops here -> the response stream sees end-of-events and appends
@@ -1102,7 +1316,7 @@ fn ensure_client_owned(rt: &mut DialogRuntime, state: &AppState) {
 /// A throwaway session used while the real one is moved out for the async turn.
 fn placeholder_session(state: &AppState) -> Session {
     let client = (state.make_client)();
-    let world = World::from_seed(&gml_stories::default_story_seed());
+    let world = World::from_worldgen(&WorldSpec::default());
     Session::with_world(client, world, state.make_client.clone())
 }
 
@@ -1110,7 +1324,11 @@ fn placeholder_session(state: &AppState) -> Session {
 // transcribe / tts / codex
 // =========================================================================
 
-async fn post_transcribe(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn post_transcribe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if state.config.backend != "codex" {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -1142,14 +1360,27 @@ async fn post_tts(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let text = body_str(&data, "text");
     if text.is_empty() {
-        return json_response(StatusCode::BAD_REQUEST, &json!({"ok": false, "error": "empty text"}));
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "empty text"}),
+        );
     }
     // Resolve the voice (explicit / role / npc gender), mirroring the handler.
-    let explicit = data.get("voice").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+    let explicit = data
+        .get("voice")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
     let voice = if matches!(explicit.as_str(), "gm" | "male" | "female") {
         explicit
     } else {
-        let role = data.get("role").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+        let role = data
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
         let npc_id = body_str(&data, "npc_id");
         if role == "gm" || npc_id.is_empty() {
             "gm".to_string()
@@ -1342,7 +1573,11 @@ async fn post_debug_fact(State(state): State<AppState>, body: Bytes) -> Response
     let data = parse_body(&body);
     debug_mutate(&state, move |rt, cfg, settings| {
         let text = data.get("text").and_then(Value::as_str).unwrap_or("");
-        let kind = data.get("kind").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("public");
+        let kind = data
+            .get("kind")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("public");
         rt.session.world.add_fact(text, kind);
         payload::debug_data(rt, cfg, settings)
     })
@@ -1363,8 +1598,15 @@ async fn post_debug_player(State(state): State<AppState>, body: Bytes) -> Respon
     let data = parse_body(&body);
     debug_mutate(&state, move |rt, cfg, settings| {
         let fields = data.get("fields").cloned().unwrap_or(Value::Null);
-        let fields = if fields.is_object() { fields } else { Value::Object(Map::new()) };
-        let reason = data.get("reason").and_then(Value::as_str).unwrap_or("debug edit");
+        let fields = if fields.is_object() {
+            fields
+        } else {
+            Value::Object(Map::new())
+        };
+        let reason = data
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("debug edit");
         rt.session.world.update_player_character(&fields, reason);
         payload::debug_data(rt, cfg, settings)
     })
@@ -1374,8 +1616,15 @@ async fn post_debug_player(State(state): State<AppState>, body: Bytes) -> Respon
 async fn post_debug_npc(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     debug_mutate(&state, move |rt, cfg, settings| {
-        let npc_id = data.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-        if rt.session.apply_debug_edit(&npc_id, &Value::Object(data.clone())) {
+        let npc_id = data
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if rt
+            .session
+            .apply_debug_edit(&npc_id, &Value::Object(data.clone()))
+        {
             payload::debug_data(rt, cfg, settings)
         } else {
             json!({"ok": false, "error": format!("no such npc: {npc_id}")})
@@ -1390,6 +1639,9 @@ async fn post_debug_story(State(state): State<AppState>, body: Bytes) -> Respons
         let w = &mut rt.session.world;
         if let Some(v) = data.get("title").and_then(Value::as_str) {
             w.set_story_title(v);
+        }
+        if let Some(v) = data.get("story_brief").and_then(Value::as_str) {
+            w.set_story_brief(v);
         }
         if let Some(v) = data.get("public_intro").and_then(Value::as_str) {
             w.set_public_intro(v);
@@ -1422,11 +1674,13 @@ async fn post_debug_state_record(State(state): State<AppState>, body: Bytes) -> 
     let data = parse_body(&body);
     debug_mutate(&state, move |rt, cfg, settings| {
         let null = Value::Null;
-        rt.session.world.apply_state_record_batch(
+        rt.session.world.apply_state_memory_record_batch(
             data.get("add").unwrap_or(&null),
             data.get("update").unwrap_or(&null),
             data.get("delete").unwrap_or(&null),
-            data.get("hard_delete").map(gml_orchestrator::truthy).unwrap_or(false),
+            data.get("hard_delete")
+                .map(gml_orchestrator::truthy)
+                .unwrap_or(false),
         );
         payload::debug_data(rt, cfg, settings)
     })
@@ -1437,7 +1691,11 @@ async fn post_debug_rumor(State(state): State<AppState>, body: Bytes) -> Respons
     let data = parse_body(&body);
     debug_mutate(&state, move |rt, cfg, settings| {
         let w = &mut rt.session.world;
-        let action = data.get("action").and_then(Value::as_str).unwrap_or("").to_lowercase();
+        let action = data
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_lowercase();
         match action.as_str() {
             "add" => {
                 w.add_debug_rumor(
@@ -1450,7 +1708,10 @@ async fn post_debug_rumor(State(state): State<AppState>, body: Bytes) -> Respons
                 w.remove_rumor(data.get("seq").unwrap_or(&Value::Null));
             }
             "confirm" => {
-                let confirmed = data.get("confirmed").map(gml_orchestrator::truthy).unwrap_or(true);
+                let confirmed = data
+                    .get("confirmed")
+                    .map(gml_orchestrator::truthy)
+                    .unwrap_or(true);
                 w.set_rumor_confirmed(data.get("seq").unwrap_or(&Value::Null), confirmed);
             }
             _ => {}
@@ -1485,7 +1746,9 @@ fn die_or_none(value: Option<&Value>) -> Option<i64> {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) if s.is_empty() => None,
         Some(v) => {
-            let n = v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<i64>().ok()));
+            let n = v
+                .as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<i64>().ok()));
             n.map(|x| x.max(1))
         }
     }
@@ -1527,7 +1790,12 @@ fn build_session(
 }
 
 /// Build a story session (`_story_session`) — no live client work yet.
-fn story_session(client: Arc<dyn Backend>, world: World, cfg: &Config, model_hint: &str) -> Session {
+fn story_session(
+    client: Arc<dyn Backend>,
+    world: World,
+    cfg: &Config,
+    model_hint: &str,
+) -> Session {
     let factory: gml_orchestrator::ClientFactory = Arc::new({
         let _ = client; // story session uses the default factory for NPCs
         || -> Arc<dyn Backend> { Arc::new(gml_llm::MockClient::new()) }
@@ -1554,7 +1822,11 @@ async fn list_models(client: &dyn Backend, cfg: &Config) -> Vec<Value> {
     let model = {
         let m = client.model();
         if m.is_empty() {
-            if cfg.model.is_empty() { "default".to_string() } else { cfg.model.clone() }
+            if cfg.model.is_empty() {
+                "default".to_string()
+            } else {
+                cfg.model.clone()
+            }
         } else {
             m
         }
@@ -1620,8 +1892,8 @@ pub async fn run_https(
 ) -> std::io::Result<()> {
     use tokio_rustls::TlsAcceptor;
 
-    let (cert_path, key_path) = tls::ensure_self_signed(cert_dir)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let (cert_path, key_path) =
+        tls::ensure_self_signed(cert_dir).map_err(|e| std::io::Error::other(e.to_string()))?;
     let certs = load_certs(&cert_path)?;
     let key = load_key(&key_path)?;
     let mut tls_config = rustls::ServerConfig::builder()
@@ -1713,7 +1985,10 @@ where
             if let Some(p) = parts.next() {
                 path = p.to_string();
             }
-        } else if let Some(h) = line.strip_prefix("Host:").or_else(|| line.strip_prefix("host:")) {
+        } else if let Some(h) = line
+            .strip_prefix("Host:")
+            .or_else(|| line.strip_prefix("host:"))
+        {
             host = h.trim().to_string();
         }
     }
@@ -1728,7 +2003,9 @@ where
     let _ = stream.flush().await;
 }
 
-fn load_certs(path: &std::path::Path) -> std::io::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+fn load_certs(
+    path: &std::path::Path,
+) -> std::io::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     let pem = std::fs::read(path)?;
     let mut reader = std::io::BufReader::new(&pem[..]);
     rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()
@@ -1737,6 +2014,7 @@ fn load_certs(path: &std::path::Path) -> std::io::Result<Vec<rustls::pki_types::
 fn load_key(path: &std::path::Path) -> std::io::Result<rustls::pki_types::PrivateKeyDer<'static>> {
     let pem = std::fs::read(path)?;
     let mut reader = std::io::BufReader::new(&pem[..]);
-    rustls_pemfile::private_key(&mut reader)?
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no private key in PEM"))
+    rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "no private key in PEM")
+    })
 }

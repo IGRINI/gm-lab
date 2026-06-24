@@ -14,12 +14,20 @@ pub fn npc_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "reasoning": {"type": "string"},
-            "speech": {"type": "string"},
-            "action": {"type": "string"},
+            "response": {"type": "string"},
+            "beats": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["speech", "action"]},
+                    "text": {"type": "string"}
+                },
+                "required": ["kind", "text"],
+                "additionalProperties": false
+            }},
             "claims": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["reasoning", "speech", "action", "claims"],
+        "required": ["response", "beats", "claims"],
+        "additionalProperties": false,
     })
 }
 
@@ -64,7 +72,10 @@ fn or_default<'a>(value: &'a str, default: &'a str) -> &'a str {
 pub fn npc_card_block(npc: &Npc) -> String {
     // mechanics dict, then drop None/""/{}/[] entries, then compact-json.
     let mut mechanics: Map<String, Value> = Map::new();
-    mechanics.insert("abilities".to_string(), Value::Object(npc.abilities.clone()));
+    mechanics.insert(
+        "abilities".to_string(),
+        Value::Object(npc.abilities.clone()),
+    );
     mechanics.insert("skills".to_string(), Value::Object(npc.skills.clone()));
     mechanics.insert(
         "saving_throws".to_string(),
@@ -81,7 +92,10 @@ pub fn npc_card_block(npc: &Npc) -> String {
     mechanics.insert("hp".to_string(), Value::Object(npc.hp.clone()));
     mechanics.insert("speed".to_string(), Value::String(npc.speed.clone()));
     mechanics.insert("senses".to_string(), Value::String(npc.senses.clone()));
-    mechanics.insert("languages".to_string(), Value::String(npc.languages.clone()));
+    mechanics.insert(
+        "languages".to_string(),
+        Value::String(npc.languages.clone()),
+    );
     // Drop values in (None, "", {}, []).
     let filtered: Map<String, Value> = mechanics
         .into_iter()
@@ -138,12 +152,37 @@ pub fn npc_user_message(
     constraints: &[String],
     scene_slice: &str,
 ) -> Value {
+    npc_user_message_with_contact(
+        situation,
+        "",
+        observations,
+        commitments,
+        feedback,
+        constraints,
+        scene_slice,
+    )
+}
+
+/// `npc_user_message` with explicit last-contact timing for the live NPC path.
+#[allow(clippy::too_many_arguments)]
+pub fn npc_user_message_with_contact(
+    situation: &str,
+    last_contact: &str,
+    observations: &str,
+    commitments: &str,
+    feedback: Option<&str>,
+    constraints: &[String],
+    scene_slice: &str,
+) -> Value {
     let mut parts: Vec<String> = vec![
         NPC_PERCEPTION_BRIEF_RULES.to_string(),
-        format!(
-            "CURRENT SITUATION (what's happening now, what you react to): {situation}"
-        ),
+        format!("CURRENT SITUATION (what's happening now, what you react to): {situation}"),
     ];
+    if !last_contact.is_empty() {
+        parts.push(format!(
+            "LAST DIRECT CONTACT WITH THE PLAYER:\n{last_contact}"
+        ));
+    }
     if !scene_slice.is_empty() {
         parts.push(format!(
             "YOUR CURRENT SCENE SLICE (what is actually around you):\n{scene_slice}"
@@ -163,8 +202,13 @@ pub fn npc_user_message(
             commitments
         }
     ));
+    let observation_heading = if last_contact.is_empty() {
+        "WHAT YOU SAW/HEARD EARLIER"
+    } else {
+        "COMPACT ROOM OBSERVATION SINCE YOU WERE LAST CAUGHT UP"
+    };
     parts.push(format!(
-        "WHAT YOU SAW/HEARD EARLIER:\n{}",
+        "{observation_heading}:\n{}",
         if observations.is_empty() {
             "(nothing)"
         } else {
@@ -209,6 +253,16 @@ pub fn historical_npc_message(message: &Value) -> Value {
         "YOUR CURRENT SCENE SLICE (what is actually around you):",
         "PREVIOUS SCENE SLICE (historical; current slice is in the latest user message):",
     );
+    content = replace_first(
+        &content,
+        "LAST DIRECT CONTACT WITH THE PLAYER:",
+        "PREVIOUS CONTACT TIMING (historical):",
+    );
+    content = replace_first(
+        &content,
+        "COMPACT ROOM OBSERVATION SINCE YOU WERE LAST CAUGHT UP:",
+        "PREVIOUS ROOM OBSERVATION DIGEST (historical):",
+    );
     out.insert(
         "content".to_string(),
         Value::String(format!(
@@ -248,10 +302,7 @@ pub fn npc_request_messages(
     }
     messages.extend(history.iter().map(historical_npc_message));
     // Late dynamic block: CURRENT NPC CARD prepended to a COPY of the final turn.
-    let mut final_turn = user_message
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let mut final_turn = user_message.as_object().cloned().unwrap_or_default();
     let existing = final_turn
         .get("content")
         .and_then(Value::as_str)

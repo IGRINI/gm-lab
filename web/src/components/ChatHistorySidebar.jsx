@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   day: "2-digit",
@@ -33,7 +34,7 @@ function sameChatId(a, b) {
 }
 
 function storyDescription(story) {
-  return story?.description?.trim?.() || "";
+  return story?.story_brief?.trim?.() || story?.description?.trim?.() || "";
 }
 
 export default function ChatHistorySidebar({
@@ -177,7 +178,19 @@ export default function ChatHistorySidebar({
               </select>
             )}
             {selectedStory && storyDescription(selectedStory) && (
-              <p title={storyDescription(selectedStory)}>{storyDescription(selectedStory)}</p>
+              <Tooltip
+                as="p"
+                tipClassName="ui-tip-wrap"
+                content={
+                  <TipContent
+                    title={selectedStory.title || "История"}
+                    subtitle="Короткое описание стартовой истории."
+                    note={storyDescription(selectedStory)}
+                  />
+                }
+              >
+                {storyDescription(selectedStory)}
+              </Tooltip>
             )}
             {storiesLoading && <span className="chat-sidebar-status">Загружаю истории...</span>}
             {storiesError && <span className="chat-sidebar-error inline">{storiesError}</span>}
@@ -229,16 +242,28 @@ export default function ChatHistorySidebar({
                       {active && <span>активный</span>}
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    className="chat-row-delete"
-                    title="Удалить чат"
-                    aria-label={`Удалить чат: ${chatTitle(chat)}`}
-                    onClick={() => setConfirmId(chat.id)}
-                    disabled={locked}
+                  <Tooltip
+                    className="tooltip-wrap"
+                    tipClassName="ui-tip-wrap"
+                    focusable={false}
+                    content={
+                      <TipContent
+                        title="Удалить чат"
+                        subtitle={chatTitle(chat)}
+                        note="Перед удалением появится подтверждение."
+                      />
+                    }
                   >
-                    <span aria-hidden="true">🗑</span>
-                  </button>
+                    <button
+                      type="button"
+                      className="chat-row-delete"
+                      aria-label={`Удалить чат: ${chatTitle(chat)}`}
+                      onClick={() => setConfirmId(chat.id)}
+                      disabled={locked}
+                    >
+                      <span aria-hidden="true">🗑</span>
+                    </button>
+                  </Tooltip>
                 </div>
               );
             })

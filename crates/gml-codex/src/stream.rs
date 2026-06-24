@@ -87,7 +87,8 @@ impl StreamAccumulator {
                 }
             }
             "response.output_item.added" => {
-                self.tool_calls.merge_item(event.get("item"), output_index(event));
+                self.tool_calls
+                    .merge_item(event.get("item"), output_index(event));
             }
             "response.function_call_arguments.delta" => {
                 let item_id = event
@@ -102,7 +103,8 @@ impl StreamAccumulator {
                 self.tool_calls.merge_done(event);
             }
             "response.output_item.done" => {
-                self.tool_calls.merge_item(event.get("item"), output_index(event));
+                self.tool_calls
+                    .merge_item(event.get("item"), output_index(event));
             }
             "response.completed" => {
                 let response = event
@@ -110,10 +112,7 @@ impl StreamAccumulator {
                     .filter(|v| v.is_object())
                     .cloned()
                     .unwrap_or(Value::Object(Map::new()));
-                self.usage = response
-                    .get("usage")
-                    .filter(|v| v.is_object())
-                    .cloned();
+                self.usage = response.get("usage").filter(|v| v.is_object()).cloned();
                 if self.content_parts.is_empty() {
                     let text = extract_output_text(&response);
                     if !text.is_empty() {
@@ -166,7 +165,10 @@ impl ToolCallAccumulator {
         if item.get("type").and_then(|v| v.as_str()) != Some("function_call") {
             return;
         }
-        let id = item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let idx = self.find_or_create(output_index, id.as_deref());
         let call = &mut self.calls[idx];
         if let Some(item_id) = item.get("id").and_then(|v| v.as_str()) {
@@ -253,7 +255,10 @@ impl ToolCallAccumulator {
                 continue;
             }
             let raw_args = {
-                let s = call.get("arguments_raw").and_then(|v| v.as_str()).unwrap_or("");
+                let s = call
+                    .get("arguments_raw")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if s.is_empty() {
                     "{}".to_string()
                 } else {
@@ -269,7 +274,10 @@ impl ToolCallAccumulator {
                 } else if let Some(item_id) = item_id {
                     item_id
                 } else {
-                    let oi = call.get("output_index").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let oi = call
+                        .get("output_index")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                     format!("responses_call_{oi}")
                 }
             };
@@ -306,7 +314,9 @@ impl ToolCallAccumulator {
         call.insert("output_index".into(), Value::from(output_index));
         call.insert(
             "item_id".into(),
-            item_id.map(|s| Value::String(s.to_string())).unwrap_or(Value::Null),
+            item_id
+                .map(|s| Value::String(s.to_string()))
+                .unwrap_or(Value::Null),
         );
         call.insert("id".into(), Value::Null);
         call.insert("name".into(), Value::String(String::new()));
@@ -323,7 +333,10 @@ fn output_index(event: &Value) -> i64 {
         .filter(|v| is_truthy(v))
         .or_else(|| event.get("index").filter(|v| is_truthy(v)));
     match pick {
-        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0),
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_f64().map(|f| f as i64))
+            .unwrap_or(0),
         Some(Value::String(s)) => s.trim().parse::<i64>().unwrap_or(0),
         _ => 0,
     }
@@ -331,16 +344,13 @@ fn output_index(event: &Value) -> i64 {
 
 /// `_event_error_message(event)`.
 pub fn event_error_message(event: &Value) -> String {
-    let mut candidates: Vec<Option<&str>> = Vec::new();
-    candidates.push(event.get("message").and_then(|v| v.as_str()));
-    candidates.push(
+    let candidates: Vec<Option<&str>> = vec![
+        event.get("message").and_then(|v| v.as_str()),
         event
             .get("error")
             .and_then(|v| v.as_object())
             .and_then(|o| o.get("message"))
             .and_then(|v| v.as_str()),
-    );
-    candidates.push(
         event
             .get("response")
             .and_then(|v| v.as_object())
@@ -348,7 +358,7 @@ pub fn event_error_message(event: &Value) -> String {
             .and_then(|e| e.as_object())
             .and_then(|eo| eo.get("message"))
             .and_then(|v| v.as_str()),
-    );
+    ];
     for message in candidates.into_iter().flatten() {
         let trimmed = message.trim();
         if !trimmed.is_empty() {
@@ -414,9 +424,13 @@ mod tests {
     #[test]
     fn content_and_thinking_deltas() {
         let mut acc = StreamAccumulator::new();
-        let yielded = acc.handle(&json!({"type": "response.output_text.delta", "delta": "Hi"})).unwrap();
+        let yielded = acc
+            .handle(&json!({"type": "response.output_text.delta", "delta": "Hi"}))
+            .unwrap();
         assert_eq!(yielded, vec![(channel::CONTENT, "Hi".to_string())]);
-        let yielded2 = acc.handle(&json!({"type": "response.reasoning_text.delta", "delta": "think"})).unwrap();
+        let yielded2 = acc
+            .handle(&json!({"type": "response.reasoning_text.delta", "delta": "think"}))
+            .unwrap();
         assert_eq!(yielded2, vec![(channel::THINKING, "think".to_string())]);
         let r = acc.finish();
         assert_eq!(r.content, "Hi");
@@ -474,7 +488,9 @@ mod tests {
     #[test]
     fn failed_event_raises_with_message() {
         let mut acc = StreamAccumulator::new();
-        let err = acc.handle(&json!({"type": "response.failed", "message": "boom"})).unwrap_err();
+        let err = acc
+            .handle(&json!({"type": "response.failed", "message": "boom"}))
+            .unwrap_err();
         assert_eq!(err, "boom");
     }
 
@@ -489,6 +505,9 @@ mod tests {
 
     #[test]
     fn event_error_default_message() {
-        assert_eq!(event_error_message(&json!({"type": "response.failed"})), "Codex stream failed");
+        assert_eq!(
+            event_error_message(&json!({"type": "response.failed"})),
+            "Codex stream failed"
+        );
     }
 }

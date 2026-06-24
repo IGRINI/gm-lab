@@ -128,6 +128,13 @@ pub trait Backend: Send + Sync {
     /// The current model id (Python `@property model`).
     fn model(&self) -> String;
 
+    /// Whether this backend supports native Responses API tool search with
+    /// deferred tools loaded at the end of the context instead of mutating the
+    /// top-level tool list between turns.
+    fn supports_native_tool_search(&self) -> bool {
+        false
+    }
+
     /// `set_model(model)` — set the active model if `model` is non-empty after
     /// trimming.
     fn set_model(&self, model: &str);
@@ -177,11 +184,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<Map<String, Value>, BackendError>;
 
     /// `summarize(text, proper_nouns)` -> summary string.
-    async fn summarize(
-        &self,
-        text: &str,
-        proper_nouns: &[String],
-    ) -> Result<String, BackendError>;
+    async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError>;
 
     /// `chat_stream(messages, tools, think, reasoning_role)` — yields deltas via
     /// `sink`, returns the final `(thinking, content, calls, assistant_msg,

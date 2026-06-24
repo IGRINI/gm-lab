@@ -50,7 +50,10 @@ fn settings_with(suggest_options: bool) -> RuntimeSettings {
     let _ = std::fs::remove_file(&tmp);
     let settings = RuntimeSettings::new(&cfg, tmp);
     let mut update = Map::new();
-    update.insert("gm_suggest_options".to_string(), Value::Bool(suggest_options));
+    update.insert(
+        "gm_suggest_options".to_string(),
+        Value::Bool(suggest_options),
+    );
     settings.update(Some(&update));
     settings
 }
@@ -79,7 +82,10 @@ enum Move {
     /// Stream this content as the final narration (no tool calls).
     Final(String),
     /// Emit `content` as prelude text + a single tool call.
-    Tool { content: String, call: (String, Value) },
+    Tool {
+        content: String,
+        call: (String, Value),
+    },
 }
 
 impl ScriptedGm {
@@ -294,7 +300,11 @@ fn ask_player_rejects_fewer_than_four_options() {
         .next()
         .unwrap_or("")
         .to_string();
-    assert!(plain.contains("not_enough_options"), "model: {}", result.model);
+    assert!(
+        plain.contains("not_enough_options"),
+        "model: {}",
+        result.model
+    );
 }
 
 // =========================================================================
@@ -303,8 +313,7 @@ fn ask_player_rejects_fewer_than_four_options() {
 
 fn has_ask_player_tool_event(events: &[Event]) -> bool {
     events.iter().any(|e| {
-        e.kind == "gm_tool_call"
-            && e.data.get("name").and_then(Value::as_str) == Some("ask_player")
+        e.kind == "gm_tool_call" && e.data.get("name").and_then(Value::as_str) == Some("ask_player")
     })
 }
 
@@ -339,11 +348,17 @@ fn run_turn_ask_player_engine_handled() {
         .iter()
         .position(|e| {
             e.kind == "gm_narration"
-                && e.data.as_str().map(|s| s.contains("сцена закрывается")).unwrap_or(false)
+                && e.data
+                    .as_str()
+                    .map(|s| s.contains("сцена закрывается"))
+                    .unwrap_or(false)
         })
         .expect("final narration emitted");
     assert!(options_idx < final_idx);
-    assert!(!has_ask_player_tool_event(&events), "no gm_tool_call for ask_player");
+    assert!(
+        !has_ask_player_tool_event(&events),
+        "no gm_tool_call for ask_player"
+    );
     assert!(
         !events
             .iter()
@@ -364,19 +379,19 @@ fn run_turn_ask_player_engine_handled() {
 
     // The GM's SECOND request saw the PLAYER OPTIONS tool message.
     let log = client.request_log.lock().unwrap();
-    let second_req = log
-        .iter()
-        .rev()
-        .find(|req| {
-            req.iter().any(|m| {
-                m.get("role").and_then(Value::as_str) == Some("tool")
-                    && m.get("content")
-                        .and_then(Value::as_str)
-                        .map(|c| c.contains("PLAYER OPTIONS"))
-                        .unwrap_or(false)
-            })
-        });
-    assert!(second_req.is_some(), "second GM request must see PLAYER OPTIONS tool message");
+    let second_req = log.iter().rev().find(|req| {
+        req.iter().any(|m| {
+            m.get("role").and_then(Value::as_str) == Some("tool")
+                && m.get("content")
+                    .and_then(Value::as_str)
+                    .map(|c| c.contains("PLAYER OPTIONS"))
+                    .unwrap_or(false)
+        })
+    });
+    assert!(
+        second_req.is_some(),
+        "second GM request must see PLAYER OPTIONS tool message"
+    );
 }
 
 // =========================================================================
@@ -387,7 +402,9 @@ fn run_turn_ask_player_engine_handled() {
 fn run_turn_missing_ask_player_errors() {
     // GM ends the turn with final narration, never calling ask_player.
     let client = Arc::new(ScriptedGm::new(
-        vec![Move::Final("Ты оставляешь себе секунду на выбор следующего шага.".to_string())],
+        vec![Move::Final(
+            "Ты оставляешь себе секунду на выбор следующего шага.".to_string(),
+        )],
         None,
     ));
     let mut s = Session::new(client);
@@ -400,7 +417,10 @@ fn run_turn_missing_ask_player_errors() {
     // An error event mentions the missing ask_player ("без ask_player").
     assert!(
         events.iter().any(|e| e.kind == "error"
-            && e.data.as_str().map(|s| s.contains("без ask_player")).unwrap_or(false)),
+            && e.data
+                .as_str()
+                .map(|s| s.contains("без ask_player"))
+                .unwrap_or(false)),
         "expected a 'без ask_player' error event"
     );
 }
@@ -448,11 +468,17 @@ fn run_turn_bare_ask_player_emits_prelude_before_options() {
         .iter()
         .position(|e| {
             e.kind == "gm_narration"
-                && e.data.as_str().map(|s| s.contains("выбрать следующий ход")).unwrap_or(false)
+                && e.data
+                    .as_str()
+                    .map(|s| s.contains("выбрать следующий ход"))
+                    .unwrap_or(false)
         })
         .expect("final narration emitted");
     assert!(prelude_idx < options_idx, "prelude must precede options");
-    assert!(options_idx < final_idx, "options must precede final narration");
+    assert!(
+        options_idx < final_idx,
+        "options must precede final narration"
+    );
     // Still no ask_player gm_tool_call event.
     assert!(!has_ask_player_tool_event(&events));
 }

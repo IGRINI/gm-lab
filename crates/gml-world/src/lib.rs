@@ -12,6 +12,7 @@
 //! - [`state_record::state_record_hash`] — canonical-JSON sha256.
 //! - Secret / hidden-canon isolation in [`World::retrieval_documents`].
 
+pub mod canon;
 pub mod dice;
 pub mod helpers;
 pub mod model;
@@ -20,6 +21,12 @@ pub mod seed;
 pub mod state_record;
 mod world;
 
+pub use canon::{
+    Account, Action, Actor, CanonEvent, Containment, Faction, MemoryAccess, MemoryInjectionState,
+    MemoryStore, MemoryTier, MemoryTruthStatus, MemoryUnit, Place, PlayerView, ProposedAction,
+    Provenance, Region, Rejection, Scope, Settlement, Transition, Truthfulness, Validator,
+    WorldCanon, WorldSpec, GENERATOR_VERSION,
+};
 pub use model::{
     FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem,
     SceneState, StateRecord, WorldEvent, WorldFact, WorldTime,

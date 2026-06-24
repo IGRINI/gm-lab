@@ -160,9 +160,14 @@ pub fn credential_path() -> PathBuf {
     if !override_path.is_empty() {
         return expanduser(&override_path);
     }
-    let appdata = std::env::var("APPDATA").unwrap_or_default().trim().to_string();
+    let appdata = std::env::var("APPDATA")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if !appdata.is_empty() {
-        return PathBuf::from(appdata).join("gm-lab").join("codex-oauth.json");
+        return PathBuf::from(appdata)
+            .join("gm-lab")
+            .join("codex-oauth.json");
     }
     if let Some(home) = home_dir() {
         return home.join(".config").join("gm-lab").join("codex-oauth.json");
@@ -187,7 +192,9 @@ pub fn load_credential() -> Result<Option<CodexCredential>, OAuthError> {
     let obj = match data {
         Value::Object(m) => m,
         _ => {
-            return Err(OAuthError::new("Codex credential file is not a JSON object"));
+            return Err(OAuthError::new(
+                "Codex credential file is not a JSON object",
+            ));
         }
     };
     let credential = CodexCredential::from_dict(&obj);
@@ -231,17 +238,30 @@ pub fn auth_status() -> Map<String, Value> {
             Value::Null,
             &format!("Codex OAuth credential is invalid: {exc}"),
         ),
-        Ok(None) => status_map(false, Value::Null, Value::Null, "Codex OAuth не авторизован"),
+        Ok(None) => status_map(
+            false,
+            Value::Null,
+            Value::Null,
+            "Codex OAuth не авторизован",
+        ),
         Ok(Some(c)) => status_map(
             true,
-            c.account_id.clone().map(Value::String).unwrap_or(Value::Null),
+            c.account_id
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
             c.expires_at.map(Value::from).unwrap_or(Value::Null),
             "Codex OAuth авторизован",
         ),
     }
 }
 
-fn status_map(authenticated: bool, account_id: Value, expires_at: Value, message: &str) -> Map<String, Value> {
+fn status_map(
+    authenticated: bool,
+    account_id: Value,
+    expires_at: Value,
+    message: &str,
+) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("authenticated".into(), Value::Bool(authenticated));
     m.insert("account_id".into(), account_id);
@@ -259,11 +279,14 @@ pub async fn ensure_fresh_credential(
     http: &reqwest::Client,
     cfg: &Config,
 ) -> Result<CodexCredential, OAuthError> {
-    let credential = load_credential()?
-        .ok_or_else(|| OAuthError::new("Codex OAuth не авторизован. Подключи Codex в интерфейсе."))?;
+    let credential = load_credential()?.ok_or_else(|| {
+        OAuthError::new("Codex OAuth не авторизован. Подключи Codex в интерфейсе.")
+    })?;
     if is_near_expiry(&credential) {
         if credential.refresh_token.trim().is_empty() {
-            return Err(OAuthError::new("Codex OAuth token expired; reconnect Codex."));
+            return Err(OAuthError::new(
+                "Codex OAuth token expired; reconnect Codex.",
+            ));
         }
         let refreshed = refresh_credential(&credential, http, cfg).await?;
         save_credential(&refreshed)?;
@@ -286,7 +309,9 @@ pub async fn refresh_credential(
     let data = post_token(http, &form).await?;
     let access_token = str_or_empty(data.get("access_token"));
     if access_token.is_empty() {
-        return Err(OAuthError::new("Codex OAuth refresh response has no access_token"));
+        return Err(OAuthError::new(
+            "Codex OAuth refresh response has no access_token",
+        ));
     }
     // refresh_token = str(data.get("refresh_token") or credential.refresh_token)
     let refresh_token = {
@@ -314,7 +339,10 @@ pub async fn refresh_credential(
 /// `run_oauth(http)` — the full browser PKCE flow. Binds the loopback callback
 /// server, opens the browser (or prints the URL), waits for the callback,
 /// exchanges the authorization code, and saves the credential.
-pub async fn run_oauth(http: &reqwest::Client, cfg: &Config) -> Result<CodexCredential, OAuthError> {
+pub async fn run_oauth(
+    http: &reqwest::Client,
+    cfg: &Config,
+) -> Result<CodexCredential, OAuthError> {
     let pkce_verifier = random_url_token(32);
     let code_challenge = code_challenge(&pkce_verifier);
     let state = random_url_token(32);
@@ -347,7 +375,9 @@ pub async fn run_oauth(http: &reqwest::Client, cfg: &Config) -> Result<CodexCred
     let access_token = str_or_empty(data.get("access_token"));
     let refresh_token = str_or_empty(data.get("refresh_token"));
     if access_token.is_empty() {
-        return Err(OAuthError::new("Codex OAuth token response has no access_token"));
+        return Err(OAuthError::new(
+            "Codex OAuth token response has no access_token",
+        ));
     }
     let id_token = nonempty_str(data.get("id_token"));
     let credential = CodexCredential {
@@ -371,7 +401,11 @@ pub async fn revoke_credential(http: &reqwest::Client, cfg: &Config) -> Result<(
     };
     let refresh = credential.refresh_token.trim().to_string();
     let access = credential.access_token.trim().to_string();
-    let token = if !refresh.is_empty() { refresh.clone() } else { access };
+    let token = if !refresh.is_empty() {
+        refresh.clone()
+    } else {
+        access
+    };
     if token.is_empty() {
         delete_credential()?;
         return Ok(());
@@ -383,9 +417,15 @@ pub async fn revoke_credential(http: &reqwest::Client, cfg: &Config) -> Result<(
     };
     let mut payload = Map::new();
     payload.insert("token".into(), Value::String(token));
-    payload.insert("token_type_hint".into(), Value::String(token_type.to_string()));
+    payload.insert(
+        "token_type_hint".into(),
+        Value::String(token_type.to_string()),
+    );
     if token_type == "refresh_token" {
-        payload.insert("client_id".into(), Value::String(cfg.codex_client_id.clone()));
+        payload.insert(
+            "client_id".into(),
+            Value::String(cfg.codex_client_id.clone()),
+        );
     }
     // try: client.post(REVOKE_ENDPOINT, json=payload, timeout=10) finally: delete
     let _ = http
@@ -439,7 +479,11 @@ fn wait_for_callback(server: tiny_http::Server) -> Result<Callback, OAuthError> 
     let timeout = Duration::from_secs_f64(OAUTH_TIMEOUT_SECS);
     let request = match server.recv_timeout(timeout) {
         Ok(Some(req)) => req,
-        Ok(None) => return Err(OAuthError::new("Timed out waiting for Codex OAuth callback")),
+        Ok(None) => {
+            return Err(OAuthError::new(
+                "Timed out waiting for Codex OAuth callback",
+            ))
+        }
         Err(e) => return Err(OAuthError::new(e)),
     };
 
@@ -447,11 +491,9 @@ fn wait_for_callback(server: tiny_http::Server) -> Result<Callback, OAuthError> 
     let ok = callback.is_some() && callback_error.is_none();
     let body = callback_html(ok);
     let encoded = body.into_bytes();
-    let header = tiny_http::Header::from_bytes(
-        &b"Content-Type"[..],
-        &b"text/html; charset=utf-8"[..],
-    )
-    .map_err(|_| OAuthError::new("invalid header"))?;
+    let header =
+        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+            .map_err(|_| OAuthError::new("invalid header"))?;
     let len = encoded.len();
     let response = tiny_http::Response::from_data(encoded)
         .with_status_code(200)
@@ -485,8 +527,14 @@ fn parse_callback(raw_url: &str) -> (Option<Callback>, Option<String>) {
         if first(&params, "error").is_some() {
             return Err("Codex OAuth rejected authorization".to_string());
         }
-        let code = first(&params, "code").unwrap_or_default().trim().to_string();
-        let state = first(&params, "state").unwrap_or_default().trim().to_string();
+        let code = first(&params, "code")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let state = first(&params, "state")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if code.is_empty() {
             return Err("OAuth callback has no code".to_string());
         }
@@ -521,7 +569,12 @@ fn callback_html(ok: bool) -> String {
 /// `_authorize_url(redirect_uri, code_challenge, state)`.
 ///
 /// Reproduces the param order and `urlencode` quoting from the Python source.
-pub fn authorize_url(cfg: &Config, redirect_uri: &str, code_challenge: &str, state: &str) -> String {
+pub fn authorize_url(
+    cfg: &Config,
+    redirect_uri: &str,
+    code_challenge: &str,
+    state: &str,
+) -> String {
     let params: [(&str, &str); 10] = [
         ("response_type", "code"),
         ("client_id", &cfg.codex_client_id),
@@ -619,7 +672,10 @@ pub fn decode_jwt_claims(token: Option<&str>) -> Option<Map<String, Value>> {
 
 /// `_account_id_from_tokens(id_token, access_token)` — pull `chatgpt_account_id`
 /// from the JWT claims of either token.
-pub fn account_id_from_tokens(id_token: Option<&str>, access_token: Option<&str>) -> Option<String> {
+pub fn account_id_from_tokens(
+    id_token: Option<&str>,
+    access_token: Option<&str>,
+) -> Option<String> {
     for token in [id_token, access_token] {
         let claims = match decode_jwt_claims(token) {
             Some(c) => c,
@@ -687,9 +743,7 @@ fn now_ms() -> i64 {
 fn int_or_none(value: Option<&Value>) -> Option<i64> {
     match value {
         None | Some(Value::Null) => None,
-        Some(Value::Number(n)) => n
-            .as_i64()
-            .or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Some(Value::String(s)) => {
             if s.is_empty() {
                 None
@@ -824,7 +878,10 @@ fn parse_qs(query: &str) -> Vec<(String, String)> {
 }
 
 fn first<'a>(params: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    params.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    params
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
 }
 
 fn urldecode(s: &str) -> String {
@@ -927,10 +984,13 @@ mod tests {
     #[test]
     fn account_id_from_jwt_top_level_claim() {
         // header.payload.signature with payload {"chatgpt_account_id":"acc-1"}
-        let payload =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"chatgpt_account_id":"acc-1"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"chatgpt_account_id":"acc-1"}"#);
         let token = format!("h.{payload}.s");
-        assert_eq!(account_id_from_tokens(Some(&token), None), Some("acc-1".to_string()));
+        assert_eq!(
+            account_id_from_tokens(Some(&token), None),
+            Some("acc-1".to_string())
+        );
     }
 
     #[test]
@@ -938,7 +998,10 @@ mod tests {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"nested"}}"#);
         let token = format!("h.{payload}.s");
-        assert_eq!(account_id_from_tokens(None, Some(&token)), Some("nested".to_string()));
+        assert_eq!(
+            account_id_from_tokens(None, Some(&token)),
+            Some("nested".to_string())
+        );
     }
 
     #[test]
@@ -976,7 +1039,8 @@ mod tests {
     fn authorize_url_param_order() {
         let cfg = Config::from_env();
         let url = authorize_url(&cfg, "http://localhost:1455/auth/callback", "CH", "ST");
-        assert!(url.starts_with("https://auth.openai.com/oauth/authorize?response_type=code&client_id="));
+        assert!(url
+            .starts_with("https://auth.openai.com/oauth/authorize?response_type=code&client_id="));
         // redirect_uri quoted with quote_plus
         assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback"));
         assert!(url.contains("code_challenge=CH"));

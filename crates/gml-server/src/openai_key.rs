@@ -48,7 +48,11 @@ pub fn load_key() -> String {
     match std::fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str::<Value>(&s)
             .ok()
-            .and_then(|v| v.get("openai_api_key").and_then(Value::as_str).map(str::to_string))
+            .and_then(|v| {
+                v.get("openai_api_key")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
         Err(_) => String::new(),

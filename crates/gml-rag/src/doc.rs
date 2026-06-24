@@ -21,7 +21,11 @@ pub struct RagDocument {
 
 impl RagDocument {
     /// Construct with Python defaults for the optional fields.
-    pub fn new(doc_id: impl Into<String>, kind: impl Into<String>, text: impl Into<String>) -> Self {
+    pub fn new(
+        doc_id: impl Into<String>,
+        kind: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
         RagDocument {
             doc_id: doc_id.into(),
             kind: kind.into(),

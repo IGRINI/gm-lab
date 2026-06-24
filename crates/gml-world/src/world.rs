@@ -3,6 +3,10 @@
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::canon::{
+    canonical_scope, MemoryAccess, MemoryInjectionState, MemoryTier, MemoryTruthStatus, MemoryUnit,
+    WorldCanon,
+};
 use crate::dice;
 use crate::helpers::{
     actor_key, anchor_label, as_dict, as_int_or_none, as_joined_str, as_list, as_str, get_str,
@@ -57,7 +61,12 @@ pub const WHEREABOUTS_STATUS_LABELS: [(&str, &str); 6] = [
 /// `WHEREABOUTS_STATUSES = tuple(WHEREABOUTS_STATUS_LABELS)`.
 pub fn whereabouts_statuses() -> [&'static str; 6] {
     [
-        "present", "known", "likely", "rumored", "unknown", "left_scene",
+        "present",
+        "known",
+        "likely",
+        "rumored",
+        "unknown",
+        "left_scene",
     ]
 }
 
@@ -94,7 +103,9 @@ fn source_ru(source: &str) -> Option<&'static str> {
 /// `_public_role(role)`.
 pub fn public_role(role: &str) -> String {
     let raw = as_str(&Value::String(role.to_string()));
-    role_ru(&raw.to_lowercase()).map(|s| s.to_string()).unwrap_or(raw)
+    role_ru(&raw.to_lowercase())
+        .map(|s| s.to_string())
+        .unwrap_or(raw)
 }
 
 /// `_public_gender(value)`.
@@ -220,6 +231,7 @@ pub struct World {
 
     pub story_id: String,
     pub story_title: String,
+    pub story_brief: String,
     pub public: String,
     pub canon: String,
     pub time: WorldTime,
@@ -231,6 +243,14 @@ pub struct World {
     pub fact_records: Vec<FactRecord>,
     pub state_records: Vec<StateRecord>,
     pub npc_whereabouts: BTreeMap<String, NpcWhereabouts>,
+
+    /// Canonical world graph (places + transitions) — the living-world layer
+    /// (LIVING_WORLD_ARCHITECTURE_TZ.md). Phase 1: derived from the seeded
+    /// scene, persisted additively, and projectable back to a `SceneState`, but
+    /// not yet the owner of the live scene. Empty for worlds loaded from a
+    /// pre-canon save. (Distinct from the legacy `canon: String` hidden-truth
+    /// lore text above.)
+    pub world_canon: WorldCanon,
 
     /// True when the cacheable system prefix must be recomputed — set by
     /// `set_public_intro` (the single prefix-mutating world method). Mirrors the
@@ -273,6 +293,7 @@ impl World {
             rumor_seq: 0,
             story_id: String::new(),
             story_title: String::new(),
+            story_brief: String::new(),
             public: String::new(),
             canon: String::new(),
             time: WorldTime::default(),
@@ -296,6 +317,7 @@ impl World {
             fact_records: Vec::new(),
             state_records: Vec::new(),
             npc_whereabouts: BTreeMap::new(),
+            world_canon: WorldCanon::default(),
             prefix_dirty: false,
         }
     }
@@ -304,6 +326,140 @@ impl World {
         let mut w = World::empty_with_rng(MersenneTwister::from_u128_seed(dice_seed));
         w.dice_seed = dice_seed;
         w
+    }
+
+    /// Procedurally create a campaign from a [`crate::canon::WorldSpec`]
+    /// (LOCKED DECISION #4): run worldgen, then DERIVE the legacy-facing `World`
+    /// from the resulting canon. The canon is authoritative — `World.npcs`,
+    /// `World.scene` and `npc_whereabouts` are all built from it.
+    ///
+    /// The dice seed is derived from the spec seed when it is a plain integer
+    /// (so a numeric procedural seed is fully reproducible incl. the dice RNG),
+    /// otherwise a fresh OS-entropy dice seed is used. Use
+    /// [`World::from_worldgen_with_dice_seed`] to pin the dice seed in tests.
+    pub fn from_worldgen(spec: &crate::canon::WorldSpec) -> Self {
+        let dice_seed = spec
+            .seed
+            .parse::<u128>()
+            .unwrap_or_else(|_| Self::new_dice_seed());
+        Self::from_worldgen_with_dice_seed(spec, dice_seed)
+    }
+
+    /// [`World::from_worldgen`] with an explicit dice seed (deterministic tests).
+    pub fn from_worldgen_with_dice_seed(spec: &crate::canon::WorldSpec, dice_seed: u128) -> Self {
+        let mut world = World::skeleton(dice_seed);
+        world.story_id = "procedural".to_string();
+        world.story_title = "Процедурный мир".to_string();
+        world.story_brief =
+            "Ты начинаешь в живом, сгенерированном мире: рядом уже есть место, люди и первый источник напряжения. Осмотрись, выбери, кому верить, и реши, за какую нитку потянуть первым."
+                .to_string();
+        world.public =
+            "Процедурно созданный мир. Игрок видит место, людей рядом и ближайший конфликт."
+                .to_string();
+        world.time.current_date_label = "День начала пути".to_string();
+        world.time.absolute_minutes = 480;
+
+        // Generate the canon — the source of truth — and derive everything else.
+        world.world_canon = crate::canon::worldgen::generate(spec);
+        world.world_canon.clock_minutes = world.time.absolute_minutes;
+        world.derive_legacy_from_canon();
+        world
+    }
+
+    /// Build the legacy-facing `World` surface (`npcs`, `npc_whereabouts`, the
+    /// start `scene`) from `self.world_canon`. Called by [`World::from_worldgen`]
+    /// after generation; idempotent.
+    fn derive_legacy_from_canon(&mut self) {
+        use crate::canon::Containment;
+
+        // One NPC card per canon actor, so ask_npc / get_npc_profile / move_npc
+        // work on the procedural roster. The rich card body is synthesised from
+        // the actor's structural fields; the bodies stay editable later.
+        self.npcs = BTreeMap::new();
+        self.npc_whereabouts = BTreeMap::new();
+        self.extra_proper_nouns = Vec::new();
+        for actor in self.world_canon.actors.values() {
+            let name = if actor.public_label.is_empty() {
+                actor.actor_id.clone()
+            } else {
+                actor.public_label.clone()
+            };
+            let role = if actor.role.is_empty() {
+                "персонаж мира".to_string()
+            } else {
+                actor.role.clone()
+            };
+            let goals = if actor.goals.is_empty() {
+                "Реагировать правдоподобно и защищать свои интересы.".to_string()
+            } else {
+                actor.goals.join("; ")
+            };
+            let status = if actor.status.is_empty() {
+                "alive".to_string()
+            } else {
+                actor.status.clone()
+            };
+            let npc = Npc {
+                npc_id: actor.actor_id.clone(),
+                name: name.clone(),
+                role,
+                pronouns: String::new(),
+                color: String::new(),
+                public_label: actor.public_label.clone(),
+                age: String::new(),
+                physical_type: String::new(),
+                distinctive_features: String::new(),
+                life_status: status,
+                life_status_note: String::new(),
+                condition: String::new(),
+                persona: if actor.agenda.is_empty() {
+                    "Житель мира.".to_string()
+                } else {
+                    actor.agenda.clone()
+                },
+                personality: String::new(),
+                values: String::new(),
+                habits: String::new(),
+                pressure_response: String::new(),
+                boundaries: String::new(),
+                voice: "Естественно, кратко, в образе.".to_string(),
+                goals,
+                knowledge: "Только то, что очевидно в текущей сцене.".to_string(),
+                secret: "Личная тайна не задана.".to_string(),
+                abilities: Map::new(),
+                skills: Map::new(),
+                saving_throws: Map::new(),
+                passive_perception: None,
+                ac: Value::Null,
+                hp: Map::new(),
+                speed: String::new(),
+                senses: String::new(),
+                languages: String::new(),
+                default_whereabouts: None,
+                card_revision: 0,
+            };
+            self.npcs.insert(actor.actor_id.clone(), npc);
+            if !name.is_empty() && !self.extra_proper_nouns.contains(&name) {
+                self.extra_proper_nouns.push(name);
+            }
+        }
+        // The start scene is DERIVED from the canon's player place first, so the
+        // whereabouts sync below can read the present-NPC roster from it.
+        self.refresh_scene_from_canon();
+        self.ensure_npc_whereabouts();
+        // Mirror each actor's canonical location into whereabouts so the legacy
+        // whereabouts export agrees with the canon (for NPCs not marked present
+        // by the scene sync above).
+        for actor in self.world_canon.actors.values() {
+            if let Containment::Place { place_id } = &actor.location {
+                if let Some(wb) = self.npc_whereabouts.get_mut(&actor.actor_id) {
+                    if wb.location_id.is_empty() {
+                        wb.location_id = place_id.clone();
+                    }
+                }
+            }
+        }
+        self.constraints = self.scene.constraints.clone();
     }
 
     // --- RNG accessors for persistence -----------------------------------
@@ -343,6 +499,24 @@ impl World {
                 "Пользовательская история".to_string()
             } else {
                 v
+            }
+        };
+        self.story_brief = {
+            let v = get_str(&seed, "story_brief");
+            if !v.is_empty() {
+                v
+            } else {
+                let v = get_str(&seed, "player_brief");
+                if !v.is_empty() {
+                    v
+                } else {
+                    let v = get_str(&seed, "brief");
+                    if !v.is_empty() {
+                        v
+                    } else {
+                        get_str(&seed, "public_intro")
+                    }
+                }
             }
         };
         self.public = {
@@ -385,6 +559,222 @@ impl World {
         self.state_records = self.seed_state_records(&seed);
         self.npc_whereabouts = BTreeMap::new();
         self.ensure_npc_whereabouts();
+        // Derive the Phase-1 canonical place graph from the seeded scene. This
+        // consumes no RNG (ids are taken verbatim), so deterministic replay is
+        // unaffected; the dice_seed is recorded only as provenance.
+        self.world_canon = WorldCanon::from_scene(&self.scene, &self.dice_seed.to_string());
+        self.world_canon.clock_minutes = self.time.absolute_minutes;
+        self.populate_canon_actors();
+        self.migrate_legacy_state_records_to_memory();
+    }
+
+    /// Populate `world_canon.actors` from the seeded NPC roster so an NPC exists
+    /// as a world-side actor even outside the current scene (TZ §6.7). Consumes
+    /// ZERO RNG: locations/roles/status are taken verbatim from the existing
+    /// scene / whereabouts / NPC cards. One [`crate::canon::Actor`] per NPC, keyed
+    /// by `npc_id`. Present NPCs are located at the start place; others sit at
+    /// their whereabouts `location_id` when it names a known place, else off-scene
+    /// (`OutOfPlay`) so the byte-identical view (occupant_ids) is unaffected.
+    fn populate_canon_actors(&mut self) {
+        use crate::canon::{Actor, Containment, Provenance};
+        let start_place = self.scene.location_id.clone();
+        for npc in self.npcs.values() {
+            let present = self.scene.present_npcs.contains(&npc.npc_id);
+            let wb_loc = self
+                .npc_whereabouts
+                .get(&npc.npc_id)
+                .map(|w| w.location_id.clone())
+                .unwrap_or_default();
+            let location = if present && self.world_canon.places.contains_key(&start_place) {
+                Containment::Place {
+                    place_id: start_place.clone(),
+                }
+            } else if !wb_loc.is_empty() && self.world_canon.places.contains_key(&wb_loc) {
+                Containment::Place {
+                    place_id: wb_loc.clone(),
+                }
+            } else {
+                Containment::OutOfPlay
+            };
+            let home = location.place().map(|s| s.to_string()).unwrap_or_default();
+            let status = match npc.life_status.as_str() {
+                "" => "alive".to_string(),
+                other => other.to_string(),
+            };
+            self.world_canon.actors.insert(
+                npc.npc_id.clone(),
+                Actor {
+                    actor_id: npc.npc_id.clone(),
+                    public_label: if npc.public_label.is_empty() {
+                        npc.name.clone()
+                    } else {
+                        npc.public_label.clone()
+                    },
+                    location,
+                    home_place_id: home,
+                    role: npc.role.clone(),
+                    status,
+                    provenance: Provenance::seed(),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    /// Move legacy `StateRecord` facts into the scoped living-world memory once,
+    /// so old seeds/saves stay readable without letting the old flat store feed
+    /// prompts or fact lookup directly.
+    pub fn migrate_legacy_state_records_to_memory(&mut self) {
+        let records = self.state_records.clone();
+        for record in records {
+            self.sync_legacy_state_record_to_memory(&record);
+        }
+    }
+
+    fn sync_legacy_state_record_to_memory(&mut self, record: &StateRecord) {
+        let _ = self.upsert_state_record_memory(record, "legacy_state_record_migration");
+    }
+
+    /// Store a `StateRecord`-shaped fact as scoped living-world memory.
+    ///
+    /// This keeps old seed/save import compatible while allowing live tools to
+    /// stop appending to the legacy flat `state_records` vector.
+    pub fn upsert_state_record_memory(
+        &mut self,
+        record: &StateRecord,
+        created_by: &str,
+    ) -> Option<String> {
+        let normalized_record_id = actor_key(&record.record_id);
+        if normalized_record_id.is_empty() {
+            return None;
+        }
+        let existing_id = self
+            .world_canon
+            .memory
+            .units
+            .iter()
+            .find(|(_, unit)| {
+                unit.source_state_record_ids
+                    .iter()
+                    .any(|id| id == &normalized_record_id)
+            })
+            .map(|(id, _)| id.clone());
+
+        if !record.active || record.text.trim().is_empty() {
+            if let Some(id) = existing_id {
+                if let Some(unit) = self.world_canon.memory.units.get_mut(&id) {
+                    unit.injection_state = MemoryInjectionState::Archived;
+                    unit.time_end = self.world_canon.clock_minutes;
+                }
+                return Some(id);
+            }
+            return None;
+        }
+
+        let owner_scope = legacy_state_record_owner_scope(record);
+        let visibility_scopes = legacy_state_record_visibility_scopes(record, &owner_scope);
+        let known_name = get_str(&record.metadata, "known_name");
+        let mut metadata = record.metadata.clone();
+        metadata.insert("record_id".to_string(), json!(record.record_id.clone()));
+        metadata.insert("hash".to_string(), json!(state_record_hash(record)));
+        metadata.insert(
+            "legacy_kind".to_string(),
+            json!(state_record_kind(&record.kind)),
+        );
+        metadata.insert(
+            "legacy_scope".to_string(),
+            json!(state_record_scope(&record.scope)),
+        );
+        metadata.insert("status".to_string(), json!(record.status.clone()));
+        if created_by != "legacy_state_record_migration" {
+            metadata.insert("source".to_string(), json!(record.source.clone()));
+            metadata.insert("tags".to_string(), json!(record.tags.clone()));
+        }
+        metadata.insert("owner".to_string(), json!(record.owner.clone()));
+        metadata.insert("subject".to_string(), json!(record.subject.clone()));
+        metadata.insert("source_npc".to_string(), json!(record.source_npc.clone()));
+        metadata.insert(
+            "participants".to_string(),
+            json!(record.participants.clone()),
+        );
+        metadata.insert("location_id".to_string(), json!(record.location_id.clone()));
+        metadata.insert(
+            "location_name".to_string(),
+            json!(record.location_name.clone()),
+        );
+        metadata.insert("region_id".to_string(), json!(record.region_id.clone()));
+        metadata.insert("region_name".to_string(), json!(record.region_name.clone()));
+        metadata.insert("scene_id".to_string(), json!(record.scene_id.clone()));
+        metadata.insert("importance".to_string(), json!(record.importance.clone()));
+        metadata.insert("aliases".to_string(), json!(record.aliases.clone()));
+        if !record.entity_id.trim().is_empty() {
+            metadata.insert("entity_id".to_string(), json!(actor_key(&record.entity_id)));
+        }
+        if !known_name.is_empty() {
+            metadata.insert("known_name".to_string(), json!(known_name));
+        }
+        let memory_id = existing_id.unwrap_or_else(|| {
+            let prefix = if created_by == "legacy_state_record_migration" {
+                "legacy_state_record"
+            } else {
+                "world_state"
+            };
+            format!("{prefix}_{normalized_record_id}")
+        });
+        let mut unit = MemoryUnit {
+            memory_id: memory_id.clone(),
+            tier: MemoryTier::Raw,
+            owner_scope,
+            visibility_scopes,
+            summary: record.text.clone(),
+            details: record.text.clone(),
+            source_state_record_ids: vec![normalized_record_id],
+            injection_state: MemoryInjectionState::Hot,
+            time_start: self.world_canon.clock_minutes,
+            time_end: self.world_canon.clock_minutes,
+            place_ids: legacy_state_record_place_ids(record),
+            actor_ids: legacy_state_record_actor_ids(record),
+            topic_tags: legacy_state_record_topic_tags(record, &known_name),
+            metadata,
+            truth_status: legacy_state_record_truth_status(record),
+            created_by: nonempty_or(created_by.trim().to_string(), "world_state_memory"),
+            ..Default::default()
+        };
+        if unit.visibility_scopes.is_empty()
+            && !matches!(unit.owner_scope.as_str(), "gm_private" | "true_canon")
+        {
+            unit.visibility_scopes.push(unit.owner_scope.clone());
+        }
+        unit.normalize();
+        self.world_canon
+            .memory
+            .units
+            .insert(unit.memory_id.clone(), unit);
+        Some(memory_id)
+    }
+
+    pub fn archive_state_record_memory(&mut self, record_id: &str) -> bool {
+        let normalized_record_id = actor_key(record_id);
+        if normalized_record_id.is_empty() {
+            return false;
+        }
+        let mut archived = false;
+        for unit in self.world_canon.memory.units.values_mut() {
+            if unit
+                .source_state_record_ids
+                .iter()
+                .any(|id| id == &normalized_record_id)
+            {
+                unit.injection_state = MemoryInjectionState::Archived;
+                unit.time_end = self.world_canon.clock_minutes;
+                archived = true;
+            }
+        }
+        archived
+    }
+
+    fn archive_legacy_state_record_memory(&mut self, record_id: &str) {
+        let _ = self.archive_state_record_memory(record_id);
     }
 
     fn seed_npcs(&mut self, seed: &Map<String, Value>) -> BTreeMap<String, Npc> {
@@ -565,12 +955,11 @@ impl World {
         };
         let location_id = safe_id(&get_str(&raw, "location_id"), "start_location");
         let description = nonempty_or(get_str(&raw, "description"), &self.public);
-        let mut constraints: Vec<String> =
-            as_list(raw.get("constraints").unwrap_or(&Value::Null))
-                .iter()
-                .map(as_str)
-                .filter(|s| !s.is_empty())
-                .collect();
+        let mut constraints: Vec<String> = as_list(raw.get("constraints").unwrap_or(&Value::Null))
+            .iter()
+            .map(as_str)
+            .filter(|s| !s.is_empty())
+            .collect();
         if constraints.is_empty() {
             constraints = vec![
                 "Здесь существуют только описанные выходы, видимые предметы и присутствующие люди."
@@ -675,10 +1064,7 @@ impl World {
                         .filter(|s| !s.is_empty())
                         .collect();
                     let source = get_str(m, "source");
-                    let confirmed = m
-                        .get("confirmed")
-                        .map(as_bool_pyish)
-                        .unwrap_or(true);
+                    let confirmed = m.get("confirmed").map(as_bool_pyish).unwrap_or(true);
                     (text, fid, kind, kw, source, confirmed)
                 }
                 _ => {
@@ -729,9 +1115,7 @@ impl World {
             .enumerate()
         {
             let i = idx + 1;
-            if let Some(rec) =
-                coerce_state_record(raw, &format!("seed_state_{i}"), &existing)
-            {
+            if let Some(rec) = coerce_state_record(raw, &format!("seed_state_{i}"), &existing) {
                 existing.insert(rec.record_id.clone());
                 records.push(rec);
             }
@@ -744,14 +1128,18 @@ impl World {
     // =====================================================================
 
     pub fn add_state_records(&mut self, records: &Value) -> Vec<StateRecord> {
-        let mut existing: BTreeSet<String> =
-            self.state_records.iter().map(|r| r.record_id.clone()).collect();
+        let mut existing: BTreeSet<String> = self
+            .state_records
+            .iter()
+            .map(|r| r.record_id.clone())
+            .collect();
         let mut added: Vec<StateRecord> = Vec::new();
         for (idx, raw) in as_list(records).iter().enumerate() {
             let fallback = format!("state_{}", existing.len() + idx + 1);
             if let Some(rec) = coerce_state_record(raw, &fallback, &existing) {
                 existing.insert(rec.record_id.clone());
                 self.state_records.push(rec.clone());
+                self.sync_legacy_state_record_to_memory(&rec);
                 added.push(rec);
             }
         }
@@ -773,77 +1161,19 @@ impl World {
                     get_str(&m, "id")
                 }
             };
-            let pos = match self.state_records.iter().position(|r| r.record_id == record_id) {
+            let pos = match self
+                .state_records
+                .iter()
+                .position(|r| r.record_id == record_id)
+            {
                 Some(p) => p,
                 None => continue,
             };
             let rec = &mut self.state_records[pos];
-            if m.contains_key("kind") {
-                rec.kind = state_record_kind(&get_str(&m, "kind"));
-            }
-            if m.contains_key("text") {
-                let text = get_str(&m, "text");
-                if !text.is_empty() {
-                    rec.text = text;
-                }
-            }
-            if m.contains_key("scope") {
-                rec.scope = state_record_scope(&get_str(&m, "scope"));
-            }
-            if m.contains_key("active") {
-                rec.active =
-                    state_record::state_record_active(m.get("active").unwrap(), rec.active);
-            }
-            if m.contains_key("owner") || m.contains_key("owner_id") {
-                rec.owner = first_nonempty(&m, &["owner", "owner_id"]);
-            }
-            if m.contains_key("subject") || m.contains_key("subject_id") {
-                rec.subject = first_nonempty(&m, &["subject", "subject_id"]);
-            }
-            if m.contains_key("source") {
-                rec.source = get_str(&m, "source");
-            }
-            if m.contains_key("status") {
-                rec.status = nonempty_or(get_str(&m, "status"), "known");
-            }
-            if m.contains_key("tags") {
-                rec.tags = state_record::state_record_tags(m.get("tags").unwrap());
-            }
-            if m.contains_key("entity_id") || m.contains_key("entity") || m.contains_key("about") {
-                rec.entity_id = first_nonempty(&m, &["entity_id", "entity", "about"]);
-            }
-            if m.contains_key("source_npc") || m.contains_key("source_npc_id") {
-                rec.source_npc = first_nonempty(&m, &["source_npc", "source_npc_id"]);
-            }
-            if m.contains_key("participants") {
-                rec.participants =
-                    state_record::state_record_participants(m.get("participants").unwrap());
-            }
-            if m.contains_key("location_id") {
-                rec.location_id = get_str(&m, "location_id");
-            }
-            if m.contains_key("location_name") {
-                rec.location_name = get_str(&m, "location_name");
-            }
-            if m.contains_key("region_id") {
-                rec.region_id = get_str(&m, "region_id");
-            }
-            if m.contains_key("region_name") {
-                rec.region_name = get_str(&m, "region_name");
-            }
-            if m.contains_key("scene_id") {
-                rec.scene_id = get_str(&m, "scene_id");
-            }
-            if m.contains_key("importance") {
-                rec.importance = get_str(&m, "importance");
-            }
-            if m.contains_key("aliases") {
-                rec.aliases = state_record::state_record_aliases(m.get("aliases").unwrap());
-            }
-            if m.contains_key("metadata") {
-                rec.metadata = state_record::state_record_metadata(m.get("metadata").unwrap());
-            }
-            updated.push(rec.clone());
+            apply_state_record_update_map(rec, &m);
+            let synced = rec.clone();
+            self.sync_legacy_state_record_to_memory(&synced);
+            updated.push(synced);
         }
         updated
     }
@@ -858,16 +1188,29 @@ impl World {
             return 0;
         }
         if hard {
-            let before = self.state_records.len();
+            let removed: Vec<String> = self
+                .state_records
+                .iter()
+                .filter(|r| ids.contains(&r.record_id))
+                .map(|r| r.record_id.clone())
+                .collect();
             self.state_records.retain(|r| !ids.contains(&r.record_id));
-            return (before - self.state_records.len()) as i64;
+            for id in &removed {
+                self.archive_legacy_state_record_memory(id);
+            }
+            return removed.len() as i64;
         }
         let mut count = 0;
+        let mut archived = Vec::new();
         for rec in self.state_records.iter_mut() {
             if ids.contains(&rec.record_id) && rec.active {
                 rec.active = false;
+                archived.push(rec.record_id.clone());
                 count += 1;
             }
+        }
+        for id in &archived {
+            self.archive_legacy_state_record_memory(id);
         }
         count
     }
@@ -882,6 +1225,78 @@ impl World {
         let added = self.add_state_records(add);
         let updated = self.update_state_records(update);
         let deleted = self.delete_state_records(delete, hard_delete);
+        json!({
+            "added": added.iter().map(state_record_to_value).collect::<Vec<_>>(),
+            "updated": updated.iter().map(state_record_to_value).collect::<Vec<_>>(),
+            "deleted": deleted,
+        })
+    }
+
+    pub fn apply_state_memory_record_batch(
+        &mut self,
+        add: &Value,
+        update: &Value,
+        delete: &Value,
+        _hard_delete: bool,
+    ) -> Value {
+        let mut existing: BTreeSet<String> = self
+            .world_canon
+            .memory
+            .units
+            .values()
+            .filter_map(memory_unit_to_state_record)
+            .map(|record| record.record_id)
+            .collect();
+        let mut added = Vec::new();
+        for (idx, raw) in as_list(add).iter().enumerate() {
+            let fallback = format!("state_{}", existing.len() + idx + 1);
+            let Some(record) = coerce_state_record(raw, &fallback, &existing) else {
+                continue;
+            };
+            existing.insert(record.record_id.clone());
+            let _ = self.upsert_state_record_memory(&record, "world_state_memory");
+            added.push(record);
+        }
+
+        let mut updated = Vec::new();
+        for raw in as_list(update) {
+            let Value::Object(m) = raw else {
+                continue;
+            };
+            let record_id = {
+                let r = get_str(&m, "record_id");
+                if r.is_empty() {
+                    get_str(&m, "id")
+                } else {
+                    r
+                }
+            };
+            let Some(mut record) = self
+                .world_canon
+                .memory
+                .units
+                .values()
+                .filter_map(memory_unit_to_state_record)
+                .find(|record| record.record_id == record_id)
+            else {
+                continue;
+            };
+            apply_state_record_update_map(&mut record, &m);
+            let _ = self.upsert_state_record_memory(&record, "world_state_memory");
+            updated.push(record);
+        }
+
+        let mut deleted = 0;
+        for id in as_list(delete)
+            .iter()
+            .map(as_str)
+            .filter(|id| !id.is_empty())
+        {
+            if self.archive_state_record_memory(&id) {
+                deleted += 1;
+            }
+        }
+
         json!({
             "added": added.iter().map(state_record_to_value).collect::<Vec<_>>(),
             "updated": updated.iter().map(state_record_to_value).collect::<Vec<_>>(),
@@ -960,12 +1375,13 @@ impl World {
         for record in self.state_records_for(&query) {
             let mut tags: Vec<String> = Vec::new();
             let candidate_tags: Vec<String> = {
-                let mut v: Vec<String> = Vec::new();
-                v.push(state_record_kind(&record.kind));
-                v.push(record.owner.clone());
-                v.push(record.subject.clone());
-                v.push(record.entity_id.clone());
-                v.push(record.source_npc.clone());
+                let mut v: Vec<String> = vec![
+                    state_record_kind(&record.kind),
+                    record.owner.clone(),
+                    record.subject.clone(),
+                    record.entity_id.clone(),
+                    record.source_npc.clone(),
+                ];
                 v.extend(record.participants.iter().cloned());
                 v.push(record.location_id.clone());
                 v.push(record.location_name.clone());
@@ -1009,13 +1425,23 @@ impl World {
             let doc_text = if context_bits.is_empty() {
                 record.text.clone()
             } else {
-                format!("Memory context: {}. {}", context_bits.join("; "), record.text)
+                format!(
+                    "Memory context: {}. {}",
+                    context_bits.join("; "),
+                    record.text
+                )
             };
 
             let mut metadata = record.metadata.clone();
             metadata.insert("record_id".to_string(), json!(record.record_id));
-            metadata.insert("record_kind".to_string(), json!(state_record_kind(&record.kind)));
-            metadata.insert("scope".to_string(), json!(state_record_scope(&record.scope)));
+            metadata.insert(
+                "record_kind".to_string(),
+                json!(state_record_kind(&record.kind)),
+            );
+            metadata.insert(
+                "scope".to_string(),
+                json!(state_record_scope(&record.scope)),
+            );
             metadata.insert("owner".to_string(), json!(record.owner));
             metadata.insert("subject".to_string(), json!(record.subject));
             metadata.insert("entity_id".to_string(), json!(record.entity_id));
@@ -1044,6 +1470,243 @@ impl World {
         docs
     }
 
+    fn insert_place_scope_chain(&self, place_id: &str, scopes: &mut BTreeSet<String>) {
+        let mut current = actor_key(place_id);
+        let mut guard = 0usize;
+        while !current.is_empty() && guard < 16 {
+            guard += 1;
+            scopes.insert(format!("place:{current}"));
+            let Some(place) = self.world_canon.places.get(&current) else {
+                break;
+            };
+            if !place.region_id.is_empty() {
+                scopes.insert(format!("region:{}", actor_key(&place.region_id)));
+            }
+            if place.parent.is_empty() {
+                break;
+            }
+            let parent = actor_key(&place.parent);
+            if self.world_canon.settlements.contains_key(&parent) {
+                scopes.insert(format!("settlement:{parent}"));
+                if let Some(settlement) = self.world_canon.settlements.get(&parent) {
+                    if !settlement.region_id.is_empty() {
+                        scopes.insert(format!("region:{}", actor_key(&settlement.region_id)));
+                    }
+                }
+                break;
+            }
+            if parent == current {
+                break;
+            }
+            current = parent;
+        }
+    }
+
+    fn insert_route_scopes_for_place(&self, place_id: &str, scopes: &mut BTreeSet<String>) {
+        let place_id = actor_key(place_id);
+        if place_id.is_empty() {
+            return;
+        }
+        for transition in self.world_canon.transitions.values() {
+            if actor_key(&transition.from_place) == place_id
+                || actor_key(&transition.to_place) == place_id
+            {
+                scopes.extend(crate::canon::rumor::scopes_for_transition(transition));
+            }
+        }
+    }
+
+    pub fn memory_access_for_player(&self) -> MemoryAccess {
+        let mut scopes = BTreeSet::new();
+        scopes.insert("player".to_string());
+        scopes.insert("actor:player".to_string());
+        scopes.insert("public".to_string());
+        scopes.insert("legacy_public".to_string());
+        MemoryAccess::scoped(scopes)
+    }
+
+    pub fn memory_access_for_public(&self) -> MemoryAccess {
+        let mut scopes = BTreeSet::new();
+        scopes.insert("public".to_string());
+        scopes.insert("legacy_public".to_string());
+        MemoryAccess::scoped(scopes)
+    }
+
+    pub fn memory_access_for_actor(&self, actor_id: &str) -> MemoryAccess {
+        let actor_id = actor_key(actor_id);
+        if actor_id == "gm" || actor_id == "debug" || actor_id == "system" {
+            return MemoryAccess::gm();
+        }
+        if actor_id == "public" {
+            return self.memory_access_for_public();
+        }
+        if actor_id == "player" || actor_id.is_empty() {
+            return self.memory_access_for_player();
+        }
+        let mut scopes = BTreeSet::new();
+        scopes.insert("public".to_string());
+        scopes.insert("legacy_public".to_string());
+        scopes.insert(format!("actor:{actor_id}"));
+        if let Some(actor) = self.world_canon.actors.get(&actor_id) {
+            if let Some(place_id) = actor.location.place() {
+                self.insert_place_scope_chain(place_id, &mut scopes);
+                self.insert_route_scopes_for_place(place_id, &mut scopes);
+            }
+            if !actor.faction_id.is_empty() {
+                scopes.insert(format!("faction:{}", actor_key(&actor.faction_id)));
+            }
+        }
+        for faction in self.world_canon.factions.values() {
+            if faction
+                .member_ids
+                .iter()
+                .any(|id| actor_key(id) == actor_id)
+            {
+                scopes.insert(format!("faction:{}", actor_key(&faction.faction_id)));
+            }
+        }
+        MemoryAccess::scoped(scopes)
+    }
+
+    pub fn memory_access_for_place(&self, place_id: &str) -> MemoryAccess {
+        let mut scopes = BTreeSet::new();
+        scopes.insert("public".to_string());
+        scopes.insert("legacy_public".to_string());
+        self.insert_place_scope_chain(place_id, &mut scopes);
+        self.insert_route_scopes_for_place(place_id, &mut scopes);
+        MemoryAccess::scoped(scopes)
+    }
+
+    pub fn memory_access_for_scope(&self, scope: &str, id: &str) -> Result<MemoryAccess, String> {
+        let scope = canonical_scope(scope, "player");
+        match scope.as_str() {
+            "gm_private" | "true_canon" | "gm" => Ok(MemoryAccess::gm()),
+            "player" => Ok(self.memory_access_for_player()),
+            "public" | "legacy_public" => Ok(self.memory_access_for_public()),
+            _ if scope.starts_with("actor:") => {
+                let actor_id = scope.trim_start_matches("actor:");
+                if !self.world_canon.actors.contains_key(actor_id)
+                    && !self.npcs.contains_key(actor_id)
+                {
+                    return Err(format!("unknown actor scope: {actor_id}"));
+                }
+                Ok(self.memory_access_for_actor(actor_id))
+            }
+            _ if scope.starts_with("place:") => {
+                let place_id = scope.trim_start_matches("place:");
+                if !self.world_canon.places.contains_key(place_id) {
+                    return Err(format!("unknown place scope: {place_id}"));
+                }
+                Ok(self.memory_access_for_place(place_id))
+            }
+            _ if !id.trim().is_empty() => {
+                let scoped = canonical_scope(&format!("{scope}:{id}"), "");
+                if scoped.starts_with("actor:") {
+                    Ok(self.memory_access_for_actor(scoped.trim_start_matches("actor:")))
+                } else if scoped.starts_with("place:") {
+                    Ok(self.memory_access_for_place(scoped.trim_start_matches("place:")))
+                } else {
+                    let mut scopes = BTreeSet::new();
+                    scopes.insert("public".to_string());
+                    scopes.insert("legacy_public".to_string());
+                    scopes.insert(scoped);
+                    Ok(MemoryAccess::scoped(scopes))
+                }
+            }
+            _ => Err(format!("unsupported memory scope: {scope}")),
+        }
+    }
+
+    pub fn add_memory_unit(&mut self, unit: MemoryUnit) -> String {
+        let seed = if self.world_canon.world_seed.is_empty() {
+            self.dice_seed.to_string()
+        } else {
+            self.world_canon.world_seed.clone()
+        };
+        self.world_canon.memory.insert(unit, &seed)
+    }
+
+    pub fn consolidate_memory_unit(&mut self, mut unit: MemoryUnit) -> (String, Vec<String>) {
+        if unit.tier == MemoryTier::Raw {
+            unit.tier = MemoryTier::Episode;
+        }
+        let source_ids = unit.source_memory_ids.clone();
+        let id = self.add_memory_unit(unit);
+        let consumed = self.world_canon.memory.mark_consumed(&source_ids, &id);
+        (id, consumed)
+    }
+
+    pub fn auto_consolidate_memory(&mut self) -> Vec<String> {
+        let seed = if self.world_canon.world_seed.is_empty() {
+            self.dice_seed.to_string()
+        } else {
+            self.world_canon.world_seed.clone()
+        };
+        self.world_canon.memory.auto_consolidate(&seed)
+    }
+
+    pub fn memory_rows_for_access(
+        &self,
+        access: &MemoryAccess,
+        query: &str,
+        limit: usize,
+        include_cold: bool,
+        include_details: bool,
+    ) -> Vec<Value> {
+        self.world_canon
+            .memory
+            .query_with_details(access, query, limit, include_cold, include_details)
+            .into_iter()
+            .map(|unit| unit.to_row(include_details))
+            .collect()
+    }
+
+    pub fn memory_documents(&self, actor_id: &str) -> Vec<RagDocument> {
+        let access = self.memory_access_for_actor(actor_id);
+        self.memory_documents_for_access(&access, false, false)
+    }
+
+    pub fn memory_documents_for_access(
+        &self,
+        access: &MemoryAccess,
+        include_cold: bool,
+        include_details: bool,
+    ) -> Vec<RagDocument> {
+        self.world_canon
+            .memory
+            .query(access, "", usize::MAX, include_cold)
+            .into_iter()
+            .map(|unit| unit.to_rag_document_with_details(include_details))
+            .collect()
+    }
+
+    pub fn npc_memory_brief(&self, npc_id: &str, query: &str, limit: usize) -> String {
+        let access = self.memory_access_for_actor(npc_id);
+        let rows = self
+            .world_canon
+            .memory
+            .query_with_details(&access, query, limit, false, false);
+        if rows.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<String> = rows
+            .into_iter()
+            .map(|unit| {
+                format!(
+                    "- [{}; {}; {}] {}",
+                    unit.memory_id,
+                    unit.tier.as_str(),
+                    unit.truth_status.as_str(),
+                    unit.summary
+                )
+            })
+            .collect();
+        format!(
+            "Scoped memory recall (short summaries only; actor-visible):\n{}",
+            lines.join("\n")
+        )
+    }
+
     pub fn state_records_export(&self, query: &StateRecordQuery) -> Vec<Value> {
         let mut out = Vec::new();
         for record in self.state_records_for(query) {
@@ -1056,21 +1719,76 @@ impl World {
         out
     }
 
+    pub fn state_memory_records_export(&self, query: &StateRecordQuery) -> Vec<Value> {
+        let mut out = Vec::new();
+        for unit in self.world_canon.memory.units.values() {
+            let Some(record) = memory_unit_to_state_record(unit) else {
+                continue;
+            };
+            if !state_record_matches_query(&record, query) {
+                continue;
+            }
+            let mut row = state_record_to_value(&record);
+            if let Value::Object(ref mut m) = row {
+                let hash = memory_meta_string(unit, "hash");
+                m.insert(
+                    "hash".to_string(),
+                    json!(if hash.is_empty() {
+                        state_record_hash(&record)
+                    } else {
+                        hash
+                    }),
+                );
+                m.insert("memory_id".to_string(), json!(unit.memory_id.clone()));
+            }
+            out.push(row);
+        }
+        out
+    }
+
     /// `npc_known_name(npc_id, actor_id)`.
     pub fn npc_known_name(&self, npc_id: &str, actor_id: &str) -> String {
         let clean_id = actor_key(npc_id);
         if clean_id.is_empty() {
             return String::new();
         }
-        let mut query = StateRecordQuery::new(actor_id);
-        let entity_owned = clean_id.clone();
-        query.entity_id = &entity_owned;
-        let records = self.state_records_for(&query);
-        for record in records.iter().rev() {
-            let known_name = get_str(&record.metadata, "known_name");
-            if !known_name.is_empty() {
-                return known_name;
-            }
+        let access = self.memory_access_for_actor(actor_id);
+        let mut memory_matches = self
+            .world_canon
+            .memory
+            .units
+            .values()
+            .filter(|unit| unit.is_visible_to(&access))
+            .filter_map(|unit| {
+                let entity_id = unit
+                    .metadata
+                    .get("entity_id")
+                    .and_then(Value::as_str)
+                    .map(actor_key)
+                    .unwrap_or_default();
+                if entity_id != clean_id {
+                    return None;
+                }
+                let known_name = unit
+                    .metadata
+                    .get("known_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if known_name.is_empty() {
+                    None
+                } else {
+                    Some((
+                        unit.time_end,
+                        unit.memory_id.clone(),
+                        known_name.to_string(),
+                    ))
+                }
+            })
+            .collect::<Vec<_>>();
+        memory_matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        if let Some((_, _, known_name)) = memory_matches.into_iter().next() {
+            return known_name;
         }
         String::new()
     }
@@ -1106,6 +1824,7 @@ impl World {
         }
         self.npc_whereabouts = cleaned;
         self.apply_default_story_whereabouts();
+        self.downgrade_stale_present_whereabouts();
         self.sync_present_npc_whereabouts();
     }
 
@@ -1189,6 +1908,26 @@ impl World {
                     source: nonempty_or(get_str(&default, "source"), SOURCE_DEFAULT_LORE),
                 },
             );
+        }
+    }
+
+    fn downgrade_stale_present_whereabouts(&mut self) {
+        let current_scene_npcs = self.scene.present_npcs.clone();
+        for (npc_id, row) in self.npc_whereabouts.iter_mut() {
+            if row.status != "present" || current_scene_npcs.contains(npc_id) {
+                continue;
+            }
+            row.status = if row.location_id.is_empty()
+                && row.location_name.is_empty()
+                && row.details.is_empty()
+            {
+                "unknown".to_string()
+            } else {
+                "known".to_string()
+            };
+            if row.source.trim().is_empty() || row.source == "current scene" {
+                row.source = "stale current scene".to_string();
+            }
         }
     }
 
@@ -1287,7 +2026,7 @@ impl World {
 
     pub fn retrieval_documents(&mut self, actor_id: &str) -> Vec<RagDocument> {
         let mut docs: Vec<RagDocument> = Vec::new();
-        docs.extend(self.state_record_documents(actor_id));
+        docs.extend(self.memory_documents(actor_id));
 
         for record in &self.fact_records {
             if record.kind == "truth" {
@@ -1372,7 +2111,10 @@ impl World {
             .cloned()
             .collect::<Vec<_>>()
         {
-            let mut text = format!("В текущей сцене виден предмет: {}; место: {}.", item.name, item.location);
+            let mut text = format!(
+                "В текущей сцене виден предмет: {}; место: {}.",
+                item.name, item.location
+            );
             if !item.details.is_empty() {
                 text.push_str(&format!(" Детали: {}.", item.details));
             }
@@ -1418,7 +2160,10 @@ impl World {
             docs.push(RagDocument::new(
                 format!("npc_public:{npc_id}"),
                 "npc_public".to_string(),
-                format!("{label} ({npc_id}) — {}.{gender_part}{appearance}", npc.role),
+                format!(
+                    "{label} ({npc_id}) — {}.{gender_part}{appearance}",
+                    npc.role
+                ),
                 "known".to_string(),
                 "npc_roster".to_string(),
                 "player".to_string(),
@@ -1485,34 +2230,6 @@ impl World {
             }
         }
 
-        for rumor in &self.rumors {
-            if !rumor.witnesses.contains("player") {
-                continue;
-            }
-            let speaker_exists = self.npcs.contains_key(&rumor.speaker);
-            let speaker_name = if speaker_exists {
-                self.npc_player_label(&rumor.speaker, actor_id)
-            } else {
-                rumor.speaker.clone()
-            };
-            let mut metadata = Map::new();
-            metadata.insert("seq".to_string(), json!(rumor.seq));
-            metadata.insert("turn".to_string(), json!(rumor.turn));
-            metadata.insert("speaker".to_string(), json!(rumor.speaker));
-            let witnesses_sorted: Vec<String> = rumor.witnesses.iter().cloned().collect();
-            metadata.insert("witnesses".to_string(), json!(witnesses_sorted));
-            metadata.insert("confirmed".to_string(), json!(rumor.confirmed));
-            docs.push(RagDocument::new(
-                format!("testimony:{}", rumor.seq),
-                "testimony".to_string(),
-                format!("{speaker_name} сказал: «{}»", rumor.text),
-                if rumor.confirmed { "known" } else { "unconfirmed" }.to_string(),
-                format!("event:{}", rumor.seq),
-                "player".to_string(),
-                vec![rumor.speaker.clone(), speaker_name.clone()],
-                metadata,
-            ));
-        }
         docs
     }
 
@@ -1580,13 +2297,42 @@ impl World {
             .iter()
             .map(|i| i.name.clone())
             .collect();
+        // Exits are rendered FROM the canon so the GM sees the real
+        // `transition_id` it must pass to `move_player` (the canonical travel
+        // mechanism). Falls back to the legacy scene exits only when the player
+        // has no canonical place (a pre-canon save).
         let mut exits: Vec<String> = Vec::new();
-        for exit_ in self.scene.visible_exits() {
-            let mut line = format!("{} -> {}", exit_.name, exit_.destination);
-            if !exit_.blocked_by.is_empty() {
-                line.push_str(&format!(" (blocked by {})", exit_.blocked_by));
+        let here = &self.world_canon.player_place_id;
+        if !here.is_empty() && self.world_canon.place(here).is_some() {
+            for t in self.world_canon.exits_from(here) {
+                if !t.visible {
+                    continue;
+                }
+                let dest = if t.to_place.is_empty() {
+                    t.destination_hint.clone()
+                } else {
+                    self.world_canon
+                        .place(&t.to_place)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| t.to_place.clone())
+                };
+                let mut line = format!(
+                    "{} -> {} [move_player transition_id={}; travel_minutes={}; road_risk={}]",
+                    t.label, dest, t.transition_id, t.time_cost, t.risk
+                );
+                if !t.blocked_by.is_empty() {
+                    line.push_str(&format!(" (blocked by {})", t.blocked_by));
+                }
+                exits.push(line);
             }
-            exits.push(line);
+        } else {
+            for exit_ in self.scene.visible_exits() {
+                let mut line = format!("{} -> {}", exit_.name, exit_.destination);
+                if !exit_.blocked_by.is_empty() {
+                    line.push_str(&format!(" (blocked by {})", exit_.blocked_by));
+                }
+                exits.push(line);
+            }
         }
         let mut parts = vec![
             format!("Scene: {}", self.scene.title),
@@ -1764,8 +2510,12 @@ impl World {
                 .collect();
             current_meta.push(json!({"label": "в сцене", "value": names.join(", ")}));
         }
-        let visible_exit_names: Vec<String> =
-            self.scene.visible_exits().iter().map(|e| e.name.clone()).collect();
+        let visible_exit_names: Vec<String> = self
+            .scene
+            .visible_exits()
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
         if !visible_exit_names.is_empty() {
             current_meta.push(json!({"label": "выходы", "value": visible_exit_names.join(", ")}));
         }
@@ -2006,32 +2756,6 @@ impl World {
                 .collect();
             parts.push(format!("Public facts you may know:\n{}", listed.join("\n")));
         }
-        let mut query = StateRecordQuery::new(npc_id);
-        let kinds = vec![
-            "fact".to_string(),
-            "rumor".to_string(),
-            "npc_memory".to_string(),
-            "relationship".to_string(),
-            "goal".to_string(),
-        ];
-        query.kinds = Some(&kinds);
-        let memory_records: Vec<StateRecord> =
-            self.state_records_for(&query).into_iter().cloned().collect();
-        if !memory_records.is_empty() {
-            let lines: Vec<String> = memory_records
-                .iter()
-                .take(12)
-                .map(|record| {
-                    let subject = if record.subject.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" about {}", record.subject)
-                    };
-                    format!("- {}{subject}: {}", record.kind, record.text)
-                })
-                .collect();
-            parts.push(format!("Actor-visible state memory:\n{}", lines.join("\n")));
-        }
         if !self.scene.constraints.is_empty() {
             let lines: Vec<String> = self
                 .scene
@@ -2068,6 +2792,81 @@ impl World {
     // Presence / scene mutators
     // =====================================================================
 
+    /// Set a canon actor's physical location (creating a bridging actor for a
+    /// legacy npc if it has none yet), keeping place occupant sets consistent.
+    /// `place = None` means offscreen (`OutOfPlay`). This is how legacy presence
+    /// mutators write through to the canonical source of truth.
+    fn set_canon_actor_location(&mut self, npc_id: &str, place: Option<&str>) {
+        use crate::canon::{Actor, Containment};
+        if let Some(cur) = self
+            .world_canon
+            .actors
+            .get(npc_id)
+            .and_then(|a| a.location.place().map(|s| s.to_string()))
+        {
+            if let Some(p) = self.world_canon.places.get_mut(&cur) {
+                p.occupant_ids.remove(npc_id);
+            }
+        }
+        let containment = match place {
+            Some(pid) if self.world_canon.places.contains_key(pid) => Containment::Place {
+                place_id: pid.to_string(),
+            },
+            _ => Containment::OutOfPlay,
+        };
+        if let Some(a) = self.world_canon.actors.get_mut(npc_id) {
+            a.location = containment;
+        } else {
+            let (label, role, status) = self
+                .npcs
+                .get(npc_id)
+                .map(|n| {
+                    (
+                        n.public_label.clone(),
+                        n.role.clone(),
+                        n.life_status.clone(),
+                    )
+                })
+                .unwrap_or_default();
+            self.world_canon.actors.insert(
+                npc_id.to_string(),
+                Actor {
+                    actor_id: npc_id.to_string(),
+                    public_label: label,
+                    location: containment,
+                    role,
+                    status: nonempty_or(status, "alive"),
+                    ..Default::default()
+                },
+            );
+        }
+        if let Some(pid) = place {
+            if let Some(p) = self.world_canon.places.get_mut(pid) {
+                p.occupant_ids.insert(npc_id.to_string());
+            }
+        }
+    }
+
+    /// Reconcile one npc's canon actor with the resulting legacy presence /
+    /// whereabouts so the canon stays authoritative after a legacy mutation
+    /// (`move_npc`, `set_npc_whereabouts`). Present ⇒ at the player's place;
+    /// otherwise at the canon place matching its recorded whereabouts, else
+    /// offscreen.
+    fn sync_canon_actor(&mut self, npc_id: &str) {
+        if self.world_canon.player_place_id.is_empty() {
+            return;
+        }
+        let target: Option<String> = if self.scene.present_npcs.contains(npc_id) {
+            Some(self.world_canon.player_place_id.clone())
+        } else {
+            self.npc_whereabouts
+                .get(npc_id)
+                .map(|w| w.location_id.clone())
+                .filter(|lid| !lid.is_empty() && self.world_canon.places.contains_key(lid))
+        };
+        self.set_canon_actor_location(npc_id, target.as_deref());
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn set_npc_presence(
         &mut self,
@@ -2091,13 +2890,17 @@ impl World {
                     npc_id: resolved_id.clone(),
                     location: nonempty_or(
                         location.trim().to_string(),
-                        &old.as_ref().map(|o| o.location.clone()).unwrap_or_else(|| "in the scene".to_string()),
+                        &old.as_ref()
+                            .map(|o| o.location.clone())
+                            .unwrap_or_else(|| "in the scene".to_string()),
                     ),
                     visible,
                     can_hear,
                     activity: nonempty_or(
                         activity.trim().to_string(),
-                        &old.as_ref().map(|o| o.activity.clone()).unwrap_or_else(|| format!("present as {role}")),
+                        &old.as_ref()
+                            .map(|o| o.activity.clone())
+                            .unwrap_or_else(|| format!("present as {role}")),
                     ),
                     attitude: nonempty_or(
                         attitude.trim().to_string(),
@@ -2154,6 +2957,11 @@ impl World {
                 );
             }
         }
+        // Write the move through to the canon, then rebuild the live scene from
+        // the canon so the change is the single source of truth (it would
+        // otherwise be overwritten by the next refresh_scene_from_canon).
+        self.sync_canon_actor(&resolved_id);
+        self.refresh_scene_from_canon();
         let name = self.npcs[&resolved_id].name.clone();
         let present_now = self.scene.present_npcs.contains(&resolved_id);
         let present_npcs: Vec<String> = self.scene.present_npcs.iter().cloned().collect();
@@ -2169,6 +2977,19 @@ impl World {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// `set_scene` — REPURPOSED to a canon mutation (LOCKED DECISION #3). Its
+    /// legacy "replace the live scene wholesale" semantics are dead: the canon is
+    /// now authoritative. This upserts a canonical [`crate::canon::Place`] for the
+    /// destination (stable id from `location_id` or the title), ensures a
+    /// transition from the player's current place, sets `canon.player_place_id` to
+    /// the destination, mirrors the present NPCs as canon [`crate::canon::Actor`]s
+    /// at the destination (so the derived `present_npcs` reflects them), then
+    /// rebuilds the live `self.scene` FROM the canon via
+    /// [`World::refresh_scene_from_canon`].
+    ///
+    /// The return shape is unchanged (a `scene_export` of the now-canon-derived
+    /// scene, plus `dropped_present_npcs` / `repair_hint` for unknown ids) so the
+    /// orchestrator tool path and the model-facing text are stable.
     pub fn set_scene(
         &mut self,
         title: &str,
@@ -2180,91 +3001,306 @@ impl World {
         constraints: &Value,
         tension: &str,
     ) -> Value {
+        use crate::canon::{Containment, Provenance, Transition};
+
         self.ensure_npc_whereabouts();
         let title = nonempty_or(title.trim().to_string(), "Новая сцена");
         let description = nonempty_or(description.trim().to_string(), &title);
         let fallback_id = format!("scene_{}", ord_sum(&title) % 100000);
-        let location_id = safe_id(
+        let dest_id = safe_id(
             &nonempty_or(location_id.trim().to_string(), &title),
             &fallback_id,
         );
-        let old_scene = self.scene.clone();
-        let old_present: BTreeSet<String> = old_scene.present_npcs.clone();
 
+        // World seed for canon provenance/id derivation. If the canon is empty
+        // (a pre-canon save), seed it from the current scene first so set_scene
+        // becomes canon-authoritative from here on.
+        if self.world_canon.is_empty() {
+            let seed = self.dice_seed.to_string();
+            self.world_canon = crate::canon::WorldCanon::from_scene(&self.scene, &seed);
+        }
+        let turn = self.world_canon.event_log.events.len() as i64;
+        let from_place = self.world_canon.player_place_id.clone();
+
+        // Resolve present_npcs to known npc ids; collect unknowns to report back.
         let mut present: BTreeSet<String> = BTreeSet::new();
-        let mut presence: BTreeMap<String, Presence> = BTreeMap::new();
         let mut dropped_present_npcs: Vec<String> = Vec::new();
         for raw_id in as_list(present_npcs) {
             let npc_id = safe_id(&as_str(&raw_id), "");
-            if !self.npcs.contains_key(&npc_id) {
+            if npc_id.is_empty() || !self.npcs.contains_key(&npc_id) {
                 let raw_label = as_str(&raw_id);
                 if !raw_label.is_empty() {
                     dropped_present_npcs.push(raw_label);
                 }
                 continue;
             }
-            let old = self.scene.presence.get(&npc_id).cloned();
-            let npc = &self.npcs[&npc_id];
-            present.insert(npc_id.clone());
-            presence.insert(
-                npc_id.clone(),
-                Presence {
-                    npc_id: npc_id.clone(),
-                    location: old.as_ref().map(|o| o.location.clone()).unwrap_or_else(|| "в сцене".to_string()),
-                    visible: true,
-                    can_hear: true,
-                    activity: old
-                        .as_ref()
-                        .map(|o| o.activity.clone())
-                        .unwrap_or_else(|| format!("присутствует как {}", npc.role)),
-                    attitude: old.as_ref().map(|o| o.attitude.clone()).unwrap_or_default(),
-                },
-            );
+            present.insert(npc_id);
         }
 
-        let scene_items = coerce_scene_items(Some(items), "в сцене");
-        let scene_exits = coerce_scene_exits_setscene(Some(exits));
-
-        self.scene = SceneState {
-            scene_id: location_id.clone(),
-            location_id: location_id.clone(),
-            title,
-            description: description.clone(),
-            present_npcs: present.clone(),
-            presence,
-            items: scene_items,
-            exits: scene_exits,
-            constraints: as_list(constraints)
-                .iter()
-                .map(as_str)
-                .filter(|s| !s.is_empty())
-                .collect(),
-            tension: tension.trim().to_string(),
-            player_seen: vec![description],
-        };
-
-        let gone: Vec<String> = old_present.difference(&present).cloned().collect();
-        for old_npc_id in gone {
-            if !self.npcs.contains_key(&old_npc_id) {
-                continue;
+        // --- upsert the destination Place ---------------------------------
+        let coerced_items = coerce_scene_items(Some(items), "в сцене");
+        let item_ids: Vec<String> = coerced_items.iter().map(|i| i.item_id.clone()).collect();
+        match self.world_canon.places.get_mut(&dest_id) {
+            Some(p) => {
+                // Existing place: update its player-facing structural fields.
+                p.name = title.clone();
+                p.default_description = description.clone();
+                p.mark_visited();
+                p.item_ids = item_ids.clone();
             }
-            let old_presence = old_scene.presence.get(&old_npc_id);
-            self.npc_whereabouts.insert(
-                old_npc_id.clone(),
-                NpcWhereabouts {
-                    npc_id: old_npc_id.clone(),
-                    location_id: old_scene.location_id.clone(),
-                    location_name: old_scene.title.clone(),
-                    status: "known".to_string(),
-                    details: nonempty_or(
-                        old_presence.map(|p| p.activity.clone()).unwrap_or_default(),
-                        "оставался в прежней сцене",
-                    ),
-                    source: "previous scene".to_string(),
-                },
-            );
+            None => {
+                let mut flags = BTreeSet::new();
+                flags.insert("visited".to_string());
+                self.world_canon.insert_place(crate::canon::Place {
+                    place_id: dest_id.clone(),
+                    name: title.clone(),
+                    kind: "scene".to_string(),
+                    parent: String::new(),
+                    region_id: String::new(),
+                    default_description: description.clone(),
+                    state_flags: flags,
+                    features: Vec::new(),
+                    transition_ids: Vec::new(),
+                    occupant_ids: BTreeSet::new(),
+                    item_ids: item_ids.clone(),
+                    event_ids: Vec::new(),
+                    fact_ids: Vec::new(),
+                    provenance: Provenance::by("llm", "set_scene authored place", turn),
+                });
+            }
         }
+
+        // --- ensure a transition from the current place to the destination -
+        if !from_place.is_empty() && from_place != dest_id {
+            let already = self
+                .world_canon
+                .exits_from(&from_place)
+                .iter()
+                .any(|t| t.to_place == dest_id);
+            if !already {
+                let tid = crate::canon::ids::stable_id(
+                    &self.world_canon.world_seed,
+                    &from_place,
+                    "transition",
+                    &dest_id,
+                );
+                if !self.world_canon.transitions.contains_key(&tid) {
+                    self.world_canon.insert_transition(Transition {
+                        transition_id: tid.clone(),
+                        source_exit_id: tid.clone(),
+                        from_place: from_place.clone(),
+                        to_place: dest_id.clone(),
+                        destination_hint: title.clone(),
+                        label: nonempty_or(title.clone(), "Переход"),
+                        kind: "scene".to_string(),
+                        visible: true,
+                        passable: true,
+                        conditions: Vec::new(),
+                        blocked_by: String::new(),
+                        time_cost: crate::canon::travel::infer_time_cost("scene", &title, &title),
+                        risk: crate::canon::travel::infer_risk("scene", &title, &title),
+                        provenance: Provenance::by("llm", "set_scene transition", turn),
+                    });
+                }
+                // A guaranteed return edge so the player can always go back.
+                let back = crate::canon::ids::stable_id(
+                    &self.world_canon.world_seed,
+                    &dest_id,
+                    "transition",
+                    &from_place,
+                );
+                if !self.world_canon.transitions.contains_key(&back) {
+                    let back_label = self
+                        .world_canon
+                        .place(&from_place)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| "Назад".to_string());
+                    self.world_canon.insert_transition(Transition {
+                        transition_id: back.clone(),
+                        source_exit_id: back.clone(),
+                        from_place: dest_id.clone(),
+                        to_place: from_place.clone(),
+                        destination_hint: String::new(),
+                        label: nonempty_or(back_label.clone(), "Назад"),
+                        kind: "back".to_string(),
+                        visible: true,
+                        passable: true,
+                        conditions: Vec::new(),
+                        blocked_by: String::new(),
+                        time_cost: crate::canon::travel::infer_time_cost("back", &back_label, ""),
+                        risk: crate::canon::travel::infer_risk("back", &back_label, ""),
+                        provenance: Provenance::by("llm", "set_scene return path", turn),
+                    });
+                }
+            }
+        }
+
+        // --- append any GM-authored extra exits onto the destination ------
+        for exit in coerce_scene_exits_setscene(Some(exits)) {
+            let base = if exit.exit_id.is_empty() {
+                safe_id(&exit.name, "exit")
+            } else {
+                exit.exit_id.clone()
+            };
+            let mut tid = format!("{dest_id}_{base}");
+            let mut n = 2;
+            while self.world_canon.transitions.contains_key(&tid) {
+                tid = format!("{dest_id}_{base}_{n}");
+                n += 1;
+            }
+            self.world_canon.insert_transition(Transition {
+                transition_id: tid.clone(),
+                source_exit_id: exit.exit_id.clone(),
+                from_place: dest_id.clone(),
+                to_place: String::new(),
+                destination_hint: exit.destination.clone(),
+                label: exit.name.clone(),
+                kind: String::new(),
+                visible: exit.visible,
+                passable: exit.blocked_by.is_empty(),
+                conditions: Vec::new(),
+                blocked_by: exit.blocked_by.clone(),
+                time_cost: crate::canon::travel::infer_time_cost("", &exit.name, &exit.destination),
+                risk: crate::canon::travel::infer_risk("", &exit.name, &exit.destination),
+                provenance: Provenance::by("llm", "set_scene exit", turn),
+            });
+        }
+
+        // --- move the player into the destination -------------------------
+        self.world_canon.player_place_id = dest_id.clone();
+
+        // --- mirror present NPCs as canon actors AT the destination -------
+        // The derived `present_npcs` is `actors_at(place)`, so each present NPC
+        // must be a living actor located here; anyone previously here but no
+        // longer listed is moved out (offscreen) and recorded in whereabouts.
+        let previously_here: Vec<String> = self
+            .world_canon
+            .actors_at(&dest_id)
+            .into_iter()
+            .map(|a| a.actor_id.clone())
+            .collect();
+        for npc_id in &present {
+            match self.world_canon.actors.get_mut(npc_id) {
+                Some(a) => {
+                    // Detach from any other place occupant set, then place here.
+                    if let Some(old) = a.location.place().map(str::to_string) {
+                        if old != dest_id {
+                            if let Some(op) = self.world_canon.places.get_mut(&old) {
+                                op.occupant_ids.remove(npc_id);
+                            }
+                        }
+                    }
+                    if let Some(a) = self.world_canon.actors.get_mut(npc_id) {
+                        a.location = Containment::Place {
+                            place_id: dest_id.clone(),
+                        };
+                        if a.status.is_empty() || a.status == "dead" {
+                            a.status = "alive".to_string();
+                        }
+                    }
+                }
+                None => {
+                    let npc = &self.npcs[npc_id];
+                    self.world_canon.actors.insert(
+                        npc_id.clone(),
+                        crate::canon::Actor {
+                            actor_id: npc_id.clone(),
+                            public_label: npc.name.clone(),
+                            location: Containment::Place {
+                                place_id: dest_id.clone(),
+                            },
+                            home_place_id: dest_id.clone(),
+                            role: npc.role.clone(),
+                            status: "alive".to_string(),
+                            provenance: Provenance::by("llm", "set_scene present npc", turn),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+            if let Some(p) = self.world_canon.places.get_mut(&dest_id) {
+                p.occupant_ids.insert(npc_id.clone());
+            }
+        }
+        // Anyone here before but dropped from present_npcs leaves the place.
+        for gone in previously_here.iter().filter(|id| !present.contains(*id)) {
+            if let Some(a) = self.world_canon.actors.get_mut(gone) {
+                a.location = Containment::OutOfPlay;
+            }
+            if let Some(p) = self.world_canon.places.get_mut(&dest_id) {
+                p.occupant_ids.remove(gone);
+            }
+            if self.npcs.contains_key(gone) {
+                self.npc_whereabouts.insert(
+                    gone.clone(),
+                    NpcWhereabouts {
+                        npc_id: gone.clone(),
+                        location_id: dest_id.clone(),
+                        location_name: title.clone(),
+                        status: "unknown".to_string(),
+                        details: "покинул сцену".to_string(),
+                        source: "set_scene".to_string(),
+                    },
+                );
+            }
+        }
+
+        // --- record the authored change in the canon event log ------------
+        // set_scene is a privileged GM *authoring* commit (the destination place,
+        // the transition, the move and the present roster). Logging it as a
+        // committed event makes the causal log explain WHY these canon objects
+        // exist (TZ §6.9, §12) — player *traversal* still goes through the
+        // validator-gated engine via move_player.
+        {
+            let mut effects = vec![
+                format!("authored_place:{dest_id}"),
+                format!("player_at:{dest_id}"),
+            ];
+            if !present.is_empty() {
+                effects.push(format!(
+                    "present:{}",
+                    present.iter().cloned().collect::<Vec<_>>().join(",")
+                ));
+            }
+            let event_id = crate::canon::ids::stable_id(
+                &self.world_canon.world_seed,
+                "set_scene",
+                "event",
+                &format!("{turn}:{}", self.world_canon.event_log.events.len()),
+            );
+            self.world_canon.event_log.append(crate::canon::CanonEvent {
+                event_id,
+                seq: 0,
+                kind: "set_scene".to_string(),
+                time_minutes: self.world_canon.clock_minutes,
+                time_label: String::new(),
+                place_id: dest_id.clone(),
+                actors: present.iter().cloned().collect(),
+                causes: Vec::new(),
+                effects,
+                visible_to_player: true,
+                scope: crate::canon::Scope::Player,
+                possible_traces: Vec::new(),
+                scheduled: false,
+                due_minutes: 0,
+                provenance: Provenance::by("llm", "set_scene authored place + move", turn),
+            });
+        }
+
+        // --- carry ephemeral view state, then rebuild scene from canon ----
+        self.scene.scene_id = dest_id.clone();
+        self.scene.items = coerced_items;
+        self.scene.constraints = as_list(constraints)
+            .iter()
+            .map(as_str)
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.scene.tension = tension.trim().to_string();
+        self.scene.player_seen = vec![description];
+
+        self.refresh_scene_from_canon();
         self.sync_present_npc_whereabouts();
+
         let mut result = self.scene_export();
         if !dropped_present_npcs.is_empty() {
             if let Value::Object(ref mut m) = result {
@@ -2323,6 +3359,9 @@ impl World {
                 },
             );
         }
+        // Reflect the offscreen whereabouts onto the canon actor + rebuild scene.
+        self.sync_canon_actor(&resolved_id);
+        self.refresh_scene_from_canon();
         let name = self.npcs[&resolved_id].name.clone();
         let present_now = self.scene.present_npcs.contains(&resolved_id);
         let whereabouts = self.npc_whereabouts_export(Some(&resolved_id));
@@ -2350,15 +3389,310 @@ impl World {
             return;
         }
         self.rumor_seq += 1;
+        let place_id = if !self.world_canon.player_place_id.is_empty() {
+            self.world_canon.player_place_id.clone()
+        } else {
+            self.scene.location_id.clone()
+        };
+        let present_npcs = self.scene.present_npcs.clone();
+        let audible_to_place = !present_npcs.is_empty()
+            && witnesses.contains("player")
+            && present_npcs.iter().all(|npc_id| witnesses.contains(npc_id))
+            && (present_npcs.len() > 1 || witnesses.len() > 2);
+        let mut known_in = BTreeSet::new();
+        if audible_to_place && !place_id.is_empty() {
+            known_in.insert(format!("place:{place_id}"));
+        }
+        if speaker.trim() == "player" {
+            known_in.insert("player".to_string());
+        } else if !speaker.trim().is_empty() {
+            known_in.insert(format!("actor:{}", actor_key(speaker)));
+        }
+        for witness in &witnesses {
+            if witness == "player" {
+                known_in.insert("player".to_string());
+            }
+            known_in.insert(format!("actor:{}", actor_key(witness)));
+        }
+        let origin_scope = if audible_to_place && !place_id.is_empty() {
+            format!("place:{place_id}")
+        } else if speaker.trim().is_empty() {
+            "public".to_string()
+        } else if speaker.trim() == "player" {
+            "player".to_string()
+        } else {
+            format!("actor:{}", actor_key(speaker))
+        };
+        let rumor_id = crate::canon::ids::stable_id(
+            &self.world_canon.world_seed,
+            &origin_scope,
+            "rumor",
+            &format!("{seq}:{turn}:{speaker}:{text}"),
+        );
+        let mut carriers = witnesses;
+        if !speaker.trim().is_empty() {
+            carriers.insert(actor_key(speaker));
+        }
         self.rumors.push(Rumor {
+            rumor_id,
             seq,
             turn,
             speaker: speaker.to_string(),
             text,
-            witnesses,
+            witnesses: carriers.clone(),
+            origin_scope,
+            known_in,
+            carriers,
+            strength: 1,
+            distortion: 0,
+            created_minutes: self
+                .time
+                .absolute_minutes
+                .max(self.world_canon.clock_minutes),
+            last_spread_minutes: self
+                .time
+                .absolute_minutes
+                .max(self.world_canon.clock_minutes),
             confirmed: false,
         });
         truncate_tail(&mut self.rumors, rumors_cap);
+        self.prune_rumor_memory_to_live_ids();
+        if let Some(rumor) = self.rumors.last().cloned() {
+            self.sync_rumor_memory(&rumor);
+        }
+    }
+
+    /// Record factual claims made by an NPC as scoped memory, without marking
+    /// the claimed facts as objective canon.
+    pub fn record_npc_claims(
+        &mut self,
+        seq: i64,
+        turn: i64,
+        speaker: &str,
+        claims: &[String],
+        witnesses: &BTreeSet<String>,
+    ) {
+        let speaker_id = actor_key(speaker);
+        if speaker_id.is_empty() || claims.is_empty() {
+            return;
+        }
+
+        let speaker_name = self
+            .npcs
+            .get(&speaker_id)
+            .map(|npc| npc.name.trim())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(speaker);
+        let speaker_name = speaker_name.to_string();
+        let place_id = if !self.world_canon.player_place_id.is_empty() {
+            self.world_canon.player_place_id.clone()
+        } else {
+            self.scene.location_id.clone()
+        };
+        let source_event_id = format!("world_event_{seq}");
+
+        let mut visibility = BTreeSet::new();
+        visibility.insert(format!("actor:{speaker_id}"));
+        for witness in witnesses {
+            if witness == "player" {
+                visibility.insert("player".to_string());
+                continue;
+            }
+            let witness_id = actor_key(witness);
+            if !witness_id.is_empty() {
+                visibility.insert(format!("actor:{witness_id}"));
+            }
+        }
+
+        let mut actor_ids = vec![speaker_id.clone()];
+        for witness in witnesses {
+            let witness_id = actor_key(witness);
+            if !witness_id.is_empty() && witness_id != "player" && !actor_ids.contains(&witness_id)
+            {
+                actor_ids.push(witness_id);
+            }
+        }
+
+        let mut seen_claims = BTreeSet::new();
+        for claim in claims {
+            let claim = claim.trim();
+            if claim.is_empty() || !seen_claims.insert(claim.to_string()) {
+                continue;
+            }
+
+            let mut unit = MemoryUnit {
+                tier: MemoryTier::Raw,
+                owner_scope: format!("actor:{speaker_id}"),
+                visibility_scopes: visibility.iter().cloned().collect(),
+                summary: format!("Claim by {speaker_name}: {claim}"),
+                details: format!(
+                    "NPC claim linked to speech event seq {seq}; turn {turn}; speaker {speaker_id}; witnesses: {}",
+                    witnesses.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+                facts_claimed: vec![claim.to_string()],
+                source_event_ids: vec![source_event_id.clone()],
+                time_start: self.time.absolute_minutes.max(self.world_canon.clock_minutes),
+                time_end: self.time.absolute_minutes.max(self.world_canon.clock_minutes),
+                actor_ids: actor_ids.clone(),
+                topic_tags: vec!["claim".to_string(), "npc_claim".to_string()],
+                truth_status: MemoryTruthStatus::Claim,
+                created_by: "npc_claim".to_string(),
+                ..Default::default()
+            };
+            if !place_id.is_empty() {
+                unit.place_ids = vec![place_id.clone()];
+            }
+            self.add_memory_unit(unit);
+        }
+    }
+
+    pub fn sync_rumor_memory(&mut self, rumor: &Rumor) {
+        let mut unit = crate::canon::rumor::memory_unit_for_rumor(rumor, &self.world_canon);
+        unit.normalize();
+        self.world_canon
+            .memory
+            .units
+            .insert(unit.memory_id.clone(), unit);
+    }
+
+    pub fn sync_all_rumor_memory(&mut self) {
+        let rumors = self.rumors.clone();
+        for rumor in &rumors {
+            self.sync_rumor_memory(rumor);
+        }
+        self.prune_rumor_memory_to_live_ids();
+    }
+
+    pub fn prune_rumor_memory_to_live_ids(&mut self) {
+        let live_ids: BTreeSet<String> = self
+            .rumors
+            .iter()
+            .map(crate::canon::rumor::memory_id_for_rumor)
+            .collect();
+        self.world_canon.memory.units.retain(|id, unit| {
+            unit.created_by != "rumor_graph" || !id.starts_with("rumor:") || live_ids.contains(id)
+        });
+    }
+
+    pub fn rumor_visible_to_access(&self, rumor: &Rumor, access: &MemoryAccess) -> bool {
+        if access.gm {
+            return true;
+        }
+        rumor
+            .known_in
+            .iter()
+            .any(|scope| access.scopes.contains(scope))
+    }
+
+    pub fn spread_rumors_on_transition(
+        &mut self,
+        actor_id: &str,
+        transition_id: &str,
+        elapsed_minutes: i64,
+    ) -> Vec<String> {
+        let actor_id = actor_key(actor_id);
+        if actor_id.is_empty() || elapsed_minutes <= 0 {
+            return Vec::new();
+        }
+        let now = self
+            .time
+            .absolute_minutes
+            .max(self.world_canon.clock_minutes);
+        let Some(transition) = self.world_canon.transition(transition_id).cloned() else {
+            return Vec::new();
+        };
+        let route_scopes = crate::canon::rumor::scopes_for_transition(&transition);
+        if route_scopes.is_empty() {
+            return Vec::new();
+        }
+        let actor_scope = format!("actor:{actor_id}");
+        let mut changed_ids = Vec::new();
+        let mut changed_rumors = Vec::new();
+        for rumor in &mut self.rumors {
+            if rumor.strength <= 0 {
+                continue;
+            }
+            if !rumor.carriers.contains(&actor_id) && !rumor.known_in.contains(&actor_scope) {
+                continue;
+            }
+            let before = rumor.known_in.len();
+            rumor.known_in.extend(route_scopes.iter().cloned());
+            if rumor.known_in.len() != before {
+                rumor.distortion = rumor.distortion.saturating_add(1).min(100);
+                rumor.last_spread_minutes = now;
+                changed_ids.push(rumor.rumor_id.clone());
+                changed_rumors.push(rumor.clone());
+            }
+        }
+        for rumor in &changed_rumors {
+            self.sync_rumor_memory(rumor);
+        }
+        changed_ids
+    }
+
+    pub fn advance_rumors(&mut self, now_minutes: i64) -> Vec<String> {
+        let mut changed_ids = Vec::new();
+        let mut changed_rumors = Vec::new();
+        for idx in 0..self.rumors.len() {
+            let elapsed = (now_minutes - self.rumors[idx].last_spread_minutes).max(0);
+            let decay = crate::canon::rumor::should_decay_rumor(elapsed);
+            if decay > 0 {
+                self.rumors[idx].strength = self.rumors[idx].strength.saturating_sub(decay);
+            }
+            if !crate::canon::rumor::should_spread_place_rumor(elapsed, self.rumors[idx].strength) {
+                if decay > 0 {
+                    self.rumors[idx].last_spread_minutes = now_minutes;
+                    changed_ids.push(self.rumors[idx].rumor_id.clone());
+                    changed_rumors.push(self.rumors[idx].clone());
+                }
+                continue;
+            }
+
+            let carriers: Vec<String> = self.rumors[idx].carriers.iter().cloned().collect();
+            let mut added_any = false;
+            for carrier in carriers {
+                let carrier = actor_key(&carrier);
+                let place_id = if carrier == "player" {
+                    self.world_canon.player_place_id.clone()
+                } else {
+                    self.world_canon
+                        .actors
+                        .get(&carrier)
+                        .and_then(|actor| actor.location.place().map(str::to_string))
+                        .unwrap_or_default()
+                };
+                if place_id.is_empty() {
+                    continue;
+                }
+                let scopes = crate::canon::rumor::scopes_added_by_carrier_at_place(
+                    &self.world_canon,
+                    &place_id,
+                    elapsed,
+                );
+                let before = self.rumors[idx].known_in.len();
+                self.rumors[idx].known_in.extend(scopes);
+                if self.rumors[idx].known_in.len() != before {
+                    added_any = true;
+                }
+            }
+            if added_any {
+                if elapsed >= crate::canon::rumor::WIDER_SPREAD_THRESHOLD_MINUTES {
+                    self.rumors[idx].distortion =
+                        self.rumors[idx].distortion.saturating_add(1).min(100);
+                }
+                self.rumors[idx].last_spread_minutes = now_minutes;
+                changed_ids.push(self.rumors[idx].rumor_id.clone());
+                changed_rumors.push(self.rumors[idx].clone());
+            } else if decay > 0 {
+                self.rumors[idx].last_spread_minutes = now_minutes;
+                changed_ids.push(self.rumors[idx].rumor_id.clone());
+                changed_rumors.push(self.rumors[idx].clone());
+            }
+        }
+        for rumor in &changed_rumors {
+            self.sync_rumor_memory(rumor);
+        }
+        changed_ids
     }
 
     pub fn scene_export(&mut self) -> Value {
@@ -2385,6 +3719,143 @@ impl World {
             "tension": self.scene.tension,
             "npc_whereabouts": whereabouts,
         })
+    }
+
+    /// Project the current player-facing [`SceneState`] out of the canonical
+    /// place graph (TZ §6.10 `Place + … -> CurrentView`). Phase 1 proves the
+    /// scene is derivable from the canon; the live `scene_export` path is not
+    /// yet routed through this (that is Phase 2). Falls back to the live scene
+    /// when the current location has no canonical place (e.g. a pre-canon save).
+    pub fn build_current_view(&self) -> SceneState {
+        crate::canon::view::build_current_view(self)
+    }
+
+    /// Rebuild `self.scene` FROM the canon so the legacy-facing scene is a
+    /// derived cache, not an independent owner of truth (LOCKED DECISION #1).
+    ///
+    /// Anchors on `world_canon.player_place_id`: title/description come from that
+    /// [`crate::canon::Place`]; exits from its visible transitions; present NPCs
+    /// from the living actors physically at the place; items/tension/constraints
+    /// and other ephemeral view state are carried over from the previous scene.
+    /// Call this after ANY canon mutation that can change the player's place,
+    /// the place's structure, or actor locations, and after load.
+    ///
+    /// No-op when the canon has no player place (a pre-canon save): the legacy
+    /// scene is left as-is so behaviour is never worse than before.
+    pub fn refresh_scene_from_canon(&mut self) {
+        if self.world_canon.player_place_id.is_empty()
+            || self
+                .world_canon
+                .place(&self.world_canon.player_place_id)
+                .is_none()
+        {
+            return;
+        }
+        self.scene = self.build_current_view();
+        self.constraints = self.scene.constraints.clone();
+    }
+
+    /// A compact, structured summary of the canonical world for GM/generator
+    /// context: high-level world lore, the current region/settlement, active
+    /// factions and their goals, and the most recent PLAYER-VISIBLE canon
+    /// events. This is what makes the rich worldgen (lore/region/settlement/
+    /// faction/history) actually reach the GM — `scene_context` only covers the
+    /// immediate place. Hidden lore is GM-only generation guidance; hidden event
+    /// history is still gated, so only player-visible events are surfaced
+    /// (TZ §11). Empty for a pre-canon / empty canon.
+    pub fn canon_world_context(&self) -> String {
+        let c = &self.world_canon;
+        if c.is_empty() || c.player_place_id.is_empty() {
+            return String::new();
+        }
+        let mut lines: Vec<String> = Vec::new();
+        lines.extend(c.world_lore.gm_context_lines());
+        if let Some(p) = c.place(&c.player_place_id) {
+            if let Some(r) = c.region(&p.region_id) {
+                lines.push(format!(
+                    "Region: {} — climate {}, danger {}/5",
+                    r.name, r.climate, r.danger_level
+                ));
+            }
+            if let Some(s) = c.settlement(&p.parent) {
+                let mut s_line = format!("Settlement: {}", s.name);
+                if !s.power.is_empty() {
+                    s_line.push_str(&format!("; power: {}", s.power));
+                }
+                if !s.conflict.is_empty() {
+                    s_line.push_str(&format!("; conflict: {}", s.conflict));
+                }
+                lines.push(s_line);
+            }
+        }
+        let factions: Vec<String> = c
+            .factions
+            .values()
+            .map(|f| {
+                if f.goals.is_empty() {
+                    f.name.clone()
+                } else {
+                    format!("{} (goals: {})", f.name, f.goals.join("; "))
+                }
+            })
+            .collect();
+        if !factions.is_empty() {
+            lines.push(format!("Factions: {}", factions.join(" | ")));
+        }
+        let recent: Vec<String> = c
+            .event_log
+            .player_visible()
+            .into_iter()
+            .rev()
+            .take(5)
+            .map(|e| {
+                if e.effects.is_empty() {
+                    e.kind.clone()
+                } else {
+                    e.effects.join(", ")
+                }
+            })
+            .collect();
+        if !recent.is_empty() {
+            lines.push(format!("Recent world events: {}", recent.join("; ")));
+        }
+        if lines.is_empty() {
+            String::new()
+        } else {
+            lines.join("\n")
+        }
+    }
+
+    /// Short access-gated continuity slice for the GM turn context.
+    ///
+    /// This is deliberately not a memory card dump: no ids, no details, no
+    /// private NPC thoughts. Full drill-down remains behind memory/NPC tools.
+    pub fn gm_memory_context(&self) -> String {
+        if self.world_canon.memory.is_empty() {
+            return String::new();
+        }
+        let place_id = if self.world_canon.player_place_id.is_empty() {
+            self.scene.location_id.as_str()
+        } else {
+            self.world_canon.player_place_id.as_str()
+        };
+        let mut scopes = self.memory_access_for_player().scopes;
+        if !place_id.trim().is_empty() {
+            scopes.extend(self.memory_access_for_place(place_id).scopes);
+        }
+        let access = MemoryAccess::scoped(scopes);
+        let rows = self.world_canon.memory.query(&access, "", 6, false);
+        if rows.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<String> = rows
+            .into_iter()
+            .map(|unit| format!("- {}", gm_memory_snapshot_line(unit)))
+            .collect();
+        format!(
+            "Access-gated short memory snapshot (player/local/public only; use get_memory or ask_npc for details):\n{}",
+            lines.join("\n")
+        )
     }
 
     /// `npc(npc_id)` — strict lookup (KeyError -> Err).
@@ -2460,7 +3931,10 @@ impl World {
         } else {
             String::new()
         };
-        format!("{prefix}{date}, {}", payload["time_of_day"].as_str().unwrap_or(""))
+        format!(
+            "{prefix}{date}, {}",
+            payload["time_of_day"].as_str().unwrap_or("")
+        )
     }
 
     pub fn time_context(&self) -> String {
@@ -2472,7 +3946,11 @@ impl World {
                 payload["last_advance_minutes"]
             ),
         ];
-        let reason = payload["last_advance_reason"].as_str().unwrap_or("").trim().to_string();
+        let reason = payload["last_advance_reason"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if !reason.is_empty() {
             lines.push(format!("Previous time reason: {reason}"));
         }
@@ -2486,10 +3964,19 @@ impl World {
             _ => return Err("minutes must be a non-negative integer".to_string()),
         };
         let before = self.time_export();
-        self.time.absolute_minutes =
-            before["absolute_minutes"].as_i64().unwrap_or(0) + amount;
+        self.time.absolute_minutes = before["absolute_minutes"].as_i64().unwrap_or(0) + amount;
         self.time.last_advance_minutes = amount;
         self.time.last_advance_reason = reason.trim().to_string();
+        // Keep the canonical clock in lockstep and run the budgeted offscreen
+        // tick so scheduled events / world simulation actually advance on a live
+        // advance_time — not only on the engine's AdvanceClock action.
+        if !self.world_canon.is_empty() {
+            self.world_canon.clock_minutes = self.time.absolute_minutes;
+            let now = self.world_canon.clock_minutes;
+            crate::canon::engine::tick_offscreen(&mut self.world_canon, now, 0);
+            self.advance_rumors(now);
+            self.refresh_scene_from_canon();
+        }
         let after = self.time_export();
         Ok(json!({
             "ok": true,
@@ -2529,8 +4016,9 @@ impl World {
         ]
         .into_iter()
         .collect();
-        let dict_fields: BTreeSet<&str> =
-            ["abilities", "skills", "saving_throws", "hp"].into_iter().collect();
+        let dict_fields: BTreeSet<&str> = ["abilities", "skills", "saving_throws", "hp"]
+            .into_iter()
+            .collect();
         let list_fields: BTreeSet<&str> =
             ["inventory", "equipment", "features"].into_iter().collect();
         let joined: BTreeSet<&str> = ["speed", "senses", "languages"].into_iter().collect();
@@ -2607,7 +4095,10 @@ impl World {
         m.insert("background".to_string(), json!(pc.background));
         m.insert("age".to_string(), json!(pc.age));
         m.insert("physical_type".to_string(), json!(pc.physical_type));
-        m.insert("distinctive_features".to_string(), json!(pc.distinctive_features));
+        m.insert(
+            "distinctive_features".to_string(),
+            json!(pc.distinctive_features),
+        );
         m.insert("life_status".to_string(), json!(pc.life_status));
         m.insert("life_status_note".to_string(), json!(pc.life_status_note));
         m.insert("condition".to_string(), json!(pc.condition));
@@ -2615,8 +4106,14 @@ impl World {
         m.insert("values".to_string(), json!(pc.values));
         m.insert("abilities".to_string(), Value::Object(pc.abilities.clone()));
         m.insert("skills".to_string(), Value::Object(pc.skills.clone()));
-        m.insert("saving_throws".to_string(), Value::Object(pc.saving_throws.clone()));
-        m.insert("passive_perception".to_string(), opt_int(pc.passive_perception));
+        m.insert(
+            "saving_throws".to_string(),
+            Value::Object(pc.saving_throws.clone()),
+        );
+        m.insert(
+            "passive_perception".to_string(),
+            opt_int(pc.passive_perception),
+        );
         m.insert("ac".to_string(), pc.ac.clone());
         m.insert("hp".to_string(), Value::Object(pc.hp.clone()));
         m.insert("speed".to_string(), json!(pc.speed));
@@ -2773,10 +4270,7 @@ impl World {
         roll_kind: &str,
     ) -> (i64, String) {
         let payload = self.roll_outcome_payload(notation, target_number, target_kind, roll_kind);
-        let total = payload
-            .get("total")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let total = payload.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
         let detail = payload
             .get("detail")
             .and_then(|v| v.as_str())
@@ -2926,8 +4420,11 @@ impl World {
         if !matches!(kind.as_str(), "public" | "truth" | "rumor") {
             kind = "public".to_string();
         }
-        let existing: BTreeSet<String> =
-            self.fact_records.iter().map(|r| r.fact_id.clone()).collect();
+        let existing: BTreeSet<String> = self
+            .fact_records
+            .iter()
+            .map(|r| r.fact_id.clone())
+            .collect();
         let base = format!("{kind}_dbg");
         let mut idx = 1;
         while existing.contains(&format!("{base}_{idx}")) {
@@ -2970,6 +4467,10 @@ impl World {
         }
         self.story_title = text;
         true
+    }
+
+    pub fn set_story_brief(&mut self, text: &str) {
+        self.story_brief = text.trim().to_string();
     }
 
     pub fn set_hidden_truth(&mut self, text: &str) {
@@ -3033,16 +4534,41 @@ impl World {
             return None;
         }
         self.rumor_seq += 1;
+        let mut known_in = BTreeSet::new();
+        known_in.insert("gm_private".to_string());
         let rumor = Rumor {
+            rumor_id: crate::canon::ids::stable_id(
+                &self.world_canon.world_seed,
+                "debug",
+                "rumor",
+                &format!("{}:{text}", self.rumor_seq),
+            ),
             seq: self.rumor_seq,
             turn: 0,
             speaker: nonempty_or(speaker.trim().to_string(), "слух"),
             text,
             witnesses: BTreeSet::new(),
+            origin_scope: "gm_private".to_string(),
+            known_in,
+            carriers: BTreeSet::new(),
+            strength: 1,
+            distortion: 0,
+            created_minutes: self
+                .time
+                .absolute_minutes
+                .max(self.world_canon.clock_minutes),
+            last_spread_minutes: self
+                .time
+                .absolute_minutes
+                .max(self.world_canon.clock_minutes),
             confirmed: false,
         };
         self.rumors.push(rumor.clone());
         truncate_tail(&mut self.rumors, rumors_cap);
+        self.prune_rumor_memory_to_live_ids();
+        if self.rumors.iter().any(|r| r.rumor_id == rumor.rumor_id) {
+            self.sync_rumor_memory(&rumor);
+        }
         // After truncation the returned rumor is still the last appended one.
         Some(rumor)
     }
@@ -3053,8 +4579,20 @@ impl World {
             None => return false,
         };
         let before = self.rumors.len();
+        let removed_ids: Vec<String> = self
+            .rumors
+            .iter()
+            .filter(|r| r.seq == target)
+            .map(crate::canon::rumor::memory_id_for_rumor)
+            .collect();
         self.rumors.retain(|r| r.seq != target);
-        self.rumors.len() < before
+        let changed = self.rumors.len() < before;
+        if changed {
+            for id in removed_ids {
+                self.world_canon.memory.units.remove(&id);
+            }
+        }
+        changed
     }
 
     pub fn set_rumor_confirmed(&mut self, seq: &Value, confirmed: bool) -> bool {
@@ -3062,11 +4600,17 @@ impl World {
             Some(s) => s,
             None => return false,
         };
+        let mut changed = None;
         for rumor in self.rumors.iter_mut() {
             if rumor.seq == target {
                 rumor.confirmed = confirmed;
-                return true;
+                changed = Some(rumor.clone());
+                break;
             }
+        }
+        if let Some(rumor) = changed {
+            self.sync_rumor_memory(&rumor);
+            return true;
         }
         false
     }
@@ -3107,9 +4651,8 @@ impl World {
             .collect();
         let present: Vec<String> = scene.present_npcs.iter().cloned().collect();
 
-        let pick = |key: &str, default: Value| -> Value {
-            patch.get(key).cloned().unwrap_or(default)
-        };
+        let pick =
+            |key: &str, default: Value| -> Value { patch.get(key).cloned().unwrap_or(default) };
 
         let result = self.set_scene(
             &as_str(&pick("title", json!(scene.title))),
@@ -3141,9 +4684,11 @@ impl World {
         let q = query.to_lowercase();
         if let Some(r) = retriever {
             // RAG is an accuracy layer, not a hard dependency: errors are ignored.
-            if let Ok(Some(payload)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                r.retrieve_world_fact(query, actor_id)
-            })) {
+            if let Ok(Some(payload)) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    r.retrieve_world_fact(query, actor_id)
+                }))
+            {
                 return WorldFact::new(
                     nonempty_or(payload.status.clone(), "unknown"),
                     payload.text.clone(),
@@ -3171,45 +4716,32 @@ impl World {
                 matches.push(format!("{label}: {}", record.text));
             }
         }
-        let mut query_obj = StateRecordQuery::new(actor_id);
-        let kinds = vec!["fact".to_string(), "rumor".to_string()];
-        query_obj.kinds = Some(&kinds);
-        for record in self.state_records_for(&query_obj) {
-            let known_name = get_str(&record.metadata, "known_name");
-            let hay = vec![
-                record.text.clone(),
-                record.tags.join(" "),
-                record.owner.clone(),
-                record.subject.clone(),
-                record.entity_id.clone(),
-                record.source_npc.clone(),
-                record.location_id.clone(),
-                record.location_name.clone(),
-                record.region_id.clone(),
-                record.region_name.clone(),
-                record.scene_id.clone(),
-                record.importance.clone(),
-                record.aliases.join(" "),
-                known_name,
-            ];
-            let haystack = hay.join(" ").to_lowercase();
-            let hay_words = match_words(&haystack);
-            if (!q.is_empty() && haystack.contains(&q)) || words_intersect(&q_words, &hay_words) {
-                let label = if record.kind == "rumor" {
-                    "rumor".to_string()
-                } else {
-                    record.status.clone()
-                };
-                matches.push(format!("{label}: {}", record.text));
-            }
+        let memory_access = self.memory_access_for_actor(actor_id);
+        for unit in self
+            .world_canon
+            .memory
+            .query(&memory_access, query, 3, false)
+        {
+            matches.push(format!("{}: {}", unit.truth_status.as_str(), unit.summary));
         }
         if !matches.is_empty() {
-            let joined = matches.iter().take(3).cloned().collect::<Vec<_>>().join(" ");
+            let joined = matches
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
             return WorldFact::new("known", joined, Vec::new());
         }
 
         let mut rumor_matches: Vec<String> = Vec::new();
         for rumor in &self.rumors {
+            if rumor.strength <= 0 {
+                continue;
+            }
+            if !self.rumor_visible_to_access(rumor, &memory_access) {
+                continue;
+            }
             let text_words = match_words(&rumor.text);
             if words_intersect(&q_words, &text_words) {
                 let speaker_exists = self.npcs.contains_key(&rumor.speaker);
@@ -3305,6 +4837,38 @@ fn nonempty_or(value: String, fallback: &str) -> String {
     }
 }
 
+fn gm_memory_snapshot_line(unit: &MemoryUnit) -> String {
+    let prefix = match unit.truth_status.as_str() {
+        "actual" => "Known: ",
+        "claim" => "Claim: ",
+        "rumor" => "Rumor: ",
+        "belief" => "Belief: ",
+        "lie" => "Disputed: ",
+        _ => "Uncertain: ",
+    };
+    let summary = unit.summary.trim();
+    let mut line = if summary.is_empty() {
+        format!("{prefix}(empty memory summary)")
+    } else {
+        format!("{prefix}{summary}")
+    };
+    if !unit.uncertainties.is_empty() {
+        line.push_str(" Uncertainty: ");
+        line.push_str(&unit.uncertainties.join("; "));
+    }
+    truncate_text_chars(&line, 240)
+}
+
+fn truncate_text_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    let mut out: String = text.chars().take(keep).collect();
+    out.push_str("...");
+    out
+}
+
 fn as_bool_pyish(v: &Value) -> bool {
     match v {
         Value::Bool(b) => *b,
@@ -3328,7 +4892,10 @@ fn ord_sum(s: &str) -> u64 {
     s.chars().map(|c| c as u64).sum()
 }
 
-fn words_intersect(a: &std::collections::BTreeSet<String>, b: &std::collections::BTreeSet<String>) -> bool {
+fn words_intersect(
+    a: &std::collections::BTreeSet<String>,
+    b: &std::collections::BTreeSet<String>,
+) -> bool {
     if a.is_empty() {
         return false;
     }
@@ -3577,10 +5144,7 @@ fn coerce_state_record(
         kind,
         text,
         scope: state_record_scope(&get_str(&data, "scope")),
-        active: state_record::state_record_active(
-            data.get("active").unwrap_or(&Value::Null),
-            true,
-        ),
+        active: state_record::state_record_active(data.get("active").unwrap_or(&Value::Null), true),
         owner: first_nonempty(&data, &["owner", "owner_id"]),
         subject: first_nonempty(&data, &["subject", "subject_id"]),
         source: get_str(&data, "source"),
@@ -3598,9 +5162,7 @@ fn coerce_state_record(
         scene_id: get_str(&data, "scene_id"),
         importance: get_str(&data, "importance"),
         aliases: state_record::state_record_aliases(data.get("aliases").unwrap_or(&Value::Null)),
-        metadata: state_record::state_record_metadata(
-            data.get("metadata").unwrap_or(&Value::Null),
-        ),
+        metadata: state_record::state_record_metadata(data.get("metadata").unwrap_or(&Value::Null)),
     })
 }
 
@@ -3644,9 +5206,7 @@ fn public_npc_description(npc: &Npc) -> String {
     } else {
         String::new()
     };
-    format!(
-        "Конкретный персонаж текущего мира.{role} Подробности появятся, когда игрок их узнает."
-    )
+    format!("Конкретный персонаж текущего мира.{role} Подробности появятся, когда игрок их узнает.")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3761,6 +5321,324 @@ fn whereabouts_to_value(w: &NpcWhereabouts) -> Value {
         "details": w.details,
         "source": w.source,
     })
+}
+
+fn legacy_actor_scope(raw: &str) -> Option<String> {
+    let id = actor_key(raw);
+    match id.as_str() {
+        "" => None,
+        "player" | "pc" => Some("player".to_string()),
+        "public" => Some("legacy_public".to_string()),
+        "gm" | "debug" | "system" => Some("gm_private".to_string()),
+        _ => Some(format!("actor:{id}")),
+    }
+}
+
+fn legacy_state_record_owner_scope(record: &StateRecord) -> String {
+    match state_record_scope(&record.scope).as_str() {
+        "public" => "legacy_public".to_string(),
+        "gm" => "gm_private".to_string(),
+        "owner" => legacy_actor_scope(&record.owner)
+            .or_else(|| legacy_actor_scope(&record.source_npc))
+            .or_else(|| legacy_actor_scope(&record.entity_id))
+            .unwrap_or_else(|| "gm_private".to_string()),
+        "subject" => legacy_actor_scope(&record.subject)
+            .or_else(|| legacy_actor_scope(&record.entity_id))
+            .unwrap_or_else(|| "gm_private".to_string()),
+        "participants" => record
+            .participants
+            .iter()
+            .find_map(|id| legacy_actor_scope(id))
+            .or_else(|| legacy_actor_scope(&record.owner))
+            .or_else(|| legacy_actor_scope(&record.source_npc))
+            .or_else(|| legacy_actor_scope(&record.subject))
+            .unwrap_or_else(|| "legacy_public".to_string()),
+        _ => "legacy_public".to_string(),
+    }
+}
+
+fn push_scope(out: &mut Vec<String>, seen: &mut BTreeSet<String>, scope: String) {
+    if !scope.is_empty() && seen.insert(scope.clone()) {
+        out.push(scope);
+    }
+}
+
+fn legacy_state_record_visibility_scopes(record: &StateRecord, owner_scope: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    match state_record_scope(&record.scope).as_str() {
+        "public" => push_scope(&mut out, &mut seen, "legacy_public".to_string()),
+        "gm" => {}
+        "owner" | "subject" => {
+            push_scope(&mut out, &mut seen, owner_scope.to_string());
+        }
+        "participants" => {
+            push_scope(&mut out, &mut seen, owner_scope.to_string());
+            for participant in &record.participants {
+                if let Some(scope) = legacy_actor_scope(participant) {
+                    push_scope(&mut out, &mut seen, scope);
+                }
+            }
+            for id in [&record.owner, &record.source_npc, &record.subject] {
+                if let Some(scope) = legacy_actor_scope(id) {
+                    push_scope(&mut out, &mut seen, scope);
+                }
+            }
+        }
+        _ => push_scope(&mut out, &mut seen, "legacy_public".to_string()),
+    }
+    out
+}
+
+fn legacy_state_record_truth_status(record: &StateRecord) -> MemoryTruthStatus {
+    let kind = state_record_kind(&record.kind);
+    if kind == "rumor" {
+        return MemoryTruthStatus::Rumor;
+    }
+    match record.status.trim().to_lowercase().as_str() {
+        "known" | "current" | "present" | "confirmed" | "actual" | "true" => {
+            MemoryTruthStatus::Actual
+        }
+        "rumor" | "rumoured" | "unconfirmed" => MemoryTruthStatus::Rumor,
+        "belief" | "believed" | "opinion" | "suspected" => MemoryTruthStatus::Belief,
+        "lie" | "false" | "deception" => MemoryTruthStatus::Lie,
+        "" | "unknown" => MemoryTruthStatus::Unknown,
+        _ => MemoryTruthStatus::Claim,
+    }
+}
+
+fn push_actor_id(out: &mut Vec<String>, seen: &mut BTreeSet<String>, id: &str) {
+    let id = actor_key(id);
+    if !id.is_empty() && seen.insert(id.clone()) {
+        out.push(id);
+    }
+}
+
+fn legacy_state_record_actor_ids(record: &StateRecord) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for id in [
+        record.owner.as_str(),
+        record.subject.as_str(),
+        record.entity_id.as_str(),
+        record.source_npc.as_str(),
+    ] {
+        push_actor_id(&mut out, &mut seen, id);
+    }
+    for id in &record.participants {
+        push_actor_id(&mut out, &mut seen, id);
+    }
+    out
+}
+
+fn legacy_state_record_place_ids(record: &StateRecord) -> Vec<String> {
+    let id = actor_key(&record.location_id);
+    if id.is_empty() {
+        Vec::new()
+    } else {
+        vec![id]
+    }
+}
+
+fn legacy_state_record_topic_tags(record: &StateRecord, known_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for tag in [
+        "legacy_state_record".to_string(),
+        state_record_kind(&record.kind),
+        record.status.clone(),
+        record.importance.clone(),
+    ] {
+        push_actor_id(&mut out, &mut seen, &tag);
+    }
+    if !known_name.trim().is_empty() {
+        push_actor_id(&mut out, &mut seen, "known_name");
+    }
+    for tag in record.tags.iter().chain(record.aliases.iter()) {
+        push_actor_id(&mut out, &mut seen, tag);
+    }
+    out
+}
+
+fn apply_state_record_update_map(rec: &mut StateRecord, m: &Map<String, Value>) {
+    if m.contains_key("kind") {
+        rec.kind = state_record_kind(&get_str(m, "kind"));
+    }
+    if m.contains_key("text") {
+        let text = get_str(m, "text");
+        if !text.is_empty() {
+            rec.text = text;
+        }
+    }
+    if m.contains_key("scope") {
+        rec.scope = state_record_scope(&get_str(m, "scope"));
+    }
+    if m.contains_key("active") {
+        rec.active = state_record::state_record_active(m.get("active").unwrap(), rec.active);
+    }
+    if m.contains_key("owner") || m.contains_key("owner_id") {
+        rec.owner = first_nonempty(m, &["owner", "owner_id"]);
+    }
+    if m.contains_key("subject") || m.contains_key("subject_id") {
+        rec.subject = first_nonempty(m, &["subject", "subject_id"]);
+    }
+    if m.contains_key("source") {
+        rec.source = get_str(m, "source");
+    }
+    if m.contains_key("status") {
+        rec.status = nonempty_or(get_str(m, "status"), "known");
+    }
+    if m.contains_key("tags") {
+        rec.tags = state_record::state_record_tags(m.get("tags").unwrap());
+    }
+    if m.contains_key("entity_id") || m.contains_key("entity") || m.contains_key("about") {
+        rec.entity_id = first_nonempty(m, &["entity_id", "entity", "about"]);
+    }
+    if m.contains_key("source_npc") || m.contains_key("source_npc_id") {
+        rec.source_npc = first_nonempty(m, &["source_npc", "source_npc_id"]);
+    }
+    if m.contains_key("participants") {
+        rec.participants = state_record::state_record_participants(m.get("participants").unwrap());
+    }
+    if m.contains_key("location_id") {
+        rec.location_id = get_str(m, "location_id");
+    }
+    if m.contains_key("location_name") {
+        rec.location_name = get_str(m, "location_name");
+    }
+    if m.contains_key("region_id") {
+        rec.region_id = get_str(m, "region_id");
+    }
+    if m.contains_key("region_name") {
+        rec.region_name = get_str(m, "region_name");
+    }
+    if m.contains_key("scene_id") {
+        rec.scene_id = get_str(m, "scene_id");
+    }
+    if m.contains_key("importance") {
+        rec.importance = get_str(m, "importance");
+    }
+    if m.contains_key("aliases") {
+        rec.aliases = state_record::state_record_aliases(m.get("aliases").unwrap());
+    }
+    if m.contains_key("metadata") {
+        rec.metadata = state_record::state_record_metadata(m.get("metadata").unwrap());
+    }
+}
+
+fn memory_meta_string(unit: &MemoryUnit, key: &str) -> String {
+    unit.metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn memory_meta_array(unit: &MemoryUnit, key: &str) -> Vec<String> {
+    unit.metadata
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn memory_unit_to_state_record(unit: &MemoryUnit) -> Option<StateRecord> {
+    if unit.source_state_record_ids.is_empty()
+        || !matches!(
+            unit.created_by.as_str(),
+            "legacy_state_record_migration" | "world_state_memory"
+        )
+    {
+        return None;
+    }
+    let mut record_id = memory_meta_string(unit, "record_id");
+    if record_id.is_empty() {
+        record_id = unit.source_state_record_ids.first()?.clone();
+    }
+    let known_name = memory_meta_string(unit, "known_name");
+    let mut metadata = Map::new();
+    if !known_name.is_empty() {
+        metadata.insert("known_name".to_string(), json!(known_name));
+    }
+    Some(StateRecord {
+        record_id,
+        kind: nonempty_or(memory_meta_string(unit, "legacy_kind"), "fact"),
+        text: unit.summary.clone(),
+        scope: nonempty_or(memory_meta_string(unit, "legacy_scope"), "public"),
+        active: unit.injection_state != MemoryInjectionState::Archived,
+        owner: memory_meta_string(unit, "owner"),
+        subject: memory_meta_string(unit, "subject"),
+        source: memory_meta_string(unit, "source"),
+        status: nonempty_or(memory_meta_string(unit, "status"), "known"),
+        tags: memory_meta_array(unit, "tags"),
+        entity_id: memory_meta_string(unit, "entity_id"),
+        source_npc: memory_meta_string(unit, "source_npc"),
+        participants: memory_meta_array(unit, "participants"),
+        location_id: memory_meta_string(unit, "location_id"),
+        location_name: memory_meta_string(unit, "location_name"),
+        region_id: memory_meta_string(unit, "region_id"),
+        region_name: memory_meta_string(unit, "region_name"),
+        scene_id: memory_meta_string(unit, "scene_id"),
+        importance: memory_meta_string(unit, "importance"),
+        aliases: memory_meta_array(unit, "aliases"),
+        metadata,
+    })
+}
+
+fn state_record_matches_query(record: &StateRecord, query: &StateRecordQuery) -> bool {
+    if let Some(active) = query.active {
+        if record.active != active {
+            return false;
+        }
+    }
+    if let Some(kinds) = query.kinds.as_ref() {
+        let allowed: BTreeSet<String> = kinds.iter().map(|k| state_record_kind(k)).collect();
+        if !allowed.contains(&state_record_kind(&record.kind)) {
+            return false;
+        }
+    }
+    if let Some(scopes) = query.scopes.as_ref() {
+        let allowed: BTreeSet<String> = scopes.iter().map(|s| state_record_scope(s)).collect();
+        if !allowed.contains(&state_record_scope(&record.scope)) {
+            return false;
+        }
+    }
+    let owner_filter = actor_key(query.owner);
+    let subject_filter = actor_key(query.subject);
+    let entity_filter = actor_key(query.entity_id);
+    let source_npc_filter = actor_key(query.source_npc);
+    let location_filter = actor_key(query.location_id);
+    let region_filter = actor_key(query.region_id);
+    let scene_filter = actor_key(query.scene_id);
+    if !owner_filter.is_empty() && actor_key(&record.owner) != owner_filter {
+        return false;
+    }
+    if !subject_filter.is_empty() && actor_key(&record.subject) != subject_filter {
+        return false;
+    }
+    if !entity_filter.is_empty() && actor_key(&record.entity_id) != entity_filter {
+        return false;
+    }
+    if !source_npc_filter.is_empty() && actor_key(&record.source_npc) != source_npc_filter {
+        return false;
+    }
+    if !location_filter.is_empty() && actor_key(&record.location_id) != location_filter {
+        return false;
+    }
+    if !region_filter.is_empty() && actor_key(&record.region_id) != region_filter {
+        return false;
+    }
+    if !scene_filter.is_empty() && actor_key(&record.scene_id) != scene_filter {
+        return false;
+    }
+    state_record::state_record_visible_to(record, query.actor_id)
 }
 
 /// `vars(record).copy()` ordering for state_records_export.

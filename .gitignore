@@ -12,6 +12,8 @@ web/dist/
 .env
 .env.*
 !.env.example
+__pycache__/
+*.py[cod]
 gm_lab_settings.json
 *.sqlite
 *.sqlite3
@@ -33,3 +35,11 @@ desktop.ini
 
 # Tauri build output
 crates/gml-app/gen/
+
+# Local generated docs and analysis artifacts
+docs/PORT_PLAN.md
+docs/subsystem_maps.json
+docs/LIVING_WORLD_*.md
+docs/LIVING_WORLD_*.html
+
+.codex/

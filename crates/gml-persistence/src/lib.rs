@@ -253,7 +253,12 @@ impl DialogStore {
 
         let mut active = active_chat_id(&con, guest_id)?;
         let chat_ids: std::collections::HashSet<&String> = rows.iter().map(|r| &r.0).collect();
-        if !rows.is_empty() && active.as_ref().map(|a| !chat_ids.contains(a)).unwrap_or(true) {
+        if !rows.is_empty()
+            && active
+                .as_ref()
+                .map(|a| !chat_ids.contains(a))
+                .unwrap_or(true)
+        {
             active = Some(rows[0].0.clone());
             set_active_chat(&con, guest_id, rows[0].0.as_str())?;
         }
@@ -337,8 +342,12 @@ impl DialogStore {
         Ok(chat_id)
     }
 
-    /// `save(runtime)` — upsert the row, refresh created_at/updated_at, and
-    /// update the in-memory cache.
+    /// `save(runtime)` — upsert the row and refresh created_at/updated_at.
+    ///
+    /// This method intentionally does not touch the in-memory cache: callers may
+    /// invoke it while holding a cached runtime through [`DialogStore::with_runtime`].
+    /// Use [`DialogStore::save_owned`] when saving a fresh owned runtime that must
+    /// replace a previously cached copy.
     pub fn save(&self, runtime: &mut DialogRuntime) -> Result<(), StoreError> {
         runtime.title = title_for_save(runtime);
         runtime.preview = derive_preview(runtime);
@@ -387,16 +396,33 @@ impl DialogStore {
         Ok(())
     }
 
+    /// Save an owned runtime and replace any cached copy with the saved value.
+    ///
+    /// The streamed `/turn` path mutates a runtime loaded outside `with_runtime`.
+    /// Without this replacement, later `/state`, `/debug`, and `/transcript`
+    /// reads keep serving the older cached runtime until process restart.
+    pub fn save_owned(&self, mut runtime: DialogRuntime) -> Result<(), StoreError> {
+        self.save(&mut runtime)?;
+        self.cache_put(runtime);
+        Ok(())
+    }
+
     /// Load a chat into a fresh [`DialogRuntime`] (rebuilds the live client).
     /// Mirrors `_runtime_from_payload`; callers own the result.
-    pub fn load_chat(
-        &self,
-        guest_id: &str,
-        chat_id: &str,
-    ) -> Result<DialogRuntime, StoreError> {
+    pub fn load_chat(&self, guest_id: &str, chat_id: &str) -> Result<DialogRuntime, StoreError> {
         let con = self.connect()?;
-        let row: Option<(String, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>)> =
-            con.query_row(
+        // The sqlite row is a wide column tuple; a type alias would not improve
+        // readability of this single decode site.
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        )> = con
+            .query_row(
                 "SELECT payload, title, preview, turn_count, created_at, updated_at
                  FROM dialog_chats
                  WHERE guest_id = ?1 AND chat_id = ?2",
@@ -442,7 +468,10 @@ impl DialogStore {
     ) -> Result<DialogRuntime, StoreError> {
         let data: Value = serde_json::from_str(payload)
             .map_err(|e| StoreError::Payload(format!("json parse: {e}")))?;
-        let sv = data.get("schema_version").and_then(|v| v.as_i64()).unwrap_or(0);
+        let sv = data
+            .get("schema_version")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         if sv != SCHEMA_VERSION {
             return Err(StoreError::SchemaVersion(
                 data.get("schema_version")
@@ -453,12 +482,9 @@ impl DialogStore {
         // Rebuild the live client + NPC factory via the make_client factory.
         let client: Arc<dyn Backend> = (self.client_factory)();
         let factory: ClientFactory = self.client_factory.clone();
-        let mut session = Session::from_payload(
-            data.get("session").unwrap_or(&Value::Null),
-            client,
-            factory,
-        )
-        .map_err(StoreError::Payload)?;
+        let mut session =
+            Session::from_payload(data.get("session").unwrap_or(&Value::Null), client, factory)
+                .map_err(StoreError::Payload)?;
         // Honor env-tuned compaction thresholds on the loaded session too.
         session.compaction = CompactionThresholds::from_config(&self.config);
         let transcript = match data.get("transcript") {
@@ -553,6 +579,7 @@ impl DialogStore {
         }
         let con = self.connect()?;
         let tx = con.unchecked_transaction()?;
+        #[allow(clippy::type_complexity)]
         let rows: Vec<(String, String, String, String, i64, String, String, String)> = {
             let mut stmt = tx.prepare(
                 "SELECT guest_id, chat_id, title, preview, turn_count, payload, created_at, updated_at
@@ -578,7 +605,9 @@ impl DialogStore {
         };
 
         let mut moved = 0i64;
-        for (src_guest, chat_id, title, preview, turn_count, payload, created_at, updated_at) in rows {
+        for (src_guest, chat_id, title, preview, turn_count, payload, created_at, updated_at) in
+            rows
+        {
             let mut target_chat_id = chat_id.clone();
             if chat_exists(&tx, &target, &target_chat_id)? {
                 target_chat_id = new_chat_id(&tx, &target)?;
@@ -771,7 +800,9 @@ fn new_chat_id(con: &Connection, guest_id: &str) -> Result<String, StoreError> {
             return Ok(chat_id);
         }
     }
-    Err(StoreError::Other("could not allocate unique chat id".to_string()))
+    Err(StoreError::Other(
+        "could not allocate unique chat id".to_string(),
+    ))
 }
 
 // ======================================================================
@@ -825,8 +856,16 @@ fn first_player_event_text(transcript: &[Value]) -> String {
             Some(Value::Object(_)) => row.get("event").unwrap(),
             _ => continue,
         };
-        let kind = event.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-        let agent = event.get("agent").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+        let kind = event
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let agent = event
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
         if kind == "player" || agent == "player" || agent == "игрок" {
             let text = event_text(event);
             if !text.is_empty() {

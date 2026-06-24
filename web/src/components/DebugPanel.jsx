@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import MarkdownText from "./MarkdownText.jsx";
 import Modal from "./Modal.jsx";
-import Tooltip from "./Tooltip.jsx";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { nameColor } from "../nameColor.js";
 
 const actorColor = (actor, npcs) => {
@@ -29,6 +29,19 @@ function Info({ children }) {
   return (
     <Tooltip content={children} className="dbg-info" tipClassName="dbg-tip">
       ⓘ
+    </Tooltip>
+  );
+}
+
+function ActionTip({ title, note, children }) {
+  return (
+    <Tooltip
+      className="tooltip-wrap"
+      tipClassName="ui-tip-wrap"
+      focusable={false}
+      content={<TipContent title={title} note={note} />}
+    >
+      {children}
     </Tooltip>
   );
 }
@@ -91,7 +104,9 @@ function FactsManager({ facts, onAdd, onDelete }) {
           <div className={["dbg-fact", f.kind].join(" ")} key={f.id}>
             <span className={["dbg-fact-kind", f.kind].join(" ")}>{factKindLabel(f.kind)}</span>
             <span className="dbg-fact-text">{f.text}</span>
-            <button type="button" className="icon-btn danger" title="Удалить факт" onClick={() => onDelete(f.id)}>🗑</button>
+            <ActionTip title="Удалить факт" note="Факт будет убран из памяти мира.">
+              <button type="button" className="icon-btn danger" onClick={() => onDelete(f.id)}>🗑</button>
+            </ActionTip>
           </div>
         )) : <Empty>фактов пока нет</Empty>}
       </div>
@@ -118,12 +133,26 @@ function StateRecordsManager({ records, npcs, onApply }) {
         <p className="dbg-hint">Долговременная память мира. Доходит до модели через query_world_state по выбранной видимости (scope). Кеш-префикс не трогает.</p>
         <textarea className="dbg-textarea" rows={2} placeholder="Текст записи состояния…" value={text} onChange={(e) => setText(e.target.value)} />
         <div className="dbg-row">
-          <select value={kind} onChange={(e) => setKind(e.target.value)} title="kind">
-            {SR_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
-          <select value={scope} onChange={(e) => setScope(e.target.value)} title="видимость (scope)">
-            {SR_SCOPES.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <Tooltip
+            className="tooltip-wrap"
+            tipClassName="ui-tip-wrap"
+            focusable={false}
+            content={<TipContent title="Тип записи" note="Что именно сохраняется: факт, слух, память NPC, отношение или цель." />}
+          >
+            <select value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Тип записи">
+              {SR_KINDS.map((k) => <option key={k} value={k}>{k}</option>)}
+            </select>
+          </Tooltip>
+          <Tooltip
+            className="tooltip-wrap"
+            tipClassName="ui-tip-wrap"
+            focusable={false}
+            content={<TipContent title="Видимость записи" note="Кому эта запись должна быть доступна при поиске памяти." />}
+          >
+            <select value={scope} onChange={(e) => setScope(e.target.value)} aria-label="Видимость записи">
+              {SR_SCOPES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </Tooltip>
           <input placeholder="entity_id (npc)" value={entity} list="dbg-npc-ids" onChange={(e) => setEntity(e.target.value)} />
           <button type="button" className="btn primary" disabled={!text.trim()} onClick={add}>Добавить</button>
         </div>
@@ -134,7 +163,9 @@ function StateRecordsManager({ records, npcs, onApply }) {
           <div className="dbg-fact" key={r.record_id || r.id}>
             <span className="dbg-fact-kind">{r.kind}/{r.scope}</span>
             <span className="dbg-fact-text">{r.text}{r.entity_id ? ` · ${r.entity_id}` : ""}</span>
-            <button type="button" className="icon-btn danger" title="Удалить запись" onClick={() => onApply({ delete: [r.record_id || r.id] })}>🗑</button>
+            <ActionTip title="Удалить запись" note="Запись состояния больше не будет попадать в память модели.">
+              <button type="button" className="icon-btn danger" onClick={() => onApply({ delete: [r.record_id || r.id] })}>🗑</button>
+            </ActionTip>
           </div>
         )) : <Empty>записей нет</Empty>}
       </div>
@@ -163,7 +194,9 @@ function RumorsManager({ rumors, onAction }) {
             <span className={["dbg-fact-kind", r.confirmed ? "truth" : "rumor"].join(" ")}>{r.confirmed ? "подтв." : "слух"}</span>
             <span className="dbg-fact-text">{r.speaker ? `${r.speaker}: ` : ""}{r.text}</span>
             <button type="button" className="btn small" onClick={() => onAction({ action: "confirm", seq: r.seq, confirmed: !r.confirmed })}>{r.confirmed ? "снять" : "подтв."}</button>
-            <button type="button" className="icon-btn danger" title="Удалить слух" onClick={() => onAction({ action: "delete", seq: r.seq })}>🗑</button>
+            <ActionTip title="Удалить слух" note="Слух исчезнет из списка доступных мировых сведений.">
+              <button type="button" className="icon-btn danger" onClick={() => onAction({ action: "delete", seq: r.seq })}>🗑</button>
+            </ActionTip>
           </div>
         )) : <Empty>слухов нет</Empty>}
       </div>
@@ -201,6 +234,7 @@ function EditField({ label, children }) {
 function StoryEditor({ story, onSave }) {
   const [d, setD] = useState(() => ({
     title: story.title || "",
+    story_brief: story.brief || story.story_brief || "",
     public_intro: story.public_intro || "",
     hidden_truth: story.hidden_truth || "",
     hidden_events: listText(story.hidden_events),
@@ -212,6 +246,7 @@ function StoryEditor({ story, onSave }) {
     // so only send it when it actually changed (avoids needless prefix re-caching).
     const body = {
       title: d.title,
+      story_brief: d.story_brief,
       hidden_truth: d.hidden_truth,
       hidden_events: parseListField(d.hidden_events),
     };
@@ -221,6 +256,9 @@ function StoryEditor({ story, onSave }) {
   return (
     <div className="dbg-form">
       <EditField label="Название истории"><input value={d.title} onChange={(e) => set({ title: e.target.value })} /></EditField>
+      <EditField label="Бриф для игрока">
+        <textarea rows={4} value={d.story_brief} onChange={(e) => set({ story_brief: e.target.value })} />
+      </EditField>
       <EditField label={<>Публичное интро <span className="dbg-warn">кеш-префикс</span></>}>
         <textarea rows={4} value={d.public_intro} onChange={(e) => set({ public_intro: e.target.value })} />
       </EditField>
@@ -1036,16 +1074,20 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
 
   return (
     <>
-      <button
-        type="button"
-        className={["debug-tab", open ? "open" : ""].filter(Boolean).join(" ")}
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-controls="debug-drawer"
-        title="Открыть дебаг истории"
+      <ActionTip
+        title={open ? "Скрыть дебаг" : "Открыть дебаг"}
+        note="Панель для просмотра и правки служебного состояния истории."
       >
-        Дебаг
-      </button>
+        <button
+          type="button"
+          className={["debug-tab", open ? "open" : ""].filter(Boolean).join(" ")}
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          aria-controls="debug-drawer"
+        >
+          Дебаг
+        </button>
+      </ActionTip>
 
       <aside id="debug-drawer" className={["debug-drawer", open ? "open" : ""].filter(Boolean).join(" ")}>
         <div className="debug-head">
@@ -1104,8 +1146,8 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
                   <div><span>персонажей</span><b>{npcs.length}</b></div>
                   <div><span>время</span><b>{data.time?.current_date_label || "—"}</b></div>
                 </div>
-                <h4>Что игрок знает на старте</h4>
-                <TextBlock>{data.story?.public_intro}</TextBlock>
+                <h4>Бриф игрока на старте</h4>
+                <TextBlock>{data.story?.brief}</TextBlock>
               </div>
             )}
 
@@ -1116,6 +1158,8 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
                 </div>
                 <h4>Цель ведения <Info>Это пояснение для тебя. Модели оно напрямую не передаётся — поведение ГМ задаёт системный промпт.</Info></h4>
                 <TextBlock>{data.story?.objective}</TextBlock>
+                <h4>Бриф для игрока <Info>Именно этот текст показывается в верхней карточке чата. Кеш-префикс ГМ не трогает.</Info></h4>
+                <TextBlock>{data.story?.brief}</TextBlock>
                 <h4>Публичное интро <Info>Лежит в кешируемом префиксе. Правка пересоберёт префикс один раз.</Info></h4>
                 <TextBlock>{data.story?.public_intro}</TextBlock>
                 <h4>Скрытая правда <Info>В префикс не входит. Доходит до ГМ через query_world_state (scope=gm).</Info></h4>

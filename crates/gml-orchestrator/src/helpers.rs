@@ -63,18 +63,17 @@ pub fn tool_reminder(name: &str) -> &'static str {
     match name {
         "ask_npc" => {
             "After this NPC response, do a state-update pass before final narration. If \
-the exchange changed durable testimony, rumor, npc_memory, relationship, \
-goal, what an NPC knows/remembers, what the player learned privately, an \
-attitude, promise, threat, lead, suspicion, clue, or known_name, call \
-query_world_state first when a matching record may exist, then call \
-update_world_state; update an existing relationship/goal/memory instead \
-of duplicating the same thread. Consolidate one testimony or clue block \
-into one record; use participants for extra listeners instead of copying \
-the same memory per actor. \
-Private leads from an NPC to the player are usually shared rumor plus \
-npc_memory, not public fact. Call update_player_character for player-sheet \
-changes or GM-only player notes. If time passed, call advance_time. If \
-nothing durable changed, do not write filler memory. Do not restate NPC speech."
+the exchange changed durable testimony, rumor, npc_memory, what an NPC \
+knows/remembers, what the player learned privately, a promise, threat, lead, \
+suspicion, clue, local rumor, faction knowledge, or GM-private secret, call \
+note_memory with the correct owner_scope, visibility_scopes, topic_tags, and \
+entity metadata. Store relationship and goal changes as scoped memory cards \
+unless a dedicated canon tool exists for the change. \
+Private leads from an NPC to the player are usually one actor-owned memory \
+visible to player, not public fact. Use short summaries; put long details only \
+for explicit drill-down. Call update_player_character for player-sheet changes \
+or GM-only player notes. If time passed, call advance_time. If nothing durable \
+changed, do not write filler memory. Do not restate NPC speech."
         }
         "roll_dice" => {
             "Use the returned total, grade, and margin as fixed. Success means the locked \
@@ -90,20 +89,24 @@ them, narrate uncertainty honestly and do not upgrade testimony into truth. \
 Player-facing narration may include only lore the player can know right now; \
 do not reveal hidden sources, secrets, or meta-information."
         }
-        "query_world_state" => {
-            "Use returned id/hash for update/delete. For the same relationship, goal, or \
-memory thread, update the existing record instead of adding a duplicate. \
-Use get_world_fact, not query_world_state(scope=player), for ordinary \
-player-safe public/lore answer lookup. Player scope here is for stored \
-state records, ids/hashes, or write preparation. \
-Scope-limited memory is internal unless the fiction makes it available to the \
-player; do not reveal gm/npc-scope secrets, private thoughts, ids/hashes, or \
-meta-information in narration."
+        "get_memory" => {
+            "Use returned memory only through the requested access lens. Results are short \
+summaries by default; do not reveal hidden scopes, private thoughts, ids, hashes, \
+or meta-information to the player."
         }
-        "update_world_state" => {
-            "If status is conflict or not_added, the change was not stored. Use the returned \
-id/hash or query_world_state before retrying; otherwise continue without \
-duplicating the stored note."
+        "remember" => {
+            "Use only these memory results as your own accessible recollection. Unknown means \
+you do not currently remember or cannot access matching memory; answer in character \
+with uncertainty, evasion, a guess, or silence rather than inventing certainty."
+        }
+        "note_memory" => {
+            "Memory was stored in the scoped living-memory layer. Continue using only the \
+fictionally visible meaning; do not narrate owner_scope, visibility_scopes, ids, \
+truth_status, or other meta-information."
+        }
+        "consolidate_memory" => {
+            "The source memories were kept for explicit drill-down and marked cold, not \
+deleted. Use the new crystal summary for ordinary recall."
         }
         "get_npc_profile" => {
             "Use returned mechanics/status/profile fields internally for resolution. The \
@@ -119,8 +122,14 @@ react, bring them into the scene if appropriate and call ask_npc."
 call ask_npc; do not invent personal speech/action in narration."
         }
         "set_scene" => {
-            "Scene state is now updated. If a named NPC in this scene must speak or react, \
-call ask_npc; do not invent personal speech/action in narration."
+            "The new place is now authored in the canon and the player has moved into it; \
+the live scene is rebuilt from the canon. If a named NPC in this place must speak \
+or react, call ask_npc; do not invent personal speech/action in narration."
+        }
+        "move_player" => {
+            "The player moved through the canon and the live scene is rebuilt from it. Use \
+the new current place as authoritative. If a named NPC now present must speak or \
+react, call ask_npc; do not invent personal speech/action in narration."
         }
         "update_player_character" => {
             "Use the changed character-sheet fields in future resolution. Do not reveal \
@@ -214,11 +223,7 @@ pub fn clean_text(value: &Value) -> String {
 /// `_clean_list(value)` — strings only, stripped, non-empty.
 pub fn clean_list(value: &Value) -> Vec<String> {
     match value {
-        Value::Array(a) => a
-            .iter()
-            .map(clean_text)
-            .filter(|s| !s.is_empty())
-            .collect(),
+        Value::Array(a) => a.iter().map(clean_text).filter(|s| !s.is_empty()).collect(),
         _ => Vec::new(),
     }
 }
@@ -441,10 +446,10 @@ pub fn compact_world_fact_payload(payload: &Value) -> Value {
 
 /// `_compact_tool_search_payload`.
 pub fn compact_tool_search_payload(payload: &Value) -> Value {
-    let loaded = get(payload, "loaded_tools");
+    let matches = get(payload, "matches");
     let missing = get(payload, "missing");
     let mut out = Map::new();
-    let loaded_arr = match loaded {
+    let matches_arr = match matches {
         Value::Array(a) => a.clone(),
         _ => Vec::new(),
     };
@@ -452,9 +457,9 @@ pub fn compact_tool_search_payload(payload: &Value) -> Value {
         Value::Array(a) => a.clone(),
         _ => Vec::new(),
     };
-    out.insert("loaded_tools".to_string(), Value::Array(loaded_arr.clone()));
+    out.insert("matches".to_string(), Value::Array(matches_arr.clone()));
     out.insert("missing".to_string(), Value::Array(missing_arr));
-    if loaded_arr.is_empty() {
+    if matches_arr.is_empty() {
         if let Some(msg) = payload.get("message") {
             if !msg.is_null() {
                 out.insert("message".to_string(), msg.clone());
@@ -505,7 +510,38 @@ pub fn model_player_options_text(payload: &Value) -> String {
 
 /// `_model_tool_search_text(payload)`.
 pub fn model_tool_search_text(payload: &Value) -> String {
-    let loaded = match get(payload, "loaded_tools") {
+    let matches = match get(payload, "matches") {
+        Value::Array(a) if !a.is_empty() => Value::Array(
+            a.iter()
+                .filter_map(|row| {
+                    row.get("name")
+                        .and_then(Value::as_str)
+                        .map(|name| Value::String(name.to_string()))
+                })
+                .collect(),
+        ),
+        _ => Value::String("none".to_string()),
+    };
+    let missing = match get(payload, "missing") {
+        Value::Array(a) if !a.is_empty() => Value::Array(a.clone()),
+        _ => Value::String("none".to_string()),
+    };
+    let next = get(payload, "next")
+        .as_str()
+        .unwrap_or("call load_tool_schema with one exact match.name");
+    plain_lines(
+        "TOOL SEARCH",
+        &[
+            kv("matches", &matches),
+            kv("missing", &missing),
+            kv_str("next", next),
+        ],
+    )
+}
+
+pub fn model_load_tool_schema_text(payload: &Value) -> String {
+    let loaded_schema = get(payload, "loaded_schema");
+    let already_loaded = match get(payload, "already_loaded") {
         Value::Array(a) if !a.is_empty() => Value::Array(a.clone()),
         _ => Value::String("none".to_string()),
     };
@@ -513,9 +549,29 @@ pub fn model_tool_search_text(payload: &Value) -> String {
         Value::Array(a) if !a.is_empty() => Value::Array(a.clone()),
         _ => Value::String("none".to_string()),
     };
+    let next = get(payload, "next")
+        .as_str()
+        .unwrap_or("call invoke_loaded_tool with the loaded schema");
+    let invoke_tool = get(payload, "invoke_tool")
+        .as_str()
+        .unwrap_or("invoke_loaded_tool");
+    let schema = get(payload, "schema");
+    let schema_line = if schema.is_null() {
+        String::new()
+    } else {
+        format!("schema: {}", json_compact(schema))
+    };
     plain_lines(
-        "TOOL SEARCH",
-        &[kv("loaded", &loaded), kv("missing", &missing)],
+        "LOAD TOOL SCHEMA",
+        &[
+            kv("status", get(payload, "status")),
+            kv("loaded_schema", loaded_schema),
+            kv_str("invoke_tool", invoke_tool),
+            kv("already_loaded", &already_loaded),
+            kv("missing", &missing),
+            schema_line,
+            kv_str("next", next),
+        ],
     )
 }
 
@@ -546,10 +602,7 @@ pub fn model_world_fact_text(payload: &Value) -> String {
     let compact = compact_world_fact_payload(payload);
     let mut lines = vec![
         kv("status", get(&compact, "status")),
-        kv_str(
-            "text",
-            &clip_text(get(&compact, "text"), 700),
-        ),
+        kv_str("text", &clip_text(get(&compact, "text"), 700)),
         kv("already_delivered", get(&compact, "already_delivered")),
     ];
     let mut sources = Vec::new();

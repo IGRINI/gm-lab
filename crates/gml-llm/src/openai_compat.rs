@@ -80,10 +80,9 @@ impl OpenAICompatClient {
             .pool_idle_timeout(None);
         if !cfg.api_key.is_empty() {
             let mut headers = reqwest::header::HeaderMap::new();
-            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!(
-                "Bearer {}",
-                cfg.api_key
-            )) {
+            if let Ok(val) =
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", cfg.api_key))
+            {
                 headers.insert(reqwest::header::AUTHORIZATION, val);
             }
             builder = builder.default_headers(headers);
@@ -124,7 +123,7 @@ impl OpenAICompatClient {
         stream: bool,
         reasoning_role: &str,
     ) -> Value {
-        let model = self.model.lock().expect("model lock").clone();
+        let model = self.model_for_role(reasoning_role);
         build_payload(
             &self.cfg,
             &self.settings,
@@ -136,6 +135,16 @@ impl OpenAICompatClient {
             stream,
             reasoning_role,
         )
+    }
+
+    fn model_for_role(&self, reasoning_role: &str) -> String {
+        if reasoning_role == gml_config::Role::Compact.as_str() {
+            let compact_model = self.cfg.compact_model.trim();
+            if !compact_model.is_empty() {
+                return compact_model.to_string();
+            }
+        }
+        self.model.lock().expect("model lock").clone()
     }
 
     /// `_remember(label, usage, timings, elapsed_ms)` — normalize stats, append a
@@ -178,7 +187,10 @@ impl OpenAICompatClient {
         for (k, v) in &st {
             row.insert(k.clone(), v.clone());
         }
-        let prompt = st.get("prompt_eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let prompt = st
+            .get("prompt_eval_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let eval = st.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
         row.insert("tokens".to_string(), Value::from(prompt + eval));
         self.call_log.lock().expect("call_log lock").push(row);
@@ -367,7 +379,10 @@ pub fn build_payload(
             p.insert("tools".to_string(), t.clone());
         }
         let tool_choice = settings.tool_choice_for_request(true);
-        p.insert("tool_choice".to_string(), Value::String(tool_choice.clone()));
+        p.insert(
+            "tool_choice".to_string(),
+            Value::String(tool_choice.clone()),
+        );
         // parallel_tool_calls = parallel_tool_calls_for_request(True) and tool_choice != "none"
         let parallel = settings.parallel_tool_calls_for_request(true) && tool_choice != "none";
         p.insert("parallel_tool_calls".to_string(), Value::Bool(parallel));
@@ -392,17 +407,17 @@ pub fn build_payload(
         if cfg.use_llama_template_kwargs {
             // p["chat_template_kwargs"] = {"enable_thinking": bool(effective_think)}
             let mut ctk = Map::new();
-            ctk.insert(
-                "enable_thinking".to_string(),
-                Value::Bool(effective_think),
-            );
+            ctk.insert("enable_thinking".to_string(), Value::Bool(effective_think));
             p.insert("chat_template_kwargs".to_string(), Value::Object(ctk));
             // p.update(sampling) — insert sampling fields in dict order:
             // temperature, top_p, top_k, min_p, presence_penalty (with exact types)
             insert_sampling(&mut p, &sampling);
             // if config.LLAMA_CACHE_REUSE > 0: p["n_cache_reuse"] = LLAMA_CACHE_REUSE
             if cfg.llama_cache_reuse > 0 {
-                p.insert("n_cache_reuse".to_string(), Value::from(cfg.llama_cache_reuse));
+                p.insert(
+                    "n_cache_reuse".to_string(),
+                    Value::from(cfg.llama_cache_reuse),
+                );
             }
         } else {
             // Keep only widely-supported fields: temperature, top_p, presence_penalty
@@ -432,7 +447,10 @@ fn insert_sampling(p: &mut Map<String, Value>, s: &SamplingPreset) {
     p.insert("top_p".to_string(), float_value(s.top_p));
     p.insert("top_k".to_string(), Value::from(s.top_k));
     p.insert("min_p".to_string(), min_p_value(s.min_p));
-    p.insert("presence_penalty".to_string(), float_value(s.presence_penalty));
+    p.insert(
+        "presence_penalty".to_string(),
+        float_value(s.presence_penalty),
+    );
 }
 
 /// One sampling field by key, with exact numeric type (used for the
@@ -588,8 +606,10 @@ impl Backend for OpenAICompatClient {
         think_flag: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
-        // First attempt: free text, think as given.
-        let payload = self.payload(messages, None, think_flag, None, false, reasoning_role);
+        // First attempt: JSON object mode, think as given. The expected shape is
+        // prompt-described; schemas are deliberately not sent to the model.
+        let rf = serde_json::json!({"type": "json_object"});
+        let payload = self.payload(messages, None, think_flag, Some(&rf), false, reasoning_role);
         let data = self.post(&payload).await?;
         self.remember(
             "chat_json",
@@ -608,9 +628,15 @@ impl Backend for OpenAICompatClient {
         if !out.is_empty() {
             return Ok(out);
         }
-        // Fallback: response_format json_object, think=False.
-        let rf = serde_json::json!({"type": "json_object"});
-        let payload2 = self.payload(messages, None, Some(false), Some(&rf), false, reasoning_role);
+        // Fallback: same json_object mode, think=False.
+        let payload2 = self.payload(
+            messages,
+            None,
+            Some(false),
+            Some(&rf),
+            false,
+            reasoning_role,
+        );
         let data2 = self.post(&payload2).await?;
         self.remember(
             "chat_json_fallback",
@@ -628,11 +654,7 @@ impl Backend for OpenAICompatClient {
         Ok(loads_map(content2))
     }
 
-    async fn summarize(
-        &self,
-        text: &str,
-        proper_nouns: &[String],
-    ) -> Result<String, BackendError> {
+    async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
         let sys = gml_prompts::render_gm_compact_system(&proper_nouns_line(proper_nouns));
         // text[:config.COMPACT_INPUT_CHARS] — clip by CHARS (Unicode scalars).
         let clipped: String = text
@@ -651,7 +673,10 @@ impl Backend for OpenAICompatClient {
                 gml_config::Role::Compact.as_str(),
             )
             .await?;
-        Ok(out.content.trim_matches(|c: char| c.is_whitespace()).to_string())
+        Ok(out
+            .content
+            .trim_matches(|c: char| c.is_whitespace())
+            .to_string())
     }
 
     async fn chat_stream(
@@ -765,7 +790,8 @@ impl Backend for OpenAICompatClient {
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<JsonStreamOutput, BackendError> {
-        let payload = self.payload(messages, None, think_flag, None, true, reasoning_role);
+        let rf = serde_json::json!({"type": "json_object"});
+        let payload = self.payload(messages, None, think_flag, Some(&rf), true, reasoning_role);
 
         let mut parts: Vec<String> = Vec::new();
         let mut usage: Option<Value> = None;
@@ -806,7 +832,9 @@ impl Backend for OpenAICompatClient {
         if data.is_empty() {
             // Python fallback passes think defaulted (True) — chat_json default
             // think=True; only reasoning_role is overridden.
-            data = self.chat_json(messages, schema, Some(true), reasoning_role).await?;
+            data = self
+                .chat_json(messages, schema, Some(true), reasoning_role)
+                .await?;
         }
         Ok(JsonStreamOutput { data, stats })
     }

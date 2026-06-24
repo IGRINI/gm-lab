@@ -2,7 +2,10 @@
 //! gating, card_revision discipline, whereabouts precedence, seed coercion).
 
 use gml_world::state_record::RagDocument;
-use gml_world::World;
+use gml_world::{
+    MemoryInjectionState, MemoryTier, MemoryTruthStatus, MemoryUnit, NpcWhereabouts, StateRecord,
+    World,
+};
 use serde_json::{json, Map, Value};
 
 fn sample_seed() -> Value {
@@ -65,11 +68,26 @@ fn seed_loads_core_fields() {
 #[test]
 fn retrieval_excludes_truth_and_secrets() {
     let mut w = pinned_world();
+    w.add_memory_unit(MemoryUnit {
+        memory_id: "pub_gate_note".to_string(),
+        tier: MemoryTier::Raw,
+        owner_scope: "public".to_string(),
+        visibility_scopes: vec!["public".to_string()],
+        summary: "Публичный факт".to_string(),
+        injection_state: MemoryInjectionState::Hot,
+        truth_status: MemoryTruthStatus::Actual,
+        created_by: "test".to_string(),
+        ..MemoryUnit::default()
+    });
     let docs = w.retrieval_documents("player");
     // No doc may carry the hidden canon text or any NPC secret.
     for d in &docs {
         assert!(!d.text.contains("оборотень"), "canon leaked: {}", d.text);
-        assert!(!d.text.contains("Прячет долги"), "secret leaked: {}", d.text);
+        assert!(
+            !d.text.contains("Прячет долги"),
+            "secret leaked: {}",
+            d.text
+        );
         assert!(!d.text.contains("Шпионка"), "secret leaked: {}", d.text);
         // kind=="truth" facts never become docs.
         assert_ne!(d.doc_id, "fact:hidden_truth");
@@ -78,8 +96,108 @@ fn retrieval_excludes_truth_and_secrets() {
     assert!(!docs.iter().any(|d| d.doc_id == "state:sr_gm"));
     // owner-scoped record (owner=borin) not visible to player either.
     assert!(!docs.iter().any(|d| d.doc_id == "state:sr_owner"));
-    // public state record IS present.
-    assert!(docs.iter().any(|d| d.doc_id == "state:sr_pub"));
+    // Canon scoped memory is the RAG source; legacy StateRecord is not.
+    assert!(docs.iter().any(|d| d.doc_id == "memory:pub_gate_note"));
+    assert!(!docs.iter().any(|d| d.doc_id == "state:sr_pub"));
+    assert!(!docs.iter().any(|d| d.doc_id.starts_with("state:")));
+}
+
+#[test]
+fn npc_scene_slice_excludes_legacy_state_records() {
+    let mut w = pinned_world();
+    w.add_state_records(&json!([{
+        "id": "late_owner_memory",
+        "kind": "npc_memory",
+        "text": "LEGACY_NPC_CONTEXT_SENTINEL",
+        "scope": "owner",
+        "owner": "borin"
+    }]));
+
+    let slice = w.npc_scene_slice("borin");
+    assert!(
+        !slice.contains("Actor-visible state memory"),
+        "legacy StateRecord block must not be injected into NPC context:\n{slice}"
+    );
+    assert!(
+        !slice.contains("LEGACY_NPC_CONTEXT_SENTINEL"),
+        "late legacy StateRecord text reached NPC context:\n{slice}"
+    );
+}
+
+#[test]
+fn fact_lookup_ignores_unsynced_legacy_state_records() {
+    let mut w = pinned_world();
+    w.state_records.push(StateRecord {
+        record_id: "late_public_fact".to_string(),
+        kind: "fact".to_string(),
+        text: "XYZZY_DIRECT_SENTINEL".to_string(),
+        scope: "public".to_string(),
+        active: true,
+        owner: String::new(),
+        subject: String::new(),
+        source: String::new(),
+        status: "known".to_string(),
+        tags: vec!["xyzzy_direct_sentinel".to_string()],
+        entity_id: String::new(),
+        source_npc: String::new(),
+        participants: Vec::new(),
+        location_id: String::new(),
+        location_name: String::new(),
+        region_id: String::new(),
+        region_name: String::new(),
+        scene_id: String::new(),
+        importance: String::new(),
+        aliases: Vec::new(),
+        metadata: Map::new(),
+    });
+
+    let legacy = w.fact("XYZZY_DIRECT_SENTINEL", "player", None);
+    assert_eq!(legacy.status, "unknown");
+    assert!(
+        !legacy.text.contains("XYZZY_DIRECT_SENTINEL"),
+        "World::fact must not read StateRecord fallback directly"
+    );
+
+    w.add_memory_unit(MemoryUnit {
+        memory_id: "scoped_fact_sentinel".to_string(),
+        tier: MemoryTier::Raw,
+        owner_scope: "public".to_string(),
+        visibility_scopes: vec!["public".to_string()],
+        summary: "SCOPED_FACT_SENTINEL".to_string(),
+        truth_status: MemoryTruthStatus::Actual,
+        created_by: "test".to_string(),
+        ..MemoryUnit::default()
+    });
+    let scoped = w.fact("SCOPED_FACT_SENTINEL", "player", None);
+    assert_eq!(scoped.status, "known");
+    assert!(scoped.text.contains("SCOPED_FACT_SENTINEL"));
+}
+
+#[test]
+fn seed_known_name_state_records_migrate_to_scoped_memory() {
+    let mut seed = sample_seed();
+    let records = seed
+        .get_mut("state_records")
+        .and_then(Value::as_array_mut)
+        .expect("sample state_records array");
+    records.push(json!({
+        "id": "legacy_known_borin",
+        "kind": "fact",
+        "text": "Игрок знает, что трактирщика зовут Старый Борин.",
+        "scope": "public",
+        "entity_id": "borin",
+        "metadata": {"known_name": "Старый Борин"}
+    }));
+
+    let w = World::from_seed_with_dice_seed(&seed, 424242);
+    assert_eq!(w.npc_known_name("borin", "player"), "Старый Борин");
+    assert_eq!(w.npc_player_label("borin", "player"), "Старый Борин");
+    assert!(w.world_canon.memory.units.values().any(|unit| {
+        unit.source_state_record_ids
+            .iter()
+            .any(|id| id == "legacy_known_borin")
+            && unit.metadata.get("known_name").and_then(Value::as_str) == Some("Старый Борин")
+    }));
 }
 
 #[test]
@@ -123,7 +241,9 @@ fn update_npc_card_revision_discipline() {
     w.update_npc("borin", &json!({"condition": "ранен"}));
     assert_eq!(w.npcs["borin"].card_revision, 1);
     // secret stays unreachable through npc_profile (not in NPC_PROFILE_FIELDS).
-    let profile = w.npc_profile("borin", "visible", &json!(["secret"])).unwrap();
+    let profile = w
+        .npc_profile("borin", "visible", &json!(["secret"]))
+        .unwrap();
     let prof = profile["profile"].as_object().unwrap();
     assert!(!prof.contains_key("secret"));
     // but the ignored list records it.
@@ -150,6 +270,33 @@ fn whereabouts_present_precedence() {
     assert_eq!(export["status"], "present");
     assert_eq!(export["source"], "current scene");
     assert_eq!(export["location_name"], "Таверна");
+}
+
+#[test]
+fn stale_present_whereabouts_downgrades_when_npc_not_in_current_scene() {
+    let mut w = pinned_world();
+    w.scene.present_npcs.remove("borin");
+    w.scene.presence.remove("borin");
+    w.npc_whereabouts.insert(
+        "borin".to_string(),
+        NpcWhereabouts {
+            npc_id: "borin".to_string(),
+            location_id: "tavern".to_string(),
+            location_name: "Таверна".to_string(),
+            status: "present".to_string(),
+            details: "за стойкой".to_string(),
+            source: "current scene".to_string(),
+        },
+    );
+
+    let export = w.npc_whereabouts_export(Some("borin"));
+    assert_eq!(export["status"], "known");
+    assert_eq!(export["source"], "stale current scene");
+
+    let summary = w.npc_whereabouts_summary("borin");
+    assert!(summary.contains("NOT in current scene"));
+    assert!(summary.contains("status: known"));
+    assert!(!summary.contains("status: present"));
 }
 
 #[test]

@@ -8,10 +8,8 @@ use std::collections::BTreeSet;
 use crate::helpers::{actor_key, as_list, as_str};
 use crate::model::StateRecord;
 
-pub const STATE_RECORD_KINDS: [&str; 5] =
-    ["fact", "rumor", "npc_memory", "relationship", "goal"];
-pub const STATE_RECORD_SCOPES: [&str; 5] =
-    ["public", "gm", "owner", "subject", "participants"];
+pub const STATE_RECORD_KINDS: [&str; 5] = ["fact", "rumor", "npc_memory", "relationship", "goal"];
+pub const STATE_RECORD_SCOPES: [&str; 5] = ["public", "gm", "owner", "subject", "participants"];
 
 /// `STATE_RECORD_SCOPE_ALIASES` (private/npc->owner, shared/participant(s)).
 pub fn scope_alias(raw: &str) -> Option<&'static str> {
@@ -125,12 +123,27 @@ pub fn state_record_active(value: &Value, default: bool) -> bool {
 pub fn state_record_hash(record: &StateRecord) -> String {
     let mut payload: Map<String, Value> = Map::new();
     payload.insert("id".to_string(), Value::String(record.record_id.clone()));
-    payload.insert("kind".to_string(), Value::String(state_record_kind(&record.kind)));
-    payload.insert("text".to_string(), Value::String(as_str_value(&record.text)));
-    payload.insert("scope".to_string(), Value::String(state_record_scope(&record.scope)));
+    payload.insert(
+        "kind".to_string(),
+        Value::String(state_record_kind(&record.kind)),
+    );
+    payload.insert(
+        "text".to_string(),
+        Value::String(as_str_value(&record.text)),
+    );
+    payload.insert(
+        "scope".to_string(),
+        Value::String(state_record_scope(&record.scope)),
+    );
     payload.insert("active".to_string(), Value::Bool(record.active));
-    payload.insert("owner".to_string(), Value::String(as_str_value(&record.owner)));
-    payload.insert("subject".to_string(), Value::String(as_str_value(&record.subject)));
+    payload.insert(
+        "owner".to_string(),
+        Value::String(as_str_value(&record.owner)),
+    );
+    payload.insert(
+        "subject".to_string(),
+        Value::String(as_str_value(&record.subject)),
+    );
     let status = {
         let s = as_str_value(&record.status);
         if s.is_empty() {
@@ -141,18 +154,48 @@ pub fn state_record_hash(record: &StateRecord) -> String {
     };
     payload.insert("status".to_string(), Value::String(status));
     payload.insert("tags".to_string(), to_str_array(&record.tags));
-    payload.insert("entity_id".to_string(), Value::String(as_str_value(&record.entity_id)));
-    payload.insert("source_npc".to_string(), Value::String(as_str_value(&record.source_npc)));
-    payload.insert("location_id".to_string(), Value::String(as_str_value(&record.location_id)));
-    payload.insert("location_name".to_string(), Value::String(as_str_value(&record.location_name)));
-    payload.insert("region_id".to_string(), Value::String(as_str_value(&record.region_id)));
-    payload.insert("region_name".to_string(), Value::String(as_str_value(&record.region_name)));
-    payload.insert("scene_id".to_string(), Value::String(as_str_value(&record.scene_id)));
-    payload.insert("importance".to_string(), Value::String(as_str_value(&record.importance)));
+    payload.insert(
+        "entity_id".to_string(),
+        Value::String(as_str_value(&record.entity_id)),
+    );
+    payload.insert(
+        "source_npc".to_string(),
+        Value::String(as_str_value(&record.source_npc)),
+    );
+    payload.insert(
+        "location_id".to_string(),
+        Value::String(as_str_value(&record.location_id)),
+    );
+    payload.insert(
+        "location_name".to_string(),
+        Value::String(as_str_value(&record.location_name)),
+    );
+    payload.insert(
+        "region_id".to_string(),
+        Value::String(as_str_value(&record.region_id)),
+    );
+    payload.insert(
+        "region_name".to_string(),
+        Value::String(as_str_value(&record.region_name)),
+    );
+    payload.insert(
+        "scene_id".to_string(),
+        Value::String(as_str_value(&record.scene_id)),
+    );
+    payload.insert(
+        "importance".to_string(),
+        Value::String(as_str_value(&record.importance)),
+    );
     payload.insert("aliases".to_string(), to_str_array(&record.aliases));
-    payload.insert("metadata".to_string(), Value::Object(record.metadata.clone()));
+    payload.insert(
+        "metadata".to_string(),
+        Value::Object(record.metadata.clone()),
+    );
     if !record.participants.is_empty() {
-        payload.insert("participants".to_string(), to_str_array(&record.participants));
+        payload.insert(
+            "participants".to_string(),
+            to_str_array(&record.participants),
+        );
     }
 
     let canonical = canonical_json(&Value::Object(payload));
@@ -247,9 +290,12 @@ fn hex(bytes: &[u8]) -> String {
 /// `_anchor_label` re-export path used by state_record_documents.
 pub use crate::helpers::anchor_label;
 
-/// `rag.RagDocument` — the actor-safe RAG corpus document. gml-rag is not yet
-/// ported, so the canonical shape lives here (PORT_PLAN.md §1.2 places it in
-/// gml-rag eventually; gml-world produces it via `retrieval_documents`).
+/// Actor-safe RAG corpus document produced by `gml-world`.
+///
+/// `gml-rag` owns the retrieval implementation and has an equivalent boundary
+/// type. The world crate keeps this local shape to avoid depending on the
+/// retrieval crate from the domain model; the orchestrator converts between the
+/// two at the integration boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RagDocument {
     pub doc_id: String,
@@ -308,7 +354,11 @@ impl RagDocument {
 
 /// `_state_record_visible_to(record, actor_id)` — static visibility gate.
 pub fn state_record_visible_to(record: &StateRecord, actor_id: &str) -> bool {
-    let actor = actor_key(if actor_id.is_empty() { "player" } else { actor_id });
+    let actor = actor_key(if actor_id.is_empty() {
+        "player"
+    } else {
+        actor_id
+    });
     let scope = state_record_scope(&record.scope);
     let owner = actor_key(&record.owner);
     let subject = actor_key(&record.subject);

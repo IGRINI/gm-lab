@@ -129,14 +129,43 @@ pub fn world_context_tokens(world: &mut World) -> i64 {
 
 /// `_meta(label, stats, scope="npc")`.
 pub fn meta(label: &str, stats: &Map<String, Value>, scope: &str) -> Value {
-    let pin = stats.get("prompt_eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
-    let pout = stats.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
-    let cached = stats.get("cached_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-    let ed = stats.get("eval_duration").and_then(|v| v.as_i64()).unwrap_or(0) as f64 / 1e9;
-    let pd = stats.get("prompt_eval_duration").and_then(|v| v.as_i64()).unwrap_or(0) as f64 / 1e9;
-    let td = stats.get("total_duration").and_then(|v| v.as_i64()).unwrap_or(0) as f64 / 1e9;
-    let ld = stats.get("load_duration").and_then(|v| v.as_i64()).unwrap_or(0) as f64 / 1e9;
-    let tps = if ed > 0.0 { (pout as f64 / ed).round() as i64 } else { 0 };
+    let pin = stats
+        .get("prompt_eval_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let pout = stats
+        .get("eval_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let cached = stats
+        .get("cached_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let ed = stats
+        .get("eval_duration")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as f64
+        / 1e9;
+    let pd = stats
+        .get("prompt_eval_duration")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as f64
+        / 1e9;
+    let td = stats
+        .get("total_duration")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as f64
+        / 1e9;
+    let ld = stats
+        .get("load_duration")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as f64
+        / 1e9;
+    let tps = if ed > 0.0 {
+        (pout as f64 / ed).round() as i64
+    } else {
+        0
+    };
     json!({
         "label": label,
         "scope": scope,
@@ -153,7 +182,12 @@ pub fn meta(label: &str, stats: &Map<String, Value>, scope: &str) -> Value {
 
 /// `_meta_total(metas, total_secs)`.
 pub fn meta_total(metas: &[Value], total_secs: f64) -> Value {
-    let sum_i = |key: &str| metas.iter().map(|m| m.get(key).and_then(|v| v.as_i64()).unwrap_or(0)).sum::<i64>();
+    let sum_i = |key: &str| {
+        metas
+            .iter()
+            .map(|m| m.get(key).and_then(|v| v.as_i64()).unwrap_or(0))
+            .sum::<i64>()
+    };
     let in_total = sum_i("in");
     let out_total = sum_i("out");
     let cached_total = sum_i("cached");
@@ -223,8 +257,19 @@ pub fn usage_from_payload(value: &Value) -> Map<String, Value> {
         }
     }
     let int_keys = [
-        "turns", "calls", "in", "out", "cached", "tokens", "peak_context", "gm_calls",
-        "gm_tokens", "npc_calls", "npc_tokens", "other_calls", "other_tokens",
+        "turns",
+        "calls",
+        "in",
+        "out",
+        "cached",
+        "tokens",
+        "peak_context",
+        "gm_calls",
+        "gm_tokens",
+        "npc_calls",
+        "npc_tokens",
+        "other_calls",
+        "other_tokens",
     ];
     for key in int_keys {
         let v = usage.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
@@ -271,11 +316,16 @@ pub async fn maybe_compact(session: &mut Session, client: &dyn Backend) {
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let base = format!("{}\n{}", session.gm_summary, old_text).trim().to_string();
+    let base = format!("{}\n{}", session.gm_summary, old_text)
+        .trim()
+        .to_string();
     let proper_nouns = session.world.proper_nouns();
     let clip = session.compaction.compact_input_chars.max(0) as usize;
     let clipped: String = base.chars().take(clip).collect();
-    let summary = client.summarize(&clipped, &proper_nouns).await.unwrap_or_default();
+    let summary = client
+        .summarize(&clipped, &proper_nouns)
+        .await
+        .unwrap_or_default();
     session.gm_summary = summary;
     session.gm_messages = recent;
     session.reset_world_query_cache();
@@ -285,7 +335,11 @@ pub async fn maybe_compact(session: &mut Session, client: &dyn Backend) {
 pub async fn maybe_compact_npc(session: &mut Session, npc_id: &str, client: &dyn Backend) {
     let npc_history_tokens = session.compaction.npc_history_tokens;
     let npc_keep_exchanges = session.compaction.npc_keep_exchanges;
-    let msgs = session.npc_messages.get(npc_id).cloned().unwrap_or_default();
+    let msgs = session
+        .npc_messages
+        .get(npc_id)
+        .cloned()
+        .unwrap_or_default();
     if messages_tokens(&msgs) < npc_history_tokens {
         return;
     }
@@ -307,7 +361,11 @@ pub async fn maybe_compact_npc(session: &mut Session, npc_id: &str, client: &dyn
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join("\n");
-    let prev_summary = session.npc_summaries.get(npc_id).cloned().unwrap_or_default();
+    let prev_summary = session
+        .npc_summaries
+        .get(npc_id)
+        .cloned()
+        .unwrap_or_default();
     let base = format!("{prev_summary}\n{old_text}").trim().to_string();
     let clip = session.compaction.compact_input_chars.max(0) as usize;
     let summary = summarize_npc_history(client, &session.world, &base, clip).await;
@@ -330,7 +388,12 @@ async fn summarize_npc_history(
         {"role": "user", "content": clipped},
     ]);
     match client
-        .chat(&messages, None, Some(true), gml_types::Role::Compact.as_str())
+        .chat(
+            &messages,
+            None,
+            Some(true),
+            gml_types::Role::Compact.as_str(),
+        )
         .await
     {
         Ok(out) => out.content.trim().to_string(),
@@ -362,11 +425,23 @@ pub fn context_usage(session: &mut Session) -> Value {
 
     let mut npc_entries: Vec<Value> = Vec::new();
     for npc_id in &npc_ids {
-        let messages = session.npc_messages.get(npc_id).cloned().unwrap_or_default();
+        let messages = session
+            .npc_messages
+            .get(npc_id)
+            .cloned()
+            .unwrap_or_default();
         let npc = session.world.npcs.get(npc_id);
-        let name = npc.map(|n| n.name.clone()).unwrap_or_else(|| npc_id.clone());
+        let name = npc
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| npc_id.clone());
         let history = messages_tokens(&messages);
-        let summary = estimate_tokens(session.npc_summaries.get(npc_id).map(|s| s.as_str()).unwrap_or(""));
+        let summary = estimate_tokens(
+            session
+                .npc_summaries
+                .get(npc_id)
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+        );
         let persona = match npc {
             None => 0,
             Some(n) => estimate_tokens(&format!(
@@ -375,9 +450,8 @@ pub fn context_usage(session: &mut Session) -> Value {
             )),
         };
         let active = world_tokens + persona + summary + history;
-        let has_session = !messages.is_empty()
-            || summary > 0
-            || session.npc_client_state.contains_key(npc_id);
+        let has_session =
+            !messages.is_empty() || summary > 0 || session.npc_client_state.contains_key(npc_id);
         npc_entries.push(json!({
             "id": npc_id,
             "name": name,
@@ -396,10 +470,16 @@ pub fn context_usage(session: &mut Session) -> Value {
         let bh = !b["has_session"].as_bool().unwrap_or(false);
         ah.cmp(&bh)
             .then_with(|| {
-                b["history"].as_i64().unwrap_or(0).cmp(&a["history"].as_i64().unwrap_or(0))
+                b["history"]
+                    .as_i64()
+                    .unwrap_or(0)
+                    .cmp(&a["history"].as_i64().unwrap_or(0))
             })
             .then_with(|| {
-                a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+                a["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(b["name"].as_str().unwrap_or(""))
             })
     });
 

@@ -64,6 +64,15 @@ fn def_str(def: &Value, key: &str) -> String {
         .to_string()
 }
 
+fn seed_str(def: &Value, key: &str) -> String {
+    def.get("seed")
+        .and_then(Value::as_object)
+        .and_then(|seed| seed.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// `story_ids() -> set[str]` — the set of catalog story ids.
 pub fn story_ids() -> BTreeSet<String> {
     STORY_DEFINITIONS
@@ -72,16 +81,19 @@ pub fn story_ids() -> BTreeSet<String> {
         .collect()
 }
 
-/// `story_metadata(story_id) -> {id, title, description}`.
+/// `story_metadata(story_id) -> {id, title, description, story_brief}`.
 ///
 /// Returns [`UnknownStory`] for an unknown id (Python raises `KeyError`).
-/// The returned map preserves the Python key order: `id`, `title`,
-/// `description`.
+/// The returned map preserves the public catalog key order: `id`, `title`,
+/// `description`, `story_brief`.
 pub fn story_metadata(story_id: &str) -> Result<Map<String, Value>, UnknownStory> {
     for story in STORY_DEFINITIONS.iter() {
         if def_str(story, "id") == story_id {
             let mut meta = Map::new();
-            meta.insert("id".to_string(), story.get("id").cloned().unwrap_or(Value::Null));
+            meta.insert(
+                "id".to_string(),
+                story.get("id").cloned().unwrap_or(Value::Null),
+            );
             meta.insert(
                 "title".to_string(),
                 story.get("title").cloned().unwrap_or(Value::Null),
@@ -90,6 +102,15 @@ pub fn story_metadata(story_id: &str) -> Result<Map<String, Value>, UnknownStory
                 "description".to_string(),
                 story.get("description").cloned().unwrap_or(Value::Null),
             );
+            let story_brief = {
+                let brief = seed_str(story, "story_brief");
+                if !brief.is_empty() {
+                    brief
+                } else {
+                    seed_str(story, "public_intro")
+                }
+            };
+            meta.insert("story_brief".to_string(), Value::String(story_brief));
             return Ok(meta);
         }
     }
@@ -152,7 +173,10 @@ mod tests {
         assert!(story_ids().contains(DEFAULT_STORY_ID));
         // Metadata resolves for the default id.
         let meta = story_metadata(DEFAULT_STORY_ID).expect("default metadata");
-        assert_eq!(meta.get("id").and_then(Value::as_str), Some(DEFAULT_STORY_ID));
+        assert_eq!(
+            meta.get("id").and_then(Value::as_str),
+            Some(DEFAULT_STORY_ID)
+        );
     }
 
     #[test]
@@ -172,11 +196,16 @@ mod tests {
     fn metadata_shape_and_order() {
         let meta = story_metadata("turnvale-murder").expect("metadata");
         let keys: Vec<&String> = meta.keys().collect();
-        assert_eq!(keys, vec!["id", "title", "description"]);
+        assert_eq!(keys, vec!["id", "title", "description", "story_brief"]);
         assert_eq!(
             meta.get("title").and_then(Value::as_str),
             Some("Убийство в Тёрнвейле")
         );
+        assert!(meta
+            .get("story_brief")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("Дарра"));
     }
 
     #[test]
@@ -194,7 +223,10 @@ mod tests {
     #[test]
     fn seed_overwrites_id_and_title() {
         let seed = story_seed("frozen-harbor").expect("seed");
-        assert_eq!(seed.get("id").and_then(Value::as_str), Some("frozen-harbor"));
+        assert_eq!(
+            seed.get("id").and_then(Value::as_str),
+            Some("frozen-harbor")
+        );
         assert_eq!(
             seed.get("title").and_then(Value::as_str),
             Some("Ледяной порт Нордхольм")
@@ -211,6 +243,10 @@ mod tests {
         // The seed builds a real World: story identity and roster populate.
         assert_eq!(world.story_id, DEFAULT_STORY_ID);
         assert_eq!(world.story_title, "Убийство в Тёрнвейле");
+        assert!(world.story_brief.contains("Дарра"));
+        assert_eq!(world.time.absolute_minutes, 480);
+        assert_eq!(world.time.current_date_label, "Утро после убийства");
+        assert_eq!(world.time_export()["time_of_day"], "08:00");
         // Both starting NPCs from the turnvale scene are loaded into the roster.
         assert!(world.npcs.contains_key("borin"));
         assert!(world.npcs.contains_key("lysa"));
@@ -231,21 +267,42 @@ mod tests {
     }
 
     #[test]
+    fn every_story_has_a_non_midnight_start_time() {
+        for id in story_ids() {
+            let seed = story_seed(&id).expect("seed");
+            let world = World::from_seed_with_dice_seed(&seed, 1);
+            assert!(
+                world.time.absolute_minutes > 0,
+                "{id} must define a story-specific start time"
+            );
+            assert_ne!(
+                world.time_export()["time_of_day"],
+                "00:00",
+                "{id} must not start at default midnight"
+            );
+            assert_eq!(
+                world.world_canon.clock_minutes, world.time.absolute_minutes,
+                "{id} canon clock must match displayed world time"
+            );
+        }
+    }
+
+    #[test]
     fn seed_compact_byte_lengths_match_python() {
         // Captured from `json.dumps(story_seed(id), ensure_ascii=False,
         // separators=(',',':'))` on the Python source — proves the embedded
         // catalog preserves every byte of content and key order.
         let expected: &[(&str, usize)] = &[
-            ("frozen-harbor", 28081),
-            ("glass-garden", 28736),
-            ("turnvale-murder", 25023),
+            ("frozen-harbor", 28901),
+            ("glass-garden", 29465),
+            ("turnvale-murder", 25727),
         ];
         for (id, py_len) in expected {
             let seed = story_seed(id).expect("seed");
             // serde_json compact (preserve_order) == Python separators=(',',':').
             let compact = serde_json::to_string(&seed).expect("compact");
             assert_eq!(
-                compact.as_bytes().len(),
+                compact.len(),
                 *py_len,
                 "compact byte length mismatch for story {id}"
             );

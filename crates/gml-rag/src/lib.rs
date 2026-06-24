@@ -24,15 +24,15 @@ pub mod tokenize;
 pub mod vector;
 
 pub use cache::EmbeddingCache;
-pub use client::{Embedder, HashEmbeddingClient, LocalEmbeddingClient};
+pub use client::{rerank_documents, Embedder, HashEmbeddingClient, LocalEmbeddingClient};
 pub use doc::{RagDocument, RagHit};
-pub use engine::{
-    bm25_scores, query_instruction, rank_map, RagEngine, GOOD_STATUS,
-};
+pub use engine::{bm25_scores, query_instruction, rank_map, RagEngine, GOOD_STATUS};
 pub use error::{RagError, Result};
 pub use retrieve::{
     purge_embeddings_for_texts, retrieve_world_fact, retrieve_world_fact_with, set_default_engine,
     with_default_engine,
 };
 pub use tokenize::{tokens, STOPWORDS};
-pub use vector::{decode_embedding_b64, decode_embedding_value, encode_vector, normalize, sha_text};
+pub use vector::{
+    decode_embedding_b64, decode_embedding_value, encode_vector, normalize, sha_text,
+};

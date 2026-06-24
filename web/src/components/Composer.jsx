@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect, useCallback, useContext } from "react";
-import Tooltip from "./Tooltip.jsx";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { fmtK } from "../util.js";
 import { transcribeAudio } from "../api.js";
 import { VisibilityContext } from "../devSettings.js";
@@ -228,31 +228,54 @@ function QuickReplies({ playerOptions, busy, onPick }) {
     >
       <div className="quick-replies-head">
         <span className="quick-replies-q">{question}</span>
-        <button
-          type="button"
-          className="quick-replies-toggle"
-          onClick={() => setCollapsed((c) => !c)}
-          aria-expanded={!collapsed}
-          aria-label={collapsed ? "Развернуть варианты" : "Свернуть варианты"}
-          title={collapsed ? "Развернуть" : "Свернуть"}
+        <Tooltip
+          className="tooltip-wrap"
+          tipClassName="ui-tip-wrap"
+          focusable={false}
+          content={
+            <TipContent
+              title={collapsed ? "Показать варианты" : "Скрыть варианты"}
+              note={collapsed ? "Вернёт быстрые действия под поле ввода." : "Спрячет подсказки, поле ввода останется доступным."}
+            />
+          }
         >
-          {collapsed ? "▴" : "▾"}
-        </button>
+          <button
+            type="button"
+            className="quick-replies-toggle"
+            onClick={() => setCollapsed((c) => !c)}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Развернуть варианты" : "Свернуть варианты"}
+          >
+            {collapsed ? "▴" : "▾"}
+          </button>
+        </Tooltip>
       </div>
       {collapsed ? null : (
         <div className="quick-replies-list">
           {options.map((option, index) => (
-            <button
-              type="button"
-              className="quick-reply"
+            <Tooltip
               key={`${option.label}:${index}`}
-              disabled={busy}
-              title={option.message}
-              onClick={() => onPick(option.message)}
+              className="tooltip-block"
+              tipClassName="ui-tip-wrap"
+              focusable={false}
+              content={
+                <TipContent
+                  title={option.label}
+                  subtitle="Быстрый ответ игрока"
+                  rows={[["отправит", option.message]]}
+                />
+              }
             >
-              <span>{option.label}</span>
-              <small>{option.message}</small>
-            </button>
+              <button
+                type="button"
+                className="quick-reply"
+                disabled={busy}
+                onClick={() => onPick(option.message)}
+              >
+                <span>{option.label}</span>
+                <small>{option.message}</small>
+              </button>
+            </Tooltip>
           ))}
         </div>
       )}
@@ -510,15 +533,26 @@ export default function Composer({
                   ↻ Повторить
                 </button>
               ) : null}
-              <button
-                type="button"
-                className="voice-cancel"
-                onClick={cancelVoice}
-                aria-label={recording ? "Отменить запись" : "Отменить голосовое"}
-                title={recording ? "Отменить запись" : "Отменить голосовое"}
+              <Tooltip
+                className="tooltip-wrap"
+                tipClassName="ui-tip-wrap"
+                focusable={false}
+                content={
+                  <TipContent
+                    title={recording ? "Отменить запись" : "Отменить голосовое"}
+                    note={recording ? "Остановит запись и не отправит аудио на распознавание." : "Уберёт текущую голосовую операцию."}
+                  />
+                }
               >
-                ✕
-              </button>
+                <button
+                  type="button"
+                  className="voice-cancel"
+                  onClick={cancelVoice}
+                  aria-label={recording ? "Отменить запись" : "Отменить голосовое"}
+                >
+                  ✕
+                </button>
+              </Tooltip>
             </div>
           ) : null}
           <div className="composer">
@@ -535,28 +569,51 @@ export default function Composer({
               />
               <div className="composer-actions">
                 {micSupported ? (
-                  <button
-                    type="button"
-                    className="mic-btn"
-                    data-recording={recording ? "true" : "false"}
-                    onClick={toggleRecord}
-                    disabled={transcribing}
-                    aria-label={recording ? "Остановить запись" : "Голосовой ввод"}
-                    title={recording ? "Остановить запись" : "Голосовой ввод"}
+                  <Tooltip
+                    className="tooltip-wrap"
+                    tipClassName="ui-tip-wrap"
+                    focusable={false}
+                    content={
+                      <TipContent
+                        title={recording ? "Остановить запись" : "Голосовой ввод"}
+                        note={recording ? "Закончит запись и отправит аудио на распознавание." : "Запишет речь с микрофона и вставит распознанный текст в поле ввода."}
+                      />
+                    }
                   >
-                    {recording ? "■" : "🎤"}
-                  </button>
+                    <button
+                      type="button"
+                      className="mic-btn"
+                      data-recording={recording ? "true" : "false"}
+                      onClick={toggleRecord}
+                      disabled={transcribing}
+                      aria-label={recording ? "Остановить запись" : "Голосовой ввод"}
+                    >
+                      {recording ? "■" : "🎤"}
+                    </button>
+                  </Tooltip>
                 ) : null}
-                <button
-                  id="send"
-                  className="send-btn"
-                  onClick={submit}
-                  disabled={busy || !value.trim()}
-                  aria-label="Отправить"
-                  title="Отправить"
+                <Tooltip
+                  className="tooltip-wrap"
+                  tipClassName="ui-tip-wrap"
+                  focusable={false}
+                  content={
+                    <TipContent
+                      title="Отправить"
+                      subtitle="Передать действие игрока ГМ."
+                      note={softKeyboard ? "На телефоне отправка только этой кнопкой." : "На клавиатуре также работает Enter; Shift+Enter добавляет новую строку."}
+                    />
+                  }
                 >
-                  <span className="send-ico" aria-hidden="true">➤</span>
-                </button>
+                  <button
+                    id="send"
+                    className="send-btn"
+                    onClick={submit}
+                    disabled={busy || !value.trim()}
+                    aria-label="Отправить"
+                  >
+                    <span className="send-ico" aria-hidden="true">➤</span>
+                  </button>
+                </Tooltip>
               </div>
             </div>
           </div>

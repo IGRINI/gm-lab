@@ -15,12 +15,13 @@
 //! - [`turn`] — [`run_turn`], the GM tool-hop loop, tool dispatch, `_ask_npc`.
 //! - [`compact`] — token estimation, `_meta`/`_meta_total`, compaction, usage.
 //! - [`helpers`] / [`model_text`] — tool-result builders + model-facing text.
-//! - [`worldstate`] / [`query_dedup`] — `update_world_state` / `query_world_state`
-//!   and world-fact delivery de-duplication.
+//! - [`worldstate`] / [`query_dedup`] — scoped memory/fact tools, legacy
+//!   world-state compatibility helpers, and world-fact delivery de-duplication.
 //! - [`rag`] — the `gml-world` -> `gml-rag` retrieval seam.
 
 pub mod compact;
 pub mod helpers;
+pub mod memory_crystals;
 pub mod model_text;
 pub mod query_dedup;
 pub mod rag;
@@ -29,9 +30,7 @@ pub mod session_payload;
 pub mod turn;
 pub mod worldstate;
 
-pub use session::{
-    ClientFactory, CompactionThresholds, NpcClientState, PendingDraft, Session,
-};
+pub use session::{ClientFactory, CompactionThresholds, NpcClientState, PendingDraft, Session};
 pub use turn::{run_tool_collect, run_turn, run_turn_into};
 
 use serde_json::Value;
@@ -65,14 +64,8 @@ pub fn round_half_even(x: f64, ndigits: i32) -> f64 {
     let scaled = x * pow;
     let floor = scaled.floor();
     let diff = scaled - floor;
-    let rounded = if diff > 0.5 {
-        floor + 1.0
-    } else if diff < 0.5 {
-        floor
-    } else if (floor as i64) % 2 == 0 {
-        floor
-    } else {
-        floor + 1.0
-    };
+    // Round half-to-even: ties (diff == 0.5) go up only when `floor` is odd.
+    let round_up = diff > 0.5 || (diff == 0.5 && (floor as i64) % 2 != 0);
+    let rounded = if round_up { floor + 1.0 } else { floor };
     rounded / pow
 }

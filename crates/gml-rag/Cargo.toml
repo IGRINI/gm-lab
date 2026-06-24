@@ -20,3 +20,6 @@ thiserror = { workspace = true }
 # blake2b deterministic hash embedder (HashEmbeddingClient). Not yet in
 # [workspace.dependencies]; pinned here with an explicit version (see followups).
 blake2 = "0.10"
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback, forwardRef, useMemo } from "r
 import { Virtuoso } from "react-virtuoso";
 import Message from "./Message.jsx";
 import Scene from "./Scene.jsx";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { ChatScrollContext } from "../chatScrollContext.js";
 import { EntityRegistryContext } from "../entityContext.js";
 import { NpcRosterContext } from "../npcContext.js";
@@ -13,7 +14,7 @@ const List = forwardRef(function List({ className, ...props }, ref) {
 
 const Header = ({ context }) => (
   <div className="chat-inner">
-    <Scene scene={context.scene} npcs={context.npcs} />
+    <Scene storyBrief={context.storyBrief} scene={context.scene} npcs={context.npcs} />
   </div>
 );
 
@@ -21,7 +22,7 @@ const Footer = () => <div className="list-pad-bottom" />;
 
 const VComponents = { List, Header, Footer };
 
-export default function Chat({ messages, scene, npcs, entities, statusLabels }) {
+export default function Chat({ messages, storyBrief, scene, npcs, entities, statusLabels }) {
   const virtuoso = useRef(null);
   const scrollerRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -103,7 +104,7 @@ export default function Chat({ messages, scene, npcs, entities, statusLabels }) 
     }
   }, []);
 
-  const context = useMemo(() => ({ scene, npcs }), [scene, npcs]);
+  const context = useMemo(() => ({ storyBrief, scene, npcs }), [storyBrief, scene, npcs]);
 
   return (
     <ChatScrollContext.Provider value={scrollCtx}>
@@ -130,15 +131,26 @@ export default function Chat({ messages, scene, npcs, entities, statusLabels }) 
           atBottomStateChange={onAtBottom}
           increaseViewportBy={{ top: 600, bottom: 600 }}
         />
-        <button
-          className={"scrolldown" + (showDown ? " show" : "")}
-          onClick={() => { pausedRef.current = false; scrollToBottom("smooth"); }}
-          title=""
-          aria-label="Вниз"
+        <Tooltip
+          className="tooltip-wrap"
+          tipClassName="ui-tip-wrap"
+          focusable={false}
+          content={
+            <TipContent
+              title="К последним сообщениям"
+              note={newCount > 0 ? `Новых сообщений: ${newCount}` : "Прокрутить диалог вниз."}
+            />
+          }
         >
-          ↓
-          {newCount > 0 && <span className="badge">{newCount > 99 ? "99+" : newCount}</span>}
-        </button>
+          <button
+            className={"scrolldown" + (showDown ? " show" : "")}
+            onClick={() => { pausedRef.current = false; scrollToBottom("smooth"); }}
+            aria-label="Вниз"
+          >
+            ↓
+            {newCount > 0 && <span className="badge">{newCount > 99 ? "99+" : newCount}</span>}
+          </button>
+        </Tooltip>
       </div>
       </StatusLabelsContext.Provider>
       </NpcRosterContext.Provider>

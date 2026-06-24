@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
 import TokenCounter from "./TokenCounter.jsx";
-import Tooltip from "./Tooltip.jsx";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 
 // Mirror of REFRESH_MARGIN_MS in crates/gml-codex/src/oauth.rs: the backend
 // auto-refreshes a Codex token once it's within 5 minutes of expiry.
@@ -75,6 +75,80 @@ function ConnTooltip({ status }) {
         </div>
       )}
       {status.note && <small className="conn-tip-note">{status.note}</small>}
+    </div>
+  );
+}
+
+function fmtElapsed(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "";
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec} с`;
+  const min = Math.floor(sec / 60);
+  const rest = sec % 60;
+  return rest ? `${min} мин ${rest} с` : `${min} мин`;
+}
+
+function componentLine(component, fallback) {
+  if (!component?.enabled) return `${fallback}: выкл`;
+  const label = component.up ? "готов" : "загрузка";
+  const model = component.model ? ` · ${component.model}` : "";
+  const quant = component.quant ? ` · ${component.quant}` : "";
+  return `${fallback}: ${label}${model}${quant}`;
+}
+
+function sidecarUiStatus(status) {
+  if (!status || status.enabled === false) return null;
+  const c = status.components || {};
+  const hasRag = !!(c.embedder?.enabled || c.reranker?.enabled);
+  const hasTts = !!c.tts?.enabled;
+  const name = hasRag && hasTts ? "RAG/TTS" : hasTts ? "TTS" : "RAG";
+  if (status.ready) {
+    return { level: "ok", label: `${name} готов`, title: "Инференс готов" };
+  }
+  if (status.state === "failed") {
+    return { level: "error", label: `${name} ошибка`, title: "Инференс не загрузился" };
+  }
+  if (status.state === "unavailable") {
+    return { level: "warn", label: `${name} ?`, title: "Статус инференса недоступен" };
+  }
+  return { level: "warn", label: `${name} грузится`, title: "Инференс загружается" };
+}
+
+function SidecarTooltip({ status, ui }) {
+  const c = status?.components || {};
+  const elapsed = fmtElapsed(status?.elapsed_ms);
+  const timeout = fmtElapsed(status?.ready_timeout_ms);
+  const rows = [
+    status?.base_url ? { k: "URL", v: status.base_url } : null,
+    status?.pid ? { k: "PID", v: String(status.pid) } : null,
+    elapsed ? { k: "Прошло", v: timeout ? `${elapsed} из ${timeout}` : elapsed } : null,
+    status?.manager_state ? { k: "Состояние", v: status.manager_state } : null,
+  ].filter(Boolean);
+  const note =
+    status?.error ||
+    [
+      componentLine(c.embedder, "Эмбеддер"),
+      componentLine(c.reranker, "Реранкер"),
+      componentLine(c.tts, "TTS"),
+    ].join("\n");
+
+  return (
+    <div className="conn-tip sidecar-tip">
+      <div className="conn-tip-head">
+        <span className={"conn-dot " + ui.level} />
+        <b>{ui.title}</b>
+      </div>
+      {rows.length > 0 && (
+        <div className="conn-tip-rows">
+          {rows.map((r, i) => (
+            <div className="conn-tip-row" key={i}>
+              <span className="conn-tip-row-k">{r.k}</span>
+              <span className="conn-tip-row-v">{r.v}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <small className="conn-tip-note">{note}</small>
     </div>
   );
 }
@@ -458,15 +532,28 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
 
         <label className="field">
           <span>Лимит tool-hop</span>
-          <input
-            type="number"
-            min="0"
-            max={settingsOptions.max_tool_hops_max || undefined}
-            step="1"
-            value={draft.max_tool_hops || 0}
-            onChange={(e) => set({ max_tool_hops: Number(e.target.value || 0) })}
-            title="0 = без ограничения"
-          />
+          <Tooltip
+            className="tooltip-block"
+            tipClassName="ui-tip-wrap"
+            focusable={false}
+            content={
+              <TipContent
+                title="Лимит tool-hop"
+                subtitle="Сколько внутренних инструментов ГМ может вызвать за один ход."
+                rows={[["0", "без ограничения"]]}
+                note="Поставь число, если нужно жёстко остановить слишком длинную цепочку действий."
+              />
+            }
+          >
+            <input
+              type="number"
+              min="0"
+              max={settingsOptions.max_tool_hops_max || undefined}
+              step="1"
+              value={draft.max_tool_hops || 0}
+              onChange={(e) => set({ max_tool_hops: Number(e.target.value || 0) })}
+            />
+          </Tooltip>
         </label>
 
         <label className="field">
@@ -499,6 +586,7 @@ export default function Header({
   onToggleChats,
   chatsOpen = false,
   srv,
+  sidecarStatus,
   models,
   settings,
   settingsOptions,
@@ -528,22 +616,34 @@ export default function Header({
 
   const chip = srv.backend ? srv.backend + (srv.stream_gm_content ? " · GM stream" : "") : "…";
   const conn = codexStatus(srv);
+  const sidecar = sidecarUiStatus(sidecarStatus);
 
   return (
     <header>
       {onToggleChats && (
-        <button
-          type="button"
-          className={"btn btn-icon chat-toggle" + (chatsOpen ? " is-active" : "")}
-          onClick={onToggleChats}
-          title={chatsOpen ? "Свернуть список чатов" : "Развернуть список чатов"}
-          aria-label={chatsOpen ? "Свернуть список чатов" : "Развернуть список чатов"}
-          aria-expanded={chatsOpen}
-          aria-controls="chat-history-sidebar"
+        <Tooltip
+          className="tooltip-wrap"
+          tipClassName="ui-tip-wrap"
+          focusable={false}
+          content={
+            <TipContent
+              title={chatsOpen ? "Скрыть список чатов" : "Показать список чатов"}
+              note={chatsOpen ? "Освободит место для текущей сцены и диалога." : "Откроет сохранённые сессии слева."}
+            />
+          }
         >
-          <span className="bi" aria-hidden="true">☰</span>
-          <span className="btn-label">Чаты</span>
-        </button>
+          <button
+            type="button"
+            className={"btn btn-icon chat-toggle" + (chatsOpen ? " is-active" : "")}
+            onClick={onToggleChats}
+            aria-label={chatsOpen ? "Свернуть список чатов" : "Развернуть список чатов"}
+            aria-expanded={chatsOpen}
+            aria-controls="chat-history-sidebar"
+          >
+            <span className="bi" aria-hidden="true">☰</span>
+            <span className="btn-label">Чаты</span>
+          </button>
+        </Tooltip>
       )}
       <h1>
         GM-<b>Lab</b>
@@ -560,31 +660,80 @@ export default function Header({
       ) : (
         <span className="chip">{chip}</span>
       )}
-      <select
-        className="model-select"
-        title="Модель"
-        value={srv.model || ""}
-        onChange={(e) => onModelChange(e.target.value)}
+      {sidecar && (
+        <Tooltip
+          content={<SidecarTooltip status={sidecarStatus} ui={sidecar} />}
+          tipClassName="conn-tip-wrap"
+          className={"chip chip-sidecar " + sidecar.level}
+        >
+          <span className={"conn-dot " + sidecar.level} aria-hidden="true" />
+          <span className="chip-sidecar-label">{sidecar.label}</span>
+        </Tooltip>
+      )}
+      <Tooltip
+        className="tooltip-wrap"
+        tipClassName="ui-tip-wrap"
+        focusable={false}
+        content={
+          <TipContent
+            title="Модель"
+            subtitle="Какая модель отвечает за следующий ход."
+            note="Смена применяется к новым запросам, уже идущий ответ не переключается."
+          />
+        }
       >
-        {options.map((o) => (
-          <option key={o.id} value={o.id}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+        <select
+          className="model-select"
+          value={srv.model || ""}
+          onChange={(e) => onModelChange(e.target.value)}
+          aria-label="Модель"
+        >
+          {options.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </Tooltip>
       <div className="spacer" />
       <div className="header-actions">
         <button className="btn" onClick={() => setSettingsOpen(true)}>
           Настройки
         </button>
-        <button className="btn btn-icon" onClick={onExport} title="Скачать JSON" aria-label="Скачать JSON">
-          <span className="bi" aria-hidden="true">⬇</span>
-          <span className="btn-label">JSON</span>
-        </button>
-        <button className="btn btn-icon" onClick={onReset} title="Сброс партии" aria-label="Сброс партии">
-          <span className="bi" aria-hidden="true">⟲</span>
-          <span className="btn-label">Сброс</span>
-        </button>
+        <Tooltip
+          className="tooltip-wrap"
+          tipClassName="ui-tip-wrap"
+          focusable={false}
+          content={
+            <TipContent
+              title="Скачать JSON"
+              subtitle="Экспорт текущей сессии."
+              note="Сохраняет состояние, историю и служебные данные для отладки или переноса."
+            />
+          }
+        >
+          <button className="btn btn-icon" onClick={onExport} aria-label="Скачать JSON">
+            <span className="bi" aria-hidden="true">⬇</span>
+            <span className="btn-label">JSON</span>
+          </button>
+        </Tooltip>
+        <Tooltip
+          className="tooltip-wrap"
+          tipClassName="ui-tip-wrap"
+          focusable={false}
+          content={
+            <TipContent
+              title="Сброс партии"
+              subtitle="Начать сцену заново."
+              note="Текущая сессия будет очищена, поэтому действие лучше делать только перед новым прогоном."
+            />
+          }
+        >
+          <button className="btn btn-icon" onClick={onReset} aria-label="Сброс партии">
+            <span className="bi" aria-hidden="true">⟲</span>
+            <span className="btn-label">Сброс</span>
+          </button>
+        </Tooltip>
       </div>
       {settingsOpen && (
         <SettingsModal

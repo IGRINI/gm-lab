@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal.jsx";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { api } from "../api.js";
 
 export default function TokenCounter({ models = [], currentModel = "", onClose }) {
@@ -123,17 +124,29 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
         />
 
         <div className="tok-controls">
-          <select value={model} onChange={(e) => setModel(e.target.value)} title="Модель">
-            {modelOptions.length ? (
-              modelOptions.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))
-            ) : (
-              <option value="">модели не загружены</option>
-            )}
-          </select>
+          <Tooltip
+            className="tooltip-wrap"
+            tipClassName="ui-tip-wrap"
+            focusable={false}
+            content={
+              <TipContent
+                title="Модель для подсчёта"
+                note="Токены считаются по токенизатору выбранной модели."
+              />
+            }
+          >
+            <select value={model} onChange={(e) => setModel(e.target.value)} aria-label="Модель">
+              {modelOptions.length ? (
+                modelOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))
+              ) : (
+                <option value="">модели не загружены</option>
+              )}
+            </select>
+          </Tooltip>
           <button
             type="button"
             className="btn primary"

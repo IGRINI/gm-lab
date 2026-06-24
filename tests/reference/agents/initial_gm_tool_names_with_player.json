@@ -2,10 +2,13 @@
   "advance_time",
   "ask_npc",
   "ask_player",
+  "get_memory",
   "get_world_fact",
-  "query_world_state",
+  "invoke_loaded_tool",
+  "load_tool_schema",
+  "move_player",
+  "note_memory",
   "roll_dice",
   "tool_search",
-  "update_player_character",
-  "update_world_state"
+  "update_player_character"
 ]

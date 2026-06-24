@@ -23,6 +23,8 @@ export const api = {
 
   settings: () => getJSON("/settings"),
 
+  sidecarStatus: () => getJSON("/sidecar/status"),
+
   transcript: () => getJSON("/transcript"),
 
   stories: () => getJSON("/stories"),

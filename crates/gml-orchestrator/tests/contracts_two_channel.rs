@@ -17,11 +17,18 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use gml_llm::{Backend, MockClient};
+use gml_orchestrator::worldstate::{get_memory, note_memory, npc_memory_recall};
 use gml_orchestrator::{run_tool_collect, Session};
 
 fn session() -> Session {
+    std::env::set_var("GM_RAG_ENABLED", "0");
     let client: Arc<dyn Backend> = Arc::new(MockClient::new());
-    Session::new(client)
+    let world = gml_world::World::from_seed(&gml_stories::default_story_seed());
+    Session::with_world(
+        client,
+        world,
+        Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>),
+    )
 }
 
 fn tokio_block_on<F: std::future::Future>(fut: F) -> F::Output {
@@ -48,7 +55,10 @@ fn model_plain(model: &str) -> String {
 fn assert_structured_text(text: &str) {
     let t = text.trim();
     assert!(!t.is_empty(), "model tool result must not be empty");
-    assert!(!t.starts_with('{') && !t.starts_with('['), "must not start like JSON: {t}");
+    assert!(
+        !t.starts_with('{') && !t.starts_with('['),
+        "must not start like JSON: {t}"
+    );
     // Must not parse as a JSON document (it is structured plain text).
     if let Ok(v) = serde_json::from_str::<Value>(t) {
         // Scalars like a bare number can "parse"; only object/array is forbidden.
@@ -57,6 +67,186 @@ fn assert_structured_text(text: &str) {
             "model tool result unexpectedly raw machine payload: {t}"
         );
     }
+}
+
+#[test]
+fn legacy_world_state_tools_are_not_raw_dispatchable() {
+    let mut s = session();
+    let before_memory = s.world.world_canon.memory.units.len();
+    let before_events = s.world.world_canon.event_log.events.len();
+
+    for tool_name in ["query_world_state", "update_world_state"] {
+        let (events, result) = tokio_block_on(run_tool_collect(
+            &mut s,
+            tool_name,
+            &json!({
+                "query": "anything",
+                "items": [{
+                    "type": "fact",
+                    "scope": "public",
+                    "text": "LEGACY_RAW_DISPATCH_SENTINEL"
+                }]
+            }),
+        ));
+        assert!(
+            result.full.contains("tool error"),
+            "full error should be a tool-error string: {}",
+            result.full
+        );
+        assert!(
+            result.model.contains("unknown tool"),
+            "model error should mention unknown tool: {}",
+            result.model
+        );
+        assert!(
+            result.model.contains("unknown_tool"),
+            "model error should carry unknown_tool code: {}",
+            result.model
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind != "world_state_update" && event.kind != "world_query"),
+            "legacy raw tool must not emit legacy state/query events: {events:?}"
+        );
+    }
+
+    assert_eq!(s.world.world_canon.memory.units.len(), before_memory);
+    assert_eq!(s.world.world_canon.event_log.events.len(), before_events);
+}
+
+#[test]
+fn scoped_memory_tools_two_channel_do_not_leak_foreign_memory() {
+    let mut s = session();
+    let (_events, borin_note) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "note_memory",
+        &json!({
+            "summary": "BORIN_TOOL_SENTINEL знает тайный знак.",
+            "details": "Тайный знак нарисован на внутренней стороне щита.",
+            "owner_scope": "actor:borin",
+            "topic_tags": ["tool_sentinel"],
+        }),
+    ));
+    assert_structured_text(&model_plain(&borin_note.model));
+    let borin_full: Value = serde_json::from_str(&borin_note.full).expect("full is JSON");
+    assert_eq!(borin_full["ok"], json!(true));
+
+    let (_events, lysa_note) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "note_memory",
+        &json!({
+            "summary": "LYSA_TOOL_SENTINEL знает другой знак.",
+            "owner_scope": "actor:lysa",
+            "topic_tags": ["tool_sentinel"],
+        }),
+    ));
+    assert_structured_text(&model_plain(&lysa_note.model));
+    let lysa_full: Value = serde_json::from_str(&lysa_note.full).expect("full is JSON");
+    assert_eq!(lysa_full["ok"], json!(true));
+
+    let (_events, recall) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "get_memory",
+        &json!({"scope": "actor", "npc_id": "borin", "query": "tool_sentinel", "max_results": 10}),
+    ));
+    assert_structured_text(&model_plain(&recall.model));
+    let full: Value = serde_json::from_str(&recall.full).expect("full is JSON");
+    let full_text = serde_json::to_string(&full).unwrap();
+    assert!(full_text.contains("BORIN_TOOL_SENTINEL"), "{full_text}");
+    assert!(!full_text.contains("LYSA_TOOL_SENTINEL"), "{full_text}");
+    assert!(!model_plain(&recall.model).contains("внутренней стороне щита"));
+
+    let (_events, detailed) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "get_memory",
+        &json!({
+            "scope": "actor",
+            "npc_id": "borin",
+            "query": "тайный знак",
+            "include_details": true
+        }),
+    ));
+    let detailed_full: Value = serde_json::from_str(&detailed.full).expect("full is JSON");
+    assert!(serde_json::to_string(&detailed_full)
+        .unwrap()
+        .contains("внутренней стороне щита"));
+}
+
+#[test]
+fn memory_consolidation_tool_two_channel_is_append_only() {
+    let mut s = session();
+    let (_events, a) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "note_memory",
+        &json!({
+            "summary": "RAW_TOOL_A караван оставил следы у дороги.",
+            "owner_scope": "actor:borin",
+            "topic_tags": ["tool_caravan"],
+        }),
+    ));
+    let a_full: Value = serde_json::from_str(&a.full).unwrap();
+    let (_events, b) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "note_memory",
+        &json!({
+            "summary": "RAW_TOOL_B Борин слышал о нападении на караван.",
+            "owner_scope": "actor:borin",
+            "topic_tags": ["tool_caravan"],
+        }),
+    ));
+    let b_full: Value = serde_json::from_str(&b.full).unwrap();
+    let source_ids = vec![
+        a_full["memory_id"].as_str().unwrap().to_string(),
+        b_full["memory_id"].as_str().unwrap().to_string(),
+    ];
+
+    let (_events, crystal) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "consolidate_memory",
+        &json!({
+            "source_memory_ids": source_ids,
+            "summary": "CRYSTAL_TOOL караванные следы связаны с нападением.",
+            "owner_scope": "actor:borin",
+            "topic_tags": ["tool_caravan"],
+        }),
+    ));
+    assert_structured_text(&model_plain(&crystal.model));
+    let crystal_full: Value = serde_json::from_str(&crystal.full).expect("full is JSON");
+    assert_eq!(crystal_full["not_deleted"], json!(true));
+    assert_eq!(
+        crystal_full["consumed_source_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let (_events, default_recall) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "get_memory",
+        &json!({"scope": "actor", "npc_id": "borin", "query": "tool_caravan", "max_results": 10}),
+    ));
+    let default_text = default_recall.full.clone();
+    assert!(default_text.contains("CRYSTAL_TOOL"), "{default_text}");
+    assert!(!default_text.contains("RAW_TOOL_A"), "{default_text}");
+    assert!(!default_text.contains("RAW_TOOL_B"), "{default_text}");
+
+    let (_events, audit_recall) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "get_memory",
+        &json!({
+            "scope": "actor",
+            "npc_id": "borin",
+            "query": "tool_caravan",
+            "max_results": 10,
+            "include_cold": true
+        }),
+    ));
+    let audit_text = audit_recall.full;
+    assert!(audit_text.contains("CRYSTAL_TOOL"), "{audit_text}");
+    assert!(audit_text.contains("RAW_TOOL_A"), "{audit_text}");
+    assert!(audit_text.contains("RAW_TOOL_B"), "{audit_text}");
 }
 
 // =========================================================================
@@ -82,17 +272,31 @@ fn roll_dice_two_channel() {
     assert_structured_text(&model_plain(&result.model));
 
     // .full (= the roll detail string) carries the graded outcome, no [forced].
-    assert!(result.full.contains("grade=success"), "full: {}", result.full);
+    assert!(
+        result.full.contains("grade=success"),
+        "full: {}",
+        result.full
+    );
     assert!(result.full.contains("margin=+0"), "full: {}", result.full);
     assert!(!result.full.contains("[forced]"));
-    assert!(!result.full.contains(REMINDER_OPEN), ".full must NOT carry a reminder");
+    assert!(
+        !result.full.contains(REMINDER_OPEN),
+        ".full must NOT carry a reminder"
+    );
 
     // .model carries the exact roll reminder verbatim.
-    assert!(result.model.contains(REMINDER_OPEN), ".model must carry a reminder");
-    assert!(result.model.contains("Use the returned total, grade, and margin as fixed"));
+    assert!(
+        result.model.contains(REMINDER_OPEN),
+        ".model must carry a reminder"
+    );
+    assert!(result
+        .model
+        .contains("Use the returned total, grade, and margin as fixed"));
     assert!(result.model.contains("If a damage roll was made"));
     assert!(result.model.contains("failed detonation"));
-    assert!(result.model.contains("critical success means the best plausible version"));
+    assert!(result
+        .model
+        .contains("critical success means the best plausible version"));
     assert!(result.model.contains("concrete benefit from the success"));
 
     // The plain model line is the compact RESULT, with no machine details.
@@ -175,7 +379,10 @@ fn advance_time_two_channel() {
 
     assert_eq!(s.world.time_export()["absolute_minutes"], before + 7);
     assert_eq!(s.world.time_export()["last_advance_minutes"], 7);
-    assert_eq!(s.world.time_export()["last_advance_reason"], "допрос у стойки");
+    assert_eq!(
+        s.world.time_export()["last_advance_reason"],
+        "допрос у стойки"
+    );
 }
 
 // =========================================================================
@@ -216,7 +423,6 @@ fn get_world_fact_unknown_and_dedup() {
     // RAG ranking (that lives in gml-rag). Python's get_world_fact "sources"
     // come from the RAG layer; here we assert the de-dup contract that the
     // orchestrator owns and that holds on the keyword path too.
-    std::env::set_var("GM_RAG_ENABLED", "0");
     let mut s = session();
 
     // Unknown lookup -> status unknown, compact model keys only, reminder present.
@@ -228,9 +434,20 @@ fn get_world_fact_unknown_and_dedup() {
     assert_structured_text(&model_plain(&unknown.model));
     let unknown_full: Value = serde_json::from_str(&unknown.full).unwrap();
     assert_eq!(unknown_full["status"], "unknown");
-    assert!(!unknown.full.contains(REMINDER_OPEN), ".full must NOT carry a reminder");
-    assert!(unknown.model.contains(REMINDER_OPEN), ".model must carry a reminder");
-    assert!(unknown.model.contains("only lore the player can know right now"));
+    assert_eq!(unknown_full["retrieval"]["enabled"], json!(false));
+    assert_eq!(unknown_full["retrieval"]["backend"], json!("lexical"));
+    assert_eq!(unknown_full["retrieval"]["reason"], json!("disabled"));
+    assert!(
+        !unknown.full.contains(REMINDER_OPEN),
+        ".full must NOT carry a reminder"
+    );
+    assert!(
+        unknown.model.contains(REMINDER_OPEN),
+        ".model must carry a reminder"
+    );
+    assert!(unknown
+        .model
+        .contains("only lore the player can know right now"));
     assert!(unknown.model.contains("do not reveal hidden sources"));
 
     // Known lookup (keyword path) -> status known, model text WORLD FACT, no score.
@@ -244,6 +461,7 @@ fn get_world_fact_unknown_and_dedup() {
     let known_plain = model_plain(&known.model);
     assert!(known_plain.contains("WORLD FACT"));
     assert!(!known_plain.contains("score"));
+    assert!(!known_plain.contains("retrieval"));
     assert!(known.model.contains(REMINDER_OPEN));
     assert!(!known.full.contains(REMINDER_OPEN));
 
@@ -260,8 +478,137 @@ fn get_world_fact_unknown_and_dedup() {
         .get("sources")
         .map(|v| v.as_array().map(|a| a.is_empty()).unwrap_or(true))
         .unwrap_or(true));
-    assert!(repeat_full["text"].as_str().unwrap().contains("already delivered"));
-    std::env::remove_var("GM_RAG_ENABLED");
+    assert!(repeat_full["text"]
+        .as_str()
+        .unwrap()
+        .contains("already delivered"));
+}
+
+// =========================================================================
+// tool_search / load_tool_schema: discovery is separate from cache-stable invocation
+// =========================================================================
+
+#[test]
+fn tool_search_returns_metadata_without_loading_tools() {
+    let mut s = session();
+    assert!(!s.loaded_gm_tools.contains("move_npc"));
+    assert!(!s.loaded_gm_tools.contains("set_scene"));
+
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "tool_search",
+        &json!({"query": "select:move_npc,set_scene"}),
+    ));
+    assert_structured_text(&model_plain(&result.model));
+
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert!(
+        full.get("loaded_tools").is_none(),
+        "tool_search must not load schemas"
+    );
+    let matches = full["matches"].as_array().expect("matches array");
+    let names: Vec<&str> = matches
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"move_npc"));
+    assert!(names.contains(&"set_scene"));
+    for row in matches {
+        assert!(row.get("title").and_then(Value::as_str).is_some());
+        assert!(row.get("description").and_then(Value::as_str).is_some());
+        assert!(row.get("keywords").and_then(Value::as_array).is_some());
+        assert!(row.get("aliases").and_then(Value::as_array).is_some());
+        assert!(row.get("capabilities").and_then(Value::as_array).is_some());
+        assert_eq!(row["load_schema"]["tool"], "load_tool_schema");
+        assert!(row.get("schema").is_none());
+        assert!(row.get("function").is_none());
+        assert!(row.get("parameters").is_none());
+    }
+    assert!(!s.loaded_gm_tools.contains("move_npc"));
+    assert!(!s.loaded_gm_tools.contains("set_scene"));
+    assert!(result.model.contains("TOOL SEARCH"));
+    assert!(result.model.contains("matches"));
+    assert!(result.model.contains("load_tool_schema"));
+    assert!(result.model.contains("invoke_loaded_tool"));
+    assert!(events.iter().any(|e| e.kind == "tool_search"));
+}
+
+#[test]
+fn load_tool_schema_returns_schema_without_mutating_top_level_tools() {
+    let mut s = session();
+
+    let (_events, loaded) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "load_tool_schema",
+        &json!({"name": "move_npc"}),
+    ));
+    assert_structured_text(&model_plain(&loaded.model));
+    let loaded_full: Value = serde_json::from_str(&loaded.full).expect("full is JSON");
+    assert_eq!(loaded_full["status"], "loaded_schema");
+    assert_eq!(loaded_full["loaded_schema"], "move_npc");
+    assert_eq!(loaded_full["invoke_tool"], "invoke_loaded_tool");
+    assert!(loaded_full.get("loaded_tools").is_none());
+    assert_eq!(loaded_full["schema"]["function"]["name"], "move_npc");
+    assert!(!s.loaded_gm_tools.contains("move_npc"));
+    assert!(loaded.model.contains("LOAD TOOL SCHEMA"));
+    assert!(loaded.model.contains("schema: {\"type\":\"function\""));
+    assert!(loaded.model.contains("invoke_loaded_tool"));
+
+    let (_events, repeat) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "load_tool_schema",
+        &json!({"name": "move_npc"}),
+    ));
+    let repeat_full: Value = serde_json::from_str(&repeat.full).expect("full is JSON");
+    assert_eq!(repeat_full["status"], "loaded_schema");
+    assert_eq!(repeat_full["loaded_schema"], "move_npc");
+    assert!(repeat_full.get("loaded_tools").is_none());
+    assert_eq!(repeat_full["already_loaded"], json!([]));
+    assert_eq!(repeat_full["schema"]["function"]["name"], "move_npc");
+    assert!(!s.loaded_gm_tools.contains("move_npc"));
+
+    let (_events, missing) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "load_tool_schema",
+        &json!({"name": "does_not_exist"}),
+    ));
+    let missing_full: Value = serde_json::from_str(&missing.full).expect("full is JSON");
+    assert_eq!(missing_full["status"], "missing");
+    assert_eq!(missing_full["missing"], json!(["does_not_exist"]));
+    assert!(missing_full["schema"].is_null());
+}
+
+#[test]
+fn invoke_loaded_tool_dispatches_without_mutating_loaded_tools() {
+    let mut s = session();
+
+    let (_events, loaded) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "load_tool_schema",
+        &json!({"name": "get_npc_profile"}),
+    ));
+    let loaded_full: Value = serde_json::from_str(&loaded.full).expect("full is JSON");
+    assert_eq!(loaded_full["status"], "loaded_schema");
+    assert_eq!(loaded_full["loaded_schema"], "get_npc_profile");
+    assert!(!s.loaded_gm_tools.contains("get_npc_profile"));
+
+    let (_events, invoked) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "invoke_loaded_tool",
+        &json!({
+            "name": "get_npc_profile",
+            "arguments": {
+                "npc_id": "borin",
+                "preset": "mechanics",
+                "fields": ["passive_perception"]
+            }
+        }),
+    ));
+    assert_structured_text(&model_plain(&invoked.model));
+    let invoked_full: Value = serde_json::from_str(&invoked.full).expect("full is JSON");
+    assert_eq!(invoked_full["npc_id"], "borin");
+    assert!(invoked.model.contains("NPC PROFILE"));
+    assert!(!s.loaded_gm_tools.contains("get_npc_profile"));
 }
 
 // =========================================================================
@@ -289,10 +636,17 @@ fn ask_npc_success_two_channel_and_label() {
 
     // .model carries the ask_npc reminder verbatim; .full does not.
     assert!(result.model.contains(REMINDER_OPEN));
-    assert!(result.model.contains("call update_world_state"));
+    assert!(result.model.contains("call note_memory"));
+    assert!(result
+        .model
+        .contains("Store relationship and goal changes as scoped memory cards"));
     assert!(result.model.contains("call advance_time"));
-    assert!(result.model.contains("durable testimony, rumor, npc_memory, relationship"));
-    assert!(result.model.contains("Private leads from an NPC to the player"));
+    assert!(result
+        .model
+        .contains("durable testimony, rumor, npc_memory"));
+    assert!(result
+        .model
+        .contains("Private leads from an NPC to the player"));
     assert!(result.model.contains("nothing durable changed"));
     assert!(result.model.contains("update_player_character"));
     assert!(!result.full.contains(REMINDER_OPEN));
@@ -305,6 +659,173 @@ fn ask_npc_success_two_channel_and_label() {
     assert!(plain.contains("ask_npc"));
 
     assert!(events.iter().any(|e| e.kind == "npc_speech"));
+}
+
+#[test]
+fn ask_npc_runs_remember_as_an_npc_tool_not_a_gm_tool() {
+    let mut s = session();
+    let (_events, stored) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "note_memory",
+        &json!({
+            "summary": "BORIN_REMEMBER_TOOL_SENTINEL хранится только в памяти Борина.",
+            "owner_scope": "actor:borin",
+            "topic_tags": ["REMEMBER_TOOL_SENTINEL"],
+        }),
+    ));
+    let stored_full: Value = serde_json::from_str(&stored.full).expect("stored JSON");
+    assert_eq!(stored_full["ok"], json!(true));
+
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "ask_npc",
+        &json!({
+            "npc_id": "borin",
+            "situation": "Игрок просит Борина вспомнить REMEMBER_TOOL_SENTINEL.",
+        }),
+    ));
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert!(
+        full["speech_ru"]
+            .as_str()
+            .unwrap_or("")
+            .contains("BORIN_REMEMBER_TOOL_SENTINEL"),
+        "{full}"
+    );
+    assert!(events.iter().any(|e| {
+        e.kind == "npc_tool_call"
+            && e.agent.as_deref() == Some("Борин")
+            && e.data.get("name").and_then(Value::as_str) == Some("remember")
+    }));
+    assert!(events.iter().any(|e| {
+        e.kind == "npc_tool_result"
+            && e.agent.as_deref() == Some("Борин")
+            && e.data
+                .as_str()
+                .unwrap_or("")
+                .contains("BORIN_REMEMBER_TOOL_SENTINEL")
+    }));
+    assert!(!events.iter().any(|e| {
+        e.kind == "gm_tool_call"
+            && e.data.get("name").and_then(Value::as_str) == Some("npc_remember")
+    }));
+}
+
+#[test]
+fn ask_npc_runs_npc_note_memory_as_actor_private_tool() {
+    let mut s = session();
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "ask_npc",
+        &json!({
+            "npc_id": "borin",
+            "situation": "Игрок угрожает Борину: NPC_NOTE_MEMORY_TOOL_SENTINEL.",
+        }),
+    ));
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert!(
+        full["response_ru"]
+            .as_str()
+            .unwrap_or("")
+            .contains("запоминая"),
+        "{full}"
+    );
+    assert!(events.iter().any(|e| {
+        e.kind == "npc_tool_call"
+            && e.agent.as_deref() == Some("Борин")
+            && e.data.get("name").and_then(Value::as_str) == Some("npc_note_memory")
+    }));
+    let note_result = events
+        .iter()
+        .find(|e| {
+            e.kind == "npc_tool_result"
+                && e.agent.as_deref() == Some("Борин")
+                && e.data
+                    .as_str()
+                    .map(|text| text.contains("\"status\":\"stored\""))
+                    .unwrap_or(false)
+        })
+        .and_then(|e| e.data.as_str())
+        .expect("npc_note_memory result event");
+    assert!(
+        !note_result.contains("NPC_NOTE_MEMORY_TOOL_SENTINEL"),
+        "private note text must not be echoed through the event result: {note_result}"
+    );
+
+    let borin_recall = npc_memory_recall(
+        &mut s,
+        &json!({
+            "npc_id": "borin",
+            "query": "NPC_NOTE_MEMORY_TOOL_SENTINEL",
+            "max_results": 10,
+            "include_cold": true
+        }),
+    );
+    assert!(
+        serde_json::to_string(&borin_recall)
+            .unwrap()
+            .contains("NPC_NOTE_MEMORY_TOOL_SENTINEL"),
+        "{borin_recall}"
+    );
+
+    let player_recall = get_memory(
+        &mut s,
+        &json!({
+            "scope": "player",
+            "query": "NPC_NOTE_MEMORY_TOOL_SENTINEL",
+            "max_results": 10,
+            "include_cold": true
+        }),
+    );
+    assert_eq!(player_recall["status"], json!("unknown"), "{player_recall}");
+    assert!(
+        player_recall["results"]
+            .as_array()
+            .map(|rows| rows.is_empty())
+            .unwrap_or(true),
+        "NPC private note must not become player memory: {player_recall}"
+    );
+}
+
+#[test]
+fn ask_npc_runs_relationship_recall_through_actor_memory() {
+    let mut s = session();
+    let stored = note_memory(
+        &mut s,
+        &json!({
+            "summary": "NPC_RELATIONSHIP_MEMORY_SENTINEL Борин помнит, что игрок однажды прикрыл его перед стражей.",
+            "owner_scope": "actor:borin",
+            "topic_tags": ["relationship", "player"],
+        }),
+    );
+    assert_eq!(stored["ok"], json!(true), "{stored}");
+
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "ask_npc",
+        &json!({
+            "npc_id": "borin",
+            "situation": "Игрок просит Борина вспомнить их прошлые дела: NPC_RELATIONSHIP_TOOL_SENTINEL.",
+        }),
+    ));
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert!(
+        full["response_ru"].as_str().unwrap_or("").contains("мягче"),
+        "{full}"
+    );
+    assert!(events.iter().any(|e| {
+        e.kind == "npc_tool_call"
+            && e.agent.as_deref() == Some("Борин")
+            && e.data.get("name").and_then(Value::as_str) == Some("npc_recall_relationship")
+    }));
+    assert!(events.iter().any(|e| {
+        e.kind == "npc_tool_result"
+            && e.agent.as_deref() == Some("Борин")
+            && e.data
+                .as_str()
+                .map(|text| text.contains("NPC_RELATIONSHIP_MEMORY_SENTINEL"))
+                .unwrap_or(false)
+    }));
 }
 
 #[test]
@@ -355,14 +876,19 @@ fn tool_errors_are_structured_with_codes() {
     assert!(model_plain(&bad_move.model).contains("tool: move_npc"));
 
     // ask_npc missing situation -> missing_situation code + error event.
-    let (events, missing_sit) =
-        tokio_block_on(run_tool_collect(&mut s, "ask_npc", &json!({"npc_id": "borin"})));
+    let (events, missing_sit) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "ask_npc",
+        &json!({"npc_id": "borin"}),
+    ));
     assert_structured_text(&model_plain(&missing_sit.model));
     assert!(missing_sit.full.contains("tool error"));
     assert!(model_plain(&missing_sit.model).contains("code: missing_situation"));
-    assert!(events
-        .iter()
-        .any(|e| e.kind == "error" && e.data.as_str().map(|s| s.contains("situation")).unwrap_or(false)));
+    assert!(events.iter().any(|e| e.kind == "error"
+        && e.data
+            .as_str()
+            .map(|s| s.contains("situation"))
+            .unwrap_or(false)));
 }
 
 // =========================================================================

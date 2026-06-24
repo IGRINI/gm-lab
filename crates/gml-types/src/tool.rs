@@ -39,7 +39,11 @@ impl ToolExecutionResult {
     }
 
     /// Construct with an explicit `terminal` flag.
-    pub fn with_terminal(full: impl Into<String>, model: impl Into<String>, terminal: bool) -> Self {
+    pub fn with_terminal(
+        full: impl Into<String>,
+        model: impl Into<String>,
+        terminal: bool,
+    ) -> Self {
         ToolExecutionResult {
             full: full.into(),
             model: model.into(),
@@ -71,7 +75,11 @@ pub struct ParsedCall {
 
 impl ParsedCall {
     /// Construct a parsed call with the given name, arguments, and id.
-    pub fn new(name: impl Into<String>, arguments: Map<String, Value>, id: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        arguments: Map<String, Value>,
+        id: impl Into<String>,
+    ) -> Self {
         ParsedCall {
             name: name.into(),
             arguments,

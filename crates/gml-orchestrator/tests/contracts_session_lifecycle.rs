@@ -25,10 +25,24 @@ use gml_llm::backend::{
 use gml_llm::{mock_stats, MockClient};
 use gml_orchestrator::session::default_client_factory;
 use gml_orchestrator::Session;
+use gml_types::NpcBeat;
 
 fn session() -> Session {
     let client: Arc<dyn Backend> = Arc::new(MockClient::new());
-    Session::new(client)
+    let world = gml_world::World::from_seed(&gml_stories::default_story_seed());
+    Session::with_world(
+        client,
+        world,
+        Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>),
+    )
+}
+
+#[test]
+fn session_new_uses_procedural_worldgen_by_default() {
+    let s = Session::new(Arc::new(MockClient::new()));
+    assert_eq!(s.world.story_id, "procedural");
+    assert!(!s.world.world_canon.is_empty());
+    assert!(!s.world.world_canon.player_place_id.is_empty());
 }
 
 // =========================================================================
@@ -41,9 +55,12 @@ fn reset_npc_memory_drops_state_and_pins_boundaries() {
     s.seq = 9; // current shared-log boundary
 
     for id in ["borin", "lysa"] {
-        s.npc_messages
-            .insert(id.to_string(), vec![json!({"role": "user", "content": format!("hi {id}")})]);
-        s.npc_summaries.insert(id.to_string(), format!("summary-{id}"));
+        s.npc_messages.insert(
+            id.to_string(),
+            vec![json!({"role": "user", "content": format!("hi {id}")})],
+        );
+        s.npc_summaries
+            .insert(id.to_string(), format!("summary-{id}"));
         s.npc_client_state.insert(
             id.to_string(),
             gml_orchestrator::NpcClientState {
@@ -52,8 +69,19 @@ fn reset_npc_memory_drops_state_and_pins_boundaries() {
                 thread_id: format!("thread-{id}"),
             },
         );
-        s.npc_clients.insert(id.to_string(), Arc::new(MockClient::new()) as Arc<dyn Backend>);
-        s.commitments.insert(id.to_string(), vec![format!("commit-{id}")]);
+        s.npc_clients.insert(
+            id.to_string(),
+            Arc::new(MockClient::new()) as Arc<dyn Backend>,
+        );
+        s.commitments
+            .insert(id.to_string(), vec![format!("commit-{id}")]);
+        s.npc_last_contact_minutes.insert(id.to_string(), 123);
+        s.world.add_memory_unit(gml_world::MemoryUnit {
+            owner_scope: format!("actor:{id}"),
+            summary: format!("memory-{id}"),
+            tier: gml_world::MemoryTier::Raw,
+            ..Default::default()
+        });
         s.delivered.insert(id.to_string(), 5);
         s.shown.insert(id.to_string(), 3);
         // pending draft for the NPC
@@ -76,6 +104,14 @@ fn reset_npc_memory_drops_state_and_pins_boundaries() {
     assert!(!s.npc_clients.contains_key("borin"));
     assert!(!s.commitments.contains_key("borin"));
     assert!(!s.pending.contains_key("borin"));
+    assert!(!s.npc_last_contact_minutes.contains_key("borin"));
+    assert!(!s
+        .world
+        .world_canon
+        .memory
+        .units
+        .values()
+        .any(|unit| unit.owner_scope == "actor:borin"));
     // delivered/shown PINNED to current seq (not deleted) so old events do not
     // resurface as new after reset.
     assert_eq!(s.delivered.get("borin").copied(), Some(s.seq));
@@ -86,10 +122,29 @@ fn reset_npc_memory_drops_state_and_pins_boundaries() {
         s.npc_messages.get("lysa").cloned().unwrap(),
         vec![json!({"role": "user", "content": "hi lysa"})]
     );
-    assert_eq!(s.npc_summaries.get("lysa").map(|x| x.as_str()), Some("summary-lysa"));
-    assert_eq!(s.npc_client_state.get("lysa").map(|st| st.thread_id.as_str()), Some("thread-lysa"));
+    assert_eq!(
+        s.npc_summaries.get("lysa").map(|x| x.as_str()),
+        Some("summary-lysa")
+    );
+    assert_eq!(
+        s.npc_client_state
+            .get("lysa")
+            .map(|st| st.thread_id.as_str()),
+        Some("thread-lysa")
+    );
     assert!(s.npc_clients.contains_key("lysa"));
-    assert_eq!(s.commitments.get("lysa").cloned().unwrap(), vec!["commit-lysa"]);
+    assert_eq!(
+        s.commitments.get("lysa").cloned().unwrap(),
+        vec!["commit-lysa"]
+    );
+    assert_eq!(s.npc_last_contact_minutes.get("lysa").copied(), Some(123));
+    assert!(s
+        .world
+        .world_canon
+        .memory
+        .units
+        .values()
+        .any(|unit| unit.owner_scope == "actor:lysa" && unit.summary == "memory-lysa"));
     assert_eq!(s.delivered.get("lysa").copied(), Some(5));
     assert_eq!(s.shown.get("lysa").copied(), Some(3));
     assert!(s.pending.contains_key("lysa"));
@@ -105,11 +160,12 @@ fn reset_npc_memory_return_contract() {
     assert!(!s.reset_npc_memory(""));
 
     // Any real NPC with no prior memory -> True.
-    assert!(Session::new(Arc::new(MockClient::new())).reset_npc_memory("mareth"));
+    assert!(session().reset_npc_memory("mareth"));
 
     // A valid NPC with ONLY commitments/pending still mutates -> True.
     let mut co = session();
-    co.commitments.insert("borin".to_string(), vec!["block".to_string()]);
+    co.commitments
+        .insert("borin".to_string(), vec!["block".to_string()]);
     co.draft(
         "borin",
         "y",
@@ -147,6 +203,327 @@ fn reset_npc_memory_does_not_resurface_old_observations() {
     assert_eq!(s.observations("borin"), "");
 }
 
+#[test]
+fn room_observations_are_witness_scoped_and_compact() {
+    let mut s = session();
+    s.turn = 1;
+    s.last_player_action = "Игрок громко требует ответа у стойки".to_string();
+    let witnesses = s.record_player_for("borin");
+    assert!(witnesses.contains("player"));
+    assert!(witnesses.contains("borin"));
+    assert!(
+        witnesses.contains("lysa"),
+        "other present NPCs should witness public room interaction"
+    );
+
+    s.draft(
+        "borin",
+        "Тише. Здесь стены тонкие.",
+        "Борин стучит пальцами по стойке.",
+        vec![],
+        None,
+        None,
+        Some(witnesses),
+    );
+
+    let same_turn = s.observations("lysa");
+    assert!(same_turn.contains("Compact room note"));
+    assert!(same_turn.contains("Тише"));
+    assert!(
+        !same_turn.contains("Игрок громко требует ответа"),
+        "current player event is delivered through the fresh GM situation, not duplicated as observation"
+    );
+
+    s.commit_turn();
+    s.turn = 2;
+    let next_turn = s.observations("lysa");
+    assert!(next_turn.contains("Compact room note"));
+    assert!(next_turn.contains("Player"));
+    assert!(next_turn.contains("Тише"));
+
+    let recall = gml_orchestrator::worldstate::npc_memory_recall(
+        &mut s,
+        &json!({"npc_id": "lysa", "query": "Тише"}),
+    );
+    assert_eq!(recall["status"], "known");
+    assert!(recall["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["owner_scope"] == "actor:lysa"
+            && row["text"].as_str().unwrap_or("").contains("Тише")));
+
+    let mareth_recall = gml_orchestrator::worldstate::npc_memory_recall(
+        &mut s,
+        &json!({"npc_id": "mareth", "query": "Тише"}),
+    );
+    assert_eq!(
+        mareth_recall["status"], "unknown",
+        "another NPC must not read Lysa's private observed memory"
+    );
+
+    let scene_slice = s.world.npc_scene_slice("lysa");
+    assert!(
+        !scene_slice.contains("Observed in scene"),
+        "long-term scoped memories are fetched by the NPC remember tool, not dumped into every prompt"
+    );
+}
+
+#[test]
+fn room_observation_digest_folds_long_raw_event_tails() {
+    let mut s = session();
+    s.turn = 1;
+    for i in 0..20 {
+        s.record_public("borin", "speech", &format!("строка наблюдения {i}"), "");
+    }
+
+    let digest = s.observations("lysa");
+    assert!(digest.contains("Compact room note: 20 observable beat(s)"));
+    assert!(digest.contains("Earlier observable beats folded into this note"));
+    assert!(digest.contains("строка наблюдения 19"));
+    assert!(!digest.contains("строка наблюдения 0"));
+    assert!(
+        digest.lines().count() <= 4,
+        "digest should stay compact instead of dumping every raw event"
+    );
+}
+
+#[test]
+fn room_observations_hide_dice_and_gm_meta_events() {
+    let mut s = session();
+    s.turn = 1;
+
+    s.record_public("gm", "dice", "", "1d20+4 -> [18] + 4 = 22");
+    s.record_public("gm", "meta", "", "debug: should never reach NPC prompt");
+    s.record_public("borin", "speech", "Лиза слышит только это.", "");
+
+    let digest = s.observations("lysa");
+    assert!(digest.contains("Compact room note: 1 observable beat(s)"));
+    assert!(digest.contains("Лиза слышит только это"));
+    assert!(!digest.contains("Roll"));
+    assert!(!digest.contains("1d20"));
+    assert!(!digest.contains("debug"));
+    assert!(!digest.contains("meta"));
+}
+
+#[test]
+fn direct_npc_exchange_does_not_leak_exact_words_to_bystanders() {
+    let mut s = session();
+    s.turn = 1;
+    s.last_player_action = "секретный вопрос к Борину".to_string();
+
+    let witnesses = s.record_player_for_direct("borin");
+    assert!(witnesses.contains("player"));
+    assert!(witnesses.contains("borin"));
+    assert!(
+        !witnesses.contains("lysa"),
+        "direct exchanges must not make every present NPC hear exact words"
+    );
+    s.draft(
+        "borin",
+        "секретный ответ Борина",
+        "Борин говорит это только Дарре.",
+        vec![],
+        None,
+        None,
+        Some(witnesses),
+    );
+    s.commit_turn();
+
+    let lysa_recall = gml_orchestrator::worldstate::npc_memory_recall(
+        &mut s,
+        &json!({"npc_id": "lysa", "query": "секретный ответ Борина"}),
+    );
+    assert_eq!(lysa_recall["status"], "unknown");
+    let lysa_question_recall = gml_orchestrator::worldstate::npc_memory_recall(
+        &mut s,
+        &json!({"npc_id": "lysa", "query": "секретный вопрос к Борину"}),
+    );
+    assert_eq!(lysa_question_recall["status"], "unknown");
+
+    let borin_recall = gml_orchestrator::worldstate::npc_memory_recall(
+        &mut s,
+        &json!({"npc_id": "borin", "query": "секретный ответ Борина"}),
+    );
+    assert_eq!(borin_recall["status"], "known");
+}
+
+#[test]
+fn npc_organic_response_and_beats_survive_commit_and_payload_roundtrip() {
+    let mut s = session();
+    s.turn = 1;
+    let witnesses = BTreeSet::from(["player".to_string(), "borin".to_string()]);
+    let beats = vec![
+        NpcBeat {
+            kind: "action".to_string(),
+            text: "Борин бледнеет и оглядывается на дверь.".to_string(),
+        },
+        NpcBeat {
+            kind: "speech".to_string(),
+            text: "Тише. Не здесь.".to_string(),
+        },
+        NpcBeat {
+            kind: "action".to_string(),
+            text: "Он прячет ключ в рукав.".to_string(),
+        },
+    ];
+    s.draft_with_response(
+        "borin",
+        "Борин бледнеет, оглядывается на дверь и шепчет: «Тише. Не здесь». Он прячет ключ в рукав.",
+        beats.clone(),
+        "Тише. Не здесь.",
+        "Борин бледнеет и оглядывается на дверь. Он прячет ключ в рукав.",
+        Vec::new(),
+        None,
+        None,
+        Some(witnesses),
+    );
+    s.commit_turn_without_memory_consolidation();
+
+    let event = s
+        .events
+        .iter()
+        .find(|event| event.actor == "borin")
+        .expect("borin event");
+    assert!(event.response.contains("Борин бледнеет"));
+    assert_eq!(event.beats, beats);
+    assert_eq!(event.speech, "Тише. Не здесь.");
+    assert!(event.action.contains("прячет ключ"));
+    assert!(s
+        .world
+        .world_canon
+        .memory
+        .units
+        .values()
+        .any(
+            |unit| unit.summary.contains("Борин бледнеет") && unit.summary.contains("прячет ключ")
+        ));
+    assert!(s
+        .world
+        .rumors
+        .iter()
+        .any(|rumor| rumor.text == "Тише. Не здесь."));
+
+    let payload = s.to_payload();
+    let event_payload = payload["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["actor"] == "borin")
+        .expect("event payload");
+    assert!(event_payload["response"]
+        .as_str()
+        .unwrap()
+        .contains("Борин бледнеет"));
+    assert_eq!(event_payload["beats"].as_array().unwrap().len(), 3);
+
+    let restored = Session::from_payload(
+        &payload,
+        Arc::new(MockClient::new()) as Arc<dyn Backend>,
+        default_client_factory(),
+    )
+    .expect("session payload should restore");
+    let restored_event = restored
+        .events
+        .iter()
+        .find(|event| event.actor == "borin")
+        .expect("restored event");
+    assert_eq!(restored_event.response, event.response);
+    assert_eq!(restored_event.beats, beats);
+    assert_eq!(restored_event.speech, "Тише. Не здесь.");
+}
+
+#[test]
+fn npc_claims_commit_as_witness_scoped_claim_memory() {
+    let mut s = session();
+    s.turn = 1;
+    s.world.time.absolute_minutes = 210;
+    s.world.world_canon.clock_minutes = 210;
+
+    let witnesses = BTreeSet::from(["player".to_string(), "borin".to_string()]);
+    s.draft(
+        "borin",
+        "Я кое-что видел.",
+        "",
+        vec!["Под бочкой лежит серебряный ключ".to_string()],
+        None,
+        None,
+        Some(witnesses),
+    );
+    s.commit_turn_without_memory_consolidation();
+
+    let claim_units: Vec<_> = s
+        .world
+        .world_canon
+        .memory
+        .units
+        .values()
+        .filter(|unit| unit.created_by == "npc_claim")
+        .collect();
+    assert_eq!(claim_units.len(), 1);
+    let claim = claim_units[0];
+    assert_eq!(claim.truth_status, gml_world::MemoryTruthStatus::Claim);
+    assert_eq!(
+        claim.facts_claimed,
+        vec!["Под бочкой лежит серебряный ключ".to_string()]
+    );
+    assert_eq!(claim.owner_scope, "actor:borin");
+    assert!(claim.visibility_scopes.contains(&"player".to_string()));
+    assert!(claim.visibility_scopes.contains(&"actor:borin".to_string()));
+    assert!(!claim.visibility_scopes.contains(&"actor:lysa".to_string()));
+    assert!(claim
+        .source_event_ids
+        .iter()
+        .any(|source| source.starts_with("world_event_")));
+
+    let borin_recall = gml_orchestrator::worldstate::npc_memory_recall(
+        &mut s,
+        &json!({"npc_id": "borin", "query": "серебряный ключ"}),
+    );
+    assert_eq!(borin_recall["status"], "known");
+
+    let lysa_recall = gml_orchestrator::worldstate::npc_memory_recall(
+        &mut s,
+        &json!({"npc_id": "lysa", "query": "серебряный ключ"}),
+    );
+    assert_eq!(lysa_recall["status"], "unknown");
+}
+
+#[test]
+fn npc_last_contact_tracks_elapsed_world_time_and_persists() {
+    let mut s = session();
+    assert!(s
+        .npc_last_contact_text("borin")
+        .contains("No previous direct contact"));
+
+    s.world.time.absolute_minutes = 90;
+    s.world.world_canon.clock_minutes = 90;
+    s.mark_npc_contact("borin");
+    assert!(s.npc_last_contact_text("borin").contains("just now"));
+
+    s.world.time.absolute_minutes = 1_590;
+    s.world.world_canon.clock_minutes = 1_590;
+    let text = s.npc_last_contact_text("borin");
+    assert!(text.contains("1 day(s) 1 hour(s)"));
+
+    let payload = s.to_payload();
+    let restored = Session::from_payload(
+        &payload,
+        Arc::new(MockClient::new()) as Arc<dyn Backend>,
+        default_client_factory(),
+    )
+    .expect("session payload should restore");
+    assert_eq!(
+        restored.npc_last_contact_minutes.get("borin").copied(),
+        Some(90)
+    );
+
+    s.reset_npc_memory("borin");
+    assert!(s
+        .npc_last_contact_text("borin")
+        .contains("No previous direct contact"));
+}
+
 // =========================================================================
 // apply_debug_edit: presence/visibility guard, reset-only-on-flag
 // =========================================================================
@@ -158,7 +535,10 @@ fn apply_debug_edit_presence_visibility_guard_and_reset_flag() {
     s.world.scene.presence.get_mut("borin").unwrap().can_hear = false;
 
     // Card-only edit (no `present` key) must not flip presence/visibility.
-    assert!(s.apply_debug_edit("borin", &json!({"fields": {"persona": "переписанное описание"}})));
+    assert!(s.apply_debug_edit(
+        "borin",
+        &json!({"fields": {"persona": "переписанное описание"}})
+    ));
     assert!(!s.world.scene.presence["borin"].visible);
     assert!(!s.world.scene.presence["borin"].can_hear);
     assert!(!s.world.npc_can_react("borin"));
@@ -177,8 +557,10 @@ fn apply_debug_edit_presence_visibility_guard_and_reset_flag() {
     assert!(!s.apply_debug_edit("not_real", &json!({"fields": {"persona": "x"}})));
 
     // reset_memory via the edit path clears the chosen NPC's memory.
-    s.npc_messages
-        .insert("borin".to_string(), vec![json!({"role": "user", "content": "hi"})]);
+    s.npc_messages.insert(
+        "borin".to_string(),
+        vec![json!({"role": "user", "content": "hi"})],
+    );
     assert!(s.apply_debug_edit("borin", &json!({"reset_memory": true})));
     assert!(!s.npc_messages.contains_key("borin"));
 }

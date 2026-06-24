@@ -67,11 +67,11 @@ fn status_labels() -> Value {
     Value::Object(m)
 }
 
-/// `_debug_state_records(world)` -> `world.state_records_export("gm", active=None)`.
+/// `_debug_state_records(world)` -> memory-backed StateRecord-shaped export.
 fn debug_state_records(session: &mut Session) -> Vec<Value> {
     let mut query = StateRecordQuery::new("gm");
     query.active = None;
-    session.world.state_records_export(&query)
+    session.world.state_memory_records_export(&query)
 }
 
 /// `state(dialog)` — the shared chat state the SPA renders on first load and
@@ -88,6 +88,7 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
 
     let story_id = w.story_id.clone();
     let story_title = w.story_title.clone();
+    let story_brief = w.story_brief.clone();
     let public = w.public.clone();
     let time = w.time_export();
     let player_character = w.player_character_export(true);
@@ -120,13 +121,29 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
     let mut data = Map::new();
     data.insert("model".to_string(), Value::String(model));
     data.insert("backend".to_string(), Value::String(cfg.backend.clone()));
-    data.insert("stream_gm_content".to_string(), Value::Bool(stream_gm_content));
+    data.insert(
+        "stream_gm_content".to_string(),
+        Value::Bool(stream_gm_content),
+    );
     data.insert("settings".to_string(), settings_to_value(settings_map));
-    data.insert("settings_options".to_string(), Value::Object(settings.options()));
+    data.insert(
+        "settings_options".to_string(),
+        Value::Object(settings.options()),
+    );
     data.insert("run_usage".to_string(), run_usage);
     data.insert("context_usage".to_string(), context);
     data.insert("story_id".to_string(), Value::String(story_id));
-    data.insert("story_title".to_string(), Value::String(story_title));
+    data.insert(
+        "story_title".to_string(),
+        Value::String(story_title.clone()),
+    );
+    data.insert(
+        "story_brief".to_string(),
+        json!({
+            "title": story_title,
+            "text": story_brief,
+        }),
+    );
     data.insert("public".to_string(), Value::String(public));
     data.insert("time".to_string(), time);
     data.insert("player_character".to_string(), player_character);
@@ -135,7 +152,10 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
     data.insert("status_labels".to_string(), status_labels());
     data.insert("npcs".to_string(), Value::Array(npcs));
     if is_codex(cfg) {
-        data.insert("codex_auth".to_string(), Value::Object(gml_codex::auth_status()));
+        data.insert(
+            "codex_auth".to_string(),
+            Value::Object(gml_codex::auth_status()),
+        );
     }
     Value::Object(data)
 }
@@ -179,7 +199,9 @@ fn npc_label_maps(session: &mut Session) -> (Map<String, Value>, Map<String, Val
         for raw in [npc.name.clone(), npc.public_label.clone(), label.clone()] {
             let key = raw.trim().to_lowercase();
             if !key.is_empty() {
-                by_name.entry(key).or_insert_with(|| Value::String(npc_id.clone()));
+                by_name
+                    .entry(key)
+                    .or_insert_with(|| Value::String(npc_id.clone()));
             }
         }
     }
@@ -208,9 +230,15 @@ fn sanitize_player_name(
                 .unwrap_or("")
                 .trim()
                 .to_lowercase();
-            npc_id = by_name.get(&agent_key).and_then(Value::as_str).map(String::from);
+            npc_id = by_name
+                .get(&agent_key)
+                .and_then(Value::as_str)
+                .map(String::from);
         }
-        let label = npc_id.as_deref().and_then(|id| by_id.get(id)).and_then(Value::as_str);
+        let label = npc_id
+            .as_deref()
+            .and_then(|id| by_id.get(id))
+            .and_then(Value::as_str);
         if let Some(label) = label {
             if Some(label) != event.get("agent").and_then(Value::as_str) {
                 let mut e = event.clone();
@@ -236,9 +264,15 @@ fn sanitize_player_name(
                     .unwrap_or("")
                     .trim()
                     .to_lowercase();
-                npc_id = by_name.get(&name_key).and_then(Value::as_str).map(String::from);
+                npc_id = by_name
+                    .get(&name_key)
+                    .and_then(Value::as_str)
+                    .map(String::from);
             }
-            let label = npc_id.as_deref().and_then(|id| by_id.get(id)).and_then(Value::as_str);
+            let label = npc_id
+                .as_deref()
+                .and_then(|id| by_id.get(id))
+                .and_then(Value::as_str);
             if let Some(label) = label {
                 if Some(label) != data.get("name").and_then(Value::as_str) {
                     let mut e = event.clone();
@@ -308,6 +342,7 @@ pub fn export_data(runtime: &mut DialogRuntime, cfg: &Config) -> Value {
     let w = &mut session.world;
     let story_id = w.story_id.clone();
     let story_title = w.story_title.clone();
+    let story_brief = w.story_brief.clone();
     let public = w.public.clone();
     let time = w.time_export();
     let player_character = w.player_character_export(false);
@@ -324,10 +359,12 @@ pub fn export_data(runtime: &mut DialogRuntime, cfg: &Config) -> Value {
             "run_usage": run_usage,
             "story_id": story_id,
             "story_title": story_title,
+            "story_brief": story_brief,
         },
         "world": {
             "story_id": story_id,
             "story_title": story_title,
+            "story_brief": story_brief,
             "public": public,
             "time": time,
             "player_character": player_character,
@@ -384,7 +421,10 @@ fn btreemap_str_to_value(m: &std::collections::BTreeMap<String, String>) -> Valu
 fn btreemap_strvec_to_value(m: &std::collections::BTreeMap<String, Vec<String>>) -> Value {
     let mut out = Map::new();
     for (k, v) in m {
-        out.insert(k.clone(), Value::Array(v.iter().cloned().map(Value::String).collect()));
+        out.insert(
+            k.clone(),
+            Value::Array(v.iter().cloned().map(Value::String).collect()),
+        );
     }
     Value::Object(out)
 }
@@ -524,6 +564,7 @@ pub fn debug_data(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeS
 
     let story_id = session.world.story_id.clone();
     let story_title = session.world.story_title.clone();
+    let story_brief = session.world.story_brief.clone();
     let public_intro = session.world.public.clone();
     let hidden_truth = session.world.canon.clone();
     let story_constraints: Vec<Value> = session
@@ -554,13 +595,21 @@ pub fn debug_data(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeS
         let player_label = session.world.npc_player_label(npc_id, "player");
         let known_name = session.world.npc_known_name(npc_id, "player");
         let whereabouts = session.world.npc_whereabouts_export(Some(npc_id));
-        let summary = session.npc_summaries.get(npc_id).cloned().unwrap_or_default();
+        let summary = session
+            .npc_summaries
+            .get(npc_id)
+            .cloned()
+            .unwrap_or_default();
         let commitments: Vec<Value> = session
             .commitments
             .get(npc_id)
             .map(|v| v.iter().cloned().map(Value::String).collect())
             .unwrap_or_default();
-        let messages = session.npc_messages.get(npc_id).map(|m| m.len() as i64).unwrap_or(0);
+        let messages = session
+            .npc_messages
+            .get(npc_id)
+            .map(|m| m.len() as i64)
+            .unwrap_or(0);
         let history = session.npc_history_text(npc_id, 6);
         let presence = session.world.scene.presence.get(npc_id).map(presence_value);
         let present = session.world.scene.present_npcs.contains(npc_id);
@@ -632,6 +681,7 @@ pub fn debug_data(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeS
         "story": {
             "id": story_id,
             "title": story_title,
+            "brief": story_brief,
             "objective": "Вести игрока к раскрытию скрытой правды истории через действия, улики, свидетелей и последствия, не выдавая секреты без игрового основания.",
             "public_intro": public_intro,
             "hidden_truth": hidden_truth,

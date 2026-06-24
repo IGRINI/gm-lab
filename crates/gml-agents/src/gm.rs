@@ -108,7 +108,20 @@ matches it):\n{}",
     }
     system.push_str("\n\nPLAYER CHARACTER CARD (current sheet; GM-only notes may be present):\n");
     system.push_str(&world.player_character_context());
-    system.push_str(&format!("\n\nCURRENT SCENE STATE:\n{}", world.scene_context()));
+    system.push_str(&format!(
+        "\n\nCURRENT SCENE STATE:\n{}",
+        world.scene_context()
+    ));
+    let canon_world = world.canon_world_context();
+    if !canon_world.is_empty() {
+        system.push_str(&format!(
+            "\n\nCANON WORLD (structured truth — region, settlement, factions, recent history):\n{canon_world}"
+        ));
+    }
+    let memory_context = world.gm_memory_context();
+    if !memory_context.is_empty() {
+        system.push_str(&format!("\n\nLIVING MEMORY SNAPSHOT:\n{memory_context}"));
+    }
     system.push_str(&format!(
         "\n\nENTITY REFERENCE MARKUP:\n{}",
         world.entity_reference_context()

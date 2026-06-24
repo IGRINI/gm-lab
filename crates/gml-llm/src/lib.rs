@@ -36,7 +36,9 @@ pub use backend::{
 };
 pub use factory::{make_client, BackendKind, CodexHook};
 pub use identity::SessionIdentity;
-pub use json_helpers::{extract_json_string, json_unescape, loads_map, loads_value, parse_tool_calls};
+pub use json_helpers::{
+    extract_json_string, json_unescape, loads_map, loads_value, parse_tool_calls,
+};
 pub use mock::MockClient;
 pub use openai_compat::{build_payload, OpenAICompatClient};
 pub use parsing::{assistant_msg, clean, mock_stats, proper_nouns_line, stats, think};

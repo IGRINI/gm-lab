@@ -251,14 +251,20 @@ mod tests {
     #[test]
     fn assistant_msg_no_tool_calls() {
         let m = assistant_msg("hi", None);
-        assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"role":"assistant","content":"hi"}"#);
+        assert_eq!(
+            serde_json::to_string(&m).unwrap(),
+            r#"{"role":"assistant","content":"hi"}"#
+        );
     }
 
     #[test]
     fn assistant_msg_empty_content() {
         // content or "" -> we pass "" directly when content is empty.
         let m = assistant_msg("", None);
-        assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"role":"assistant","content":""}"#);
+        assert_eq!(
+            serde_json::to_string(&m).unwrap(),
+            r#"{"role":"assistant","content":""}"#
+        );
     }
 
     #[test]
@@ -343,7 +349,11 @@ mod tests {
             "Keep proper nouns exactly as written in the transcript; never transliterate them."
         );
         assert_eq!(
-            proper_nouns_line(&["Борин".to_string(), "  ".to_string(), "Нордхольм".to_string()]),
+            proper_nouns_line(&[
+                "Борин".to_string(),
+                "  ".to_string(),
+                "Нордхольм".to_string()
+            ]),
             "Keep these proper nouns exactly as written if they appear; never translate or \
              transliterate them: Борин, Нордхольм."
         );

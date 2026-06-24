@@ -2,7 +2,8 @@
 //!
 //! Table `embeddings(model, text_hash, text, dims, vector_b64, created_at REAL,
 //! PRIMARY KEY(model, text_hash))`; `PRAGMA journal_mode=WAL`,
-//! `synchronous=NORMAL`. One short-lived connection per op (matches Python).
+//! `synchronous=NORMAL`, `busy_timeout=10000`. One short-lived connection per op
+//! (matches Python).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,7 +37,9 @@ impl EmbeddingCache {
 
     fn connect(&self) -> Result<Connection> {
         let con = Connection::open(&self.path)?;
-        con.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+        con.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000;",
+        )?;
         Ok(con)
     }
 

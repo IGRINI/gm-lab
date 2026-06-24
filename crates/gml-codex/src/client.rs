@@ -66,7 +66,7 @@ impl CodexClient {
 
         let model = {
             // self._model = config.CODEX_MODEL or config.MODEL
-            
+
             if !cfg.codex_model.is_empty() {
                 cfg.codex_model.clone()
             } else {
@@ -108,7 +108,8 @@ impl CodexClient {
 
     /// `prompt_cache_key` — `CODEX_PROMPT_CACHE_KEY or self.thread_id`.
     pub fn prompt_cache_key(&self) -> String {
-        self.identity.prompt_cache_key(&self.cfg.codex_prompt_cache_key)
+        self.identity
+            .prompt_cache_key(&self.cfg.codex_prompt_cache_key)
     }
 
     /// `_payload(messages, tools, think, schema, reasoning_role)` — build the
@@ -135,7 +136,7 @@ impl CodexClient {
         let mut payload = Map::new();
         payload.insert(
             "model".into(),
-            Value::String(self.model.lock().expect("model lock").clone()),
+            Value::String(self.model_for_role(reasoning_role)),
         );
         payload.insert("instructions".into(), Value::String(instructions));
         payload.insert("input".into(), Value::Array(input_items));
@@ -160,7 +161,10 @@ impl CodexClient {
         );
 
         // reasoning = runtime_settings.reasoning_for_request(think, reasoning_role)
-        if let Some(reasoning) = self.settings.reasoning_for_request(think_flag, reasoning_role) {
+        if let Some(reasoning) = self
+            .settings
+            .reasoning_for_request(think_flag, reasoning_role)
+        {
             payload.insert("reasoning".into(), Value::Object(reasoning));
             payload.insert(
                 "include".into(),
@@ -177,14 +181,13 @@ impl CodexClient {
         if verbosity != "default" {
             text.insert("verbosity".into(), Value::String(verbosity.to_string()));
         }
-        if let Some(schema) = schema {
-            // `if schema:` — Python truthiness; skip empty schemas.
-            if is_truthy(schema) {
+        if let Some(shape_hint) = schema {
+            // `if schema:` keeps the legacy call-site contract, but the wire
+            // request stays in loose JSON-object mode. The expected shape
+            // belongs in the prompt.
+            if is_truthy(shape_hint) {
                 let mut format = Map::new();
-                format.insert("type".into(), Value::String("json_schema".into()));
-                format.insert("name".into(), Value::String("gm_lab_json".into()));
-                format.insert("strict".into(), Value::Bool(false));
-                format.insert("schema".into(), schema.clone());
+                format.insert("type".into(), Value::String("json_object".into()));
                 text.insert("format".into(), Value::Object(format));
             }
         }
@@ -200,9 +203,22 @@ impl CodexClient {
         Value::Object(payload)
     }
 
+    fn model_for_role(&self, reasoning_role: &str) -> String {
+        if reasoning_role == Role::Compact.as_str() {
+            let compact_model = self.cfg.codex_compact_model.trim();
+            if !compact_model.is_empty() {
+                return compact_model.to_string();
+            }
+        }
+        self.model.lock().expect("model lock").clone()
+    }
+
     /// `_auth_headers(accept_sse)` — assemble the request headers, refreshing the
     /// OAuth credential first.
-    async fn auth_headers(&self, accept_sse: bool) -> Result<reqwest::header::HeaderMap, BackendError> {
+    async fn auth_headers(
+        &self,
+        accept_sse: bool,
+    ) -> Result<reqwest::header::HeaderMap, BackendError> {
         let credential = oauth::ensure_fresh_credential(&self.http, &self.cfg)
             .await
             .map_err(BackendError::new)?;
@@ -226,7 +242,10 @@ impl CodexClient {
         put("session-id", self.identity.session_id());
         put("thread-id", self.identity.thread_id());
         put("x-client-request-id", self.identity.thread_id());
-        put("x-codex-installation-id", crate::install_id::installation_id());
+        put(
+            "x-codex-installation-id",
+            crate::install_id::installation_id(),
+        );
         if accept_sse {
             put("accept", "text/event-stream".to_string());
         }
@@ -248,8 +267,14 @@ impl CodexClient {
         for (k, v) in &stats {
             row.insert(k.clone(), v.clone());
         }
-        let prompt = stats.get("prompt_eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
-        let eval = stats.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let prompt = stats
+            .get("prompt_eval_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let eval = stats
+            .get("eval_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         row.insert("tokens".into(), Value::from(prompt + eval));
         self.call_log.lock().expect("call_log lock").push(row);
         stats
@@ -378,6 +403,10 @@ impl Backend for CodexClient {
         self.model.lock().expect("model lock").clone()
     }
 
+    fn supports_native_tool_search(&self) -> bool {
+        model_supports_native_tool_search(&self.model())
+    }
+
     fn set_model(&self, model: &str) {
         let m = model.trim();
         if !m.is_empty() {
@@ -398,13 +427,10 @@ impl Backend for CodexClient {
     }
 
     async fn list_models(&self) -> Vec<Value> {
-        match self.list_models_inner().await {
-            Ok(v) => v,
-            // Python raises on failure; the Backend signature returns Vec.
-            // Surface an empty list rather than panicking (callers treat empty
-            // as "no models"). The error path is exercised only on live calls.
-            Err(_) => Vec::new(),
-        }
+        // Python raises on failure; the Backend signature returns Vec. Surface an
+        // empty list rather than panicking (callers treat empty as "no models").
+        // The error path is exercised only on live calls.
+        self.list_models_inner().await.unwrap_or_default()
     }
 
     async fn chat(
@@ -416,7 +442,9 @@ impl Backend for CodexClient {
     ) -> Result<ChatOutput, BackendError> {
         let payload = self.payload(messages, tools, think_flag, None, reasoning_role);
         let mut sink = gml_llm::NullSink;
-        let (result, elapsed_ms) = self.collect_stream(&payload, &mut sink, sse_channel::CONTENT).await?;
+        let (result, elapsed_ms) = self
+            .collect_stream(&payload, &mut sink, sse_channel::CONTENT)
+            .await?;
         self.remember("chat", result.usage.as_ref(), elapsed_ms);
         let raw = raw_tool_calls(&result.calls);
         Ok(ChatOutput {
@@ -436,16 +464,14 @@ impl Backend for CodexClient {
     ) -> Result<Map<String, Value>, BackendError> {
         let payload = self.payload(messages, None, think_flag, Some(schema), reasoning_role);
         let mut sink = gml_llm::NullSink;
-        let (result, elapsed_ms) = self.collect_stream(&payload, &mut sink, sse_channel::CONTENT).await?;
+        let (result, elapsed_ms) = self
+            .collect_stream(&payload, &mut sink, sse_channel::CONTENT)
+            .await?;
         self.remember("chat_json", result.usage.as_ref(), elapsed_ms);
         Ok(loads(&result.content))
     }
 
-    async fn summarize(
-        &self,
-        text: &str,
-        proper_nouns: &[String],
-    ) -> Result<String, BackendError> {
+    async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
         // names = [str(name).strip() for name in proper_nouns if str(name).strip()]
         let names: Vec<String> = proper_nouns
             .iter()
@@ -454,7 +480,8 @@ impl Backend for CodexClient {
             .collect();
         // Codex-specific proper_nouns_line (DIFFERENT wording from llm_client's).
         let proper_nouns_line = if names.is_empty() {
-            "Keep proper nouns exactly as written; never translate or transliterate them.".to_string()
+            "Keep proper nouns exactly as written; never translate or transliterate them."
+                .to_string()
         } else {
             format!(
                 "Keep these proper nouns exactly as written: {}.",
@@ -474,7 +501,10 @@ impl Backend for CodexClient {
         let out = self
             .chat(&messages, None, Some(true), Role::Compact.as_str())
             .await?;
-        Ok(out.content.trim_matches(|c: char| c.is_whitespace()).to_string())
+        Ok(out
+            .content
+            .trim_matches(|c: char| c.is_whitespace())
+            .to_string())
     }
 
     async fn chat_stream(
@@ -486,7 +516,9 @@ impl Backend for CodexClient {
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<ChatStreamOutput, BackendError> {
         let payload = self.payload(messages, tools, think_flag, None, reasoning_role);
-        let (result, elapsed_ms) = self.collect_stream(&payload, sink, sse_channel::CONTENT).await?;
+        let (result, elapsed_ms) = self
+            .collect_stream(&payload, sink, sse_channel::CONTENT)
+            .await?;
         let stats = self.remember("chat_stream", result.usage.as_ref(), elapsed_ms);
         let raw = raw_tool_calls(&result.calls);
         Ok(ChatStreamOutput {
@@ -510,14 +542,20 @@ impl Backend for CodexClient {
         let payload = self.payload(messages, None, think_flag, Some(schema), reasoning_role);
         // Wrap the sink to drop thinking deltas (Python only yields "content").
         let mut filtered = ContentOnlySink { inner: sink };
-        let (result, elapsed_ms) =
-            self.collect_stream(&payload, &mut filtered, sse_channel::CONTENT).await?;
+        let (result, elapsed_ms) = self
+            .collect_stream(&payload, &mut filtered, sse_channel::CONTENT)
+            .await?;
         let stats = self.remember("chat_json_stream", result.usage.as_ref(), elapsed_ms);
         Ok(JsonStreamOutput {
             data: loads(&result.content),
             stats,
         })
     }
+}
+
+fn model_supports_native_tool_search(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.contains("gpt-5.4") || model.contains("gpt-5.5") || model.starts_with("gpt-6")
 }
 
 impl CodexClient {
@@ -572,10 +610,7 @@ impl CodexClient {
                     .filter(|v| is_truthy(v))
                     .and_then(|v| v.as_str())
                     .unwrap_or(slug);
-                let supported = obj
-                    .get("supported_in_api")
-                    .map(is_truthy)
-                    .unwrap_or(true);
+                let supported = obj.get("supported_in_api").map(is_truthy).unwrap_or(true);
                 let mut entry = Map::new();
                 entry.insert("id".into(), Value::String(slug.to_string()));
                 entry.insert("slug".into(), Value::String(slug.to_string()));
@@ -602,20 +637,29 @@ impl CodexClient {
                 );
                 entry.insert(
                     "default_reasoning_level".into(),
-                    obj.get("default_reasoning_level").cloned().unwrap_or(Value::Null),
+                    obj.get("default_reasoning_level")
+                        .cloned()
+                        .unwrap_or(Value::Null),
                 );
                 entry.insert(
                     "default_reasoning_summary".into(),
-                    obj.get("default_reasoning_summary").cloned().unwrap_or(Value::Null),
+                    obj.get("default_reasoning_summary")
+                        .cloned()
+                        .unwrap_or(Value::Null),
                 );
                 entry.insert(
                     "supports_reasoning_summaries".into(),
-                    obj.get("supports_reasoning_summaries").cloned().unwrap_or(Value::Null),
+                    obj.get("supports_reasoning_summaries")
+                        .cloned()
+                        .unwrap_or(Value::Null),
                 );
                 let levels = obj
                     .get("supported_reasoning_levels")
                     .filter(|v| is_truthy(v))
-                    .or_else(|| obj.get("supported_reasoning_efforts").filter(|v| is_truthy(v)))
+                    .or_else(|| {
+                        obj.get("supported_reasoning_efforts")
+                            .filter(|v| is_truthy(v))
+                    })
                     .cloned()
                     .unwrap_or(Value::Array(Vec::new()));
                 entry.insert("supported_reasoning_levels".into(), levels);
@@ -632,8 +676,14 @@ impl CodexClient {
         }
         // models.sort(key=lambda m: (not m["supported"], -int(m["priority"] or 0), m["name"]))
         models.sort_by(|a, b| {
-            let sa = a.get("supported").and_then(|v| v.as_bool()).unwrap_or(false);
-            let sb = b.get("supported").and_then(|v| v.as_bool()).unwrap_or(false);
+            let sa = a
+                .get("supported")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let sb = b
+                .get("supported")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             // not supported sorts last: (!supported) ascending => supported first.
             (!sa)
                 .cmp(&(!sb))
@@ -701,7 +751,11 @@ pub fn usage_stats(usage: Option<&Value>, elapsed_ms: Option<f64>) -> Map<String
 /// `_json_event(text)` — parse one SSE JSON payload.
 fn json_event(text: &str) -> Result<Value, BackendError> {
     match serde_json::from_str::<Value>(text) {
-        Ok(v) => Ok(if v.is_object() { v } else { Value::Object(Map::new()) }),
+        Ok(v) => Ok(if v.is_object() {
+            v
+        } else {
+            Value::Object(Map::new())
+        }),
         Err(e) => Err(BackendError::new(format!(
             "Codex returned invalid SSE JSON: {e}"
         ))),
@@ -812,6 +866,16 @@ mod tests {
     }
 
     #[test]
+    fn native_tool_search_capability_is_model_gated() {
+        assert!(model_supports_native_tool_search("gpt-5.4"));
+        assert!(model_supports_native_tool_search("gpt-5.4-mini"));
+        assert!(model_supports_native_tool_search("gpt-5.5"));
+        assert!(model_supports_native_tool_search("gpt-6"));
+        assert!(!model_supports_native_tool_search("gpt-5.3"));
+        assert!(!model_supports_native_tool_search("codex-mini-latest"));
+    }
+
+    #[test]
     fn payload_basic_shape_and_cache_key() {
         let mut cfg = Config::from_env();
         cfg.codex_prompt_cache_key = String::new();
@@ -841,7 +905,31 @@ mod tests {
         assert_eq!(p.get("parallel_tool_calls").unwrap(), &Value::Bool(false));
         // client_metadata
         assert_eq!(p.pointer("/client_metadata/application").unwrap(), "gm-lab");
-        assert_eq!(p.pointer("/client_metadata/provider").unwrap(), "codex-oauth");
+        assert_eq!(
+            p.pointer("/client_metadata/provider").unwrap(),
+            "codex-oauth"
+        );
+    }
+
+    #[test]
+    fn payload_uses_compact_model_only_for_compact_role() {
+        let mut cfg = Config::from_env();
+        cfg.codex_prompt_cache_key = String::new();
+        cfg.codex_model = "gpt-main".to_string();
+        cfg.codex_compact_model = "gpt-mini-compact".to_string();
+        let cfg = Arc::new(cfg);
+        let settings = Arc::new(RuntimeSettings::new(
+            &cfg,
+            std::env::temp_dir().join("gml_codex_compact_model.json"),
+        ));
+        let client = CodexClient::new(cfg, settings);
+        let messages = serde_json::json!([{"role": "user", "content": "hi"}]);
+
+        let gm = client.payload(&messages, None, Some(false), None, Role::Gm.as_str());
+        assert_eq!(gm.get("model").unwrap(), "gpt-main");
+
+        let compact = client.payload(&messages, None, Some(true), None, Role::Compact.as_str());
+        assert_eq!(compact.get("model").unwrap(), "gpt-mini-compact");
     }
 
     #[test]
@@ -867,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_schema_sets_text_format() {
+    fn payload_shape_hint_sets_json_object_text_format() {
         let cfg = Arc::new(Config::from_env());
         let settings = Arc::new(RuntimeSettings::new(
             &cfg,
@@ -876,11 +964,17 @@ mod tests {
         let client = CodexClient::new(cfg, settings);
         let messages = serde_json::json!([{"role": "user", "content": "hi"}]);
         let schema = serde_json::json!({"type": "object", "properties": {}});
-        let p = client.payload(&messages, None, Some(true), Some(&schema), Role::Gm.as_str());
-        assert_eq!(p.pointer("/text/format/type").unwrap(), "json_schema");
-        assert_eq!(p.pointer("/text/format/name").unwrap(), "gm_lab_json");
-        assert_eq!(p.pointer("/text/format/strict").unwrap(), &Value::Bool(false));
-        assert_eq!(p.pointer("/text/format/schema").unwrap(), &schema);
+        let p = client.payload(
+            &messages,
+            None,
+            Some(true),
+            Some(&schema),
+            Role::Gm.as_str(),
+        );
+        assert_eq!(p.pointer("/text/format/type").unwrap(), "json_object");
+        assert!(p.pointer("/text/format/name").is_none());
+        assert!(p.pointer("/text/format/strict").is_none());
+        assert!(p.pointer("/text/format/schema").is_none());
     }
 
     #[test]
@@ -896,8 +990,14 @@ mod tests {
         assert_eq!(s.get("cached_tokens").unwrap(), &Value::from(64));
         assert_eq!(s.get("prompt_eval_duration").unwrap(), &Value::from(0));
         // elapsed_ns = 1000ms * 1e6 = 1_000_000_000
-        assert_eq!(s.get("eval_duration").unwrap(), &Value::from(1_000_000_000i64));
-        assert_eq!(s.get("total_duration").unwrap(), &Value::from(1_000_000_000i64));
+        assert_eq!(
+            s.get("eval_duration").unwrap(),
+            &Value::from(1_000_000_000i64)
+        );
+        assert_eq!(
+            s.get("total_duration").unwrap(),
+            &Value::from(1_000_000_000i64)
+        );
         assert_eq!(s.get("load_duration").unwrap(), &Value::from(0));
         // key order
         let out = serde_json::to_string(&Value::Object(s)).unwrap();

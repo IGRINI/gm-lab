@@ -1,9 +1,10 @@
-//! TTS sidecar process manager (NEW design — no Python reference).
+//! Unified inference sidecar process manager (NEW design — no Python reference).
 //!
-//! PORT_PLAN §3.2 sidecar row / risk #7. Spawns the faster-qwen3-tts Python
-//! sidecar once (guarded by a `OnceCell<Mutex<...>>`), polls a health endpoint
-//! until ready or timeout, exposes readiness, and kills the process tree on
-//! shutdown (cross-platform, via [`crate::proc`]).
+//! PORT_PLAN §3.2 sidecar row / risk #7. Spawns the unified `serve.py` sidecar
+//! (one process hosting embeddings + rerank + TTS) once (guarded by a
+//! `OnceCell<Mutex<...>>`), polls a health endpoint until ready or timeout,
+//! exposes readiness, and kills the process tree on shutdown (cross-platform,
+//! via [`crate::proc`]).
 //!
 //! The app must run FULLY without TTS: if TTS is disabled
 //! (`runtime_settings.tts_enabled == false`) or the sidecar can't start, every
@@ -25,21 +26,32 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::OnceCell;
+use serde_json::Value;
 
 use crate::proc::ProcessTree;
 
 /// Env var holding the spawn command line for the sidecar. Default launches the
-/// faster-qwen3-tts demo server in `hf_models/faster-qwen3-tts`.
+/// unified `serve.py` (embeddings + rerank + TTS) on the rag312 Python env.
 pub const SPAWN_CMD_ENV: &str = "GM_TTS_SPAWN_CMD";
-/// Env var pointing at the sidecar working directory (the faster-qwen3-tts dir).
+/// Env var pointing at the sidecar working directory (the `serve.py` dir).
 pub const SPAWN_DIR_ENV: &str = "GM_TTS_SPAWN_DIR";
 /// Env var: how long (seconds) to wait for the sidecar to become healthy.
 pub const READY_TIMEOUT_ENV: &str = "GM_TTS_READY_TIMEOUT";
 
-/// Default spawn working directory (the faster-qwen3-tts repo).
-pub const DEFAULT_SPAWN_DIR: &str = r"E:/gemma/gm-lab/hf_models/faster-qwen3-tts";
-/// Default readiness timeout in seconds.
-pub const DEFAULT_READY_TIMEOUT_SECS: u64 = 180;
+/// Default Python interpreter (the rag312 env: torch 2.7 cu128 + flash-attn +
+/// transformers 4.57.3 + sentence-transformers + qwen-tts).
+pub const DEFAULT_PYTHON: &str = r"E:/gemma/rag312/Scripts/python.exe";
+/// Default spawn working directory (the gm-lab-rs `sidecar/` dir with serve.py).
+pub const DEFAULT_SPAWN_DIR: &str = r"E:/gemma/gm-lab-rs/sidecar";
+/// Default sidecar script, relative to [`DEFAULT_SPAWN_DIR`].
+pub const DEFAULT_SCRIPT: &str = "serve.py";
+/// Default HF cache home (where the TTS weights live, on E:).
+pub const DEFAULT_HF_HOME: &str = r"E:/gemma/gm-lab/hf_models/.hf-home";
+/// Default TTS asset dir (voice refs + local `qwen17b_base` model).
+pub const DEFAULT_TTS_HOME: &str = r"E:/gemma/gm-lab/hf_models/faster-qwen3-tts";
+/// Default readiness timeout in seconds. The TTS 1.7B load + CUDA-graph capture
+/// is ~120s; allow margin for a cold model download.
+pub const DEFAULT_READY_TIMEOUT_SECS: u64 = 300;
 /// Interval between health polls.
 pub const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -54,6 +66,29 @@ pub enum SidecarState {
     Ready,
     /// Spawn failed or readiness timed out.
     Failed,
+}
+
+impl SidecarState {
+    /// Stable wire label used by the UI status endpoint.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SidecarState::Disabled => "disabled",
+            SidecarState::Starting => "starting",
+            SidecarState::Ready => "ready",
+            SidecarState::Failed => "failed",
+        }
+    }
+}
+
+/// Read-only snapshot of the live sidecar manager.
+#[derive(Debug, Clone)]
+pub struct SidecarSnapshot {
+    pub state: SidecarState,
+    pub ready: bool,
+    pub pid: Option<u32>,
+    pub base_url: String,
+    pub started_elapsed: Option<Duration>,
+    pub ready_timeout: Duration,
 }
 
 /// Sidecar failures.
@@ -84,6 +119,10 @@ pub struct SidecarConfig {
     pub spawn_dir: String,
     /// How long to wait for readiness.
     pub ready_timeout: Duration,
+    /// Extra environment variables to set on the spawned process — the unified
+    /// sidecar reads these (HF_HOME, GMLAB_SIDECAR_PORT, EMBEDDER_QUANT /
+    /// RERANKER_QUANT, EMBEDDER/RERANKER/TTS_ENABLED, TTS_HOME, TTS_MODEL_ID…).
+    pub envs: Vec<(String, String)>,
 }
 
 impl SidecarConfig {
@@ -105,13 +144,10 @@ impl SidecarConfig {
         let (spawn_program, spawn_args) = match std::env::var(SPAWN_CMD_ENV) {
             Ok(cmd) if !cmd.trim().is_empty() => {
                 let mut parts = cmd.split_whitespace().map(|s| s.to_string());
-                let prog = parts.next().unwrap_or_else(|| "python".to_string());
+                let prog = parts.next().unwrap_or_else(|| default_python().to_string());
                 (prog, parts.collect())
             }
-            _ => (
-                default_python().to_string(),
-                vec!["demo/server.py".to_string()],
-            ),
+            _ => (DEFAULT_PYTHON.to_string(), vec![DEFAULT_SCRIPT.to_string()]),
         };
         let ready_timeout = std::env::var(READY_TIMEOUT_ENV)
             .ok()
@@ -119,13 +155,37 @@ impl SidecarConfig {
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(DEFAULT_READY_TIMEOUT_SECS));
 
+        // Port for serve.py's uvicorn bind, parsed from base_url so they stay in
+        // sync (base_url = http://127.0.0.1:8077 -> "8077").
+        let port = base_url
+            .rsplit(':')
+            .next()
+            .map(|s| s.trim_end_matches('/'))
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or("8077")
+            .to_string();
+        let envs = vec![
+            ("GMLAB_SIDECAR_PORT".to_string(), port),
+            ("HF_HOME".to_string(), env_or("HF_HOME", DEFAULT_HF_HOME)),
+            ("TTS_HOME".to_string(), env_or("TTS_HOME", DEFAULT_TTS_HOME)),
+        ];
+
         SidecarConfig {
             base_url,
             spawn_program,
             spawn_args,
             spawn_dir,
             ready_timeout,
+            envs,
         }
+    }
+}
+
+/// Read an env var, falling back to `default` when unset or blank.
+fn env_or(key: &str, default: &str) -> String {
+    match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => default.to_string(),
     }
 }
 
@@ -162,6 +222,16 @@ impl StateMachine {
     /// Current state.
     pub fn state(&self) -> SidecarState {
         self.state
+    }
+
+    /// Elapsed time since the current start attempt began.
+    pub fn started_elapsed(&self) -> Option<Duration> {
+        self.started_at.map(|started_at| started_at.elapsed())
+    }
+
+    /// Configured readiness timeout.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     /// Whether the sidecar is ready to take requests.
@@ -264,6 +334,19 @@ impl Sidecar {
         self.inner().lock().unwrap().sm.is_ready()
     }
 
+    /// Current read-only process/readiness snapshot.
+    pub fn snapshot(&self) -> SidecarSnapshot {
+        let g = self.inner().lock().unwrap();
+        SidecarSnapshot {
+            state: g.sm.state(),
+            ready: g.sm.is_ready(),
+            pid: g.child.as_ref().and_then(tokio::process::Child::id),
+            base_url: self.cfg.base_url.clone(),
+            started_elapsed: g.sm.started_elapsed(),
+            ready_timeout: g.sm.timeout(),
+        }
+    }
+
     /// Ensure the sidecar is started and become-ready, returning once it is
     /// [`SidecarState::Ready`] or erroring on spawn failure / timeout.
     ///
@@ -323,6 +406,9 @@ impl Sidecar {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        for (k, v) in &self.cfg.envs {
+            cmd.env(k, v);
+        }
         crate::proc::no_window(&mut cmd);
 
         let child = cmd.spawn().map_err(|e| e.to_string())?;
@@ -331,20 +417,30 @@ impl Sidecar {
         Ok((child, tree))
     }
 
-    /// Probe `GET {base}/health`; return true on a 2xx response. A connection
-    /// failure (sidecar not yet listening) is simply "not healthy yet".
+    /// Probe `GET {base}/health`; return true only when every enabled component
+    /// reports `up:true`. A connection failure (sidecar not yet listening) is
+    /// simply "not healthy yet".
     async fn probe_health(&self) -> bool {
+        self.health_payload()
+            .await
+            .map(|body| health_payload_ready(&self.cfg, &body))
+            .unwrap_or(false)
+    }
+
+    /// Fetch the raw sidecar `/health` payload for status UIs.
+    pub async fn health_payload(&self) -> Result<Value, String> {
         let url = format!("{}/health", self.cfg.base_url);
-        match self
+        let resp = self
             .http
             .get(&url)
             .timeout(Duration::from_secs(2))
             .send()
             .await
-        {
-            Ok(resp) => resp.status().is_success(),
-            Err(_) => false,
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("health returned {}", resp.status()));
         }
+        resp.json::<Value>().await.map_err(|e| e.to_string())
     }
 
     /// Kill the sidecar process tree and reset to [`SidecarState::Disabled`].
@@ -366,9 +462,44 @@ impl Sidecar {
     }
 }
 
+fn sidecar_env_enabled(cfg: &SidecarConfig, key: &str) -> bool {
+    cfg.envs
+        .iter()
+        .rev()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.trim() == "1")
+        .unwrap_or(false)
+}
+
+fn health_component_up(body: &Value, key: &str) -> bool {
+    body.get(key)
+        .and_then(|v| v.get("up"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn health_payload_ready(cfg: &SidecarConfig, body: &Value) -> bool {
+    let expected = [
+        ("EMBEDDER_ENABLED", "embedder"),
+        ("RERANKER_ENABLED", "reranker"),
+        ("TTS_ENABLED", "tts"),
+    ];
+    let mut any_expected = false;
+    for (env_key, health_key) in expected {
+        if sidecar_env_enabled(cfg, env_key) {
+            any_expected = true;
+            if !health_component_up(body, health_key) {
+                return false;
+            }
+        }
+    }
+    any_expected
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn t0() -> Instant {
         Instant::now()
@@ -429,6 +560,33 @@ mod tests {
     }
 
     #[test]
+    fn health_payload_requires_enabled_components() {
+        let mut cfg = SidecarConfig::from_env();
+        cfg.envs
+            .push(("EMBEDDER_ENABLED".to_string(), "1".to_string()));
+        cfg.envs
+            .push(("RERANKER_ENABLED".to_string(), "1".to_string()));
+        cfg.envs.push(("TTS_ENABLED".to_string(), "0".to_string()));
+
+        assert!(health_payload_ready(
+            &cfg,
+            &json!({
+                "embedder": {"up": true},
+                "reranker": {"up": true},
+                "tts": {"up": false}
+            })
+        ));
+        assert!(!health_payload_ready(
+            &cfg,
+            &json!({
+                "embedder": {"up": true},
+                "reranker": {"up": false},
+                "tts": {"up": true}
+            })
+        ));
+    }
+
+    #[test]
     fn state_machine_shutdown_resets() {
         let mut sm = StateMachine::new(Duration::from_secs(5));
         let start = t0();
@@ -458,6 +616,7 @@ mod tests {
             spawn_args: vec![],
             spawn_dir: ".".to_string(),
             ready_timeout: Duration::from_millis(10),
+            envs: vec![],
         };
         let s = Sidecar::new(cfg);
         let err = s.ensure_started(false).await.unwrap_err();
@@ -475,6 +634,7 @@ mod tests {
             spawn_args: vec![],
             spawn_dir: ".".to_string(),
             ready_timeout: Duration::from_millis(50),
+            envs: vec![],
         };
         let s = Sidecar::new(cfg);
         let err = s.ensure_started(true).await.unwrap_err();

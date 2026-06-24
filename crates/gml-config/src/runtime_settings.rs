@@ -26,8 +26,7 @@ use serde_json::{Map, Value};
 use crate::config::{self, Config};
 
 /// `REASONING_EFFORTS = ("none","minimal","low","medium","high","xhigh")`.
-pub const REASONING_EFFORTS: [&str; 6] =
-    ["none", "minimal", "low", "medium", "high", "xhigh"];
+pub const REASONING_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
 /// `REASONING_SUMMARIES = ("auto","concise","detailed","none")`.
 pub const REASONING_SUMMARIES: [&str; 4] = ["auto", "concise", "detailed", "none"];
 /// `TEXT_VERBOSITIES = ("default","low","medium","high")`.
@@ -38,11 +37,12 @@ pub const TOOL_CHOICES: [&str; 3] = ["auto", "required", "none"];
 pub const MAX_TOOL_HOPS_CAP: i64 = 100;
 
 /// The reasoning role string keys, in `config.REASONING_ROLES` order.
-fn reasoning_role_keys() -> [&'static str; 3] {
+fn reasoning_role_keys() -> [&'static str; 4] {
     [
         config::Role::Gm.as_str(),
         config::Role::Npc.as_str(),
         config::Role::Compact.as_str(),
+        config::Role::Location.as_str(),
     ]
 }
 
@@ -102,23 +102,48 @@ impl RuntimeSettings {
         let mut m = Map::new();
         m.insert(
             "reasoning_efforts".into(),
-            Value::from(REASONING_EFFORTS.iter().map(|s| Value::from(*s)).collect::<Vec<_>>()),
+            Value::from(
+                REASONING_EFFORTS
+                    .iter()
+                    .map(|s| Value::from(*s))
+                    .collect::<Vec<_>>(),
+            ),
         );
         m.insert(
             "reasoning_summaries".into(),
-            Value::from(REASONING_SUMMARIES.iter().map(|s| Value::from(*s)).collect::<Vec<_>>()),
+            Value::from(
+                REASONING_SUMMARIES
+                    .iter()
+                    .map(|s| Value::from(*s))
+                    .collect::<Vec<_>>(),
+            ),
         );
         m.insert(
             "reasoning_roles".into(),
-            Value::from(reasoning_role_keys().iter().map(|s| Value::from(*s)).collect::<Vec<_>>()),
+            Value::from(
+                reasoning_role_keys()
+                    .iter()
+                    .map(|s| Value::from(*s))
+                    .collect::<Vec<_>>(),
+            ),
         );
         m.insert(
             "text_verbosities".into(),
-            Value::from(TEXT_VERBOSITIES.iter().map(|s| Value::from(*s)).collect::<Vec<_>>()),
+            Value::from(
+                TEXT_VERBOSITIES
+                    .iter()
+                    .map(|s| Value::from(*s))
+                    .collect::<Vec<_>>(),
+            ),
         );
         m.insert(
             "tool_choices".into(),
-            Value::from(TOOL_CHOICES.iter().map(|s| Value::from(*s)).collect::<Vec<_>>()),
+            Value::from(
+                TOOL_CHOICES
+                    .iter()
+                    .map(|s| Value::from(*s))
+                    .collect::<Vec<_>>(),
+            ),
         );
         m.insert("max_tool_hops_max".into(), Value::from(MAX_TOOL_HOPS_CAP));
         m.insert(
@@ -188,7 +213,10 @@ impl RuntimeSettings {
                 if !eff.is_empty() {
                     eff
                 } else {
-                    supported.first().cloned().unwrap_or_else(|| "none".to_string())
+                    supported
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "none".to_string())
                 }
             }
         };
@@ -213,19 +241,14 @@ impl RuntimeSettings {
             if supports_is_false && effort != "none" {
                 next.insert(effort_key.clone(), Value::from("none"));
                 next.insert(summary_key.clone(), Value::from("none"));
-            } else if !supported.is_empty()
-                && !supported.contains(&effort)
-                && effort != "none"
-            {
+            } else if !supported.is_empty() && !supported.contains(&effort) && effort != "none" {
                 next.insert(effort_key.clone(), Value::from(default_effort.clone()));
                 if default_effort == "none" {
                     next.insert(summary_key.clone(), Value::from("none"));
                 } else if settings.get(&summary_key) == Some(&Value::from("none")) {
                     next.insert(summary_key.clone(), Value::from(default_summary.clone()));
                 }
-            } else if effort == "none"
-                && settings.get(&summary_key) != Some(&Value::from("none"))
-            {
+            } else if effort == "none" && settings.get(&summary_key) != Some(&Value::from("none")) {
                 next.insert(summary_key.clone(), Value::from("none"));
             }
         }
@@ -241,11 +264,7 @@ impl RuntimeSettings {
     /// `role_settings(role, settings?)` — `{effort, summary}` for a role,
     /// lowercased, defaulting to `"none"`; summary forced `"none"` if effort is
     /// `"none"` or if summary is not a known summary value.
-    pub fn role_settings(
-        &self,
-        role: &str,
-        settings: Option<&SettingsMap>,
-    ) -> RoleSettings {
+    pub fn role_settings(&self, role: &str, settings: Option<&SettingsMap>) -> RoleSettings {
         let role = normalize_role(role);
         let owned;
         let values: &SettingsMap = match settings {
@@ -255,8 +274,7 @@ impl RuntimeSettings {
                 &owned
             }
         };
-        let mut effort =
-            string_of(values.get(&format!("{role}_reasoning_effort"))).to_lowercase();
+        let mut effort = string_of(values.get(&format!("{role}_reasoning_effort"))).to_lowercase();
         if effort.is_empty() {
             effort = "none".to_string();
         }
@@ -349,7 +367,9 @@ impl RuntimeSettings {
                 &owned
             }
         };
-        int_of(values.get("max_tool_hops")).map(|n| n.max(0)).unwrap_or(0)
+        int_of(values.get("max_tool_hops"))
+            .map(|n| n.max(0))
+            .unwrap_or(0)
     }
 
     /// `max_output_tokens()` — clamp `>= 0`.
@@ -361,12 +381,7 @@ impl RuntimeSettings {
 
     // --- internal helpers ---------------------------------------------------
 
-    fn bool_setting(
-        &self,
-        settings: Option<&SettingsMap>,
-        key: &str,
-        default: bool,
-    ) -> bool {
+    fn bool_setting(&self, settings: Option<&SettingsMap>, key: &str, default: bool) -> bool {
         let owned;
         let values: &SettingsMap = match settings {
             Some(s) => s,
@@ -541,8 +556,16 @@ pub fn supported_reasoning_efforts(model: Option<&Map<String, Value>>) -> Vec<St
     let raw = model
         .get("supported_reasoning_levels")
         .filter(|v| !is_empty_value(v))
-        .or_else(|| model.get("supported_reasoning_efforts").filter(|v| !is_empty_value(v)))
-        .or_else(|| model.get("reasoning_efforts").filter(|v| !is_empty_value(v)));
+        .or_else(|| {
+            model
+                .get("supported_reasoning_efforts")
+                .filter(|v| !is_empty_value(v))
+        })
+        .or_else(|| {
+            model
+                .get("reasoning_efforts")
+                .filter(|v| !is_empty_value(v))
+        });
 
     let mut out: Vec<String> = Vec::new();
     if let Some(Value::Array(items)) = raw {
@@ -572,12 +595,16 @@ pub fn supported_reasoning_efforts(model: Option<&Map<String, Value>>) -> Vec<St
 }
 
 /// `_migrate_legacy_reasoning(data)` — map old global `reasoning_effort` /
-/// `reasoning_summary` to GM and NPC only (compact keeps its new default).
+/// `reasoning_summary` to active generation roles only (compact keeps default).
 fn migrate_legacy_reasoning(data: &Map<String, Value>) -> Map<String, Value> {
     let mut out = Map::new();
     let legacy_effort = string_of(data.get("reasoning_effort")).to_lowercase();
     let legacy_summary = string_of(data.get("reasoning_summary")).to_lowercase();
-    for role in [config::Role::Gm.as_str(), config::Role::Npc.as_str()] {
+    for role in [
+        config::Role::Gm.as_str(),
+        config::Role::Npc.as_str(),
+        config::Role::Location.as_str(),
+    ] {
         let effort_key = format!("{role}_reasoning_effort");
         let summary_key = format!("{role}_reasoning_summary");
         if !legacy_effort.is_empty() && !data.contains_key(&effort_key) {
@@ -674,7 +701,9 @@ fn clean_int(value: Option<&Value>) -> Option<i64> {
         Some(Value::Number(n)) => {
             if let Some(i) = n.as_i64() {
                 Some(i)
-            } else { n.as_f64().map(|f| f.trunc() as i64) }
+            } else {
+                n.as_f64().map(|f| f.trunc() as i64)
+            }
         }
         Some(Value::String(s)) => {
             let t = s.trim();
@@ -742,7 +771,7 @@ fn compute_defaults(cfg: &Config) -> (SettingsMap, String) {
         }
     };
 
-    // _ROLE_REASONING_BASE: GM/NPC inherit base; compact = ("none","none").
+    // _ROLE_REASONING_BASE: active generation roles inherit base; compact = ("none","none").
     let role_base = |role: &str| -> (String, String) {
         if role == config::Role::Compact.as_str() {
             ("none".to_string(), "none".to_string())
@@ -753,7 +782,11 @@ fn compute_defaults(cfg: &Config) -> (SettingsMap, String) {
 
     // _role_default(role, kind, base): env GM_<ROLE>_REASONING_<KIND>, .strip().lower() or base
     let role_default = |role: &str, kind: &str, base: &str| -> String {
-        let var = format!("GM_{}_REASONING_{}", role.to_uppercase(), kind.to_uppercase());
+        let var = format!(
+            "GM_{}_REASONING_{}",
+            role.to_uppercase(),
+            kind.to_uppercase()
+        );
         let env = std::env::var(&var).unwrap_or_else(|_| base.to_string());
         let v = env.trim().to_lowercase();
         if v.is_empty() {
@@ -878,7 +911,7 @@ mod tests {
         let path = dir.path().join(format!("settings_{n}.json"));
         // Use a Config with codex base effort "low"/"auto" (Python defaults),
         // built from a clean env for the role-default vars.
-        for role in ["GM", "NPC", "COMPACT"] {
+        for role in ["GM", "NPC", "COMPACT", "LOCATION"] {
             std::env::remove_var(format!("GM_{role}_REASONING_EFFORT"));
             std::env::remove_var(format!("GM_{role}_REASONING_SUMMARY"));
         }
@@ -898,8 +931,22 @@ mod tests {
         assert_eq!(d.get("gm_reasoning_effort"), Some(&Value::from("low")));
         assert_eq!(d.get("gm_reasoning_summary"), Some(&Value::from("auto")));
         assert_eq!(d.get("npc_reasoning_effort"), Some(&Value::from("low")));
-        assert_eq!(d.get("compact_reasoning_effort"), Some(&Value::from("none")));
-        assert_eq!(d.get("compact_reasoning_summary"), Some(&Value::from("none")));
+        assert_eq!(
+            d.get("location_reasoning_effort"),
+            Some(&Value::from("low"))
+        );
+        assert_eq!(
+            d.get("location_reasoning_summary"),
+            Some(&Value::from("auto"))
+        );
+        assert_eq!(
+            d.get("compact_reasoning_effort"),
+            Some(&Value::from("none"))
+        );
+        assert_eq!(
+            d.get("compact_reasoning_summary"),
+            Some(&Value::from("none"))
+        );
         assert_eq!(d.get("text_verbosity"), Some(&Value::from("default")));
         assert_eq!(d.get("tool_choice"), Some(&Value::from("auto")));
         assert_eq!(d.get("stream_gm_content"), Some(&Value::from(true)));
@@ -966,19 +1013,45 @@ mod tests {
     }
 
     #[test]
-    fn legacy_migration_maps_to_gm_and_npc_only() {
+    fn legacy_migration_maps_to_active_generation_roles_only() {
         let (rs, _d) = temp_settings();
         // Write a legacy-shaped file then load it.
         let body = r#"{"reasoning_effort":"high","reasoning_summary":"detailed"}"#;
         std::fs::write(rs.settings_path(), body).unwrap();
         let loaded = rs.get();
-        assert_eq!(loaded.get("gm_reasoning_effort"), Some(&Value::from("high")));
-        assert_eq!(loaded.get("gm_reasoning_summary"), Some(&Value::from("detailed")));
-        assert_eq!(loaded.get("npc_reasoning_effort"), Some(&Value::from("high")));
-        assert_eq!(loaded.get("npc_reasoning_summary"), Some(&Value::from("detailed")));
+        assert_eq!(
+            loaded.get("gm_reasoning_effort"),
+            Some(&Value::from("high"))
+        );
+        assert_eq!(
+            loaded.get("gm_reasoning_summary"),
+            Some(&Value::from("detailed"))
+        );
+        assert_eq!(
+            loaded.get("npc_reasoning_effort"),
+            Some(&Value::from("high"))
+        );
+        assert_eq!(
+            loaded.get("npc_reasoning_summary"),
+            Some(&Value::from("detailed"))
+        );
+        assert_eq!(
+            loaded.get("location_reasoning_effort"),
+            Some(&Value::from("high"))
+        );
+        assert_eq!(
+            loaded.get("location_reasoning_summary"),
+            Some(&Value::from("detailed"))
+        );
         // compact keeps its new default (none/none), NOT migrated
-        assert_eq!(loaded.get("compact_reasoning_effort"), Some(&Value::from("none")));
-        assert_eq!(loaded.get("compact_reasoning_summary"), Some(&Value::from("none")));
+        assert_eq!(
+            loaded.get("compact_reasoning_effort"),
+            Some(&Value::from("none"))
+        );
+        assert_eq!(
+            loaded.get("compact_reasoning_summary"),
+            Some(&Value::from("none"))
+        );
     }
 
     #[test]
@@ -997,8 +1070,9 @@ mod tests {
         // keys appear in sorted order: compact_* before gm_*
         let i_compact = on_disk.find("compact_reasoning_effort").unwrap();
         let i_gm = on_disk.find("gm_reasoning_effort").unwrap();
+        let i_location = on_disk.find("location_reasoning_effort").unwrap();
         let i_npc = on_disk.find("npc_reasoning_effort").unwrap();
-        assert!(i_compact < i_gm && i_gm < i_npc);
+        assert!(i_compact < i_gm && i_gm < i_location && i_location < i_npc);
 
         // Reload into a fresh instance -> identical normalized map
         let cfg = Config::from_env();
@@ -1018,14 +1092,17 @@ mod tests {
         m.insert("a_num".into(), Value::from(0i64));
         m.insert("c_str".into(), Value::from("Ива")); // raw cyrillic, not \u
         let s = serialize_sorted_pretty(&m);
-        assert_eq!(s, "{\n  \"a_num\": 0,\n  \"b_flag\": true,\n  \"c_str\": \"Ива\"\n}");
+        assert_eq!(
+            s,
+            "{\n  \"a_num\": 0,\n  \"b_flag\": true,\n  \"c_str\": \"Ива\"\n}"
+        );
         assert!(!s.contains("\\u"));
     }
 
     #[test]
     fn reconcile_supports_false_forces_none() {
         let (rs, _d) = temp_settings();
-        // start from defaults (gm/npc effort=low)
+        // start from defaults (active generation roles effort=low)
         rs.get();
         let mut model = Map::new();
         model.insert("supports_reasoning_summaries".into(), Value::from(false));
@@ -1033,7 +1110,18 @@ mod tests {
         assert_eq!(out.get("gm_reasoning_effort"), Some(&Value::from("none")));
         assert_eq!(out.get("gm_reasoning_summary"), Some(&Value::from("none")));
         assert_eq!(out.get("npc_reasoning_effort"), Some(&Value::from("none")));
-        assert_eq!(out.get("compact_reasoning_effort"), Some(&Value::from("none")));
+        assert_eq!(
+            out.get("location_reasoning_effort"),
+            Some(&Value::from("none"))
+        );
+        assert_eq!(
+            out.get("location_reasoning_summary"),
+            Some(&Value::from("none"))
+        );
+        assert_eq!(
+            out.get("compact_reasoning_effort"),
+            Some(&Value::from("none"))
+        );
     }
 
     #[test]
@@ -1081,7 +1169,7 @@ mod tests {
     fn per_request_accessors() {
         let (rs, _d) = temp_settings();
         rs.get(); // defaults: gm effort low, summary auto
-        // reasoning_for_request(true, "gm") -> {effort:low, summary:auto}
+                  // reasoning_for_request(true, "gm") -> {effort:low, summary:auto}
         let r = rs.reasoning_for_request(Some(true), "gm").unwrap();
         assert_eq!(r.get("effort"), Some(&Value::from("low")));
         assert_eq!(r.get("summary"), Some(&Value::from("auto")));

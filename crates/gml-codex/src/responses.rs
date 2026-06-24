@@ -69,7 +69,11 @@ pub fn raw_tool_calls(calls: &[Value]) -> Vec<Value> {
             Some(Value::Object(m)) => Value::Object(m.clone()),
             _ => Value::Object(Map::new()),
         };
-        let id = call.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = call
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let mut function = Map::new();
         function.insert("name".into(), Value::String(name));
         // json.dumps(args, ensure_ascii=False) — compact, raw unicode.
@@ -177,13 +181,18 @@ fn function_call_item(tool_call: &Value) -> Option<Value> {
     // if not isinstance(args, str): args = json.dumps(args if dict else {}, ensure_ascii=False)
     let args = match args_val {
         Value::String(s) => s,
-        Value::Object(m) => serde_json::to_string(&Value::Object(m)).unwrap_or_else(|_| "{}".into()),
+        Value::Object(m) => {
+            serde_json::to_string(&Value::Object(m)).unwrap_or_else(|_| "{}".into())
+        }
         _ => "{}".to_string(),
     };
     // call_id = str(tool_call.get("id") or tool_call.get("call_id") or f"call_{name}")
     let call_id = {
         let id = tool_call.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        let cid = tool_call.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+        let cid = tool_call
+            .get("call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !id.is_empty() {
             id.to_string()
         } else if !cid.is_empty() {
@@ -289,8 +298,7 @@ pub fn strict_schema_for_responses(schema: &Value) -> Value {
         // recurse into anyOf / oneOf / allOf
         for key in ["anyOf", "oneOf", "allOf"] {
             if let Some(Value::Array(arr)) = obj.get(key).cloned() {
-                let mapped: Vec<Value> =
-                    arr.iter().map(strict_schema_for_responses).collect();
+                let mapped: Vec<Value> = arr.iter().map(strict_schema_for_responses).collect();
                 obj.insert(key.into(), Value::Array(mapped));
             }
         }
@@ -330,10 +338,7 @@ pub fn strict_schema_for_responses(schema: &Value) -> Value {
                 new_props.insert(name.clone(), child);
             }
             // required = list(props.keys()) — preserves insertion order.
-            let required: Vec<Value> = props_map
-                .keys()
-                .map(|k| Value::String(k.clone()))
-                .collect();
+            let required: Vec<Value> = props_map.keys().map(|k| Value::String(k.clone())).collect();
             obj.insert("properties".into(), Value::Object(new_props));
             obj.insert("required".into(), Value::Array(required));
         } else {
@@ -356,6 +361,35 @@ fn out_required(obj: &Map<String, Value>) -> Vec<String> {
 
 /// `convert_tool_for_responses(tool)`.
 pub fn convert_tool_for_responses(tool: &Value) -> Value {
+    if tool.get("type").and_then(|v| v.as_str()) == Some("namespace") {
+        let mut out = Map::new();
+        out.insert("type".into(), Value::String("namespace".into()));
+        out.insert(
+            "name".into(),
+            Value::String(
+                tool.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+        );
+        out.insert(
+            "description".into(),
+            Value::String(
+                tool.get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+        );
+        let nested = tool
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().map(convert_tool_for_responses).collect())
+            .unwrap_or_default();
+        out.insert("tools".into(), Value::Array(nested));
+        return Value::Object(out);
+    }
     if tool.get("type").and_then(|v| v.as_str()) != Some("function") {
         return tool.clone();
     }
@@ -382,14 +416,31 @@ pub fn convert_tool_for_responses(tool: &Value) -> Value {
     out.insert("type".into(), Value::String("function".into()));
     out.insert(
         "name".into(),
-        Value::String(fn_obj.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string()),
+        Value::String(
+            fn_obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ),
     );
     out.insert(
         "description".into(),
-        Value::String(fn_obj.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string()),
+        Value::String(
+            fn_obj
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ),
     );
     out.insert("parameters".into(), parameters);
     out.insert("strict".into(), Value::Bool(strict));
+    if tool.get("defer_loading").map(is_truthy).unwrap_or(false)
+        || fn_obj.get("defer_loading").map(is_truthy).unwrap_or(false)
+    {
+        out.insert("defer_loading".into(), Value::Bool(true));
+    }
     Value::Object(out)
 }
 
@@ -427,11 +478,19 @@ pub fn extract_tool_calls(response: &Value) -> Vec<Value> {
             if item.get("type").and_then(|v| v.as_str()) != Some("function_call") {
                 continue;
             }
-            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if name.is_empty() {
                 continue;
             }
-            let raw_args = item.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+            let raw_args = item
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("{}");
             let args = if raw_args.is_empty() {
                 loads("{}")
             } else {
@@ -461,7 +520,10 @@ pub fn extract_tool_calls(response: &Value) -> Vec<Value> {
 // --- helpers ----------------------------------------------------------------
 
 fn attr_str(obj: &Value, name: &str) -> String {
-    obj.get(name).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    obj.get(name)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn is_truthy(v: &Value) -> bool {
@@ -620,7 +682,13 @@ mod tests {
         assert_eq!(out.get("name").unwrap(), "roll_dice");
         assert_eq!(out.get("description").unwrap(), "roll");
         assert_eq!(out.get("strict").unwrap(), &json!(true));
-        assert_eq!(out.get("parameters").unwrap().get("additionalProperties").unwrap(), &json!(false));
+        assert_eq!(
+            out.get("parameters")
+                .unwrap()
+                .get("additionalProperties")
+                .unwrap(),
+            &json!(false)
+        );
     }
 
     #[test]
@@ -636,6 +704,42 @@ mod tests {
         assert_eq!(out.get("strict").unwrap(), &json!(false));
         // non-strict params unchanged (no required injected, no additionalProperties)
         assert!(out.pointer("/parameters/additionalProperties").is_none());
+    }
+
+    #[test]
+    fn convert_tool_namespace_recurses_and_preserves_defer_loading() {
+        let tool = json!({
+            "type": "namespace",
+            "name": "gm_deferred",
+            "description": "Deferred GM tools",
+            "tools": [{
+                "type": "function",
+                "defer_loading": true,
+                "function": {
+                    "name": "move_npc",
+                    "description": "move",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"npc_id": {"type": "string"}},
+                        "required": ["npc_id"]
+                    }
+                }
+            }]
+        });
+        let out = convert_tool_for_responses(&tool);
+        assert_eq!(out.get("type").unwrap(), "namespace");
+        assert_eq!(out.get("name").unwrap(), "gm_deferred");
+        let nested = out.get("tools").unwrap().as_array().unwrap();
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].get("type").unwrap(), "function");
+        assert_eq!(nested[0].get("name").unwrap(), "move_npc");
+        assert_eq!(nested[0].get("defer_loading").unwrap(), &json!(true));
+        assert_eq!(
+            nested[0]
+                .pointer("/parameters/additionalProperties")
+                .unwrap(),
+            &json!(false)
+        );
     }
 
     #[test]

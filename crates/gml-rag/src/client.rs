@@ -18,6 +18,20 @@ use crate::vector::{decode_embedding_value, normalize, sha_text};
 /// Port of the implicit Python protocol: `embed(texts) -> list[list[float]]`.
 pub trait Embedder {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f64>>>;
+
+    /// Embed a QUERY for asymmetric retrieval. The DEFAULT applies the
+    /// client-side instruction template ([`crate::engine::query_instruction`])
+    /// and embeds it like any text — correct for dumb embedders (and what the
+    /// golden tests pin). [`LocalEmbeddingClient`] overrides this to send the bare
+    /// query with `input_type:"query"` so the SIDECAR applies the Qwen3 template;
+    /// documents are always embedded bare via [`Embedder::embed`].
+    fn embed_query(&self, query: &str) -> Result<Vec<f64>> {
+        let text = crate::engine::query_instruction(query);
+        self.embed(std::slice::from_ref(&text))?
+            .into_iter()
+            .next()
+            .ok_or(RagError::BadEmbedding)
+    }
 }
 
 /// HTTP embedding client with a cache-through, batching to `RAG_BATCH_SIZE`.
@@ -38,13 +52,62 @@ impl LocalEmbeddingClient {
         let batch_size = std::cmp::max(1, config.rag_batch_size) as usize;
         Ok(LocalEmbeddingClient {
             url: config.rag_embeddings_url.clone(),
-            model: config.rag_embeddings_model.clone(),
+            // Fold the embedder quant into the cache key so switching bf16<->nf4
+            // (or the model) never serves stale/incompatible cached vectors. The
+            // sidecar ignores the payload `model` field, so this is cache-only.
+            model: format!("{}@{}", config.rag_embeddings_model, config.embedder_quant),
             encoding_format: config.rag_encoding_format.clone(),
             batch_size,
             timeout: config.rag_timeout_seconds,
             cache: EmbeddingCache::new(&config.rag_cache_path)?,
         })
     }
+}
+
+fn post_json(url: &str, payload: Value, timeout: f64) -> Result<Value> {
+    let url = url.to_string();
+    std::thread::spawn(move || -> Result<Value> {
+        let http = reqwest::blocking::Client::new();
+        let response = http
+            .post(url)
+            .timeout(std::time::Duration::from_secs_f64(timeout))
+            .json(&payload)
+            .send()?
+            .error_for_status()?;
+        Ok(response.json()?)
+    })
+    .join()
+    .map_err(|_| RagError::Value("RAG HTTP worker panicked".to_string()))?
+}
+
+/// Blocking POST to the unified sidecar's `/rerank` (jina-reranker-v3).
+///
+/// Returns the reranked indices into `documents`, best-first, as the sidecar
+/// ordered them (scores are raw cosine — only the ORDER is used). On ANY
+/// transport / HTTP / parse error returns `Err` so the caller can surface
+/// degraded retrieval or choose its own fallback. Mirrors the per-call
+/// blocking-client style of [`LocalEmbeddingClient::embed`].
+pub fn rerank_documents(
+    url: &str,
+    query: &str,
+    documents: &[String],
+    top_n: usize,
+    timeout: f64,
+) -> Result<Vec<usize>> {
+    let payload = json!({ "query": query, "documents": documents, "top_n": top_n });
+    let body = post_json(url, payload, timeout)?;
+    let results = body
+        .get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut order: Vec<usize> = Vec::with_capacity(results.len());
+    for item in &results {
+        if let Some(idx) = item.get("index").and_then(|v| v.as_u64()) {
+            order.push(idx as usize);
+        }
+    }
+    Ok(order)
 }
 
 impl Embedder for LocalEmbeddingClient {
@@ -62,7 +125,6 @@ impl Embedder for LocalEmbeddingClient {
             }
         }
 
-        let http = reqwest::blocking::Client::new();
         let mut start = 0;
         while start < missing.len() {
             let end = std::cmp::min(start + self.batch_size, missing.len());
@@ -73,14 +135,12 @@ impl Embedder for LocalEmbeddingClient {
                 "input": batch,
                 "encoding_format": self.encoding_format,
             });
-            let response = http
-                .post(&self.url)
-                .timeout(std::time::Duration::from_secs_f64(self.timeout))
-                .json(&payload)
-                .send()?
-                .error_for_status()?;
-            let body: Value = response.json()?;
-            let data = body.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+            let body = post_json(&self.url, payload, self.timeout)?;
+            let data = body
+                .get("data")
+                .and_then(|d| d.as_array())
+                .cloned()
+                .unwrap_or_default();
 
             // vectors_by_index: int(item.get("index", idx)) -> decoded vec
             let mut vectors_by_index: HashMap<i64, Vec<f64>> = HashMap::new();
@@ -89,9 +149,7 @@ impl Embedder for LocalEmbeddingClient {
                     .get("index")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(idx as i64);
-                let embedding = item
-                    .get("embedding")
-                    .ok_or(RagError::BadEmbedding)?;
+                let embedding = item.get("embedding").ok_or(RagError::BadEmbedding)?;
                 vectors_by_index.insert(index, decode_embedding_value(embedding)?);
             }
 
@@ -117,6 +175,28 @@ impl Embedder for LocalEmbeddingClient {
             result.push(vec);
         }
         Ok(result)
+    }
+
+    fn embed_query(&self, query: &str) -> Result<Vec<f64>> {
+        // Bare query + input_type:"query" + the domain task -> the SIDECAR builds
+        // the `Instruct: {task}\nQuery:{q}` template (documents are embedded bare
+        // via `embed`). Queries are transient, so no cache round-trip here.
+        let q = py_strip(query).to_string();
+        let payload = json!({
+            "model": self.model,
+            "input": [q],
+            "encoding_format": self.encoding_format,
+            "input_type": "query",
+            "task": crate::engine::QUERY_TASK,
+        });
+        let body = post_json(&self.url, payload, self.timeout)?;
+        let item = body
+            .get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .ok_or(RagError::BadEmbedding)?;
+        let embedding = item.get("embedding").ok_or(RagError::BadEmbedding)?;
+        decode_embedding_value(embedding)
     }
 }
 

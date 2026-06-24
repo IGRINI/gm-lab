@@ -1,14 +1,31 @@
 {
   "type": "object",
   "properties": {
-    "reasoning": {
+    "response": {
       "type": "string"
     },
-    "speech": {
-      "type": "string"
-    },
-    "action": {
-      "type": "string"
+    "beats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "speech",
+              "action"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ],
+        "additionalProperties": false
+      }
     },
     "claims": {
       "type": "array",
@@ -18,9 +35,9 @@
     }
   },
   "required": [
-    "reasoning",
-    "speech",
-    "action",
+    "response",
+    "beats",
     "claims"
-  ]
+  ],
+  "additionalProperties": false
 }

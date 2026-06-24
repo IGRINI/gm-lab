@@ -23,7 +23,6 @@ pub use config::{
 };
 pub use gml_types::Role;
 pub use runtime_settings::{
-    default_settings_path, supported_reasoning_efforts, RoleSettings, RuntimeSettings,
-    SettingsMap, MAX_TOOL_HOPS_CAP, REASONING_EFFORTS, REASONING_SUMMARIES, TEXT_VERBOSITIES,
-    TOOL_CHOICES,
+    default_settings_path, supported_reasoning_efforts, RoleSettings, RuntimeSettings, SettingsMap,
+    MAX_TOOL_HOPS_CAP, REASONING_EFFORTS, REASONING_SUMMARIES, TEXT_VERBOSITIES, TOOL_CHOICES,
 };

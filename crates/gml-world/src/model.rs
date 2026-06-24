@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+use gml_types::NpcBeat;
+
 fn default_true() -> bool {
     true
 }
@@ -20,8 +22,16 @@ fn default_true() -> bool {
 pub struct WorldEvent {
     pub seq: i64,
     pub turn: i64,
+    /// Absolute game time in minutes when this observable beat was recorded.
+    /// Older saves do not carry it; `0` means "unknown/legacy start".
+    #[serde(default)]
+    pub time_minutes: i64,
     pub actor: String,
     pub kind: String,
+    #[serde(default)]
+    pub response: String,
+    #[serde(default)]
+    pub beats: Vec<NpcBeat>,
     #[serde(default)]
     pub speech: String,
     #[serde(default)]
@@ -297,12 +307,28 @@ pub struct FactRecord {
 /// `Rumor` dataclass.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rumor {
+    #[serde(default)]
+    pub rumor_id: String,
     pub seq: i64,
     pub turn: i64,
     pub speaker: String,
     pub text: String,
     #[serde(default)]
     pub witnesses: BTreeSet<String>,
+    #[serde(default)]
+    pub origin_scope: String,
+    #[serde(default)]
+    pub known_in: BTreeSet<String>,
+    #[serde(default)]
+    pub carriers: BTreeSet<String>,
+    #[serde(default)]
+    pub strength: i64,
+    #[serde(default)]
+    pub distortion: i64,
+    #[serde(default)]
+    pub created_minutes: i64,
+    #[serde(default)]
+    pub last_spread_minutes: i64,
     #[serde(default)]
     pub confirmed: bool,
 }

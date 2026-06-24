@@ -101,6 +101,8 @@ pub mod event_kind {
     pub const WORLD_STATE_UPDATE: &str = "world_state_update";
     /// A world-state query result.
     pub const WORLD_QUERY: &str = "world_query";
+    /// A read-only living-world canon debug/replay dump (`world_debug` tool).
+    pub const WORLD_DEBUG: &str = "world_debug";
     /// Selected NPC profile/mechanics fields.
     pub const NPC_PROFILE: &str = "npc_profile";
     /// World clock advanced.
@@ -115,9 +117,14 @@ pub mod event_kind {
     pub const NPC_START: &str = "npc_start";
     /// NPC sub-agent recent-history context.
     pub const NPC_HISTORY: &str = "npc_history";
+    /// An NPC sub-agent tool call is about to run.
+    pub const NPC_TOOL_CALL: &str = "npc_tool_call";
+    /// Result of an NPC sub-agent tool call.
+    pub const NPC_TOOL_RESULT: &str = "npc_tool_result";
     /// NPC sub-agent reasoning/thinking.
     pub const NPC_THINKING: &str = "npc_thinking";
-    /// NPC sub-agent speech/action (`data = {speech, action, claims, npc_id}`).
+    /// NPC sub-agent visible response
+    /// (`data = {response, beats, claims, npc_id, speech, action}`).
     pub const NPC_SPEECH: &str = "npc_speech";
     /// GM rejected/corrected an NPC response.
     pub const GM_REJECT: &str = "gm_reject";
@@ -127,7 +134,7 @@ pub mod event_kind {
     pub const DONE: &str = "done";
 
     /// All event kinds emitted by `run_turn` plus the server-pushed `done`.
-    /// Ordered as: the 25 distinct `ev(...)` kinds (alphabetical, matching the
+    /// Ordered as: the 26 distinct `ev(...)` kinds (alphabetical, matching the
     /// source extraction) followed by the server-only terminal `done`.
     pub const ALL: &[&str] = &[
         DELTA,
@@ -144,6 +151,8 @@ pub mod event_kind {
         NPC_SPEECH,
         NPC_START,
         NPC_THINKING,
+        NPC_TOOL_CALL,
+        NPC_TOOL_RESULT,
         NPC_WHEREABOUTS,
         PLAYER,
         PLAYER_CHARACTER_UPDATE,
@@ -152,6 +161,7 @@ pub mod event_kind {
         TIME,
         TOOL_RESULT,
         TOOL_SEARCH,
+        WORLD_DEBUG,
         WORLD_FACT,
         WORLD_QUERY,
         WORLD_STATE_UPDATE,

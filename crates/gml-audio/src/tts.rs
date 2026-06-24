@@ -98,9 +98,7 @@ impl TtsFormat {
     pub fn ffmpeg_encode_args(self) -> Option<&'static [&'static str]> {
         match self {
             TtsFormat::Ogg => Some(&["-c:a", "libopus", "-b:a", "32k", "-ac", "1", "-f", "ogg"]),
-            TtsFormat::Mp3 => Some(&[
-                "-c:a", "libmp3lame", "-b:a", "56k", "-ac", "1", "-f", "mp3",
-            ]),
+            TtsFormat::Mp3 => Some(&["-c:a", "libmp3lame", "-b:a", "56k", "-ac", "1", "-f", "mp3"]),
             TtsFormat::Wav => None,
         }
     }
@@ -112,10 +110,22 @@ pub fn tts_format() -> TtsFormat {
 }
 
 /// The sidecar base URL, with any trailing `/` stripped (server.py line 54).
+///
+/// Resolution order: `GM_TTS_URL` → `GM_INFER_URL` → default `:8077`. Sharing the
+/// `GM_INFER_URL` base with gml-config (which derives the embeddings/rerank URLs
+/// from it) keeps all three pointed at the same unified `serve.py` host:port.
 pub fn tts_url() -> String {
-    let raw = std::env::var(TTS_URL_ENV).unwrap_or_default();
-    let raw = raw.trim();
-    let base = if raw.is_empty() { "http://127.0.0.1:8765" } else { raw };
+    let tts = std::env::var(TTS_URL_ENV).unwrap_or_default();
+    let infer = std::env::var("GM_INFER_URL").unwrap_or_default();
+    let tts = tts.trim();
+    let infer = infer.trim();
+    let base = if !tts.is_empty() {
+        tts
+    } else if !infer.is_empty() {
+        infer
+    } else {
+        "http://127.0.0.1:8077"
+    };
     base.trim_end_matches('/').to_string()
 }
 
@@ -187,16 +197,18 @@ pub struct AudioClip {
 /// with size > 0. Fully offline — no sidecar needed for a hit.
 pub fn cache_lookup(dir: &Path, voice: &str, text: &str, fmt: TtsFormat) -> Option<AudioClip> {
     // [(ext, content_type), ("wav", "audio/wav")] — same order as Python.
-    let candidates: [(&'static str, &'static str); 2] = [
-        (fmt.ext(), fmt.content_type()),
-        ("wav", "audio/wav"),
-    ];
+    let candidates: [(&'static str, &'static str); 2] =
+        [(fmt.ext(), fmt.content_type()), ("wav", "audio/wav")];
     for (ext, ctype) in candidates {
         let p = cache_path(dir, voice, text, ext);
         match std::fs::metadata(&p) {
             Ok(meta) if meta.len() > 0 => {
                 if let Ok(bytes) = std::fs::read(&p) {
-                    return Some(AudioClip { bytes, content_type: ctype, ext });
+                    return Some(AudioClip {
+                        bytes,
+                        content_type: ctype,
+                        ext,
+                    });
                 }
             }
             _ => continue,
@@ -395,7 +407,10 @@ pub async fn stream_open(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u32>().ok())
         .unwrap_or(DEFAULT_SAMPLE_RATE);
-    Ok(PcmStream { sample_rate, response: resp })
+    Ok(PcmStream {
+        sample_rate,
+        response: resp,
+    })
 }
 
 /// After a PCM stream completes cleanly with accumulated `pcm`, compress to the
@@ -531,7 +546,7 @@ mod tests {
         assert_eq!(npc_voice("ЖЕНСКИЙ"), "female");
         assert_eq!(npc_voice("женский"), "female"); // uppercased internally -> ЖЕН
         assert_eq!(npc_voice("  f/her  "), "female"); // trimmed
-        // Male cues: prefix `M` or contains `МУЖ`.
+                                                      // Male cues: prefix `M` or contains `МУЖ`.
         assert_eq!(npc_voice("M"), "male");
         assert_eq!(npc_voice("male"), "male");
         assert_eq!(npc_voice("МУЖСКОЙ"), "male");

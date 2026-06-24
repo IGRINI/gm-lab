@@ -1,7 +1,7 @@
 import { memo, useContext } from "react";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
-import Tooltip from "./Tooltip.jsx";
+import Tooltip, { TipContent } from "./Tooltip.jsx";
 import ToolCard from "./ToolCard.jsx";
 import ToolResultCard from "./ToolResultCard.jsx";
 import DiceRoll from "./DiceRoll.jsx";
@@ -30,9 +30,8 @@ function npcVoice(roster, npc_id, name) {
 
 // Speaker button shown top-right of GM narration and NPC cards. Click streams +
 // plays the sequence (audio starts ~0.4s in and continues as it generates); click
-// again stops. One message plays at a time. `segments` is a list of {text, body} —
-// an NPC card carries two: the character's speech (character voice) then the action
-// (GM voice).
+// again stops. One message plays at a time. `segments` is a list of {text, body};
+// NPC cards prefer ordered visible beats and fall back to older speech/action rows.
 function TtsButton({ msgKey, segments }) {
   const st = useTtsState(msgKey);
   if (!(segments || []).some((s) => s && s.text && s.text.trim())) return null;
@@ -43,14 +42,23 @@ function TtsButton({ msgKey, segments }) {
     return (
       <span className="tts-ctl">
         {status === "playing" ? (
-          <button type="button" className="tts-btn is-playing" onClick={() => ttsPause(msgKey)}
-            title="Пауза" aria-label="Пауза">⏸</button>
+          <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
+            content={<TipContent title="Пауза" note="Приостановить текущую озвучку." />}>
+            <button type="button" className="tts-btn is-playing" onClick={() => ttsPause(msgKey)}
+              aria-label="Пауза">⏸</button>
+          </Tooltip>
         ) : (
-          <button type="button" className="tts-btn is-playing" onClick={() => ttsResume(msgKey)}
-            title="Продолжить" aria-label="Продолжить">▶</button>
+          <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
+            content={<TipContent title="Продолжить" note="Возобновить озвучку с места паузы." />}>
+            <button type="button" className="tts-btn is-playing" onClick={() => ttsResume(msgKey)}
+              aria-label="Продолжить">▶</button>
+          </Tooltip>
         )}
-        <button type="button" className="tts-btn" onClick={() => ttsStop(msgKey)}
-          title="Стоп" aria-label="Стоп">⏹</button>
+        <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
+          content={<TipContent title="Стоп" note="Остановить озвучку этого сообщения." />}>
+          <button type="button" className="tts-btn" onClick={() => ttsStop(msgKey)}
+            aria-label="Стоп">⏹</button>
+        </Tooltip>
       </span>
     );
   }
@@ -59,15 +67,21 @@ function TtsButton({ msgKey, segments }) {
   const title = status === "error" ? "Ошибка озвучки — повторить" : "Озвучить";
   return (
     <span className="tts-ctl">
-      <button
-        type="button"
-        className="tts-btn"
-        onClick={() => ttsToggle(msgKey, segments)}
-        title={title}
-        aria-label={title}
+      <Tooltip
+        className="tooltip-wrap"
+        tipClassName="ui-tip-wrap"
+        focusable={false}
+        content={<TipContent title={title} note="Сгенерировать и воспроизвести аудио для видимого текста." />}
       >
-        {icon}
-      </button>
+        <button
+          type="button"
+          className="tts-btn"
+          onClick={() => ttsToggle(msgKey, segments)}
+          aria-label={title}
+        >
+          {icon}
+        </button>
+      </Tooltip>
     </span>
   );
 }
@@ -152,6 +166,8 @@ function Message({ m }) {
             msgKey={`${m.sid}:npc`}
             segments={npcSegments({
               name: m.name,
+              response: m.response,
+              beats: m.beats,
               speech: m.speech,
               action: m.action,
               voice: npcVoice(roster, m.npc_id, m.name),
@@ -164,11 +180,7 @@ function Message({ m }) {
           </div>
           <div className="speech">
             {m.revealed ? (
-              <>
-                <span className="q">«</span>
-                <span className="txt"><MarkdownInline>{m.speech}</MarkdownInline></span>
-                <span className="q">»</span>
-              </>
+              <span className="txt"><MarkdownInline>{m.response || m.speech}</MarkdownInline></span>
             ) : (
               <span className="typing">печатает…</span>
             )}
@@ -176,7 +188,12 @@ function Message({ m }) {
           {vis.npcInternals && m.hidden != null && (
             <Spoiler label="🧠 Скрытые мысли (игрок не видит)"><MarkdownText>{m.hidden}</MarkdownText></Spoiler>
           )}
-          {m.action && <div className="action">— <MarkdownInline>{m.action}</MarkdownInline></div>}
+          {vis.npcInternals && Array.isArray(m.beats) && m.beats.length > 0 && (
+            <Spoiler label="Видимые шаги">
+              <ListBody items={m.beats.map((beat) => `${beat.kind}: ${beat.text}`)} />
+            </Spoiler>
+          )}
+          {!m.response && m.action && <div className="action">— <MarkdownInline>{m.action}</MarkdownInline></div>}
           {vis.npcInternals && m.claims != null && (
             <Spoiler label="📌 Опора ответа">
               <ListBody items={m.claims} />

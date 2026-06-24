@@ -18,7 +18,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::ParseRoleError;
 
 /// A reasoning role. Serializes to / parses from exactly `"gm"`, `"npc"`,
-/// `"compact"` — matching `config.ROLE_GM` / `ROLE_NPC` / `ROLE_COMPACT`.
+/// `"compact"`, or `"location"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Role {
     /// `config.ROLE_GM == "gm"`. The game master with tools.
@@ -27,29 +27,31 @@ pub enum Role {
     Npc,
     /// `config.ROLE_COMPACT == "compact"`. The summarization/compaction role.
     Compact,
+    /// Dedicated location / road-situation generator role.
+    Location,
 }
 
-/// The reasoning roles, in declaration order — port of
-/// `config.REASONING_ROLES = (ROLE_GM, ROLE_NPC, ROLE_COMPACT)`.
-pub const REASONING_ROLES: [Role; 3] = [Role::Gm, Role::Npc, Role::Compact];
+/// The reasoning roles, in declaration order.
+pub const REASONING_ROLES: [Role; 4] = [Role::Gm, Role::Npc, Role::Compact, Role::Location];
 
 impl Role {
-    /// The canonical string for this role (`"gm"` / `"npc"` / `"compact"`).
+    /// The canonical string for this role.
     pub const fn as_str(self) -> &'static str {
         match self {
             Role::Gm => "gm",
             Role::Npc => "npc",
             Role::Compact => "compact",
+            Role::Location => "location",
         }
     }
 
-    /// Parse a role string. Mirrors the implicit Python contract that only the
-    /// three canonical values are valid role strings.
+    /// Parse a role string. Only canonical lowercase role strings are valid.
     pub fn parse(s: &str) -> Result<Self, ParseRoleError> {
         match s {
             "gm" => Ok(Role::Gm),
             "npc" => Ok(Role::Npc),
             "compact" => Ok(Role::Compact),
+            "location" => Ok(Role::Location),
             other => Err(ParseRoleError(other.to_string())),
         }
     }

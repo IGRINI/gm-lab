@@ -257,8 +257,7 @@ mod imp {
             form = form.text("language", language);
         }
 
-        let timeout =
-            std::time::Duration::from_secs_f64(transcribe_timeout_secs().max(0.0));
+        let timeout = std::time::Duration::from_secs_f64(transcribe_timeout_secs().max(0.0));
         let response = req
             .multipart(form)
             .timeout(timeout)
@@ -347,7 +346,10 @@ mod tests {
         let _g = URL_ENV_LOCK.lock().unwrap();
         std::env::remove_var("GM_CODEX_TRANSCRIBE_URL");
         let c = cfg_with_base("https://example.com/backend-api");
-        assert_eq!(transcribe_url(&c), "https://example.com/backend-api/transcribe");
+        assert_eq!(
+            transcribe_url(&c),
+            "https://example.com/backend-api/transcribe"
+        );
     }
 
     #[test]

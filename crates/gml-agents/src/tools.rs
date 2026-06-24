@@ -1,4 +1,5 @@
-//! GM tool catalog — faithful port of the STATIC tool schemas in `agents.py`.
+//! GM and NPC tool catalogs. GM schemas stay static/cacheable; NPC schemas are
+//! also static and never enumerate live world ids.
 //!
 //! Tool definitions are STATIC: they describe tool behavior only and never
 //! enumerate the current world (no NPC roster, no dynamic id enums), so the
@@ -18,7 +19,8 @@ use serde_json::{json, Map, Value};
 use crate::tool_guidance;
 
 /// `_SITUATION_DESC` — verbatim.
-const SITUATION_DESC: &str = "Russian neutral third-person NPC-perception brief of what is happening RIGHT NOW: \
+const SITUATION_DESC: &str =
+    "Russian neutral third-person NPC-perception brief of what is happening RIGHT NOW: \
 only what this NPC can see, hear, already know, or plausibly infer from visible \
 pressure. Include the player's action and exact addressed words; quote player phrases \
 unchanged when precision matters. Preserve declared delivery exactly: whisper, quiet \
@@ -73,23 +75,32 @@ const NPC_PROFILE_FIELDS: [&str; 25] = [
     "voice",
 ];
 
-/// `_INITIAL_GM_TOOL_NAMES` — the eight always-loaded GM tools.
-pub(crate) const INITIAL_GM_TOOL_NAMES: [&str; 8] = [
+/// `_INITIAL_GM_TOOL_NAMES` — the always-loaded GM tools. `move_player` is a
+/// PRIMARY living-world tool (LOCKED DECISION #2): travel goes through the canon,
+/// so the model always has it without a `tool_search`.
+pub(crate) const INITIAL_GM_TOOL_NAMES: [&str; 11] = [
     "ask_npc",
     "roll_dice",
     "get_world_fact",
-    "query_world_state",
-    "update_world_state",
+    "get_memory",
+    "note_memory",
     "update_player_character",
     "advance_time",
+    "move_player",
+    "load_tool_schema",
+    "invoke_loaded_tool",
     "tool_search",
 ];
 
 /// `_PLAYER_OPTIONS_TOOL_NAME`.
 pub(crate) const PLAYER_OPTIONS_TOOL_NAME: &str = "ask_player";
+pub(crate) const TOOL_SEARCH_TOOL_NAME: &str = "tool_search";
+pub(crate) const LOAD_TOOL_SCHEMA_TOOL_NAME: &str = "load_tool_schema";
+pub(crate) const INVOKE_LOADED_TOOL_NAME: &str = "invoke_loaded_tool";
 
-/// `_TOOL_SEARCH_HINTS` — name -> hint keywords, in Python insertion order.
-pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 12] = [
+/// `_TOOL_SEARCH_HINTS` — name -> hint keywords. Includes the living-world canon
+/// tools (`move_player`, `world_debug`).
+pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 16] = [
     (
         "ask_npc",
         "npc нпс персонаж поговорить спросить допросить ответить реакция речь \
@@ -108,7 +119,22 @@ pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 12] = [
     (
         "set_scene",
         "сцена локация перейти войти выйти добраться место комната улица здание \
-travel location scene exits items present_npcs",
+travel location scene exits items present_npcs канон canon place",
+    ),
+    (
+        "move_player",
+        "идти перейти выход проход дверь покинуть уйти добраться двигаться канон \
+move player transition exit travel walk leave traversal place",
+    ),
+    (
+        "world_debug",
+        "debug отладка канон граф мест переходов актёров причинный лог replay \
+world debug causal log canon dump snapshot",
+    ),
+    (
+        "generate_location",
+        "генератор локация сцена помещение комната город деревня данж дорожная ситуация \
+location scene room city village dungeon travel situation encounter anti-repeat",
     ),
     (
         "get_npc_profile",
@@ -131,10 +157,19 @@ perception investigation stealth persuasion deception intimidation attack save d
 fact memory rag testimony rumor lead source provenance player-safe answer public",
     ),
     (
-        "update_world_state",
-        "batch пакет обновить записать удалить состояние мир факт слух память npc relationship \
-отношение цель goal goals npc_memory facts rumors world state compact scope id known_name \
-локация место город регион scene location aliases алиасы",
+        "get_memory",
+        "память воспоминание знание кто знает что помнит секрет слух город таверна \
+memory scoped recall player npc actor place faction public private crystal source",
+    ),
+    (
+        "note_memory",
+        "записать память воспоминание слух секрет событие игрок npc город место фракция \
+write memory note scoped owner visibility summary details source event",
+    ),
+    (
+        "consolidate_memory",
+        "кристалл память сжать суммаризировать raw episode arc durable consumed cold \
+consolidate crystal memory sources summarize archive",
     ),
     (
         "update_player_character",
@@ -145,13 +180,6 @@ inventory equipment feature condition status update damage heal предмет �
         "ask_player",
         "варианты действия реплики кнопки быстрый ответ player options quick replies \
 suggest choices задать вопрос что делать дальше",
-    ),
-    // NOTE: query_world_state hint appears last in the Python dict literal,
-    // after ask_player. Insertion order preserved.
-    (
-        "query_world_state",
-        "query scoped state record id hash expected_hash update delete область gm npc player \
-состояние память секрет цели отношения relationship goal npc_memory target private",
     ),
 ];
 
@@ -170,38 +198,38 @@ fn roll_dice_tool() -> Value {
         "name": "roll_dice",
         "description":
             "Roll dice for an uncertain D&D-style mechanical result. Before rolling, lock in \
-the roll kind, target number, and compact stakes so the post-roll narration cannot \
-move the goalposts. Roll only after the action is possible with the current \
-PLAYER CHARACTER CARD, inventory/equipment/features, and scene objects. Do not \
-roll to conjure missing items, spells, authority, master training, tools, or \
-materials into existence. If the latest action first needs a player-facing \
-reality correction for a missing item/spell/feature/training/authority/body access/\
-scene object/material/effect, do not call this tool; answer the correction and wait \
-for the player. If a damage roll is made, the damaging effect is \
-established as framed. Success means the locked intent works within the \
-established fiction; critical success means the best plausible version of that \
-success. Do not later treat a successful roll as a misfire, failed detonation, \
-or no-effect outcome unless that condition was explicitly locked before rolling. \
-Call for ability checks \
-(Perception, Investigation, Insight, Stealth, Persuasion, Deception, \
-Intimidation, Athletics, Sleight of Hand, lore checks, etc.), contested checks, \
-saving throws, attacks, damage, random chance, intimidation/coercion, or other \
-social pressure where success and failure both matter. Do not call for pure \
-conversation, visible scene \
-description, trivial/impossible actions, unsupported missing resources, or \
-obvious consequences. Supports \
-standard notation like 1d20+3 or 2d6, plus 2d20kh1/2d20kl1 for \
-advantage/disadvantage. For player-side rolls, use PLAYER CHARACTER CARD \
-modifiers/advantages when available. Put any known modifier directly in notation; do not \
-invent unknown character-sheet bonuses. Skill/save modifiers must be exact card \
-keys; never borrow a nearby skill or call an unlisted skill known. If the exact \
-skill/save is missing, derive the ability modifier from the named ability score \
-or roll plain 1d20 when that is also unknown. For actions opposed by a named NPC \
-(stealing from them, sneaking past them, lying to them, attacking them, or testing \
-whether they notice), get selected mechanics through get_npc_profile first when not \
-already known; use their passive_perception, AC, save, skill, or ability data instead \
-of a generic DC. The result is compact structured text containing only the \
-new roll outcome: total, grade, margin, and natural roll.",
+    the roll kind, target number, and compact stakes so the post-roll narration cannot \
+    move the goalposts. Roll only after the action is possible with the current \
+    PLAYER CHARACTER CARD, inventory/equipment/features, and scene objects. Do not \
+    roll to conjure missing items, spells, authority, master training, tools, or \
+    materials into existence. If the latest action first needs a player-facing \
+    reality correction for a missing item/spell/feature/training/authority/body access/\
+    scene object/material/effect, do not call this tool; answer the correction and wait \
+    for the player. If a damage roll is made, the damaging effect is \
+    established as framed. Success means the locked intent works within the \
+    established fiction; critical success means the best plausible version of that \
+    success. Do not later treat a successful roll as a misfire, failed detonation, \
+    or no-effect outcome unless that condition was explicitly locked before rolling. \
+    Call for ability checks \
+    (Perception, Investigation, Insight, Stealth, Persuasion, Deception, \
+    Intimidation, Athletics, Sleight of Hand, lore checks, etc.), contested checks, \
+    saving throws, attacks, damage, random chance, intimidation/coercion, or other \
+    social pressure where success and failure both matter. Do not call for pure \
+    conversation, visible scene \
+    description, trivial/impossible actions, unsupported missing resources, or \
+    obvious consequences. Supports \
+    standard notation like 1d20+3 or 2d6, plus 2d20kh1/2d20kl1 for \
+    advantage/disadvantage. For player-side rolls, use PLAYER CHARACTER CARD \
+    modifiers/advantages when available. Put any known modifier directly in notation; do not \
+    invent unknown character-sheet bonuses. Skill/save modifiers must be exact card \
+    keys; never borrow a nearby skill or call an unlisted skill known. If the exact \
+    skill/save is missing, derive the ability modifier from the named ability score \
+    or roll plain 1d20 when that is also unknown. For actions opposed by a named NPC \
+    (stealing from them, sneaking past them, lying to them, attacking them, or testing \
+    whether they notice), get selected mechanics through get_npc_profile first when not \
+    already known; use their passive_perception, AC, save, skill, or ability data instead \
+    of a generic DC. The result is compact structured text containing only the \
+    new roll outcome: total, grade, margin, and natural roll.",
         "parameters": {"type": "object", "properties": {
             "roll_kind": {"type": "string",
                           "enum": ["check", "save", "attack", "damage", "chance", "contest"],
@@ -240,20 +268,21 @@ fn get_fact_tool() -> Value {
     json!({"type": "function", "function": {
         "name": "get_world_fact",
         "description":
-            "Player-safe answer lookup for world memory: facts, leads, testimony, known NPC \
-whereabouts, public lore, rumors, or prior statements that are not already in \
-CURRENT SCENE STATE, the public intro, or the conversation. Use this, not \
-query_world_state, for ordinary player-facing public/lore answers. Use before asserting or summarizing \
-non-visible suspects, leads, clue meanings, timelines, ownership, relationships, \
-factions, prior testimony, or offscreen NPC locations. The result is compact \
-structured text with status, text, and compact source lines; it may contain \
-unconfirmed testimony. Do not call for facts \
-that are visible right now. If the result status is unknown or a source is \
-unconfirmed, preserve uncertainty instead of inventing an answer. Do not use this \
-when you need state-record id/hash for update/delete; use query_world_state then. Within the \
-active, not-yet-compacted GM context, repeated lookups return only new matching \
-sources; sources already delivered to the model are suppressed and reported as \
-already_delivered. After GM history compaction, this delivery memory resets.",
+            "Player-safe answer lookup for compact world facts: leads, testimony, known NPC \
+    whereabouts, public lore, rumors, or prior statements that are not already in \
+    CURRENT SCENE STATE, the public intro, or the conversation. Use get_memory \
+    when you need scoped living memory for a player, NPC, place, faction, route, \
+    or GM-private lens. Use this before asserting or summarizing \
+    non-visible suspects, leads, clue meanings, timelines, ownership, relationships, \
+    factions, prior testimony, or offscreen NPC locations. The result is compact \
+    structured text with status, text, and compact source lines; it may contain \
+    unconfirmed testimony. Do not call for facts \
+    that are visible right now. If the result status is unknown or a source is \
+    unconfirmed, preserve uncertainty instead of inventing an answer. Do not use this \
+    when you need detailed scoped memory cards; call get_memory explicitly for that. Within the \
+    active, not-yet-compacted GM context, repeated lookups return only new matching \
+    sources; sources already delivered to the model are suppressed and reported as \
+    already_delivered. After GM history compaction, this delivery memory resets.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string",
                       "description": "What you want to know, in Russian. Keep proper nouns exactly as written."},
@@ -263,14 +292,40 @@ already_delivered. After GM history compaction, this delivery memory resets.",
 
 fn tool_search_tool() -> Value {
     json!({"type": "function", "function": {
-        "name": "tool_search",
+        "name": TOOL_SEARCH_TOOL_NAME,
         "description": tool_guidance::TOOL_SEARCH_DESCRIPTION,
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string",
-                      "description": "Search query in Russian or English, or select:tool_name for exact loading."},
+                      "description": "Search query in Russian or English, or select:tool_name for exact catalog lookup."},
             "max_results": {"type": "integer",
-                            "description": "Maximum number of tools to load. Default 5."},
+                            "description": "Maximum number of catalog cards to return. Default 5."},
         }, "required": ["query"], "additionalProperties": false},
+    }})
+}
+
+fn load_tool_schema_tool() -> Value {
+    json!({"type": "function", "function": {
+        "name": LOAD_TOOL_SCHEMA_TOOL_NAME,
+        "description": tool_guidance::LOAD_TOOL_SCHEMA_DESCRIPTION,
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string",
+                     "description": "Exact canonical GM tool name returned by tool_search."},
+        }, "required": ["name"], "additionalProperties": false},
+    }})
+}
+
+fn invoke_loaded_tool() -> Value {
+    json!({"type": "function", "function": {
+        "name": INVOKE_LOADED_TOOL_NAME,
+        "description": tool_guidance::INVOKE_LOADED_TOOL_DESCRIPTION,
+        "strict": false,
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string",
+                     "description": "Exact canonical GM tool name returned by load_tool_schema."},
+            "arguments": {"type": "object",
+                          "description": "Arguments matching the loaded schema.",
+                          "additionalProperties": true},
+        }, "required": ["name", "arguments"], "additionalProperties": false},
     }})
 }
 
@@ -281,45 +336,45 @@ pub fn build_gm_tools() -> Vec<Value> {
         "name": "ask_npc",
         "description":
             "Ask one present, able-to-hear named NPC for their own speech and visible action. \
-WHEN TO CALL: the player addresses, questions, threatens, orders, bargains with, \
-attacks, follows, or otherwise demands a personal reaction from that NPC; or the \
-NPC must decide/speak/act/show emotion/move for themselves. If the player's latest \
-message contains a present NPC's name and asks or accuses them, call this before \
-final narration. DO NOT CALL when the latest action first needs a player-facing \
-reality correction for a missing item, spell, feature, training, authority, body \
-access, scene object, material, or effect; give the correction and wait. If the \
-player later deliberately continues with a physically possible remainder, call \
-ask_npc for the actual visible words/actions only. DO NOT CALL for absent NPCs, generic \
-crowd color, visible scene description, or facts the GM can state from CURRENT \
-SCENE STATE. If the fiction first brings an NPC into the scene, call move_npc \
-before ask_npc. The result is the NPC response; if the action is physically \
-impossible, call ask_npc again with the same npc_id and a correction. Use the \
-npc_id from the current roster in CURRENT TURN CONTEXT; if the id is unknown \
-the tool returns an error so you can retry with a valid id. The result is \
-compact structured text with NPC speech/action already emitted to the player.",
+    WHEN TO CALL: the player addresses, questions, threatens, orders, bargains with, \
+    attacks, follows, or otherwise demands a personal reaction from that NPC; or the \
+    NPC must decide/speak/act/show emotion/move for themselves. If the player's latest \
+    message contains a present NPC's name and asks or accuses them, call this before \
+    final narration. DO NOT CALL when the latest action first needs a player-facing \
+    reality correction for a missing item, spell, feature, training, authority, body \
+    access, scene object, material, or effect; give the correction and wait. If the \
+    player later deliberately continues with a physically possible remainder, call \
+    ask_npc for the actual visible words/actions only. DO NOT CALL for absent NPCs, generic \
+    crowd color, visible scene description, or facts the GM can state from CURRENT \
+    SCENE STATE. If the fiction first brings an NPC into the scene, call move_npc \
+    before ask_npc. The result is the NPC response; if the action is physically \
+    impossible, call ask_npc again with the same npc_id and a correction. Use the \
+    npc_id from the current roster in CURRENT TURN CONTEXT; if the id is unknown \
+    the tool returns an error so you can retry with a valid id. The result is \
+    compact structured text with NPC speech/action already emitted to the player.",
         "parameters": {"type": "object", "properties": {
             "npc_id": {"type": "string",
                        "description": "Whom to wake: the npc_id of a present NPC from the current roster."},
             "situation": {"type": "string", "description": SITUATION_DESC},
             "correction": {"type": "string",
                            "description": "Fill in ONLY when sending an NPC response back for a redo: \
-what is wrong and what to fix, in Russian. Omit this \
-field on the first ask_npc call for a fresh player \
-action."},
+    what is wrong and what to fix, in Russian. Omit this \
+    field on the first ask_npc call for a fresh player \
+    action."},
         }, "required": ["npc_id", "situation"], "additionalProperties": false},
     }});
     let move_npc = json!({"type": "function", "function": {
         "name": "move_npc",
         "description":
             "Update current-scene presence for a named NPC. WHEN TO CALL: a named NPC enters, \
-leaves, becomes visible/hidden, moves into hearing range, leaves hearing range, \
-or an accepted NPC response physically changes their presence. Call before final \
-narration. DO NOT CALL for anonymous crowds, future plans, rumors, a player \
-ordering an NPC to move, the player approaching an already-present NPC, or NPC \
-speech/motives. This tool only changes state; it does not make the NPC speak, \
-decide, or feel anything. Use the npc_id from the current roster in CURRENT TURN \
-CONTEXT; an unknown id returns an error instead of changing state. The result \
-is compact structured text with presence status only.",
+    leaves, becomes visible/hidden, moves into hearing range, leaves hearing range, \
+    or an accepted NPC response physically changes their presence. Call before final \
+    narration. DO NOT CALL for anonymous crowds, future plans, rumors, a player \
+    ordering an NPC to move, the player approaching an already-present NPC, or NPC \
+    speech/motives. This tool only changes state; it does not make the NPC speak, \
+    decide, or feel anything. Use the npc_id from the current roster in CURRENT TURN \
+    CONTEXT; an unknown id returns an error instead of changing state. The result \
+    is compact structured text with presence status only.",
         "parameters": {"type": "object", "properties": {
             "npc_id": {"type": "string",
                        "description": "npc_id of the NPC to update, from the current roster."},
@@ -343,14 +398,14 @@ is compact structured text with presence status only.",
         "name": "set_npc_whereabouts",
         "description":
             "Update an absent named NPC's known, likely, rumored, or unknown offscreen \
-whereabouts without adding them to the current scene. WHEN TO CALL: testimony, \
-public facts, travel, or scene logic establishes where an absent NPC is, was \
-last seen, or is likely to be found; or a previous guess is corrected. DO NOT \
-CALL to make the NPC speak, react, enter, leave the current scene, or become \
-visible. Use move_npc for current-scene presence and set_scene when the player \
-actually reaches that place. Use the npc_id from the current roster in CURRENT \
-TURN CONTEXT; an unknown id returns an error instead of recording whereabouts. \
-The result is compact structured text with whereabouts status.",
+    whereabouts without adding them to the current scene. WHEN TO CALL: testimony, \
+    public facts, travel, or scene logic establishes where an absent NPC is, was \
+    last seen, or is likely to be found; or a previous guess is corrected. DO NOT \
+    CALL to make the NPC speak, react, enter, leave the current scene, or become \
+    visible. Use move_npc for current-scene presence and set_scene when the player \
+    actually reaches that place. Use the npc_id from the current roster in CURRENT \
+    TURN CONTEXT; an unknown id returns an error instead of recording whereabouts. \
+    The result is compact structured text with whereabouts status.",
         "parameters": {"type": "object", "properties": {
             "npc_id": {"type": "string",
                        "description": "npc_id of the absent NPC, from the current roster."},
@@ -370,10 +425,10 @@ The result is compact structured text with whereabouts status.",
         "name": "get_npc_profile",
         "description":
             "Fetch selected safe NPC card/mechanics fields without returning the full private \
-NPC card. Use when a roll, visible description, status check, or social read \
-needs specific NPC data. GM-internal: do not reveal raw stats to the player. \
-It includes no secrets, private knowledge, or goals. The result is compact \
-structured text listing only selected fields.",
+    NPC card. Use when a roll, visible description, status check, or social read \
+    needs specific NPC data. GM-internal: do not reveal raw stats to the player. \
+    It includes no secrets, private knowledge, or goals. The result is compact \
+    structured text listing only selected fields.",
         "parameters": {"type": "object", "properties": {
             "npc_id": {"type": "string",
                        "description": "NPC id from CURRENT TURN CONTEXT."},
@@ -388,21 +443,27 @@ structured text listing only selected fields.",
     let set_scene = json!({"type": "function", "function": {
         "name": "set_scene",
         "description":
-            "Replace CURRENT SCENE STATE when the player actually enters or arrives at a \
-different room, building, street, site, or area. WHEN TO CALL: before final \
-narration if you will say the player has arrived in a new current place, uses \
-a visible exit, reaches a destination, or starts interacting with a different \
-location. DO NOT CALL for movement inside the same scene, plans to go somewhere, \
-failed travel, or vague searching without arrival. Include only visible/public \
-state. If the player wants to enter/go to a reachable place and no obstacle is \
-established, make the new scene the reached place; do not stop them at the doorway \
-unless the doorway/blocker matters in play. The title must name the exact current \
-area, e.g. 'У входа в караульную' if they are still outside. Do not invent hidden \
-facts or conclusions. List in present_npcs only the npc_ids (from the current \
-roster in CURRENT TURN CONTEXT) of NPCs actually in the new scene; unknown ids \
-are ignored and reported back so you can correct them. The result is compact \
-structured text with saved scene title, ids, items, exits, \
-and dropped NPC ids.",
+            "\
+    Compatibility/debug fallback for applying a fully-authored current scene patch. \
+    DO NOT use this as the normal way to invent a new room, side chamber, street, \
+    building, point of interest, dungeon point, or road situation. For living-world \
+    play, prefer move_player whenever a listed exit already leads where the player is \
+    going, and call generate_location FIRST when the player discovers, opens, enters, \
+    or needs a not-yet-authored place/situation. Use set_scene only after \
+    generate_location is unavailable or rejected, or when an external tool/user debug \
+    patch already supplies the complete visible scene. The destination is upserted as \
+    a canonical Place (stable id from location_id or the title), a transition from the \
+    player's current place is ensured, and the player's canonical place is set to it; \
+    the live scene is then rebuilt FROM the canon, so it is authoritative — not a \
+    wholesale scene replacement. DO NOT CALL for movement inside the same place, plans \
+    to go somewhere, failed travel, vague searching without arrival, or when a visible \
+    exit already leads there (use move_player). Include only visible/public state. The \
+    title must name the exact current area, e.g. \
+    'У входа в караульную' if they are still outside. Do not invent hidden facts or \
+    conclusions. List in present_npcs only the npc_ids (from the current roster in \
+    CURRENT TURN CONTEXT) of NPCs actually in the new place; unknown ids are ignored \
+    and reported back so you can correct them. The result is compact structured text \
+    with the new canonical place id, title, items, exits, and dropped NPC ids.",
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string",
                       "description": "Russian player-facing title of the new current scene."},
@@ -438,10 +499,13 @@ and dropped NPC ids.",
     let advance_time = json!({"type": "function", "function": {
         "name": "advance_time",
         "description":
-            "Advance the hidden world clock by elapsed in-world minutes for this resolved \
-player turn. Call once before final narration when time passes. NPC speech or \
-a social exchange usually consumes at least a short amount of time. The result \
-is compact structured text with elapsed minutes and current time.",
+            "Advance the hidden world clock by elapsed in-world minutes for waiting, \
+    sleeping, work, study, recovery, rituals, or other time passing that is NOT \
+    ordinary travel through a listed exit. Do NOT call this after move_player: \
+    move_player already spends the transition's travel time and may trigger road \
+    situations. NPC speech or a social exchange usually consumes at least a short \
+    amount of time. The result is compact structured text with elapsed minutes and \
+    current time.",
         "parameters": {"type": "object", "properties": {
             "minutes": {"type": "integer",
                         "description": "Elapsed in-world minutes, non-negative."},
@@ -453,19 +517,19 @@ is compact structured text with elapsed minutes and current time.",
         "name": PLAYER_OPTIONS_TOOL_NAME,
         "description":
             "Show quick-reply buttons above the player's input when CURRENT TURN CONTEXT says \
-PLAYER OPTION SUGGESTIONS are enabled. This is the last tool before final \
-narration: after all other required tools are resolved, call it exactly once, \
-then use its tool result to write the closing player-facing narration and stop. \
-Do not finish with narration only, do not call ask_player after final narration, \
-and do not continue with more tools after ask_player unless its arguments were \
-invalid. The engine will not synthesize fallback buttons if you skip this call. \
-Provide at least 4 current, concrete actions or dialogue lines that fit the \
-situation without replacing free text input. Each option has a short Russian \
-label displayed on the button and a fuller Russian message that will be sent as \
-the player's next message if clicked. Do not use this tool for hidden facts, \
-spoilers, GM-only reasoning, NPC stats, or commands to the player. The result is \
-compact structured text confirming that the buttons were shown; after receiving \
-it, write the final narration for this turn.",
+    PLAYER OPTION SUGGESTIONS are enabled. This is the last tool before final \
+    narration: after all other required tools are resolved, call it exactly once, \
+    then use its tool result to write the closing player-facing narration and stop. \
+    Do not finish with narration only, do not call ask_player after final narration, \
+    and do not continue with more tools after ask_player unless its arguments were \
+    invalid. The engine will not synthesize fallback buttons if you skip this call. \
+    Provide at least 4 current, concrete actions or dialogue lines that fit the \
+    situation without replacing free text input. Each option has a short Russian \
+    label displayed on the button and a fuller Russian message that will be sent as \
+    the player's next message if clicked. Do not use this tool for hidden facts, \
+    spoilers, GM-only reasoning, NPC stats, or commands to the player. The result is \
+    compact structured text confirming that the buttons were shown; after receiving \
+    it, write the final narration for this turn.",
         "parameters": {"type": "object", "properties": {
             "question": {"type": "string",
                          "description": "Short Russian prompt above the buttons, e.g. 'Что ты делаешь дальше?'."},
@@ -484,18 +548,18 @@ it, write the final narration for this turn.",
         "strict": false,
         "description":
             "Update the player character sheet after the fiction establishes a real change \
-to the player's character: name/class/background details, life status, condition, \
-HP, AC, abilities, skills, saves, passive Perception, senses, languages, \
-inventory, equipment, features, or GM-only notes. Use this for the player \
-character only, not for NPC memories, relationships, world facts, scene state, \
-or time. Use it when the resolved fiction changes the sheet, or when a player-\
-declared character detail is compatible with the current card and grants no \
-unsupported item, authority, feature, expertise, or advantage. Do not record a \
-contradictory or power-granting self-declaration as truth. Batch all player-sheet field changes \
-for the turn in one call, but send only fields that changed; never echo the \
-whole current card back to the tool. Omit optional fields when they did not \
-change; do not send empty placeholders. The result is compact structured text \
-with changed field names and card revision only.",
+    to the player's character: name/class/background details, life status, condition, \
+    HP, AC, abilities, skills, saves, passive Perception, senses, languages, \
+    inventory, equipment, features, or GM-only notes. Use this for the player \
+    character only, not for NPC memories, relationships, world facts, scene state, \
+    or time. Use it when the resolved fiction changes the sheet, or when a player-\
+    declared character detail is compatible with the current card and grants no \
+    unsupported item, authority, feature, expertise, or advantage. Do not record a \
+    contradictory or power-granting self-declaration as truth. Batch all player-sheet field changes \
+    for the turn in one call, but send only fields that changed; never echo the \
+    whole current card back to the tool. Omit optional fields when they did not \
+    change; do not send empty placeholders. The result is compact structured text \
+    with changed field names and card revision only.",
         "parameters": {"type": "object", "properties": {
             "fields": {"type": "object", "properties": {
                 "name": {"type": "string"},
@@ -538,105 +602,6 @@ with changed field names and card revision only.",
                        "description": "Very short Russian reason for the sheet update."},
         }, "required": ["fields", "reason"], "additionalProperties": false},
     }});
-    let update_world_state = json!({"type": "function", "function": {
-        "name": "update_world_state",
-        "strict": false,
-        "description": update_world_state_description(),
-        "parameters": {"type": "object", "properties": {
-            "items": {"type": "array", "items": {"type": "object", "properties": {
-                "op": {"type": "string", "enum": ["add", "update", "delete"],
-                       "description": "Operation. Omit for add."},
-                "id": {"type": "string",
-                       "description": "Existing record id for update/delete, usually from query_world_state or a just-returned update result. Omit for add."},
-                "expected_hash": {"type": "string",
-                                  "description": "Optional concurrency precondition for update/delete: pass the record hash from query_world_state or a just-returned update result. If it mismatches, the change is not applied."},
-                "type": {"type": "string",
-                         "enum": ["fact", "rumor", "npc_memory", "relationship", "goal"],
-                         "description":
-                             "What namespace this item updates. Required for add. fact is \
-objective established truth/visible stable state; rumor is \
-unverified testimony/claim/suspicion/lead; npc_memory is what \
-one NPC remembers, saw, was told, promised, hid, or learned; \
-relationship is ongoing attitude/trust/debt/leverage/fear/\
-loyalty/hatred/love/suspicion toward target; goal is current \
-want/plan/intent. Do not store NPC testimony as fact just \
-because someone said it."},
-                "text": {"type": "string",
-                         "description":
-                            "Compact Russian durable meaning, not a transcript quote. \
-Do not include English access labels like private, \
-privately, shared, or public; use scope for access control. \
-Required for add/update unless deleting. For relationship, keep \
-the full multi-layer attitude in one string and update that \
-record as it changes."},
-                "npc_id": {"type": "string",
-                           "description": "NPC id that owns/knows this npc_memory, relationship, or goal; for rumor, the speaker if known. Required for shared scope. For private NPC-player exchange use npc_id=<speaker>. Omit when empty."},
-                "target": {"type": "string",
-                           "description": "Relationship target such as player, an npc_id, faction, or place. For shared scope, target must be player or a known npc_id for one primary listener; use participants for multiple listeners. Required for relationship. For private NPC-player exchange use target=player."},
-                "entity_id": {"type": "string",
-                              "description": "Optional entity this note is about, such as an npc_id or location id. Use when someone reveals or remembers facts about another entity."},
-                "known_name": {"type": "string",
-                               "description": "Optional player-known name/label for the NPC named by entity_id, e.g. after an introduction or another character identifies them. Requires entity_id to be an NPC id. Never use for the player, locations, factions, items, or ordinary facts. This is what the player may now call that NPC; it need not prove the NPC's true identity."},
-                "source_npc": {"type": "string",
-                               "description": "Optional npc_id whose testimony/revelation is the source. Omit when same as npc_id or not relevant."},
-                "participants": {"type": "array", "items": {"type": "string"},
-                                 "description": "Optional extra actor ids who know/heard/share this exact record, such as player or npc ids. Use one record with participants instead of duplicating the same fact/rumor/npc_memory for several listeners. Do not use for public knowledge."},
-                "location_id": {"type": "string",
-                                "description": "Optional stable place id this note happened at or is about. Use for exact lookup; pair with location_name or aliases when the id is English/transliterated."},
-                "location_name": {"type": "string",
-                                  "description": "Optional human/Russian place name for search, e.g. a tavern, street, room, ruin, or district. Use when location_id alone may not match future Russian queries."},
-                "region_id": {"type": "string",
-                              "description": "Optional broader area id such as city, village, district, dungeon, faction territory, or campaign region."},
-                "region_name": {"type": "string",
-                                "description": "Optional human/Russian broader area name for search, e.g. the town/city name the GM may ask about later."},
-                "scene_id": {"type": "string",
-                             "description": "Optional exact scene id when the note belongs to a specific current or past scene. Omit when the note is not scene-specific."},
-                "importance": {"type": "string",
-                               "description": "Optional short priority label like low, normal, high, pinned, or clue. Omit when not useful."},
-                "aliases": {"type": "array", "items": {"type": "string"},
-                            "description": "Optional search aliases/spellings for this note: Russian names, case forms, transliterations, old names, nicknames, or common variants. Use to bridge English ids and Russian queries from the GM."},
-                "scope": {"type": "string",
-                          "enum": ["public", "gm", "npc", "shared"],
-                          "description": "Who may know this state. public is not private player knowledge; shared means only npc_id plus target and/or participants know; npc means only npc_id knows/thinks/remembers; gm means hidden author truth. Use shared for a private NPC-player exchange. shared requires npc_id and either target or participants. Omit to use the type default."},
-                "witnesses": {"type": "array", "items": {"type": "string"},
-                               "description": "For public rumors only: ids who heard it, plus player if relevant. Omit when empty."},
-                "mode": {"type": "string", "enum": ["replace"],
-                         "description": "Only for goal when replacing existing active goals. Omit for normal add/update and for all non-goal items."},
-            }, "required": [], "additionalProperties": false},
-                "description": "Compact updates. Omit optional item fields when empty."},
-        }, "required": ["items"], "additionalProperties": false},
-    }});
-    let query_world_state = json!({"type": "function", "function": {
-        "name": "query_world_state",
-        "description":
-            "Scoped state-record lookup for durable memory, ids, and hashes. Use before \
-update_world_state update/delete, and before adding a relationship, goal, or \
-npc_memory that may already exist. Do not use this for ordinary player-safe \
-public/lore answer lookup; use get_world_fact for that. The \
-result is compact structured text with matching rows and record \
-ids/hashes for update/delete expected_hash. Use player scope only when you need \
-stored player-known state records, ids, hashes, or expected_hash for a write; \
-player scope must never reveal GM truth, hidden events, NPC secrets, private NPC \
-memory, or private goals. Use npc scope with npc_id for what that NPC may know: \
-public memory plus that NPC's own private card/memory only. Use gm scope for \
-author-only truth, hidden events, all NPC private notes, and public memory. \
-The result includes only matching scoped state. Search can match \
-record text plus location, region, scene, and aliases when those anchors were stored. \
-Within the active, not-yet-compacted GM context, repeated queries return only \
-new matching rows; rows already delivered to the model are suppressed and \
-reported as already_delivered. After GM history compaction, this delivery \
-memory resets.",
-        "parameters": {"type": "object", "properties": {
-            "scope": {"type": "string", "enum": ["player", "gm", "npc"],
-                      "description": "Visibility namespace to query."},
-            "query": {"type": "string",
-                      "description": "State-record lookup text, in Russian or English. Include kind, parties, place, region, scene, or alias when useful, e.g. 'relationship borin player', 'goal lysa', 'known_name Лиза', or 'state_fact Тёрнвейле тайник'. For ordinary player-safe public/lore answers, use get_world_fact instead. Keep proper nouns exact."},
-            "npc_id": {"type": "string",
-                       "description": "Required for npc scope. Omit for player or gm scope."},
-            "max_results": {"type": "integer",
-                            "description": "Maximum matching rows to return. Omit for default 5."},
-        }, "required": ["scope", "query"], "additionalProperties": false},
-    }});
     vec![
         ask_npc,
         move_npc,
@@ -646,59 +611,274 @@ memory resets.",
         advance_time,
         ask_player,
         update_player_character,
-        update_world_state,
-        query_world_state,
         roll_dice_tool(),
         get_fact_tool(),
         tool_search_tool(),
     ]
 }
 
-/// The `update_world_state` description f-string, with the six tool_guidance
-/// fragments spliced in exactly as Python concatenates them.
-fn update_world_state_description() -> String {
-    format!(
-        "Apply a compact batch of GM-authored world-state updates after the fiction \
-establishes them. Accepts items[] for fact, rumor, npc_memory, relationship, \
-and goal records. One item is one atomic durable note; batch 1-5 important \
-changes instead of making repeated tool calls. Use op=add to create, op=update \
-to revise an existing id, and op=delete to remove an id from active memory/RAG. \
-After ask_npc, use this before final narration when the NPC answer confirms, \
-denies, hides, promises, threatens, refuses, or changes something that should \
-matter later. \
-When the player learns what to call an NPC, include known_name plus entity_id=<npc_id>; \
-this is GM-authored identity state, never inferred automatically. known_name is \
-only for NPC entity_id values, never for the player, locations, factions, items, \
-or ordinary facts. \
-For update/delete, include expected_hash when you have a fresh hash from \
-query_world_state or a just-returned update_world_state result. If you do not \
-have a fresh id/hash and an active record may already exist for the same \
-npc_id, target, and participants, call query_world_state first; then update/delete that id \
-instead of adding a duplicate. Use add only when lookup is unknown or the note \
-is genuinely new. For op=add, never invent or send id, expected_hash, mode, or \
-placeholder hash values; the engine assigns ids. \
-{} {} {} {} {} {} \
-Keep text short and in Russian. Do not put English access labels like \
-private, privately, shared, or public into item text; access belongs in \
-scope only. Omit optional fields when empty; do not send empty strings, \
-empty arrays, or nulls for optional fields. Private NPC testimony, clues, \
-promises, or leads told only to the player must use shared, not public. \
-When one durable note is known by several specific actors, write one \
-item and put the extra actor ids in participants instead of duplicating \
-the same text for each actor. \
-Every shared item must include npc_id and either target or participants \
-or it will be rejected. \
-Do not use for visible scene movement, current-scene presence, or NPC speech; \
-use set_scene, move_npc, or ask_npc for those. The result is compact structured \
-text: applied/not-stored rows with ids, hashes, status, \
-and conflict/duplicate hints.",
-        tool_guidance::WORLD_STATE_TYPE_GUIDE,
-        tool_guidance::WORLD_STATE_SCOPE_GUIDE,
-        tool_guidance::WORLD_STATE_SPLIT_GUIDE,
-        tool_guidance::WORLD_STATE_CONSOLIDATION_GUIDE,
-        tool_guidance::WORLD_STATE_EXAMPLE_GUIDE,
-        tool_guidance::WORLD_STATE_SEARCH_ANCHOR_GUIDE,
-    )
+// --- canon / living-world tools (ADDITIVE, appended after the static catalog) -
+//
+// These map onto `gml_world::canon::Action`s and are routed through the
+// validator-gated engine in the orchestrator (TZ §8). They are NOT part of the
+// byte-identical `build_gm_tools()` fixture: a separate builder leaves
+// `gm_tools.json` untouched while still making them dispatchable.
+// `gm_tool_catalog()` appends `build_canon_gm_tools()` AFTER `build_gm_tools()`
+// so the stable cache prefix is preserved (new tools only ever go at the end).
+
+/// `_CANON_GM_TOOL_NAMES` — the additive living-world tools, in append order.
+pub const CANON_GM_TOOL_NAMES: [&str; 3] = ["move_player", "world_debug", "generate_location"];
+
+/// The additive living-world GM tools that commit through the canon engine.
+pub fn build_canon_gm_tools() -> Vec<Value> {
+    let move_player = json!({"type": "function", "function": {
+        "name": "move_player",
+        "description":
+            "Move the player along a known, visible, passable transition out of their CURRENT \
+    canon place, instead of replacing the scene wholesale. WHEN TO CALL: the player \
+    takes a listed exit / path / doorway and actually leaves for the place it leads \
+    to. The transition spends its canon travel time automatically; do NOT also call \
+    advance_time for the same travel. Long risky routes may stop the player at a \
+    temporary road situation before the destination, with continue/back exits and \
+    remaining travel time. The transition is committed through the world canon and gated by the \
+    validator: an unknown transition, one that does not start at the player's current \
+    place, a hidden exit, or a blocked way is REJECTED and changes nothing, so the \
+    player can never reach a contradictory location. If the destination has not been \
+    authored yet it is lazily generated on first entry and then becomes canon, with a \
+    guaranteed return path so the player can always go back. DO NOT CALL to invent an \
+    exit that does not exist, to teleport, or for movement inside the same place. Use \
+    the transition_id from the player's visible exits. The result is compact \
+    structured text with the new current place and the committed canon events, or a \
+    rejection reason to repair.",
+        "parameters": {"type": "object", "properties": {
+            "transition_id": {"type": "string",
+                              "description": "Id of a visible, passable transition leaving the player's current place."},
+            "reason": {"type": "string",
+                       "description": "Very short Russian reason for the move."},
+        }, "required": ["transition_id"], "additionalProperties": false},
+    }});
+    let world_debug = json!({"type": "function", "function": {
+        "name": "world_debug",
+        "description":
+            "GM/developer replay tool: return a debug dump of the current living-world canon — \
+    the full place/transition/actor graph plus the causal event log explaining WHY \
+    the world reached its current state (TZ §12). Read-only; it commits nothing and \
+    changes no state. GM-internal only: never reveal raw canon, hidden events, or \
+    GM-private scopes to the player. The result is compact structured text with the \
+    canon snapshot and the ordered causal log.",
+        "parameters": {"type": "object", "properties": {
+            "causal_log_only": {"type": "boolean",
+                                "description": "When true, return only the causal event log, not the full canon dump."},
+        }, "required": [], "additionalProperties": false},
+    }});
+    let generate_location = json!({"type": "function", "function": {
+        "name": "generate_location",
+        "description":
+            "Ask the dedicated location/situation generator sub-agent to draft and optionally \
+    commit a bounded canon location, room, dungeon point, city/village point of interest, \
+    or road situation. FIRST CHOICE for living-world play when the player discovers, \
+    opens, enters, searches out, or otherwise needs a new place/situation that is not \
+    already represented by a visible transition. Use this instead of set_scene for new \
+    side rooms, hidden chambers, street/building interiors, points of interest, dungeon \
+    points, and road encounters. If the player enters the generated place immediately, \
+    set enter_after_commit=true so the tool creates the place, links it, and moves the \
+    player there atomically. If the player only sees/learns the generated place without \
+    entering it, set player_observed=true. The generator has its own context/thread and receives \
+    recent anti-repeat keys, so it avoids repeating nearby motifs. It returns short \
+    player-visible description, hidden GM-only notes, concrete features/choices/\
+    consequences, optional exits, and an anti_repeat_key. Do not use it for NPC speech \
+    or for teleporting the player; use move_player for travel along existing exits.",
+        "parameters": {"type": "object", "properties": {
+            "purpose": {"type": "string",
+                        "enum": ["place", "local_place", "room", "travel_situation", "city_point", "village_point", "dungeon_point"],
+                        "description": "What kind of thing to generate."},
+            "request": {"type": "string",
+                        "description": "Short Russian brief: why this is needed, what should roughly be present, and what must be avoided."},
+            "target_place_id": {"type": "string",
+                                "description": "Existing canon place to flesh out. Defaults to current place when commit=true."},
+            "parent_place_id": {"type": "string",
+                                "description": "Parent/current place when a new place should be created."},
+            "route_transition_id": {"type": "string",
+                                    "description": "Transition id for a road/travel situation."},
+            "commit": {"type": "boolean",
+                       "description": "When true, apply generated place details to canon. Default true."},
+            "player_observed": {"type": "boolean",
+                                "description": "True when the player can already see or directly learn this generated place/situation. This reveals only player-safe generated fields."},
+            "enter_after_commit": {"type": "boolean",
+                                   "description": "True when the latest player action enters the generated place now. The tool commits the place and moves the player through the new/current transition atomically."},
+            "elapsed_minutes": {"type": "integer",
+                                "description": "For travel situations: minutes already travelled before the interruption."},
+            "remaining_minutes": {"type": "integer",
+                                  "description": "For travel situations: minutes left to destination after this stop."},
+            "route_time_minutes": {"type": "integer",
+                                   "description": "For travel situations: total planned transition time before interruption modifiers."},
+            "situation_type": {"type": "string",
+                               "enum": ["good", "bad", "neutral", "mixed"],
+                               "description": "Road-situation tone/type if already rolled."},
+            "rarity": {"type": "string",
+                       "enum": ["common", "uncommon", "rare", "legendary"],
+                       "description": "Road-situation rarity if already rolled."},
+        }, "required": ["purpose", "request"], "additionalProperties": false},
+    }});
+    vec![move_player, world_debug, generate_location]
+}
+
+/// Scoped GM living-memory tools. `get_memory` and `note_memory` are direct
+/// primary tools; consolidation is discoverable via tool_search. NPC personal
+/// recall is intentionally not exposed here: NPCs get their own `remember` tool.
+pub fn build_memory_gm_tools() -> Vec<Value> {
+    let get_memory = json!({"type": "function", "function": {
+        "name": "get_memory",
+        "description":
+            "Retrieve short, scoped living-world memory summaries after applying the access \
+    gate BEFORE search/ranking. Use this when the GM needs to know what the player, a \
+    specific NPC, a place/community, a faction, or GM-private canon may remember about \
+    a topic. Default results return short summaries only. Do not reveal GM/private or \
+    other-actor memory to the player unless the fiction establishes how the player \
+    learns it. Live ids are strings from current context; schemas never enumerate \
+    current NPCs/places/factions.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string",
+                      "description": "Topic to recall, in Russian or exact ids from context."},
+            "scope": {"type": "string",
+                      "description": "Access lens: player, gm, actor, place, settlement, region, faction, route, group, public. Use npc_id for actor scope when available."},
+            "npc_id": {"type": "string",
+                       "description": "NPC/actor id for scope=actor or npc-specific recall."},
+            "scope_id": {"type": "string",
+                         "description": "Id for place/settlement/region/faction/route/group scopes."},
+            "max_results": {"type": "integer",
+                            "description": "1..12 short summaries; default 5."},
+            "include_cold": {"type": "boolean",
+                             "description": "Include consumed/archived source memories for explicit drill-down/debug; default false."},
+            "include_details": {"type": "boolean",
+                                "description": "Return detailed cards, not just summaries. Use sparingly and never for ordinary player narration."},
+        }, "required": ["query"], "additionalProperties": false},
+    }});
+    let note_memory = json!({"type": "function", "function": {
+        "name": "note_memory",
+        "description":
+            "Write one short scoped living-world memory card after the fiction establishes \
+    it. Use for NPC private memories, player-learned understanding, place/community \
+    rumours, faction knowledge, GM-private secrets, or traces tied to events. Write a \
+    compact summary for ordinary retrieval; put optional longer detail in details only \
+    when a later explicit tool drill-down should be possible. This does not replace \
+    canon facts/events; it records who remembers or can know what.",
+        "parameters": {"type": "object", "properties": {
+            "summary": {"type": "string",
+                        "description": "Short Russian memory summary. This is what normal recall returns."},
+            "details": {"type": "string",
+                        "description": "Optional detailed card for explicit include_details lookup only."},
+            "owner_scope": {"type": "string",
+                            "description": "Owner scope string: actor:<id>, player, place:<id>, settlement:<id>, region:<id>, faction:<id>, public, gm_private, true_canon."},
+            "visibility_scopes": {"type": "array", "items": {"type": "string"},
+                                  "description": "Additional scopes allowed to recall it. Empty means only owner scope plus GM/debug."},
+            "tier": {"type": "string", "enum": ["raw", "episode", "arc", "durable"],
+                     "description": "Memory tier; default raw."},
+            "truth_status": {"type": "string", "enum": ["actual", "claim", "rumor", "belief", "lie", "unknown"],
+                             "description": "Whether this is truth, claim, rumour, belief, lie or unknown."},
+            "topic_tags": {"type": "array", "items": {"type": "string"}},
+            "place_ids": {"type": "array", "items": {"type": "string"}},
+            "actor_ids": {"type": "array", "items": {"type": "string"}},
+            "faction_ids": {"type": "array", "items": {"type": "string"}},
+            "source_event_ids": {"type": "array", "items": {"type": "string"}},
+            "source_memory_ids": {"type": "array", "items": {"type": "string"}},
+            "entity_id": {"type": "string",
+                          "description": "Optional NPC id this memory identifies. Required when known_name is set."},
+            "known_name": {"type": "string",
+                           "description": "Optional player-known name/label for entity_id when the fiction establishes what the player may call a specific NPC."},
+            "confidence": {"type": "integer", "description": "0..100 optional confidence."},
+            "reason": {"type": "string", "description": "Short GM-internal reason for the note."},
+        }, "required": ["summary", "owner_scope"], "additionalProperties": false},
+    }});
+    let consolidate_memory = json!({"type": "function", "function": {
+        "name": "consolidate_memory",
+        "description":
+            "Create a higher-tier memory crystal from existing source memory ids. Source \
+    memories are NOT deleted: they are marked cold/consumed_by the crystal and remain \
+    available for explicit debug/drill-down. Use when several raw/episode memories \
+    should stop being injected separately and become one short stable recollection.",
+        "parameters": {"type": "object", "properties": {
+            "source_memory_ids": {"type": "array", "items": {"type": "string"},
+                                  "description": "Existing memories to consume into the crystal."},
+            "summary": {"type": "string",
+                        "description": "Short Russian crystal summary."},
+            "details": {"type": "string",
+                        "description": "Optional detailed derived card."},
+            "owner_scope": {"type": "string",
+                            "description": "Scope that owns the crystal."},
+            "visibility_scopes": {"type": "array", "items": {"type": "string"}},
+            "tier": {"type": "string", "enum": ["episode", "arc", "durable"],
+                     "description": "Target tier; default episode."},
+            "truth_status": {"type": "string", "enum": ["actual", "claim", "rumor", "belief", "lie", "unknown"]},
+            "topic_tags": {"type": "array", "items": {"type": "string"}},
+            "reason": {"type": "string"},
+        }, "required": ["source_memory_ids", "summary", "owner_scope"], "additionalProperties": false},
+    }});
+    vec![get_memory, note_memory, consolidate_memory]
+}
+
+/// Static tools available only to an NPC sub-agent while it is producing its own
+/// response. Runtime binds the current npc_id; the model cannot ask as another
+/// actor.
+pub fn build_npc_tools() -> Vec<Value> {
+    let remember = json!({"type": "function", "function": {
+        "name": "remember",
+        "description":
+            "Recall what YOU, this NPC, can personally know or plausibly access about a \
+    topic before answering. Runtime binds the current NPC identity and filters by that \
+    actor's private memory, local place/community rumors, faction memory, and public \
+    memory before ranking. This cannot read another NPC's private thoughts or GM-private \
+    truth. Use it when the current situation asks what you remember, know, heard, saw, \
+    or believe about a topic. Results are short summaries only.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string",
+                      "description": "What you are trying to remember, in Russian or exact names from the scene."},
+            "max_results": {"type": "integer",
+                            "description": "1..8 short summaries; default 5."},
+            "include_cold": {"type": "boolean",
+                             "description": "Include consumed raw source memories only for explicit audit/debug; default false."},
+        }, "required": ["query"], "additionalProperties": false},
+    }});
+    let npc_note_memory = json!({"type": "function", "function": {
+        "name": "npc_note_memory",
+        "description":
+            "Privately record what YOU, this NPC, now remember from this interaction. \
+    Runtime binds the current NPC identity; you cannot write memory for another actor \
+    and this tool never makes a rumour globally public. Use short Russian text only. \
+    Public rumour spread must be established by the GM/world simulation separately.",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string",
+                     "description": "Short Russian memory from this NPC's point of view."},
+            "kind": {"type": "string",
+                     "enum": ["interaction", "observation", "belief", "goal", "relationship", "rumor", "secret", "other"],
+                     "description": "Memory category. Default interaction."},
+            "about": {"type": "string",
+                      "description": "Short topic or target, e.g. player, an NPC id/name, a place, or a faction."},
+            "privacy": {"type": "string",
+                        "enum": ["private", "scene", "shared", "public"],
+                        "description": "Requested privacy. Runtime keeps the note actor-private; non-private values are recorded as requested_privacy metadata only."},
+            "anchors": {"type": "array", "items": {"type": "string"},
+                        "description": "Optional anchors like place:<id>, actor:<id>, faction:<id>, route:<id>. They tag the memory but do not grant public visibility."},
+        }, "required": ["text"], "additionalProperties": false},
+    }});
+    let npc_recall_relationship = json!({"type": "function", "function": {
+        "name": "npc_recall_relationship",
+        "description":
+            "Recall your own attitude/history toward a target before answering. Runtime \
+    binds this NPC and filters through the same actor-private memory gate as remember. \
+    Use for the player or another named NPC when relationship history matters.",
+        "parameters": {"type": "object", "properties": {
+            "target": {"type": "string",
+                       "description": "Target to recall relationship with. Use player, an NPC id, or an exact visible name."},
+            "max_results": {"type": "integer",
+                            "description": "1..8 short summaries; default 5."},
+        }, "required": ["target"], "additionalProperties": false},
+    }});
+    vec![remember, npc_note_memory, npc_recall_relationship]
+}
+
+pub fn build_loader_gm_tools() -> Vec<Value> {
+    vec![load_tool_schema_tool(), invoke_loaded_tool()]
 }
 
 // --- catalog / per-model / search ------------------------------------------
@@ -719,10 +899,23 @@ fn tool_description(tool: &Value) -> String {
         .to_string()
 }
 
-/// `gm_tool_catalog(world)` — executable registry keyed by tool name.
+/// `gm_tool_catalog()` — the MODEL-FACING executable registry keyed by tool name.
+/// The static catalog (`build_gm_tools`) stays as a stable cache prefix and the
+/// living-world canon tools (`build_canon_gm_tools` — `move_player`,
+/// `world_debug`) are APPENDED after it, so the canon tools are part of the real
+/// catalog the GM model sees while the static prefix bytes stay untouched.
 pub fn gm_tool_catalog() -> indexmap::IndexMap<String, Value> {
     let mut map = indexmap::IndexMap::new();
     for tool in build_gm_tools() {
+        map.insert(tool_name(&tool), tool);
+    }
+    for tool in build_canon_gm_tools() {
+        map.insert(tool_name(&tool), tool);
+    }
+    for tool in build_memory_gm_tools() {
+        map.insert(tool_name(&tool), tool);
+    }
+    for tool in build_loader_gm_tools() {
         map.insert(tool_name(&tool), tool);
     }
     map
@@ -730,8 +923,10 @@ pub fn gm_tool_catalog() -> indexmap::IndexMap<String, Value> {
 
 /// `initial_gm_tool_names(include_player_options_tool)`.
 pub fn initial_gm_tool_names(include_player_options_tool: bool) -> BTreeSet<String> {
-    let mut names: BTreeSet<String> =
-        INITIAL_GM_TOOL_NAMES.iter().map(|s| s.to_string()).collect();
+    let mut names: BTreeSet<String> = INITIAL_GM_TOOL_NAMES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     if include_player_options_tool {
         names.insert(PLAYER_OPTIONS_TOOL_NAME.to_string());
     }
@@ -743,16 +938,11 @@ pub fn build_gm_tools_for_model(
     loaded_tool_names: Option<&BTreeSet<String>>,
     include_player_options_tool: bool,
 ) -> Vec<Value> {
-    let catalog = gm_tool_catalog();
-    let catalog: Vec<(String, Value)> = catalog
-        .into_iter()
-        .filter(|(name, _)| include_player_options_tool || name != PLAYER_OPTIONS_TOOL_NAME)
-        .collect();
+    let catalog = catalog_entries(include_player_options_tool);
     match loaded_tool_names {
         None => catalog.into_iter().map(|(_, t)| t).collect(),
         Some(loaded) => {
-            let mut visible: BTreeSet<String> = loaded.clone();
-            visible.extend(initial_gm_tool_names(include_player_options_tool));
+            let visible = effective_loaded_tools(Some(loaded), include_player_options_tool);
             catalog
                 .into_iter()
                 .filter(|(name, _)| visible.contains(name))
@@ -762,9 +952,287 @@ pub fn build_gm_tools_for_model(
     }
 }
 
+pub fn build_gm_tools_for_native_tool_search(include_player_options_tool: bool) -> Vec<Value> {
+    let catalog = catalog_entries(include_player_options_tool);
+    let visible = initial_gm_tool_names(include_player_options_tool);
+    let mut tools = Vec::new();
+    let mut deferred = Vec::new();
+
+    for (name, tool) in catalog {
+        if is_loader_tool_name(&name) {
+            continue;
+        }
+        if visible.contains(&name) {
+            tools.push(tool);
+        } else {
+            deferred.push(mark_tool_deferred(tool));
+        }
+    }
+
+    if !deferred.is_empty() {
+        tools.push(json!({
+            "type": "namespace",
+            "name": "gm_deferred",
+            "description": "Deferred GM tools for scene movement, NPC profiles, NPC whereabouts, canon debug, memory writing/consolidation, and other non-primary GM operations. Use tool_search to load one only when needed.",
+            "tools": deferred,
+        }));
+        tools.push(json!({"type": "tool_search"}));
+    }
+
+    tools
+}
+
+fn mark_tool_deferred(mut tool: Value) -> Value {
+    if let Value::Object(ref mut obj) = tool {
+        obj.insert("defer_loading".into(), Value::Bool(true));
+    }
+    tool
+}
+
+fn catalog_entries(include_player_options_tool: bool) -> Vec<(String, Value)> {
+    gm_tool_catalog()
+        .into_iter()
+        .filter(|(name, _)| include_player_options_tool || name != PLAYER_OPTIONS_TOOL_NAME)
+        .collect()
+}
+
+fn effective_loaded_tools(
+    _loaded_tool_names: Option<&BTreeSet<String>>,
+    include_player_options_tool: bool,
+) -> BTreeSet<String> {
+    initial_gm_tool_names(include_player_options_tool)
+}
+
+fn is_loader_tool_name(name: &str) -> bool {
+    name == TOOL_SEARCH_TOOL_NAME
+        || name == LOAD_TOOL_SCHEMA_TOOL_NAME
+        || name == INVOKE_LOADED_TOOL_NAME
+}
+
+struct ToolSearchMetadata {
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    keywords: &'static [&'static str],
+    aliases: &'static [&'static str],
+    capabilities: &'static [&'static str],
+}
+
+const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 16] = [
+    ToolSearchMetadata {
+        name: "ask_npc",
+        title: "Ask NPC",
+        description: "Get one present NPC's visible speech and action.",
+        keywords: &["npc", "speech", "reaction", "dialogue", "допрос"],
+        aliases: &["talk", "question", "угроза"],
+        capabilities: &["npc_dialogue", "visible_reaction"],
+    },
+    ToolSearchMetadata {
+        name: "roll_dice",
+        title: "Roll Dice",
+        description: "Resolve uncertain checks, saves, attacks, damage, or chance.",
+        keywords: &["dice", "d20", "check", "roll", "проверка"],
+        aliases: &["кубик", "бросок"],
+        capabilities: &["mechanical_resolution", "stakes_locked_roll"],
+    },
+    ToolSearchMetadata {
+        name: "get_world_fact",
+        title: "World Fact",
+        description: "Look up player-safe lore, leads, testimony, and known facts.",
+        keywords: &["fact", "lore", "memory", "rumor", "улика"],
+        aliases: &["rag", "lookup", "что известно"],
+        capabilities: &["player_safe_lookup", "source_dedup"],
+    },
+    ToolSearchMetadata {
+        name: "get_memory",
+        title: "Get Memory",
+        description: "Read short scoped living-world memory summaries.",
+        keywords: &["memory", "scope", "recall", "secret", "rumor"],
+        aliases: &["вспомнить", "что знает"],
+        capabilities: &["scoped_memory", "access_filtered_recall"],
+    },
+    ToolSearchMetadata {
+        name: "note_memory",
+        title: "Note Memory",
+        description: "Write one scoped living-world memory card.",
+        keywords: &["write", "memory", "note", "rumor", "secret"],
+        aliases: &["save memory", "записать память"],
+        capabilities: &["memory_write", "scoped_visibility"],
+    },
+    ToolSearchMetadata {
+        name: "consolidate_memory",
+        title: "Consolidate Memory",
+        description: "Create a higher-tier memory crystal and mark sources cold.",
+        keywords: &["crystal", "consolidate", "summary", "episode", "archive"],
+        aliases: &["сжать память", "memory crystal"],
+        capabilities: &["hierarchical_memory", "source_retention"],
+    },
+    ToolSearchMetadata {
+        name: "update_player_character",
+        title: "Player Card",
+        description: "Update the player character card after established fiction changes it.",
+        keywords: &["player", "character", "hp", "inventory", "condition"],
+        aliases: &["pc card", "лист персонажа"],
+        capabilities: &["player_state_update"],
+    },
+    ToolSearchMetadata {
+        name: "advance_time",
+        title: "Advance Time",
+        description: "Move the world clock by a known elapsed duration.",
+        keywords: &["time", "clock", "minutes", "wait", "время"],
+        aliases: &["подождать", "спустя"],
+        capabilities: &["world_clock"],
+    },
+    ToolSearchMetadata {
+        name: "ask_player",
+        title: "Ask Player",
+        description: "Show quick-reply choices or a focused question to the player.",
+        keywords: &["options", "choices", "player", "buttons", "варианты"],
+        aliases: &["quick replies", "что делать"],
+        capabilities: &["player_prompt", "quick_replies"],
+    },
+    ToolSearchMetadata {
+        name: "move_npc",
+        title: "Move NPC",
+        description: "Move an NPC into, out of, or within the current scene.",
+        keywords: &["npc", "scene", "presence", "enters", "leaves"],
+        aliases: &["set_npc_presence", "вошел", "ушел"],
+        capabilities: &["scene_presence", "npc_movement"],
+    },
+    ToolSearchMetadata {
+        name: "set_npc_whereabouts",
+        title: "NPC Whereabouts",
+        description: "Record an NPC's known or likely offscreen location.",
+        keywords: &["npc", "whereabouts", "absent", "location", "где"],
+        aliases: &["offscreen", "местонахождение"],
+        capabilities: &["offscreen_location", "whereabouts_memory"],
+    },
+    ToolSearchMetadata {
+        name: "get_npc_profile",
+        title: "NPC Profile",
+        description: "Read player-safe NPC mechanics, persona, voice, or profile fields.",
+        keywords: &["npc", "profile", "stats", "mechanics", "persona"],
+        aliases: &["card", "анкета", "статы"],
+        capabilities: &["npc_mechanics", "profile_fields"],
+    },
+    ToolSearchMetadata {
+        name: "set_scene",
+        title: "Set Scene",
+        description: "Compatibility/debug fallback for applying a fully authored scene patch; use generate_location for new living-world places.",
+        keywords: &["scene", "debug", "fallback", "patch", "legacy"],
+        aliases: &["manual scene patch"],
+        capabilities: &["scene_patch_fallback"],
+    },
+    ToolSearchMetadata {
+        name: "move_player",
+        title: "Move Player",
+        description: "Move the player through a visible canon transition.",
+        keywords: &["player", "move", "transition", "exit", "travel"],
+        aliases: &["идти", "выход", "дверь"],
+        capabilities: &["canon_travel", "transition_validation"],
+    },
+    ToolSearchMetadata {
+        name: "world_debug",
+        title: "World Debug",
+        description: "Read the living-world canon graph and causal log for debugging.",
+        keywords: &["debug", "canon", "graph", "causal", "snapshot"],
+        aliases: &["отладка", "replay"],
+        capabilities: &["debug_dump", "causal_log"],
+    },
+    ToolSearchMetadata {
+        name: "generate_location",
+        title: "Generate Location",
+        description: "First-choice living-world tool to draft and commit a new location, room, point of interest, or road situation through a dedicated generator agent.",
+        keywords: &["location", "scene", "room", "travel", "encounter", "anti-repeat"],
+        aliases: &["генератор", "ситуация", "локация"],
+        capabilities: &["location_generation", "road_situation_generation", "anti_repeat_context"],
+    },
+];
+
+fn metadata_for(name: &str) -> Option<&'static ToolSearchMetadata> {
+    TOOL_SEARCH_METADATA.iter().find(|meta| meta.name == name)
+}
+
+fn title_from_name(name: &str) -> String {
+    name.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn value_strings(values: &[&str]) -> Value {
+    Value::Array(
+        values
+            .iter()
+            .map(|value| Value::String((*value).to_string()))
+            .collect(),
+    )
+}
+
+fn metadata_text(name: &str) -> String {
+    match metadata_for(name) {
+        Some(meta) => [
+            meta.name.to_string(),
+            meta.title.to_string(),
+            meta.description.to_string(),
+            meta.keywords.join(" "),
+            meta.aliases.join(" "),
+            meta.capabilities.join(" "),
+        ]
+        .join(" "),
+        None => title_from_name(name),
+    }
+}
+
+fn tool_search_card(name: &str, tool: &Value, score: i64, loaded: bool) -> Value {
+    let fallback_description = short_tool_description(tool, 180);
+    let (title, description, keywords, aliases, capabilities) = match metadata_for(name) {
+        Some(meta) => (
+            meta.title.to_string(),
+            meta.description.to_string(),
+            value_strings(meta.keywords),
+            value_strings(meta.aliases),
+            value_strings(meta.capabilities),
+        ),
+        None => (
+            title_from_name(name),
+            fallback_description,
+            Value::Array(Vec::new()),
+            Value::Array(Vec::new()),
+            Value::Array(Vec::new()),
+        ),
+    };
+    json!({
+        "name": name,
+        "title": title,
+        "description": description,
+        "keywords": keywords,
+        "aliases": aliases,
+        "capabilities": capabilities,
+        "score": score,
+        "loaded": loaded,
+        "load_tool": LOAD_TOOL_SCHEMA_TOOL_NAME,
+        "invoke_tool": INVOKE_LOADED_TOOL_NAME,
+        "load_schema": {
+            "tool": LOAD_TOOL_SCHEMA_TOOL_NAME,
+            "name": name,
+            "hint": format!("Call {LOAD_TOOL_SCHEMA_TOOL_NAME} with name=\"{name}\" to load the full schema, then call {INVOKE_LOADED_TOOL_NAME} if the tool is not directly visible."),
+        },
+    })
+}
+
 fn short_tool_description(tool: &Value, limit: usize) -> String {
     let ws = Regex::new(r"\s+").unwrap();
-    let text = ws.replace_all(&tool_description(tool), " ").trim().to_string();
+    let text = ws
+        .replace_all(&tool_description(tool), " ")
+        .trim()
+        .to_string();
     if text.chars().count() <= limit {
         return text;
     }
@@ -813,6 +1281,7 @@ fn tool_search_text(tool: &Value) -> String {
     [
         name.clone(),
         name.replace('_', " "),
+        metadata_text(&name),
         tool_description(tool),
         tool_parameters_text(tool),
         hint_for(&name).to_string(),
@@ -856,15 +1325,11 @@ pub fn search_gm_tools(
     already_loaded: Option<&BTreeSet<String>>,
     include_player_options_tool: bool,
 ) -> Value {
-    let catalog = gm_tool_catalog();
-    let catalog: Vec<(String, Value)> = catalog
-        .into_iter()
-        .filter(|(name, _)| include_player_options_tool || name != PLAYER_OPTIONS_TOOL_NAME)
-        .collect();
-    let already_loaded: BTreeSet<String> = already_loaded.cloned().unwrap_or_default();
+    let catalog = catalog_entries(include_player_options_tool);
+    let already_loaded = effective_loaded_tools(already_loaded, include_player_options_tool);
     let searchable: Vec<(String, Value)> = catalog
         .iter()
-        .filter(|(name, _)| name != "tool_search" && !already_loaded.contains(name))
+        .filter(|(name, _)| !is_loader_tool_name(name) && !already_loaded.contains(name))
         .cloned()
         .collect();
 
@@ -873,9 +1338,12 @@ pub fn search_gm_tools(
         return json!({
             "query": raw_query,
             "matches": [],
-            "loaded_tools": [],
             "already_loaded": [],
+            "missing": [],
             "total_searchable_tools": searchable.len(),
+            "load_tool": LOAD_TOOL_SCHEMA_TOOL_NAME,
+            "invoke_tool": INVOKE_LOADED_TOOL_NAME,
+            "next": "Search with keywords or select:tool_name, then call load_tool_schema for one exact schema. For non-visible tools, call invoke_loaded_tool next.",
             "message": "Запрос пустой. Используй keywords или select:tool_name.",
         });
     }
@@ -883,7 +1351,7 @@ pub fn search_gm_tools(
     let limit_src = if max_results == 0 { 5 } else { max_results };
     let limit = limit_src.clamp(1, 10) as usize;
 
-    let mut selected: Vec<String> = Vec::new();
+    let mut selected: Vec<(String, i64)> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut known_loaded: Vec<String> = Vec::new();
 
@@ -897,7 +1365,7 @@ pub fn search_gm_tools(
         // all_tool_names = {name.lower(): name for name in catalog if name != tool_search}
         let mut all_tool_names: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
         for (name, _) in &catalog {
-            if name != "tool_search" {
+            if !is_loader_tool_name(name) {
                 all_tool_names.insert(name.to_lowercase(), name.clone());
             }
         }
@@ -907,9 +1375,8 @@ pub fn search_gm_tools(
                 Some(name) => {
                     if already_loaded.contains(name) {
                         known_loaded.push(name.clone());
-                    } else {
-                        selected.push(name.clone());
                     }
+                    selected.push((name.clone(), 100));
                 }
             }
         }
@@ -936,19 +1403,23 @@ pub fn search_gm_tools(
         }
         // sorted(scored, reverse=True): by (score desc, name desc).
         scored.sort_by(|a, b| b.cmp(a));
-        selected = scored.into_iter().take(limit).map(|(_, n)| n).collect();
+        selected = scored
+            .into_iter()
+            .take(limit)
+            .map(|(s, n)| (n, s))
+            .collect();
     }
 
-    let searchable_map: indexmap::IndexMap<String, Value> = searchable.into_iter().collect();
+    let catalog_map: indexmap::IndexMap<String, Value> = catalog.into_iter().collect();
     let mut matches: Vec<Value> = Vec::new();
-    for name in selected.iter().take(limit) {
-        if let Some(tool) = searchable_map.get(name) {
-            matches.push(json!({
-                "name": name,
-                "description": short_tool_description(tool, 220),
-                "loaded": true,
-                "already_loaded": already_loaded.contains(name),
-            }));
+    for (name, score) in selected.iter().take(limit) {
+        if let Some(tool) = catalog_map.get(name) {
+            matches.push(tool_search_card(
+                name,
+                tool,
+                *score,
+                already_loaded.contains(name),
+            ));
         }
     }
     let already_loaded_result: Vec<String> = {
@@ -956,26 +1427,93 @@ pub fn search_gm_tools(
         s.into_iter().collect()
     };
     let message = if !matches.is_empty() {
-        "Найденные инструменты будут доступны в следующем шаге ГМ. \
-Вызови нужный инструмент после этого результата."
+        "Найдены компактные карточки инструментов. Вызови load_tool_schema с точным name, \
+чтобы загрузить одну полную схему."
     } else if !already_loaded_result.is_empty() {
         "Запрошенные инструменты уже доступны в текущем шаге ГМ."
     } else {
         "Подходящих инструментов не найдено. Попробуй select:tool_name или другие ключевые слова."
     };
 
-    let loaded_tools: Vec<String> = matches
-        .iter()
-        .map(|m| m["name"].as_str().unwrap_or("").to_string())
-        .collect();
-
     json!({
         "query": raw_query,
         "matches": matches,
-        "loaded_tools": loaded_tools,
         "already_loaded": already_loaded_result,
         "missing": missing,
-        "total_searchable_tools": searchable_map.len(),
+        "total_searchable_tools": searchable.len(),
+        "load_tool": LOAD_TOOL_SCHEMA_TOOL_NAME,
+        "invoke_tool": INVOKE_LOADED_TOOL_NAME,
+        "next": "Call load_tool_schema with exactly one match.name. For non-visible tools, then call invoke_loaded_tool with that name and schema-matching arguments.",
         "message": message,
+    })
+}
+
+pub fn load_gm_tool_schema(
+    name: &str,
+    already_loaded: Option<&BTreeSet<String>>,
+    include_player_options_tool: bool,
+) -> Value {
+    let raw_name = name.trim().to_string();
+    if raw_name.is_empty() {
+        return json!({
+            "status": "invalid",
+            "name": raw_name,
+            "loaded_schema": null,
+            "invoke_tool": INVOKE_LOADED_TOOL_NAME,
+            "already_loaded": [],
+            "missing": [],
+            "schema": null,
+            "next": "Pass one exact canonical tool name returned by tool_search.",
+            "message": "Имя инструмента пустое. Передай точный name из tool_search.",
+        });
+    }
+
+    let already_loaded = effective_loaded_tools(already_loaded, include_player_options_tool);
+    let catalog = catalog_entries(include_player_options_tool);
+    let mut loadable: indexmap::IndexMap<String, (String, Value)> = indexmap::IndexMap::new();
+    for (tool_name, schema) in catalog {
+        if !is_loader_tool_name(&tool_name) {
+            loadable.insert(tool_name.to_lowercase(), (tool_name, schema));
+        }
+    }
+
+    let Some((canonical_name, schema)) = loadable.get(&raw_name.to_lowercase()).cloned() else {
+        return json!({
+            "status": "missing",
+            "name": raw_name,
+            "loaded_schema": null,
+            "invoke_tool": INVOKE_LOADED_TOOL_NAME,
+            "already_loaded": [],
+            "missing": [raw_name],
+            "schema": null,
+            "next": "Call tool_search again with keywords or select:tool_name.",
+            "message": "Инструмент не найден или не загружается через load_tool_schema.",
+        });
+    };
+
+    if already_loaded.contains(&canonical_name) {
+        return json!({
+            "status": "already_loaded",
+            "name": canonical_name,
+            "loaded_schema": canonical_name,
+            "invoke_tool": INVOKE_LOADED_TOOL_NAME,
+            "already_loaded": [canonical_name],
+            "missing": [],
+            "schema": schema,
+            "next": "The schema is already visible; call the tool directly when needed.",
+            "message": "Инструмент уже доступен; схема возвращена для подтверждения.",
+        });
+    }
+
+    json!({
+        "status": "loaded_schema",
+        "name": canonical_name,
+        "loaded_schema": canonical_name,
+        "invoke_tool": INVOKE_LOADED_TOOL_NAME,
+        "already_loaded": [],
+        "missing": [],
+        "schema": schema,
+        "next": "Call invoke_loaded_tool with this exact name and arguments matching the returned schema.",
+        "message": "Схема инструмента загружена в конец контекста; список top-level tools не изменён.",
     })
 }

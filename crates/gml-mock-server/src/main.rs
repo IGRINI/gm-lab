@@ -31,8 +31,7 @@ use std::time::Duration;
 use gml_config::RuntimeSettings;
 use gml_world::WHEREABOUTS_STATUS_LABELS;
 
-const SCENE: &str =
-    "Ледяной порт на краю мира. Туман, скрип снастей, пропавший корабль «Морянка».";
+const SCENE: &str = "Ледяной порт на краю мира. Туман, скрип снастей, пропавший корабль «Морянка».";
 
 /// The three canned NPCs (`NPCS` in the Python module). `(id, name, role,
 /// pronouns, color)` in declaration order.
@@ -542,7 +541,10 @@ async fn post_chat_delete(State(s): State<Shared>, AxPath(chat_id): AxPath<Strin
     st.chats
         .retain(|c| c.get("id").and_then(|v| v.as_str()) != Some(chat_id.as_str()));
     if st.chats.len() >= before {
-        return json_response(json!({"ok": false, "error": "chat not found"}), StatusCode::NOT_FOUND);
+        return json_response(
+            json!({"ok": false, "error": "chat not found"}),
+            StatusCode::NOT_FOUND,
+        );
     }
     if st.active_chat_id == chat_id {
         st.active_chat_id = st
@@ -555,8 +557,9 @@ async fn post_chat_delete(State(s): State<Shared>, AxPath(chat_id): AxPath<Strin
     }
     if st.chats.is_empty() {
         // mimic the server creating a fresh chat when none remain
-        st.chats
-            .push(json!({"id": "chat_fresh", "title": "Новый чат", "preview": "", "turn_count": 0}));
+        st.chats.push(
+            json!({"id": "chat_fresh", "title": "Новый чат", "preview": "", "turn_count": 0}),
+        );
         st.active_chat_id = "chat_fresh".to_string();
     }
     let active = st.active_chat_id.clone();
@@ -575,9 +578,7 @@ async fn post_chat_delete(State(s): State<Shared>, AxPath(chat_id): AxPath<Strin
 
 async fn post_settings(State(s): State<Shared>, body: Option<Json<Value>>) -> Response {
     let mut st = s.lock().unwrap();
-    let incoming = body
-        .map(|Json(v)| v)
-        .unwrap_or(Value::Null);
+    let incoming = body.map(|Json(v)| v).unwrap_or(Value::Null);
     if let Some(patch) = incoming.get("settings").and_then(|v| v.as_object()) {
         if let Some(cur) = st.settings.as_object_mut() {
             for (k, v) in patch {
@@ -594,7 +595,10 @@ async fn post_settings(State(s): State<Shared>, body: Option<Json<Value>>) -> Re
 
 async fn post_ok_state(State(s): State<Shared>) -> Response {
     let st = s.lock().unwrap();
-    json_response(json!({"ok": true, "state": state_payload(&st.settings)}), StatusCode::OK)
+    json_response(
+        json!({"ok": true, "state": state_payload(&st.settings)}),
+        StatusCode::OK,
+    )
 }
 
 // --- POST /debug/* mutations (each returns the fresh DEBUG payload) ----------
@@ -629,7 +633,12 @@ async fn post_debug_roll(State(s): State<Shared>, body: Option<Json<Value>>) -> 
 async fn post_debug_fact(State(s): State<Shared>, body: Option<Json<Value>>) -> Response {
     let b = body_obj(body);
     let mut st = s.lock().unwrap();
-    let text = b.get("text").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let text = b
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if !text.is_empty() {
         let kind = b
             .get("kind")
@@ -746,7 +755,10 @@ async fn post_debug_state_record(State(s): State<Shared>, body: Option<Json<Valu
     let mut st = s.lock().unwrap();
     if let Some(add) = b.get("add").and_then(|v| v.as_array()) {
         for rec in add {
-            let len = st.debug["state_records"].as_array().map(|a| a.len()).unwrap_or(0);
+            let len = st.debug["state_records"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0);
             let entry = json!({
                 "record_id": format!("sr_dbg_{}", len + 1),
                 "kind": rec.get("kind").and_then(|v| v.as_str()).unwrap_or("fact"),
@@ -963,7 +975,9 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("mock GM-Lab failed to bind {addr}: {e}"));
     println!("mock GM-Lab on http://{addr}");
-    axum::serve(listener, app).await.expect("mock server crashed");
+    axum::serve(listener, app)
+        .await
+        .expect("mock server crashed");
 }
 
 #[cfg(test)]
@@ -991,8 +1005,18 @@ mod tests {
     #[tokio::test]
     async fn state_has_contract_keys() {
         let v = get_json(app(), "/state").await;
-        for key in ["model", "backend", "stream_gm_content", "public", "scene", "npcs",
-                    "status_labels", "settings", "settings_options", "context_usage"] {
+        for key in [
+            "model",
+            "backend",
+            "stream_gm_content",
+            "public",
+            "scene",
+            "npcs",
+            "status_labels",
+            "settings",
+            "settings_options",
+            "context_usage",
+        ] {
             assert!(v.get(key).is_some(), "missing /state key {key}");
         }
     }
@@ -1043,14 +1067,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let ct = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(ct.starts_with("text/event-stream"));
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let text = String::from_utf8(bytes.to_vec()).unwrap();
         // every frame is `data: {...}\n\n`; stream ends with the done frame.
         assert!(text.contains("data: "));
         assert!(text.contains("\"kind\": \"done\""));
-        assert!(text.contains("\"channel\":\"gm_narration\"") || text.contains("\"channel\": \"gm_narration\""));
+        assert!(
+            text.contains("\"channel\":\"gm_narration\"")
+                || text.contains("\"channel\": \"gm_narration\"")
+        );
         for chunk in text.split("\n\n").filter(|c| !c.trim().is_empty()) {
             assert!(chunk.starts_with("data: "), "bad SSE frame: {chunk}");
         }

@@ -248,11 +248,11 @@ mod tests {
         h.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    // sha256 values from tests/reference/prompts_index.json
-    const GM_SYSTEM_SHA: &str =
-        "69bd3a3bf776c8d5caa6c952a9dd12b7f0063cbd13cfb7a4012ee47a5c577eb0";
+    // GM_SYSTEM sha/len updated for the living-world rework: travel is now
+    // canon-authoritative (move_player primary, set_scene authors a new place).
+    const GM_SYSTEM_SHA: &str = "754c1744413d4be689394d148f402bae2c04bafdc99e0d87db73666f58c2a78d";
     const NPC_SYSTEM_STATIC_SHA: &str =
-        "e222473ee56fdcf8b07491275d2af88048b222eda775bd49f7e8d49cbbda7264";
+        "b9cff19d13db6dabd8510ab7685bbc9c7b903e1b867bc22f9ec781366250e4c9";
     const NPC_CARD_TEMPLATE_SHA: &str =
         "73cb6261b026b1d1b8682caf45047ca625b601f43147f48a6c9b0f3e2dd3a454";
     const NPC_COMPACT_SYSTEM_SHA: &str =
@@ -274,16 +274,16 @@ mod tests {
     fn gm_system_byte_identical() {
         assert_bytes_eq!(gm_system(), "GM_SYSTEM.txt");
         assert_eq!(sha256_hex(GM_SYSTEM), GM_SYSTEM_SHA);
-        assert_eq!(GM_SYSTEM.chars().count(), 36320);
-        assert_eq!(GM_SYSTEM.len(), 36549);
+        assert_eq!(GM_SYSTEM.chars().count(), 36287);
+        assert_eq!(GM_SYSTEM.len(), 36518);
     }
 
     #[test]
     fn npc_system_static_byte_identical() {
         assert_bytes_eq!(npc_system_static(), "NPC_SYSTEM_STATIC.txt");
         assert_eq!(sha256_hex(NPC_SYSTEM_STATIC), NPC_SYSTEM_STATIC_SHA);
-        assert_eq!(NPC_SYSTEM_STATIC.chars().count(), 6901);
-        assert_eq!(NPC_SYSTEM_STATIC.len(), 6974);
+        assert_eq!(NPC_SYSTEM_STATIC.chars().count(), 7057);
+        assert_eq!(NPC_SYSTEM_STATIC.len(), 7129);
     }
 
     #[test]

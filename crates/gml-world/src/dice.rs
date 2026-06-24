@@ -16,9 +16,8 @@ use crate::rng::MersenneTwister;
 
 // r"\s*(\d*)d(\d+)\s*(k[hl]\s*\d+)?\s*([+-]\s*\d+)?\s*" applied to the
 // lowercased notation via re.fullmatch (anchored at both ends).
-static NOTATION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^\s*(\d*)d(\d+)\s*(k[hl]\s*\d+)?\s*([+-]\s*\d+)?\s*$").unwrap()
-});
+static NOTATION_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*(\d*)d(\d+)\s*(k[hl]\s*\d+)?\s*([+-]\s*\d+)?\s*$").unwrap());
 
 // Generic signed-int finder for _coerce_int's string branch.
 static INT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"-?\d+").unwrap());
@@ -91,9 +90,7 @@ pub fn coerce_int(value: &Value) -> Option<i64> {
                 None
             }
         }
-        Value::String(s) => INT_RE
-            .find(s)
-            .and_then(|m| m.as_str().parse::<i64>().ok()),
+        Value::String(s) => INT_RE.find(s).and_then(|m| m.as_str().parse::<i64>().ok()),
         _ => None,
     }
 }
@@ -183,7 +180,11 @@ pub fn roll_data(
         .map(|m| m.as_str())
         .unwrap_or("")
         .replace(' ', "");
-    let mod_str = caps.get(4).map(|m| m.as_str()).unwrap_or("0").replace(' ', "");
+    let mod_str = caps
+        .get(4)
+        .map(|m| m.as_str())
+        .unwrap_or("0")
+        .replace(' ', "");
     let modifier: i64 = if mod_str.is_empty() {
         0
     } else {
@@ -302,12 +303,19 @@ pub fn roll_outcome_payload(
         out.insert("notation".to_string(), json!(data.notation));
         out.insert(
             "roll_kind".to_string(),
-            json!(if kind.is_empty() { "roll".to_string() } else { kind.clone() }),
+            json!(if kind.is_empty() {
+                "roll".to_string()
+            } else {
+                kind.clone()
+            }),
         );
         out.insert("total".to_string(), json!(total));
         out.insert("grade".to_string(), json!("ungraded"));
         out.insert("natural".to_string(), to_opt_value(data.natural));
-        out.insert("detail".to_string(), json!(format!("{detail}: grade=ungraded")));
+        out.insert(
+            "detail".to_string(),
+            json!(format!("{detail}: grade=ungraded")),
+        );
         for (k, v) in geometry {
             out.insert(k.to_string(), v);
         }

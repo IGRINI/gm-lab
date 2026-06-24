@@ -57,11 +57,23 @@ export function genderVoice(gender) {
   const g = String(gender || "").toLowerCase();
   return /жен|^f|female/.test(g) ? "female" : "male";
 }
-export function npcSegments({ name, speech, action, voice }) {
+export function npcSegments({ name, response, beats, speech, action, voice }) {
   const segs = [];
+  if (Array.isArray(beats) && beats.length) {
+    for (const beat of beats) {
+      const text = String(beat?.text || "").trim();
+      if (!text) continue;
+      if (beat.kind === "speech") segs.push({ text, body: { voice: voice || "male" } });
+      else if (beat.kind === "action") segs.push({ text: `${name || ""} ${text}`.trim(), body: { role: "gm" } });
+    }
+    if (segs.length) return segs;
+  }
+  if (response && response.trim()) {
+    segs.push({ text: response, body: { role: "gm" } });
+    return segs;
+  }
   if (speech && speech.trim()) segs.push({ text: speech, body: { voice: voice || "male" } });
-  if (action && action.trim())
-    segs.push({ text: `${name || ""} ${action}`.trim(), body: { role: "gm" } });
+  if (action && action.trim()) segs.push({ text: `${name || ""} ${action}`.trim(), body: { role: "gm" } });
   return segs;
 }
 function usable(segments) {

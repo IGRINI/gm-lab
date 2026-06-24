@@ -167,9 +167,8 @@ fn seed_needs_npc_repair(seed: &Value) -> bool {
 
 /// `_has_cyrillic(text)`.
 fn has_cyrillic(s: &str) -> bool {
-    s.chars().any(|c| {
-        ('А'..='я').contains(&c) || c == 'Ё' || c == 'ё'
-    })
+    s.chars()
+        .any(|c| ('А'..='я').contains(&c) || c == 'Ё' || c == 'ё')
 }
 
 /// `_seed_player_facing_text(seed)`.
@@ -182,9 +181,13 @@ fn seed_player_facing_text(seed: &Value) -> String {
     let scene = scene_owned.as_ref().and_then(|v| v.as_object());
     let g = |key: &str| -> Value { o.get(key).cloned().unwrap_or(Value::Null) };
     let sg = |key: &str| -> Value {
-        scene.and_then(|m| m.get(key)).cloned().unwrap_or(Value::Null)
+        scene
+            .and_then(|m| m.get(key))
+            .cloned()
+            .unwrap_or(Value::Null)
     };
     let mut parts: Vec<String> = vec![
+        text(&g("story_brief")),
         text(&g("public_intro")),
         text(&g("location_name")),
         text(&g("description")),
@@ -199,7 +202,13 @@ fn seed_player_facing_text(seed: &Value) -> String {
     {
         parts.push(text(item));
     }
-    for key in ["visible_objects", "objects", "items", "visible_exits", "exits"] {
+    for key in [
+        "visible_objects",
+        "objects",
+        "items",
+        "visible_exits",
+        "exits",
+    ] {
         for item in as_list(&g(key)).iter().chain(as_list(&sg(key)).iter()) {
             if let Some(m) = item.as_object() {
                 parts.push(text(m.get("name").unwrap_or(&Value::Null)));
@@ -224,11 +233,39 @@ fn seed_needs_text_repair(seed: &Value, brief: &str) -> bool {
 
 fn cyr_to_lat(ch: char) -> Option<&'static str> {
     Some(match ch {
-        'а' => "a", 'б' => "b", 'в' => "v", 'г' => "g", 'д' => "d", 'е' => "e", 'ё' => "e",
-        'ж' => "zh", 'з' => "z", 'и' => "i", 'й' => "y", 'к' => "k", 'л' => "l", 'м' => "m",
-        'н' => "n", 'о' => "o", 'п' => "p", 'р' => "r", 'с' => "s", 'т' => "t", 'у' => "u",
-        'ф' => "f", 'х' => "h", 'ц' => "ts", 'ч' => "ch", 'ш' => "sh", 'щ' => "sch",
-        'ъ' => "", 'ы' => "y", 'ь' => "", 'э' => "e", 'ю' => "yu", 'я' => "ya",
+        'а' => "a",
+        'б' => "b",
+        'в' => "v",
+        'г' => "g",
+        'д' => "d",
+        'е' => "e",
+        'ё' => "e",
+        'ж' => "zh",
+        'з' => "z",
+        'и' => "i",
+        'й' => "y",
+        'к' => "k",
+        'л' => "l",
+        'м' => "m",
+        'н' => "n",
+        'о' => "o",
+        'п' => "p",
+        'р' => "r",
+        'с' => "s",
+        'т' => "t",
+        'у' => "u",
+        'ф' => "f",
+        'х' => "h",
+        'ц' => "ts",
+        'ч' => "ch",
+        'ш' => "sh",
+        'щ' => "sch",
+        'ъ' => "",
+        'ы' => "y",
+        'ь' => "",
+        'э' => "e",
+        'ю' => "yu",
+        'я' => "ya",
         _ => return None,
     })
 }
@@ -297,13 +334,14 @@ fn apply_brief_display_names(mut seed: Value, brief: &str) -> Value {
 
 /// `build_world_seed(client, brief)` — ask the model for a new playable world
 /// seed; World validates it afterwards. Repair logic preserved.
-pub async fn build_world_seed(
-    client: &dyn Backend,
-    brief: &str,
-) -> Result<Value, BackendError> {
-    let system = "Create a compact tabletop RP starting scene from the user's brief. Return JSON only. \
+pub async fn build_world_seed(client: &dyn Backend, brief: &str) -> Result<Value, BackendError> {
+    let system =
+        "Create a compact tabletop RP starting scene from the user's brief. Return JSON only. \
 This is not prose for the player; it is a seed that code will validate. Keep it small: \
 2-4 NPCs, 2-5 visible objects, 1-3 visible exits, 3-6 public facts. \
+Include `story_brief`: 2-4 short Russian sentences shown to the player at the start: \
+who they are, where they are, what just happened, and what is expected from them. \
+Do not put hidden truth, GM-only causes, future spoilers, or mechanical meta-information in `story_brief`. \
 NPC ids must be lowercase ascii snake_case. Put only NPC ids in scene.present_npcs. \
 Every present NPC must also have a full object in `npcs` with id, exact display name, \
 role, gender marker if known, persona, voice, goals, knowledge, and secret. Use `gender` \
@@ -311,7 +349,7 @@ as M, F, N, PL, OTHER, or a short custom Russian note: M=он/masculine, F=он�
 N=оно/neuter, PL=они/plural. If the \
 user gives NPC names, preserve those names exactly in `name`; never return only ids \
 like iva/run without display names. \
-All player-facing seed text must be in Russian: public_intro, scene title, scene \
+All player-facing seed text must be in Russian: story_brief, public_intro, scene title, scene \
 description, item names, exit names, public facts, NPC display names, NPC roles, \
 NPC persona/voice/goals summaries, gender custom notes, and scene positions/activities. Preserve \
 Russian proper nouns from the brief exactly; do not translate them. \
@@ -339,23 +377,22 @@ Do not create action ids or intent ids; characters will act in free text.";
     if !seed_needs_npc_repair(&seed) && !seed_needs_text_repair(&seed, brief) {
         return Ok(seed);
     }
-    let repair_system = "Repair this tabletop RP world seed into the required strict JSON shape. Return JSON \
+    let repair_system =
+        "Repair this tabletop RP world seed into the required strict JSON shape. Return JSON \
 only. Keep the same scene idea, visible objects, exits, and public facts. Create a \
 `npcs` array with one full NPC object for every id in scene.present_npcs or \
 present_npcs. Preserve exact user-provided display names from the brief, especially \
 Cyrillic names. NPC ids remain lowercase ascii snake_case; NPC `name` is the display \
-name shown to the player. All player-facing strings must be in Russian: scene title, \
-scene description, item names, exit names, public facts, NPC display names, NPC roles, \
+name shown to the player. Include `story_brief`: 2-4 short Russian sentences for the \
+player's start card with no hidden truth, future spoilers, or mechanics. All player-facing \
+strings must be in Russian: story_brief, scene title, scene description, item names, exit names, public facts, NPC display names, NPC roles, \
 NPC persona/voice/goals summaries, gender custom notes, and scene positions/activities. \
 Use `gender` as M, F, N, PL, OTHER, or a short custom Russian note. Keep \
 proper nouns from the brief exactly, for example do not translate Russian names of \
 places, ships, people, factions, or objects. Do not add action ids or intent ids.";
 
     let broken = serde_json::to_string(&seed).unwrap_or_default();
-    let repair_user = format!(
-        "USER BRIEF:\n{}\n\nBROKEN SEED:\n{}",
-        brief_user, broken
-    );
+    let repair_user = format!("USER BRIEF:\n{}\n\nBROKEN SEED:\n{}", brief_user, broken);
     let repair_messages = json!([
         {"role": "system", "content": repair_system},
         {"role": "user", "content": repair_user},
@@ -418,6 +455,11 @@ return {\"moves\":[]}.";
         {"role": "user", "content": user},
     ]);
     client
-        .chat_json(&messages, &scene_delta_schema(), Some(false), Role::Gm.as_str())
+        .chat_json(
+            &messages,
+            &scene_delta_schema(),
+            Some(false),
+            Role::Gm.as_str(),
+        )
         .await
 }

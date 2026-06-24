@@ -83,7 +83,12 @@ export function createTimeline() {
         update(i, { text: arr[i].text + d.text });
       } else if (d.channel === "npc_speech") {
         const i = idxOf(sid, "npc");
-        if (i != null) update(i, { revealed: true, speech: arr[i].speech + d.text });
+        if (i != null)
+          update(i, {
+            revealed: true,
+            response: (arr[i].response || "") + d.text,
+            speech: arr[i].speech + d.text,
+          });
       }
     } else if (k === "gm_tool_call") {
       if (d?.name === "ask_player") return;
@@ -152,6 +157,8 @@ export function createTimeline() {
         sid,
         name: a,
         npc_id: d?.npc_id,
+        response: "",
+        beats: [],
         speech: "",
         typing: true,
         revealed: false,
@@ -165,10 +172,16 @@ export function createTimeline() {
     } else if (k === "npc_speech") {
       const i = idxOf(sid, "npc");
       if (i != null) {
+        const response =
+          typeof d.response === "string" && d.response.trim()
+            ? d.response
+            : [d.action, d.speech].filter((item) => item && String(item).trim()).join(" ");
         update(i, {
           typing: false,
           revealed: true,
-          speech: d.speech,
+          response,
+          beats: Array.isArray(d.beats) ? d.beats : [],
+          speech: d.speech || "",
           action: d.action || null,
           claims: d.claims || [],
         });

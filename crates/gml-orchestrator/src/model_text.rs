@@ -91,11 +91,19 @@ pub fn compact_scene_payload(payload: &Value) -> Value {
         }
     }
     let items: Vec<Value> = match get(payload, "items") {
-        Value::Array(a) => a.iter().filter(|i| i.is_object()).map(compact_scene_item).collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter(|i| i.is_object())
+            .map(compact_scene_item)
+            .collect(),
         _ => Vec::new(),
     };
     let exits: Vec<Value> = match get(payload, "exits") {
-        Value::Array(a) => a.iter().filter(|e| e.is_object()).map(compact_scene_exit).collect(),
+        Value::Array(a) => a
+            .iter()
+            .filter(|e| e.is_object())
+            .map(compact_scene_exit)
+            .collect(),
         _ => Vec::new(),
     };
     if !items.is_empty() {
@@ -323,6 +331,16 @@ pub fn compact_world_query_payload(payload: &Value) -> Value {
                 "scene_id",
                 "importance",
                 "aliases",
+                "memory_id",
+                "tier",
+                "owner_scope",
+                "truth_status",
+                "injection_state",
+                "visibility_scopes",
+                "source_event_ids",
+                "source_memory_ids",
+                "source_state_record_ids",
+                "consumed_by",
             ] {
                 r.insert(key.to_string(), obj_get(m, key).clone());
             }
@@ -395,6 +413,14 @@ pub fn model_world_query_text(payload: &Value) -> String {
                     "region_id",
                     "scene_id",
                     "importance",
+                    "memory_id",
+                    "tier",
+                    "owner_scope",
+                    "truth_status",
+                    "injection_state",
+                    "source_event_ids",
+                    "source_memory_ids",
+                    "consumed_by",
                     "status",
                 ],
             );
@@ -497,7 +523,10 @@ pub fn compact_time_payload(payload: &Value) -> Value {
         "day_number",
         "time_of_day",
     ] {
-        cur.insert(key.to_string(), current.get(key).cloned().unwrap_or(Value::Null));
+        cur.insert(
+            key.to_string(),
+            current.get(key).cloned().unwrap_or(Value::Null),
+        );
     }
     let mut out = Map::new();
     out.insert("ok".to_string(), get(payload, "ok").clone());
@@ -518,7 +547,10 @@ pub fn model_time_text(payload: &Value) -> String {
         _ => Map::new(),
     };
     let elapsed = if compact.get("elapsed_minutes").is_some() {
-        format!("{} min", scalar_text(obj_get(&compact_obj(&compact), "elapsed_minutes")))
+        format!(
+            "{} min",
+            scalar_text(obj_get(&compact_obj(&compact), "elapsed_minutes"))
+        )
     } else {
         String::new()
     };
@@ -596,11 +628,17 @@ pub fn model_whereabouts_text(payload: &Value) -> String {
         _ => Map::new(),
     };
     let location = {
-        let ln = whereabouts.get("location_name").cloned().unwrap_or(Value::Null);
+        let ln = whereabouts
+            .get("location_name")
+            .cloned()
+            .unwrap_or(Value::Null);
         if !is_empty_value(&ln) {
             ln
         } else {
-            whereabouts.get("location_id").cloned().unwrap_or(Value::Null)
+            whereabouts
+                .get("location_id")
+                .cloned()
+                .unwrap_or(Value::Null)
         }
     };
     let lines = vec![
@@ -628,7 +666,10 @@ pub fn model_presence_text(payload: &Value) -> String {
         kv("label", get(&compact, "name")),
         kv("present", get(&compact, "present")),
         kv("scene", get(&compact, "scene")),
-        kv("whereabouts", whereabouts.get("status").unwrap_or(&Value::Null)),
+        kv(
+            "whereabouts",
+            whereabouts.get("status").unwrap_or(&Value::Null),
+        ),
     ];
     plain_lines("NPC PRESENCE", &lines)
 }
@@ -640,7 +681,10 @@ pub fn model_scene_text(payload: &Value) -> String {
         kv("location_id", get(&compact, "location_id")),
         kv("title", get(&compact, "title")),
         kv("present_npcs", get(&compact, "present_npcs")),
-        kv("dropped_present_npcs", get(&compact, "dropped_present_npcs")),
+        kv(
+            "dropped_present_npcs",
+            get(&compact, "dropped_present_npcs"),
+        ),
         kv("repair_hint", get(&compact, "repair_hint")),
     ];
     if let Value::Array(items) = get(&compact, "items") {
@@ -658,8 +702,10 @@ pub fn model_scene_text(payload: &Value) -> String {
         if !exits.is_empty() {
             lines.push("exits:".to_string());
             for exit_ in exits {
-                let summary =
-                    row_summary(exit_, &["exit_id", "name", "destination", "visible", "blocked_by"]);
+                let summary = row_summary(
+                    exit_,
+                    &["exit_id", "name", "destination", "visible", "blocked_by"],
+                );
                 if !summary.is_empty() {
                     lines.push(format!("- {summary}"));
                 }
@@ -797,7 +843,10 @@ fn compact_tool_value(schema: &Value, value: &Value, required: bool) -> Value {
             };
         }
         let required_keys: Vec<String> = match schema_obj.get("required") {
-            Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
             _ => Vec::new(),
         };
         let mut out = Map::new();
@@ -961,5 +1010,9 @@ pub fn apply_scene_move(world: &mut World, move_: &Value) -> Option<Value> {
     let can_hear = m.get("can_hear").map(crate::truthy).unwrap_or(true);
     let activity = m.get("activity").and_then(Value::as_str).unwrap_or("");
     let attitude = m.get("attitude").and_then(Value::as_str).unwrap_or("");
-    world.set_npc_presence(npc_id, present, location, visible, can_hear, activity, attitude).ok()
+    world
+        .set_npc_presence(
+            npc_id, present, location, visible, can_hear, activity, attitude,
+        )
+        .ok()
 }

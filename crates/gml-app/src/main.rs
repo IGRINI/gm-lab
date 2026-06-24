@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gml_audio::Sidecar;
+use gml_audio::{Sidecar, SidecarConfig};
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::{make_client, Backend, BackendError, CodexHook};
 use gml_persistence::DialogStore;
@@ -102,7 +102,11 @@ impl Args {
             match arg.as_str() {
                 "--server" | "--headless" | "serve" => mode = Mode::Server,
                 "-h" | "--help" => return Args { mode: Mode::Help },
-                "-V" | "--version" => return Args { mode: Mode::Version },
+                "-V" | "--version" => {
+                    return Args {
+                        mode: Mode::Version,
+                    }
+                }
                 _ => { /* ignore unknown args (Tauri/OS may pass extras) */ }
             }
         }
@@ -206,7 +210,9 @@ fn seed_path_env(dirs: &AppDirs) {
 }
 
 fn set_if_unset(key: &str, value: PathBuf) {
-    let already = std::env::var(key).map(|v| !v.trim().is_empty()).unwrap_or(false);
+    let already = std::env::var(key)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
     if !already {
         std::env::set_var(key, value);
     }
@@ -249,12 +255,8 @@ async fn build_app() -> Result<App, String> {
     };
 
     let store = Arc::new(
-        DialogStore::new(
-            DialogStore::default_db_path(),
-            factory,
-            config.clone(),
-        )
-        .map_err(|e| format!("open dialog store: {e}"))?,
+        DialogStore::new(DialogStore::default_db_path(), factory, config.clone())
+            .map_err(|e| format!("open dialog store: {e}"))?,
     );
 
     // Fold any legacy per-guest chats into the single shared scope (server.py
@@ -266,17 +268,53 @@ async fn build_app() -> Result<App, String> {
         Err(e) => tracing::warn!("merge_all_chats_into_scope failed (continuing): {e}"),
     }
 
-    let state = AppState {
+    let mut state = AppState {
         store,
         make_client,
         config,
         settings,
         http: reqwest::Client::new(),
+        sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         index_html: Arc::new(resolve_index_html(&dirs)),
     };
 
-    let sidecar = Arc::new(Sidecar::from_env());
+    // Unified inference sidecar (serve.py: embeddings + rerank + TTS in one
+    // process). Pass per-model quant + which models to load so the sidecar
+    // mirrors the app's RAG/TTS settings; base_url/port/HF_HOME come from
+    // SidecarConfig::from_env. Started best-effort at boot, killed on exit.
+    let mut sidecar_cfg = SidecarConfig::from_env();
+    let b01 = |on: bool| if on { "1" } else { "0" }.to_string();
+    sidecar_cfg.envs.push((
+        "EMBEDDER_MODEL".to_string(),
+        state.config.rag_embeddings_model.clone(),
+    ));
+    sidecar_cfg.envs.push((
+        "RERANKER_MODEL".to_string(),
+        state.config.rag_rerank_model.clone(),
+    ));
+    sidecar_cfg.envs.push((
+        "EMBEDDER_QUANT".to_string(),
+        state.config.embedder_quant.clone(),
+    ));
+    sidecar_cfg.envs.push((
+        "RERANKER_QUANT".to_string(),
+        state.config.reranker_quant.clone(),
+    ));
+    sidecar_cfg.envs.push((
+        "EMBEDDER_ENABLED".to_string(),
+        b01(state.config.rag_enabled),
+    ));
+    sidecar_cfg.envs.push((
+        "RERANKER_ENABLED".to_string(),
+        b01(state.config.rag_enabled && state.config.rag_rerank_enabled),
+    ));
+    sidecar_cfg.envs.push((
+        "TTS_ENABLED".to_string(),
+        b01(state.settings.tts_enabled(None)),
+    ));
+    let sidecar = Arc::new(Sidecar::new(sidecar_cfg));
+    state.sidecar = Some(sidecar.clone());
 
     Ok(App { state, sidecar })
 }
@@ -356,13 +394,35 @@ async fn run_server() {
         }
     };
 
-    // Best-effort TTS sidecar (no-op when disabled / can't launch).
-    start_sidecar(&app).await;
+    // Start the inference sidecar in the BACKGROUND so a slow/wedged sidecar
+    // (its readiness probe can take ~2 min for the TTS CUDA-graph capture) never
+    // delays binding the HTTP listener. The app runs degraded without it.
+    {
+        let sidecar = app.sidecar.clone();
+        let rag = app.state.config.rag_enabled;
+        let tts = app.state.settings.tts_enabled(None);
+        tokio::spawn(async move {
+            if !(rag || tts) {
+                tracing::info!("RAG + TTS both disabled; inference sidecar not started");
+                return;
+            }
+            match sidecar.ensure_started(true).await {
+                Ok(()) => tracing::info!("inference sidecar ready (rag={rag} tts={tts})"),
+                Err(e) => {
+                    tracing::warn!("inference sidecar not started ({e}); continuing degraded")
+                }
+            }
+        });
+    }
 
     let host = env_str("GM_HOST", DEFAULT_HOST);
     let port = env_u16("GM_PORT", DEFAULT_PORT);
     let lan_exposed = host.is_empty() || host == "0.0.0.0";
-    let shown_host = if lan_exposed { "localhost" } else { host.as_str() };
+    let shown_host = if lan_exposed {
+        "localhost"
+    } else {
+        host.as_str()
+    };
 
     let backend = app.state.config.backend.clone();
     let url = format!("http://{shown_host}:{port}");
@@ -382,7 +442,8 @@ async fn run_server() {
     let bind_host: std::net::IpAddr = if lan_exposed {
         std::net::IpAddr::from([0, 0, 0, 0])
     } else {
-        host.parse().unwrap_or_else(|_| std::net::IpAddr::from([127, 0, 0, 1]))
+        host.parse()
+            .unwrap_or_else(|_| std::net::IpAddr::from([127, 0, 0, 1]))
     };
 
     // Optional LAN HTTPS listener (own port) — never touches the HTTP port.
@@ -447,12 +508,10 @@ fn run_desktop() {
 
     // Build the app + bind the embedded server on a loopback port BEFORE the
     // window opens, so the React app has a live origin to talk to.
-    let app = handle
-        .block_on(build_app())
-        .unwrap_or_else(|e| {
-            eprintln!("gml-app: failed to start embedded server: {e}");
-            std::process::exit(1);
-        });
+    let app = handle.block_on(build_app()).unwrap_or_else(|e| {
+        eprintln!("gml-app: failed to start embedded server: {e}");
+        std::process::exit(1);
+    });
 
     // Loopback bind: fixed GM_PORT if set, else an ephemeral port.
     let requested_port = env_u16_opt("GM_PORT");
@@ -474,7 +533,7 @@ fn run_desktop() {
     let sidecar = app.sidecar.clone();
     handle.spawn(async move {
         let _ = sidecar
-            .ensure_started(state.settings.tts_enabled(None))
+            .ensure_started(state.config.rag_enabled || state.settings.tts_enabled(None))
             .await;
     });
     let router = build_router(app.state.clone());
@@ -493,11 +552,8 @@ fn run_desktop() {
     let origin_for_setup = origin.clone();
 
     let builder = tauri::Builder::default().setup(move |tauri_app| {
-        let url = WebviewUrl::External(
-            origin_for_setup
-                .parse()
-                .expect("parse loopback origin url"),
-        );
+        let url =
+            WebviewUrl::External(origin_for_setup.parse().expect("parse loopback origin url"));
         WebviewWindowBuilder::new(tauri_app, "main", url)
             .title("GM-Lab")
             .inner_size(1280.0, 860.0)
@@ -528,24 +584,9 @@ fn run_desktop() {
 // helpers
 // =========================================================================
 
-/// Start the TTS sidecar best-effort (PORT_PLAN: non-fatal when disabled or it
-/// can't launch). Honors `runtime_settings.tts_enabled`.
-async fn start_sidecar(app: &App) {
-    let enabled = app.state.settings.tts_enabled(None);
-    if !enabled {
-        tracing::info!("TTS disabled in settings; sidecar not started");
-        return;
-    }
-    match app.sidecar.ensure_started(true).await {
-        Ok(()) => tracing::info!("TTS sidecar ready"),
-        Err(e) => tracing::warn!("TTS sidecar not started ({e}); continuing without TTS"),
-    }
-}
-
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = fmt().with_env_filter(filter).with_target(false).try_init();
 }
 
@@ -570,13 +611,18 @@ fn env_u16(key: &str, default: u16) -> u16 {
 }
 
 fn env_u16_opt(key: &str) -> Option<u16> {
-    std::env::var(key).ok().and_then(|v| v.trim().parse::<u16>().ok())
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
 }
 
 /// Truthy env flag: set and not in the falsey set.
 fn env_flag(key: &str) -> bool {
     match std::env::var(key) {
-        Ok(v) => !matches!(v.trim().to_lowercase().as_str(), "" | "0" | "false" | "no" | "off"),
+        Ok(v) => !matches!(
+            v.trim().to_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        ),
         Err(_) => false,
     }
 }
@@ -602,7 +648,10 @@ mod tests {
     fn args_help_and_version() {
         assert_eq!(Args::parse(vec!["--help".to_string()]).mode, Mode::Help);
         assert_eq!(Args::parse(vec!["-h".to_string()]).mode, Mode::Help);
-        assert_eq!(Args::parse(vec!["--version".to_string()]).mode, Mode::Version);
+        assert_eq!(
+            Args::parse(vec!["--version".to_string()]).mode,
+            Mode::Version
+        );
         assert_eq!(Args::parse(vec!["-V".to_string()]).mode, Mode::Version);
     }
 

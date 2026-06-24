@@ -9,10 +9,41 @@ import {
   autoUpdate,
 } from "@floating-ui/dom";
 
+export function TipContent({ title, subtitle, rows = [], note }) {
+  const cleanRows = rows.filter((row) => row && row[0] && row[1]);
+  return (
+    <div className="ui-tip">
+      <div className="ui-tip-head">
+        <b>{title}</b>
+        {subtitle && <span>{subtitle}</span>}
+      </div>
+      {cleanRows.length > 0 && (
+        <div className="ui-tip-rows">
+          {cleanRows.map(([label, value]) => (
+            <div className="ui-tip-row" key={label}>
+              <span>{label}</span>
+              <b>{value}</b>
+            </div>
+          ))}
+        </div>
+      )}
+      {note && <div className="ui-tip-note">{note}</div>}
+    </div>
+  );
+}
+
 // Custom hover/focus tooltip — replaces the native title="" popup.
 // `content` may be a string (newlines honored) or any React node.
 // `as` lets the trigger render as a block element (e.g. the meta line).
-export default function Tooltip({ content, children, className, tipClassName = "", as = "span", style }) {
+export default function Tooltip({
+  content,
+  children,
+  className,
+  tipClassName = "",
+  as = "span",
+  style,
+  focusable = true,
+}) {
   const [open, setOpen] = useState(false);
   const refEl = useRef(null);
   const floatEl = useRef(null);
@@ -51,20 +82,18 @@ export default function Tooltip({ content, children, className, tipClassName = "
   const show = () => setOpen(true);
   const hide = () => setOpen(false);
 
-  const trigger = createElement(
-    as,
-    {
-      ref: refEl,
-      className,
-      style,
-      onMouseEnter: show,
-      onMouseLeave: hide,
-      onFocus: show,
-      onBlur: hide,
-      tabIndex: 0,
-    },
-    children
-  );
+  const triggerProps = {
+    ref: refEl,
+    className,
+    style,
+    onMouseEnter: show,
+    onMouseLeave: hide,
+    onFocus: show,
+    onBlur: hide,
+  };
+  if (focusable) triggerProps.tabIndex = 0;
+
+  const trigger = createElement(as, triggerProps, children);
 
   return (
     <>

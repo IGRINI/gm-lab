@@ -9,7 +9,9 @@
 //! - [`gm`] — `_gm_system`, `_gm_world_setup`, `_gm_turn_context`,
 //!   `gm_user_message`, `_gm_request_messages`, `TURN_RESOLUTION_CHECKLIST`.
 //! - [`tools`] — `build_gm_tools`, `gm_tool_catalog`, `build_gm_tools_for_model`,
-//!   `search_gm_tools`, `initial_gm_tool_names`.
+//!   `build_gm_tools_for_native_tool_search`, `search_gm_tools`,
+//!   `load_gm_tool_schema`, `initial_gm_tool_names`, `build_canon_gm_tools`,
+//!   `build_npc_tools`.
 //! - [`npc`] — `NPC_SCHEMA`, `npc_system_message`, `npc_card_block`,
 //!   `npc_user_message`, `_historical_npc_message`, `npc_request_messages`.
 //! - [`seed`] — `build_world_seed`, `extract_scene_delta` + schemas + helpers.
@@ -20,12 +22,12 @@
 //! byte-identically and feed straight into the `gml_llm::Backend` surface.
 
 // The STATIC GM tool schemas (`tools.rs`) are deeply-nested `json!` literals
-// (e.g. `update_world_state.parameters.items.items.properties.*`) that exceed
-// the default macro recursion limit during expansion.
+// that exceed the default macro recursion limit during expansion.
 #![recursion_limit = "1024"]
 
 pub mod coerce;
 pub mod gm;
+pub mod location;
 pub mod npc;
 pub mod seed;
 mod tool_guidance;
@@ -33,28 +35,26 @@ pub mod tools;
 
 use serde_json::{json, Map, Value};
 
-use gml_llm::{
-    Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
-};
+use gml_llm::{Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput};
 use gml_types::Role;
 use gml_world::World;
 
 // Re-exports mirroring the `agents.py` public surface.
-pub use coerce::{as_list, claims, norm_npc, text};
+pub use coerce::{as_list, claims, norm_npc, norm_npc_with_reasoning, text};
 pub use gm::{
     gm_request_messages, gm_system, gm_turn_context, gm_user_message, gm_world_setup,
     TURN_RESOLUTION_CHECKLIST,
 };
+pub use location::{generate_location, location_generator_messages};
 pub use npc::{
     historical_npc_message, npc_card_block, npc_request_messages, npc_schema, npc_system_message,
-    npc_user_message, NPC_PERCEPTION_BRIEF_RULES,
+    npc_user_message, npc_user_message_with_contact, NPC_PERCEPTION_BRIEF_RULES,
 };
-pub use seed::{
-    build_world_seed, extract_scene_delta, scene_delta_schema, world_seed_schema,
-};
+pub use seed::{build_world_seed, extract_scene_delta, scene_delta_schema, world_seed_schema};
 pub use tools::{
-    build_gm_tools, build_gm_tools_for_model, gm_tool_catalog, initial_gm_tool_names,
-    search_gm_tools,
+    build_canon_gm_tools, build_gm_tools, build_gm_tools_for_model,
+    build_gm_tools_for_native_tool_search, build_npc_tools, gm_tool_catalog, initial_gm_tool_names,
+    load_gm_tool_schema, search_gm_tools, CANON_GM_TOOL_NAMES,
 };
 
 /// `world._public_gender(value)` — RU grammatical-gender label, faithful port
@@ -87,10 +87,11 @@ pub async fn gm_turn(
     include_player_options_tool: bool,
 ) -> Result<ChatOutput, BackendError> {
     let messages = Value::Array(gm_request_messages(world, gm_messages, summary));
-    let tools = Value::Array(build_gm_tools_for_model(
-        loaded_tool_names,
-        include_player_options_tool,
-    ));
+    let tools = Value::Array(if client.supports_native_tool_search() {
+        build_gm_tools_for_native_tool_search(include_player_options_tool)
+    } else {
+        build_gm_tools_for_model(loaded_tool_names, include_player_options_tool)
+    });
     client
         .chat(&messages, Some(&tools), Some(true), Role::Gm.as_str())
         .await
@@ -108,10 +109,11 @@ pub async fn gm_turn_stream(
     sink: &mut (dyn DeltaSink + Send),
 ) -> Result<ChatStreamOutput, BackendError> {
     let messages = Value::Array(gm_request_messages(world, gm_messages, summary));
-    let tools = Value::Array(build_gm_tools_for_model(
-        loaded_tool_names,
-        include_player_options_tool,
-    ));
+    let tools = Value::Array(if client.supports_native_tool_search() {
+        build_gm_tools_for_native_tool_search(include_player_options_tool)
+    } else {
+        build_gm_tools_for_model(loaded_tool_names, include_player_options_tool)
+    });
     client
         .chat_stream(&messages, Some(&tools), Some(true), Role::Gm.as_str(), sink)
         .await
@@ -143,7 +145,8 @@ pub async fn gm_prelude_stream(
             "arguments": args,
         }));
     }
-    let system = "You are the Game Master writing visible scene narration BEFORE a pending tool resolution
+    let system =
+        "You are the Game Master writing visible scene narration BEFORE a pending tool resolution
 in a tabletop D&D 5e roleplay scene.
 
 Write in Russian only. Use the length the moment deserves: usually one vivid paragraph,
@@ -197,7 +200,12 @@ pub async fn npc_turn(
     summary: &str,
 ) -> Result<Map<String, Value>, BackendError> {
     let user_message = npc_user_message(
-        situation, observations, commitments, feedback, constraints, scene_slice,
+        situation,
+        observations,
+        commitments,
+        feedback,
+        constraints,
+        scene_slice,
     );
     let msgs = Value::Array(npc_request_messages(npc, history, summary, &user_message));
     let data = client
@@ -222,7 +230,12 @@ pub async fn npc_turn_stream(
     sink: &mut (dyn DeltaSink + Send),
 ) -> Result<(Map<String, Value>, Map<String, Value>), BackendError> {
     let user_message = npc_user_message(
-        situation, observations, commitments, feedback, constraints, scene_slice,
+        situation,
+        observations,
+        commitments,
+        feedback,
+        constraints,
+        scene_slice,
     );
     let msgs = Value::Array(npc_request_messages(npc, history, summary, &user_message));
     let JsonStreamOutput { data, stats } = client

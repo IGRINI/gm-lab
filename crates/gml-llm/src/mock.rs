@@ -57,7 +57,10 @@ impl MockClient {
         for (k, v) in &s {
             row.insert(k.clone(), v.clone());
         }
-        let prompt = s.get("prompt_eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let prompt = s
+            .get("prompt_eval_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let eval = s.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
         row.insert("tokens".to_string(), Value::from(prompt + eval));
         self.call_log.lock().expect("call_log lock").push(row);
@@ -77,9 +80,7 @@ impl MockClient {
                     ("npc_id", Value::String("borin".to_string())),
                     (
                         "situation",
-                        Value::String(
-                            "Игрок громко обвиняет Борина в убийстве.".to_string(),
-                        ),
+                        Value::String("Игрок громко обвиняет Борина в убийстве.".to_string()),
                     ),
                 ]),
                 "mock0",
@@ -99,9 +100,7 @@ impl MockClient {
                     ("npc_id", Value::String("borin".to_string())),
                     (
                         "situation",
-                        Value::String(
-                            "Игрок громко обвиняет Борина в убийстве.".to_string(),
-                        ),
+                        Value::String("Игрок громко обвиняет Борина в убийстве.".to_string()),
                     ),
                     (
                         "correction",
@@ -143,6 +142,68 @@ impl MockClient {
             // {"moves": []}
             return obj([("moves", Value::Array(Vec::new()))]);
         }
+        if system_text.contains("GM-Lab location generator") {
+            return obj([
+                ("name", Value::String("Дорожная остановка".to_string())),
+                ("kind", Value::String("travel_situation".to_string())),
+                (
+                    "visible_summary",
+                    Value::String("У дороги видны свежие следы остановившейся повозки.".to_string()),
+                ),
+                (
+                    "description",
+                    Value::String(
+                        "На обочине темнеют колеи, рядом валяется оборванная верёвка и пахнет мокрой кожей."
+                            .to_string(),
+                    ),
+                ),
+                (
+                    "hidden_summary",
+                    Value::String("Караван ушёл не сам: его аккуратно увели с дороги.".to_string()),
+                ),
+                (
+                    "features",
+                    Value::Array(vec![
+                        Value::String("свежие колеи".to_string()),
+                        Value::String("оборванная верёвка".to_string()),
+                    ]),
+                ),
+                (
+                    "sensory_details",
+                    Value::Array(vec![Value::String("запах мокрой кожи".to_string())]),
+                ),
+                (
+                    "choices",
+                    Value::Array(vec![
+                        Value::String("осмотреть следы".to_string()),
+                        Value::String("продолжить путь".to_string()),
+                    ]),
+                ),
+                (
+                    "consequences",
+                    Value::Array(vec![Value::String(
+                        "задержка может раскрыть, кто свернул с тракта".to_string(),
+                    )]),
+                ),
+                (
+                    "hidden_clues",
+                    Value::Array(vec![Value::String("следы подков без гвоздей".to_string())]),
+                ),
+                (
+                    "knows_more",
+                    Value::Array(vec![Value::String("местные возчики".to_string())]),
+                ),
+                ("transitions", Value::Array(Vec::new())),
+                (
+                    "anti_repeat_key",
+                    Value::String("road-stop-abandoned-cart-tracks".to_string()),
+                ),
+                (
+                    "memory_note",
+                    Value::String("На дороге найдены следы уведённой повозки.".to_string()),
+                ),
+            ]);
+        }
         if system_text.contains("starting scene") || system_text.contains("WorldSeed") {
             return world_seed_json();
         }
@@ -151,9 +212,7 @@ impl MockClient {
             return obj([
                 (
                     "reasoning",
-                    Value::String(
-                        "Чёрт, незаметно не выйти. Придётся тянуть время.".to_string(),
-                    ),
+                    Value::String("Чёрт, незаметно не выйти. Придётся тянуть время.".to_string()),
                 ),
                 (
                     "speech",
@@ -161,9 +220,7 @@ impl MockClient {
                 ),
                 (
                     "action",
-                    Value::String(
-                        "медленно бредёт к бочкам, не сводя глаз с гостя".to_string(),
-                    ),
+                    Value::String("медленно бредёт к бочкам, не сводя глаз с гостя".to_string()),
                 ),
                 ("claims", Value::Array(Vec::new())),
             ]);
@@ -376,11 +433,147 @@ impl Backend for MockClient {
     async fn chat_stream(
         &self,
         messages: &Value,
-        _tools: Option<&Value>,
+        tools: Option<&Value>,
         _think: Option<bool>,
-        _reasoning_role: &str,
+        reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<ChatStreamOutput, BackendError> {
+        if reasoning_role == "npc" {
+            let n_tool = count_tool_messages(messages);
+            let user = join_role_contents(messages, "user");
+            if tools.is_some() && n_tool == 0 && user.contains("NPC_NOTE_MEMORY_TOOL_SENTINEL") {
+                let calls = vec![ParsedCall::new(
+                    "npc_note_memory",
+                    obj([
+                        (
+                            "text",
+                            Value::String(
+                                "NPC_NOTE_MEMORY_TOOL_SENTINEL Борин запомнил угрозу игрока."
+                                    .to_string(),
+                            ),
+                        ),
+                        ("kind", Value::String("interaction".to_string())),
+                        ("about", Value::String("player".to_string())),
+                        ("privacy", Value::String("public".to_string())),
+                    ]),
+                    "npc_mock_note0",
+                )];
+                let stats = self.remember("chat_stream");
+                return Ok(ChatStreamOutput {
+                    thinking: "Нужно записать это в собственную память.".to_string(),
+                    content: String::new(),
+                    calls: calls.clone(),
+                    assistant_msg: toolmsg(&calls),
+                    stats,
+                });
+            }
+            if tools.is_some() && n_tool == 0 && user.contains("NPC_RELATIONSHIP_TOOL_SENTINEL") {
+                let calls = vec![ParsedCall::new(
+                    "npc_recall_relationship",
+                    obj([("target", Value::String("player".to_string()))]),
+                    "npc_mock_rel0",
+                )];
+                let stats = self.remember("chat_stream");
+                return Ok(ChatStreamOutput {
+                    thinking: "Нужно вспомнить отношение к игроку.".to_string(),
+                    content: String::new(),
+                    calls: calls.clone(),
+                    assistant_msg: toolmsg(&calls),
+                    stats,
+                });
+            }
+            if tools.is_some() && n_tool == 0 && user.contains("REMEMBER_TOOL_SENTINEL") {
+                let calls = vec![ParsedCall::new(
+                    "remember",
+                    obj([("query", Value::String("REMEMBER_TOOL_SENTINEL".to_string()))]),
+                    "npc_mock0",
+                )];
+                let stats = self.remember("chat_stream");
+                return Ok(ChatStreamOutput {
+                    thinking: "Нужно вспомнить личную память.".to_string(),
+                    content: String::new(),
+                    calls: calls.clone(),
+                    assistant_msg: toolmsg(&calls),
+                    stats,
+                });
+            }
+
+            let tool_text = join_role_contents(messages, "tool");
+            let data = if tool_text.contains("NPC_RELATIONSHIP_MEMORY_SENTINEL") {
+                obj([
+                    (
+                        "response",
+                        Value::String(
+                            "Борин вспоминает прежнюю услугу игрока и говорит мягче.".to_string(),
+                        ),
+                    ),
+                    (
+                        "beats",
+                        Value::Array(vec![Value::String(
+                            "понижает голос и перестает пятиться".to_string(),
+                        )]),
+                    ),
+                    (
+                        "claims",
+                        Value::Array(vec![Value::String(
+                            "NPC_RELATIONSHIP_MEMORY_SENTINEL".to_string(),
+                        )]),
+                    ),
+                ])
+            } else if tool_text.contains("\"status\":\"stored\"")
+                && tool_text.contains("\"scope\":\"npc\"")
+            {
+                obj([
+                    (
+                        "response",
+                        Value::String("Борин коротко кивает, запоминая сказанное.".to_string()),
+                    ),
+                    (
+                        "beats",
+                        Value::Array(vec![Value::String(
+                            "запоминает угрозу и держится настороженно".to_string(),
+                        )]),
+                    ),
+                    ("claims", Value::Array(Vec::new())),
+                ])
+            } else if tool_text.contains("BORIN_REMEMBER_TOOL_SENTINEL") {
+                obj([
+                    (
+                        "reasoning",
+                        Value::String("Я опираюсь на собственное воспоминание.".to_string()),
+                    ),
+                    (
+                        "speech",
+                        Value::String("Помню: BORIN_REMEMBER_TOOL_SENTINEL.".to_string()),
+                    ),
+                    (
+                        "action",
+                        Value::String("приглушает голос и смотрит на стойку".to_string()),
+                    ),
+                    (
+                        "claims",
+                        Value::Array(vec![Value::String(
+                            "BORIN_REMEMBER_TOOL_SENTINEL".to_string(),
+                        )]),
+                    ),
+                ])
+            } else {
+                self.chat_json_impl(messages)
+            };
+            let content = py_json_dumps_default(&Value::Object(data));
+            for chunk in chunk_by_chars(&content, 6) {
+                sink.emit(channel::CONTENT, &chunk);
+            }
+            let stats = self.remember("chat_stream");
+            return Ok(ChatStreamOutput {
+                thinking: String::new(),
+                content: content.clone(),
+                calls: Vec::new(),
+                assistant_msg: assistant_plain(&content),
+                stats,
+            });
+        }
+
         // thinking, content, calls, msg = self.chat(...)
         let out = self.chat_impl(messages);
         // for w in (thinking or "").split(): yield ("thinking", w + " ")
@@ -503,7 +696,10 @@ mod tests {
         assert_eq!(out.calls.len(), 1);
         assert_eq!(out.calls[0].name, "ask_npc");
         assert_eq!(out.calls[0].id, "mock0");
-        assert_eq!(out.calls[0].arguments.get("npc_id"), Some(&Value::from("borin")));
+        assert_eq!(
+            out.calls[0].arguments.get("npc_id"),
+            Some(&Value::from("borin"))
+        );
         assert!(out.calls[0].arguments.get("correction").is_none());
         assert_eq!(out.content, "");
         // assistant_msg is a toolmsg
@@ -523,7 +719,11 @@ mod tests {
         let out = mc.chat(&messages, None, Some(false), "gm").await.unwrap();
         assert_eq!(out.calls.len(), 1);
         assert_eq!(out.calls[0].id, "mock1");
-        let corr = out.calls[0].arguments.get("correction").and_then(|v| v.as_str()).unwrap();
+        let corr = out.calls[0]
+            .arguments
+            .get("correction")
+            .and_then(|v| v.as_str())
+            .unwrap();
         assert!(corr.contains("Задней двери у «Грифона» нет"));
     }
 
@@ -541,7 +741,10 @@ mod tests {
         assert!(out.content.contains("Борин мнётся за стойкой"));
         // final assistant_msg has no tool_calls
         assert!(out.assistant_msg.get("tool_calls").is_none());
-        assert_eq!(out.assistant_msg.get("role"), Some(&Value::from("assistant")));
+        assert_eq!(
+            out.assistant_msg.get("role"),
+            Some(&Value::from("assistant"))
+        );
     }
 
     #[tokio::test]
@@ -550,9 +753,17 @@ mod tests {
         let messages = serde_json::json!([
             {"role": "system", "content": "Generate the starting scene for this WorldSeed."}
         ]);
-        let out = mc.chat_json(&messages, &Value::Null, Some(true), "gm").await.unwrap();
+        let out = mc
+            .chat_json(&messages, &Value::Null, Some(true), "gm")
+            .await
+            .unwrap();
         assert!(out.contains_key("public_intro"));
-        assert_eq!(out.get("hidden_truth"), Some(&Value::from("The ship was hidden in a frozen cove by smugglers.")));
+        assert_eq!(
+            out.get("hidden_truth"),
+            Some(&Value::from(
+                "The ship was hidden in a frozen cove by smugglers."
+            ))
+        );
         let npcs = out.get("npcs").and_then(|v| v.as_array()).unwrap();
         assert_eq!(npcs.len(), 2);
         assert_eq!(npcs[0].get("id"), Some(&Value::from("iva")));
@@ -564,7 +775,10 @@ mod tests {
         let messages = serde_json::json!([
             {"role": "system", "content": "Report current-scene NPC roster changes as moves."}
         ]);
-        let out = mc.chat_json(&messages, &Value::Null, Some(true), "gm").await.unwrap();
+        let out = mc
+            .chat_json(&messages, &Value::Null, Some(true), "gm")
+            .await
+            .unwrap();
         assert_eq!(out.get("moves"), Some(&Value::Array(Vec::new())));
         assert_eq!(out.len(), 1);
     }
@@ -576,7 +790,10 @@ mod tests {
             {"role": "system", "content": "You are an NPC."},
             {"role": "user", "content": "Игрок обвиняет тебя."}
         ]);
-        let out = mc.chat_json(&messages, &Value::Null, Some(false), "npc").await.unwrap();
+        let out = mc
+            .chat_json(&messages, &Value::Null, Some(false), "npc")
+            .await
+            .unwrap();
         assert_eq!(
             out.get("action").and_then(|v| v.as_str()),
             Some("пытается незаметно выскользнуть через заднюю дверь трактира")
@@ -592,7 +809,10 @@ mod tests {
             {"role": "system", "content": "You are an NPC."},
             {"role": "user", "content": "Замечание ГМ: REDO this, no back door."}
         ]);
-        let out = mc.chat_json(&messages, &Value::Null, Some(false), "npc").await.unwrap();
+        let out = mc
+            .chat_json(&messages, &Value::Null, Some(false), "npc")
+            .await
+            .unwrap();
         assert_eq!(
             out.get("speech").and_then(|v| v.as_str()),
             Some("Сейчас, дружище, эль принесу, обожди-ка.")
@@ -689,9 +909,6 @@ mod tests {
     fn insert_default_spaces_respects_strings() {
         // Commas/colons inside strings are NOT spaced.
         let compact = r#"{"a":"x,y:z","b":1}"#;
-        assert_eq!(
-            insert_default_spaces(compact),
-            r#"{"a": "x,y:z", "b": 1}"#
-        );
+        assert_eq!(insert_default_spaces(compact), r#"{"a": "x,y:z", "b": 1}"#);
     }
 }

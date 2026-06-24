@@ -13,15 +13,21 @@ use crate::tokenize::tokens;
 /// Port of `_GOOD_STATUS`.
 pub const GOOD_STATUS: [&str; 3] = ["known", "current", "present"];
 
-/// Port of `_query_instruction(query)`.
+/// The English task that steers query-side retrieval. Kept domain-specific and
+/// in English (per Qwen3's multilingual guidance). Sent to the sidecar as `task`
+/// for `input_type:"query"`, and used by the default [`crate::Embedder::embed_query`]
+/// template. Splitting it out lets the sidecar build the model-card template
+/// (`Instruct: {task}\nQuery:{q}`) instead of a frozen client-side string.
+pub const QUERY_TASK: &str = "Given a game master's query, retrieve relevant \
+public world facts, current scene facts, known NPC whereabouts, evidence, and \
+unconfirmed witness statements for a tabletop RPG. Do not retrieve hidden canon \
+or private secrets.";
+
+/// Port of `_query_instruction(query)` — the full client-side template. Used by
+/// the default (dumb-embedder) `embed_query` path and the golden tests; the
+/// sidecar builds its own from [`QUERY_TASK`]. Byte-identical to the original.
 pub fn query_instruction(query: &str) -> String {
-    format!(
-        "Instruct: Given a game master's query, retrieve relevant public world facts, \
-current scene facts, known NPC whereabouts, evidence, and unconfirmed witness \
-statements for a tabletop RPG. Do not retrieve hidden canon or private secrets.\n\
-Query: {}",
-        py_strip(query)
-    )
+    format!("Instruct: {QUERY_TASK}\nQuery: {}", py_strip(query))
 }
 
 /// Port of `_rank_map(scores)`.
@@ -75,7 +81,11 @@ pub fn bm25_scores(query: &str, documents: &[RagDocument]) -> Vec<f64> {
         for term in terms {
             *counts.entry(term.clone()).or_insert(0) += 1;
         }
-        let dl = if terms.is_empty() { 1.0 } else { terms.len() as f64 };
+        let dl = if terms.is_empty() {
+            1.0
+        } else {
+            terms.len() as f64
+        };
         let mut score = 0.0_f64;
         for term in &query_terms {
             let tf = *counts.get(term).unwrap_or(&0);
@@ -128,15 +138,11 @@ impl<E: Embedder> RagEngine<E> {
             _ => config.rag_top_k as usize,
         };
 
-        let query_text = query_instruction(query);
-        let mut embed_inputs: Vec<String> = Vec::with_capacity(docs.len() + 1);
-        embed_inputs.push(query_text);
-        for doc in &docs {
-            embed_inputs.push(doc.contextual_text());
-        }
-        let vectors = self.embedder.embed(&embed_inputs)?;
-        let query_vec = &vectors[0];
-        let doc_vecs = &vectors[1..];
+        // Asymmetric retrieval: the query carries the instruction (sidecar-applied
+        // for the real embedder via `embed_query`), documents are embedded bare.
+        let query_vec = self.embedder.embed_query(query)?;
+        let doc_inputs: Vec<String> = docs.iter().map(|doc| doc.contextual_text()).collect();
+        let doc_vecs = self.embedder.embed(&doc_inputs)?;
 
         let dense_scores: Vec<f64> = doc_vecs
             .iter()
@@ -191,6 +197,34 @@ impl<E: Embedder> RagEngine<E> {
             .into_iter()
             .filter(|hit| hit.keyword_score > 0.0 || hit.dense_score >= min_dense)
             .collect();
+
+        // Cross-encoder rerank (precision stage) over the fused top-N candidates.
+        // The sidecar holds no corpus, so we ship the candidate texts; we use only
+        // the returned ORDER (jina scores are raw cosine). Rerank errors propagate
+        // so callers can report degraded retrieval instead of silently changing
+        // ranking semantics.
+        if config.rag_rerank_enabled && filtered.len() > 1 {
+            let cand_n = (config.rag_rerank_candidates.max(1) as usize).min(filtered.len());
+            let candidates = &filtered[..cand_n];
+            let texts: Vec<String> = candidates
+                .iter()
+                .map(|hit| hit.document.contextual_text())
+                .collect();
+            let order = crate::client::rerank_documents(
+                &config.rag_rerank_url,
+                py_strip(query),
+                &texts,
+                top_k,
+                config.rag_timeout_seconds,
+            )?;
+            let reranked: Vec<RagHit> = order
+                .iter()
+                .filter_map(|&i| candidates.get(i).cloned())
+                .collect();
+            if !reranked.is_empty() {
+                return Ok(reranked.into_iter().take(top_k).collect());
+            }
+        }
 
         Ok(filtered.into_iter().take(top_k).collect())
     }

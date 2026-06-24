@@ -23,7 +23,14 @@ fn fact_source_identity(source: &Value) -> String {
         Some(Value::Object(m)) => m.clone(),
         _ => Map::new(),
     };
-    for key in ["record_id", "fact_id", "npc_id", "scene_id", "item_id", "seq"] {
+    for key in [
+        "record_id",
+        "fact_id",
+        "npc_id",
+        "scene_id",
+        "item_id",
+        "seq",
+    ] {
         let value = clean_text(metadata.get(key).unwrap_or(&Value::Null));
         if !value.is_empty() {
             return format!("{key}:{}", value.to_lowercase());
@@ -100,7 +107,11 @@ pub fn filter_new_fact_payload(
             for source in &sources {
                 let number = source.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
                 let segment = segments.get(&number).cloned().unwrap_or_default();
-                let key_text = if segment.is_empty() { text.clone() } else { segment.clone() };
+                let key_text = if segment.is_empty() {
+                    text.clone()
+                } else {
+                    segment.clone()
+                };
                 let key = format!(
                     "fact_source:{}:{}",
                     fact_source_identity(source),
@@ -141,9 +152,19 @@ pub fn filter_new_fact_payload(
             Value::Object(m) => m,
             _ => Map::new(),
         };
-        let total = if delivered > 0 { delivered } else { sources.len() as i64 };
-        out.insert("status".to_string(), Value::String("already_delivered".to_string()));
-        out.insert("text".to_string(), Value::String(already_delivered_fact_text()));
+        let total = if delivered > 0 {
+            delivered
+        } else {
+            sources.len() as i64
+        };
+        out.insert(
+            "status".to_string(),
+            Value::String("already_delivered".to_string()),
+        );
+        out.insert(
+            "text".to_string(),
+            Value::String(already_delivered_fact_text()),
+        );
         out.insert("sources".to_string(), Value::Array(Vec::new()));
         out.insert("already_delivered".to_string(), Value::from(total));
         return (Value::Object(out), total);
@@ -155,7 +176,11 @@ pub fn filter_new_fact_payload(
     } else {
         String::new()
     };
-    let status_label = if status.is_empty() { "unknown".to_string() } else { status };
+    let status_label = if status.is_empty() {
+        "unknown".to_string()
+    } else {
+        status
+    };
     let key = format!(
         "fact_payload:{status_label}:{query_key}:{}",
         short_hash(&text)
@@ -167,8 +192,14 @@ pub fn filter_new_fact_payload(
                 Value::Object(m) => m,
                 _ => Map::new(),
             };
-            out.insert("status".to_string(), Value::String("already_delivered".to_string()));
-            out.insert("text".to_string(), Value::String(already_delivered_fact_text()));
+            out.insert(
+                "status".to_string(),
+                Value::String("already_delivered".to_string()),
+            );
+            out.insert(
+                "text".to_string(),
+                Value::String(already_delivered_fact_text()),
+            );
             out.insert("sources".to_string(), Value::Array(Vec::new()));
             out.insert("already_delivered".to_string(), Value::from(1));
             return (Value::Object(out), 1);

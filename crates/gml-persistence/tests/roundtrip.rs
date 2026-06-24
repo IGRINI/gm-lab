@@ -33,8 +33,7 @@ fn fixture_dir() -> std::path::PathBuf {
 
 fn read_compact() -> String {
     let path = fixture_dir().join("chat_payload.compact.json");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 /// Build a DialogRuntime from a parsed full-payload Value.
@@ -49,7 +48,10 @@ fn runtime_from_payload_value(payload: &Value) -> DialogRuntime {
         Some(Value::Array(a)) => a.clone(),
         _ => Vec::new(),
     };
-    let turn_count = payload.get("turn_count").and_then(|v| v.as_i64()).unwrap_or(0);
+    let turn_count = payload
+        .get("turn_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     DialogRuntime {
         guest_id: "g".to_string(),
         chat_id: "c".to_string(),
@@ -61,6 +63,57 @@ fn runtime_from_payload_value(payload: &Value) -> DialogRuntime {
         created_at: String::new(),
         updated_at: String::new(),
     }
+}
+
+/// Regenerate the canon-bearing persistence golden from a seeded Rust session.
+///
+/// Run explicitly when the payload shape changes:
+///   cargo test -p gml-persistence regen_chat_payload_fixture -- --ignored --nocapture
+///
+/// The fixture is now a SELF-CONSISTENT RUST SNAPSHOT (not a Python capture):
+/// it is the exact compact bytes `DialogStore.save()` writes for a freshly
+/// seeded, canon-authoritative session. Locked decision #7 dropped Python
+/// byte-compat, so the golden is whatever the Rust serializer emits — and it
+/// now carries the living-world `world_canon` (locked decision #5: canon is
+/// part of every save).
+#[test]
+#[ignore]
+fn regen_chat_payload_fixture() {
+    use gml_stories::default_story_seed;
+    use gml_world::World;
+
+    // Deterministic construction (fixed dice seed -> deterministic rng_state),
+    // matching the canon_payload tests so the golden is reproducible.
+    let world = World::from_seed_with_dice_seed(&default_story_seed(), 20260622);
+    let session = Session::with_world(client(), world, factory());
+
+    let payload = json!({
+        "schema_version": SCHEMA_VERSION,
+        "turn_count": 1,
+        "session": session.to_payload(),
+        "transcript": Value::Array(vec![]),
+    });
+
+    let compact = serde_json::to_string(&payload).expect("serialize compact");
+    let pretty = serde_json::to_string_pretty(&payload).expect("serialize pretty");
+
+    let dir = fixture_dir();
+    std::fs::write(dir.join("chat_payload.compact.json"), &compact).expect("write compact");
+    std::fs::write(dir.join("chat_payload.json"), pretty).expect("write pretty");
+
+    // Sanity: the regenerated golden must carry a canon.
+    let parsed: Value = serde_json::from_str(&compact).unwrap();
+    assert!(
+        parsed["session"]["world"]
+            .as_object()
+            .map(|w| w.contains_key("world_canon"))
+            .unwrap_or(false),
+        "regenerated golden must carry world_canon"
+    );
+    eprintln!(
+        "wrote chat_payload fixtures ({} bytes compact)",
+        compact.len()
+    );
 }
 
 // =========================================================================
@@ -104,12 +157,8 @@ fn temp_store() -> (DialogStore, tempfile::TempDir) {
     let db = dir.path().join("dialogs.sqlite3");
     let mut cfg = Config::from_env();
     cfg.rag_enabled = false; // keep delete's embeddings purge a no-op in tests
-    let store = DialogStore::new(
-        db.to_string_lossy().into_owned(),
-        factory(),
-        Arc::new(cfg),
-    )
-    .expect("create store");
+    let store = DialogStore::new(db.to_string_lossy().into_owned(), factory(), Arc::new(cfg))
+        .expect("create store");
     (store, dir)
 }
 
@@ -125,7 +174,10 @@ fn crud_create_save_load_list_delete() {
     assert!(!chat_id.is_empty());
 
     // active pointer points at the new chat
-    assert_eq!(store.active_chat_id(guest).unwrap().as_deref(), Some(chat_id.as_str()));
+    assert_eq!(
+        store.active_chat_id(guest).unwrap().as_deref(),
+        Some(chat_id.as_str())
+    );
 
     // list shows it, marked active
     let chats = store.list_chats(guest).expect("list");
@@ -143,9 +195,7 @@ fn crud_create_save_load_list_delete() {
         .expect("with_runtime")
         .expect("runtime present");
     // persist the change
-    store
-        .with_runtime(guest, &chat_id, |_rt| {})
-        .unwrap();
+    store.with_runtime(guest, &chat_id, |_rt| {}).unwrap();
     // Re-save explicitly through load+save to exercise the DB write path.
     let mut loaded = store.load_chat(guest, &chat_id).expect("load_chat");
     loaded.turn_count = 7;
@@ -174,11 +224,17 @@ fn crud_create_save_load_list_delete() {
     assert!(ids.contains(chat_id.as_str()), "first chat present in list");
     assert!(ids.contains(chat2.as_str()), "second chat present in list");
     // creating with activate=true makes chat2 the active chat
-    assert_eq!(store.active_chat_id(guest).unwrap().as_deref(), Some(chat2.as_str()));
+    assert_eq!(
+        store.active_chat_id(guest).unwrap().as_deref(),
+        Some(chat2.as_str())
+    );
 
     // activate the first again
     assert!(store.activate_chat(guest, &chat_id).expect("activate"));
-    assert_eq!(store.active_chat_id(guest).unwrap().as_deref(), Some(chat_id.as_str()));
+    assert_eq!(
+        store.active_chat_id(guest).unwrap().as_deref(),
+        Some(chat_id.as_str())
+    );
 
     // delete the active chat -> active pointer self-heals to the remaining one
     let res = store.delete_chat(guest, &chat_id).expect("delete");
@@ -206,6 +262,37 @@ fn get_active_creates_when_empty() {
     assert_eq!(chats[0]["active"], json!(true));
 }
 
+#[test]
+fn save_owned_replaces_stale_cached_runtime() {
+    let (store, _dir) = temp_store();
+    let guest = "guest-cache";
+    let chat_id = store
+        .create_chat(guest, None, None, 0, Some("Кэш"), None, true)
+        .expect("create_chat");
+
+    store
+        .with_runtime(guest, &chat_id, |rt| {
+            assert_eq!(rt.turn_count, 0);
+            rt.session.last_player_action = "old cached action".to_string();
+        })
+        .expect("with_runtime")
+        .expect("runtime present");
+
+    let mut owned = store.load_chat(guest, &chat_id).expect("load owned");
+    owned.turn_count = 3;
+    owned.session.last_player_action = "fresh streamed turn".to_string();
+    store.save_owned(owned).expect("save_owned");
+
+    let seen = store
+        .with_runtime(guest, &chat_id, |rt| {
+            (rt.turn_count, rt.session.last_player_action.clone())
+        })
+        .expect("with_runtime")
+        .expect("runtime present");
+    assert_eq!(seen.0, 3);
+    assert_eq!(seen.1, "fresh streamed turn");
+}
+
 // =========================================================================
 // 3. card_revision defaults to 0 on an old snapshot missing the field
 // =========================================================================
@@ -217,10 +304,7 @@ fn card_revision_defaults_zero_when_missing() {
     let input = read_compact();
     let mut parsed: Value = serde_json::from_str(&input).expect("parse");
 
-    if let Some(world) = parsed
-        .get_mut("session")
-        .and_then(|s| s.get_mut("world"))
-    {
+    if let Some(world) = parsed.get_mut("session").and_then(|s| s.get_mut("world")) {
         if let Some(Value::Object(pc)) = world.get_mut("player_character") {
             pc.remove("card_revision");
         }
@@ -242,7 +326,11 @@ fn card_revision_defaults_zero_when_missing() {
 
     assert_eq!(session.world.player_character.card_revision, 0);
     for npc in session.world.npcs.values() {
-        assert_eq!(npc.card_revision, 0, "npc {} card_revision should default 0", npc.npc_id);
+        assert_eq!(
+            npc.card_revision, 0,
+            "npc {} card_revision should default 0",
+            npc.npc_id
+        );
     }
 }
 
@@ -268,16 +356,74 @@ fn rng_state_round_trips_through_world_payload() {
     // Re-serialize and confirm the rng_state survives unchanged.
     let out = session.to_payload();
     let got_state = out["world"]["rng_state"].clone();
-    assert_eq!(got_state, expected_state, "rng_state must round-trip exactly");
+    assert_eq!(
+        got_state, expected_state,
+        "rng_state must round-trip exactly"
+    );
 
     // And the internal vector is the full 625-int CPython layout (624 + index).
-    let internal_len = got_state["internal"].as_array().map(|a| a.len()).unwrap_or(0);
-    assert_eq!(internal_len, 625, "internal must have 624 state words + index");
+    let internal_len = got_state["internal"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        internal_len, 625,
+        "internal must have 624 state words + index"
+    );
 }
 
 // =========================================================================
 // 5. schema version is hard-checked on load
 // =========================================================================
+
+// =========================================================================
+// 6. canon is core: a present-but-malformed world_canon errors on load
+//    (locked decision #5 — no silent default = no data loss)
+// =========================================================================
+
+#[test]
+fn present_but_malformed_canon_errors_on_load() {
+    let (store, _dir) = temp_store();
+    let guest = "g";
+    let chat_id = store
+        .create_chat(guest, None, None, 0, None, None, true)
+        .expect("create");
+
+    // Take the canon-bearing golden, corrupt its world_canon to a non-object so
+    // serde can't deserialize it, and write it straight into the DB.
+    let input = read_compact();
+    let mut parsed: Value = serde_json::from_str(&input).expect("parse");
+    let world = parsed
+        .get_mut("session")
+        .and_then(|s| s.get_mut("world"))
+        .and_then(Value::as_object_mut)
+        .expect("world object");
+    assert!(
+        world.contains_key("world_canon"),
+        "golden must carry world_canon for this test to be meaningful"
+    );
+    // A string is present but cannot deserialize into a WorldCanon struct.
+    world.insert("world_canon".to_string(), json!("not a canon"));
+
+    let con = rusqlite::Connection::open(store.db_path()).expect("open");
+    con.execute(
+        "UPDATE dialog_chats SET payload = ?1 WHERE guest_id = ?2 AND chat_id = ?3",
+        rusqlite::params![parsed.to_string(), guest, chat_id],
+    )
+    .expect("update");
+    drop(con);
+
+    match store.load_chat(guest, &chat_id) {
+        Ok(_) => panic!("expected a malformed-canon load error, got Ok"),
+        Err(err) => {
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("world_canon"),
+                "error should name world_canon, got: {msg}"
+            );
+        }
+    }
+}
 
 #[test]
 fn unsupported_schema_version_is_rejected() {

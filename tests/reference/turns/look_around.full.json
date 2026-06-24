@@ -246,6 +246,17 @@
     "kind": "npc_speech",
     "agent": "Борин",
     "data": {
+      "response": "пытается незаметно выскользнуть через заднюю дверь трактира и говорит: «Я... э-э, мне на кухню надо, отойду на минутку.»",
+      "beats": [
+        {
+          "kind": "action",
+          "text": "пытается незаметно выскользнуть через заднюю дверь трактира"
+        },
+        {
+          "kind": "speech",
+          "text": "Я... э-э, мне на кухню надо, отойду на минутку."
+        }
+      ],
       "speech": "Я... э-э, мне на кухню надо, отойду на минутку.",
       "action": "пытается незаметно выскользнуть через заднюю дверь трактира",
       "claims": [
@@ -275,7 +286,7 @@
   {
     "kind": "tool_result",
     "agent": "ask_npc",
-    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"speech_ru\":\"Я... э-э, мне на кухню надо, отойду на минутку.\",\"action_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
+    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"response_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира и говорит: «Я... э-э, мне на кухню надо, отойду на минутку.»\",\"beats\":[{\"kind\":\"action\",\"text\":\"пытается незаметно выскользнуть через заднюю дверь трактира\"},{\"kind\":\"speech\",\"text\":\"Я... э-э, мне на кухню надо, отойду на минутку.\"}],\"speech_ru\":\"Я... э-э, мне на кухню надо, отойду на минутку.\",\"action_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
     "sid": null
   },
   {
@@ -511,6 +522,17 @@
     "kind": "npc_speech",
     "agent": "Борин",
     "data": {
+      "response": "медленно бредёт к бочкам, не сводя глаз с гостя и говорит: «Сейчас, дружище, эль принесу, обожди-ка.»",
+      "beats": [
+        {
+          "kind": "action",
+          "text": "медленно бредёт к бочкам, не сводя глаз с гостя"
+        },
+        {
+          "kind": "speech",
+          "text": "Сейчас, дружище, эль принесу, обожди-ка."
+        }
+      ],
       "speech": "Сейчас, дружище, эль принесу, обожди-ка.",
       "action": "медленно бредёт к бочкам, не сводя глаз с гостя",
       "claims": [],
@@ -538,7 +560,7 @@
   {
     "kind": "tool_result",
     "agent": "ask_npc",
-    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"speech_ru\":\"Сейчас, дружище, эль принесу, обожди-ка.\",\"action_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
+    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"response_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя и говорит: «Сейчас, дружище, эль принесу, обожди-ка.»\",\"beats\":[{\"kind\":\"action\",\"text\":\"медленно бредёт к бочкам, не сводя глаз с гостя\"},{\"kind\":\"speech\",\"text\":\"Сейчас, дружище, эль принесу, обожди-ка.\"}],\"speech_ru\":\"Сейчас, дружище, эль принесу, обожди-ка.\",\"action_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
     "sid": null
   },
   {
@@ -843,9 +865,9 @@
       "tokens": 6160,
       "peak_context": 760,
       "secs": 0.0,
-      "sys_estimate": 12106,
+      "sys_estimate": 12422,
       "context": {
-        "current": 18742,
+        "current": 19058,
         "world": 2485,
         "next_compact": {
           "scope": "npc",
@@ -855,7 +877,7 @@
           "remaining": 62090
         },
         "gm": {
-          "active": 18742,
+          "active": 19058,
           "history": 4151,
           "summary": 0,
           "limit": 100000,
