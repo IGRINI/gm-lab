@@ -1,20 +1,20 @@
 """
-gmlab unified inference sidecar — ONE Python process hosting embedder + reranker + TTS.
-
-Runs on the Python 3.12 env at E:\\gemma\\rag312
-  (torch 2.7 cu128 + flash-attn 2.7.4 + transformers 4.57.3 + sentence-transformers + qwen-tts).
+gmlab unified inference sidecar — ONE Python process hosting embedder + reranker + TTS + image generation.
 
 Endpoints (drop-in for the Rust gml-rag client + gml-audio TTS proxy):
   POST /v1/embeddings   OpenAI-compatible  {input,[model],[encoding_format],[input_type],[task]} -> {data:[{embedding}]}
   POST /rerank          {query,documents,[top_n],[return_documents]} -> {results:[{index,relevance_score,[document]}]}
   POST /speak           {text, voice:"gm|male|female"} -> audio/wav
   POST /speak_stream    {text, voice} -> raw PCM16 mono stream + X-Sample-Rate header
+  POST /images/generate {prompt,[steps],[seed],[width],[height],[batch],[cfg],[model]} -> generated image metadata
+  GET  /image-files/{run_id}/{filename} -> generated PNG
   GET  /health          -> {status, per-model up flags, voices, embed dim}
 
 Per-model config from env (the Rust app passes these from gml-config):
   EMBEDDER_MODEL   (default Qwen/Qwen3-Embedding-0.6B)   EMBEDDER_QUANT = bf16 | nf4   EMBEDDER_ENABLED=1
   RERANKER_MODEL   (default jinaai/jina-reranker-v3)     RERANKER_QUANT = bf16 | nf4   RERANKER_ENABLED=1
   TTS_ENABLED=1    TTS_MODEL_ID (override) TTS_HOME (refs + qwen17b_base dir) TTS_LANG (default Russian)
+  IMAGE_ENABLED=1  IMAGE_RUNTIME_ROOT (default ./image_runtime) IMAGE_OUTPUT_DIR
   USE_FLASH=1  JINA_COMPILE=1  JINA_MAX_DOC_LEN=2048  JINA_MAX_QUERY_LEN=512
   RERANK_TOP_N         default # of results /rerank returns when the request omits top_n (0/empty = all)
   RERANK_RETURN_DOCS=0 default for echoing document text back (retriever owns the corpus -> off)
@@ -44,9 +44,17 @@ INTEGRATION STATUS (see sidecar/README.md for the full doc) — all three WIRED 
 """
 import base64
 import io
+import json
 import os
+import random
+import re
+import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -109,7 +117,7 @@ import numpy as np
 import torch
 import soundfile as sf
 from fastapi import FastAPI
-from fastapi.responses import Response, StreamingResponse, JSONResponse
+from fastapi.responses import Response, StreamingResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -130,6 +138,7 @@ RERANKER_QUANT = os.environ.get("RERANKER_QUANT", "bf16").lower()
 EMBEDDER_ENABLED = os.environ.get("EMBEDDER_ENABLED", "1") == "1"
 RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "1") == "1"
 TTS_ENABLED = os.environ.get("TTS_ENABLED", "1") == "1"
+IMAGE_ENABLED = os.environ.get("IMAGE_ENABLED", "1") == "1"
 USE_FLASH = os.environ.get("USE_FLASH", "1") == "1"
 JINA_COMPILE = os.environ.get("JINA_COMPILE", "1") == "1"
 JINA_MAX_DOC_LEN = int(os.environ.get("JINA_MAX_DOC_LEN", "2048"))
@@ -145,6 +154,30 @@ EMBED_QUERY_TASK = os.environ.get(
 )
 HOST = os.environ.get("GMLAB_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("GMLAB_SIDECAR_PORT", "8077"))
+
+_IMAGE_RUNTIME_DEFAULT = Path(__file__).with_name("image_runtime")
+IMAGE_RUNTIME_ROOT = Path(os.environ.get("IMAGE_RUNTIME_ROOT", str(_IMAGE_RUNTIME_DEFAULT))).resolve()
+IMAGE_COMFY_DIR = Path(os.environ.get("IMAGE_COMFY_DIR", str(IMAGE_RUNTIME_ROOT / "ComfyUI"))).resolve()
+IMAGE_PYTHON = Path(os.environ.get(
+    "IMAGE_PYTHON",
+    str(IMAGE_RUNTIME_ROOT / ".venv-flux" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
+)).resolve()
+IMAGE_OUTPUT_DIR = Path(os.environ.get("IMAGE_OUTPUT_DIR", str(IMAGE_RUNTIME_ROOT / "generated"))).resolve()
+IMAGE_HF_HOME = Path(os.environ.get("IMAGE_HF_HOME", str(IMAGE_RUNTIME_ROOT / "hf-cache"))).resolve()
+IMAGE_COMFY_HOST = os.environ.get("IMAGE_COMFY_HOST", "127.0.0.1").strip() or "127.0.0.1"
+IMAGE_COMFY_PORT = int(os.environ.get("IMAGE_COMFY_PORT", "8188") or "8188")
+IMAGE_COMFY_URL = os.environ.get("IMAGE_COMFY_URL", f"http://{IMAGE_COMFY_HOST}:{IMAGE_COMFY_PORT}").rstrip("/")
+IMAGE_TIMEOUT_SECONDS = float(os.environ.get("IMAGE_TIMEOUT_SECONDS", "300") or "300")
+IMAGE_MAX_WIDTH = int(os.environ.get("IMAGE_MAX_WIDTH", "2048") or "2048")
+IMAGE_MAX_HEIGHT = int(os.environ.get("IMAGE_MAX_HEIGHT", "2048") or "2048")
+IMAGE_MAX_BATCH = int(os.environ.get("IMAGE_MAX_BATCH", "4") or "4")
+IMAGE_MAX_STEPS = int(os.environ.get("IMAGE_MAX_STEPS", "50") or "50")
+IMAGE_COMFY_LOG = Path(os.environ.get("IMAGE_COMFY_LOG", str(IMAGE_COMFY_DIR / "server_image.log"))).resolve()
+
+# model presets: (diffusion_model, text_encoder)
+IMAGE_PRESETS = {
+    "nvfp4": ("flux-2-klein-4b-nvfp4.safetensors", "qwen_3_4b_fp4_flux2.safetensors"),
+}
 
 TTS_HOME = Path(os.environ.get("TTS_HOME", _DEFAULT_TTS_HOME))
 TTS_LANG = os.environ.get("TTS_LANG", "Russian")
@@ -173,7 +206,7 @@ VOICES = {
 }
 SAMPLING = dict(temperature=0.75, top_k=50, top_p=1.0, repetition_penalty=1.1)
 
-STATE = {"embedder": None, "reranker": None, "tts": None}
+STATE = {"embedder": None, "reranker": None, "tts": None, "image_process": None}
 # The single GPU is shared; these models are not guaranteed re-entrant and the
 # handlers are sync `def` (Starlette runs them in a threadpool), so serialize
 # each model's inference with its own lock. (GIL + one GPU => no real parallel
@@ -181,10 +214,18 @@ STATE = {"embedder": None, "reranker": None, "tts": None}
 _embed_lock = threading.Lock()
 _rerank_lock = threading.Lock()
 _tts_lock = threading.Lock()
+_image_lock = threading.Lock()
 # Bounded wait so a stuck / leaked TTS generation degrades to 503 instead of an
 # unbounded hang (e.g. if a streamed response's generator frame is abandoned on
 # client disconnect and its lock release is deferred).
 _TTS_LOCK_TIMEOUT = float(os.environ.get("TTS_LOCK_TIMEOUT", "180"))
+
+
+class ImageRequestError(RuntimeError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -268,6 +309,265 @@ def _warmup_text_models():
             print(f"[sidecar] reranker warmup skipped: {e}", flush=True)
 
 
+def _image_runtime_error() -> str | None:
+    checks = [
+        (IMAGE_RUNTIME_ROOT, "image runtime root"),
+        (IMAGE_COMFY_DIR, "ComfyUI dir"),
+        (IMAGE_COMFY_DIR / "main.py", "ComfyUI main.py"),
+        (IMAGE_PYTHON, "image Python"),
+        (IMAGE_COMFY_DIR / "models" / "vae" / "flux2-vae.safetensors", "Flux VAE"),
+    ]
+    for path, label in checks:
+        if not path.exists():
+            return f"missing {label}: {path}"
+    for model, (unet, clip) in IMAGE_PRESETS.items():
+        if not (IMAGE_COMFY_DIR / "models" / "diffusion_models" / unet).exists():
+            return f"missing image diffusion model for {model}: {unet}"
+        if not (IMAGE_COMFY_DIR / "models" / "text_encoders" / clip).exists():
+            return f"missing image text encoder for {model}: {clip}"
+    return None
+
+
+def _image_server_up(timeout: float = 2.0) -> bool:
+    try:
+        urllib.request.urlopen(f"{IMAGE_COMFY_URL}/system_stats", timeout=timeout).read()
+        return True
+    except Exception:
+        return False
+
+
+def _image_status() -> dict:
+    runtime_error = None if not IMAGE_ENABLED else _image_runtime_error()
+    return {
+        "up": bool(IMAGE_ENABLED and runtime_error is None),
+        "enabled": IMAGE_ENABLED,
+        "runtime_root": str(IMAGE_RUNTIME_ROOT),
+        "output_dir": str(IMAGE_OUTPUT_DIR),
+        "comfy_url": IMAGE_COMFY_URL,
+        "comfy_up": _image_server_up(timeout=0.2) if IMAGE_ENABLED else False,
+        "models": list(IMAGE_PRESETS),
+        "max_width": IMAGE_MAX_WIDTH,
+        "max_height": IMAGE_MAX_HEIGHT,
+        "max_batch": IMAGE_MAX_BATCH,
+        "max_steps": IMAGE_MAX_STEPS,
+        "error": runtime_error or "",
+    }
+
+
+def _ensure_image_server() -> None:
+    if not IMAGE_ENABLED:
+        raise ImageRequestError(503, "image generation disabled")
+    runtime_error = _image_runtime_error()
+    if runtime_error:
+        raise ImageRequestError(503, runtime_error)
+    IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    IMAGE_HF_HOME.mkdir(parents=True, exist_ok=True)
+    IMAGE_COMFY_LOG.parent.mkdir(parents=True, exist_ok=True)
+
+    proc = STATE.get("image_process")
+    if proc is not None and proc.poll() is not None:
+        STATE["image_process"] = None
+
+    if _image_server_up():
+        return
+
+    env = dict(os.environ)
+    env.setdefault("HF_HOME", str(IMAGE_HF_HOME))
+    env.setdefault("HF_HUB_CACHE", str(IMAGE_HF_HOME / "hub"))
+    flags = 0
+    if os.name == "nt":
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    print(f"[sidecar] starting ComfyUI image server at {IMAGE_COMFY_URL}", flush=True)
+    with open(IMAGE_COMFY_LOG, "ab", buffering=0) as log:
+        proc = subprocess.Popen(
+            [str(IMAGE_PYTHON), "main.py", "--port", str(IMAGE_COMFY_PORT), "--listen", IMAGE_COMFY_HOST, "--fast"],
+            cwd=str(IMAGE_COMFY_DIR),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            env=env,
+            creationflags=flags,
+        )
+    STATE["image_process"] = proc
+
+    deadline = time.time() + IMAGE_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            STATE["image_process"] = None
+            raise ImageRequestError(503, f"ComfyUI exited during startup; see {IMAGE_COMFY_LOG}")
+        if _image_server_up(timeout=3.0):
+            print("[sidecar] ComfyUI image server ready", flush=True)
+            return
+        time.sleep(0.75)
+    raise ImageRequestError(503, f"ComfyUI did not become ready within {IMAGE_TIMEOUT_SECONDS:.0f}s")
+
+
+def _build_image_workflow(prompt: str, steps: int, seed: int, width: int, height: int,
+                          batch: int, cfg: float, model: str, prefix: str) -> dict:
+    unet, clip = IMAGE_PRESETS[model]
+    return {
+        "10": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
+        "11": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip, "type": "flux2", "device": "default"}},
+        "12": {"class_type": "VAELoader", "inputs": {"vae_name": "flux2-vae.safetensors"}},
+        "13": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["11", 0]}},
+        "14": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["13", 0]}},
+        "15": {"class_type": "CFGGuider", "inputs": {"model": ["10", 0], "positive": ["13", 0], "negative": ["14", 0], "cfg": cfg}},
+        "16": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+        "17": {"class_type": "Flux2Scheduler", "inputs": {"steps": steps, "width": width, "height": height}},
+        "18": {"class_type": "EmptyFlux2LatentImage", "inputs": {"width": width, "height": height, "batch_size": batch}},
+        "19": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}},
+        "20": {"class_type": "SamplerCustomAdvanced", "inputs": {"noise": ["19", 0], "guider": ["15", 0], "sampler": ["16", 0], "sigmas": ["17", 0], "latent_image": ["18", 0]}},
+        "21": {"class_type": "VAEDecode", "inputs": {"samples": ["20", 0], "vae": ["12", 0]}},
+        "22": {"class_type": "SaveImage", "inputs": {"images": ["21", 0], "filename_prefix": prefix}},
+    }
+
+
+def _comfy_post(path: str, payload: dict, timeout: float | None = None) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{IMAGE_COMFY_URL}{path}",
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout or IMAGE_TIMEOUT_SECONDS) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        raise ImageRequestError(e.code, detail[:2000])
+
+
+def _comfy_get_json(path: str, timeout: float | None = None) -> dict:
+    with urllib.request.urlopen(f"{IMAGE_COMFY_URL}{path}", timeout=timeout or IMAGE_TIMEOUT_SECONDS) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _submit_image_workflow(graph: dict) -> tuple[float, str, list[tuple[str, str, str]], dict]:
+    response = _comfy_post("/prompt", {"prompt": graph})
+    prompt_id = response.get("prompt_id")
+    if not prompt_id:
+        raise ImageRequestError(502, f"ComfyUI did not return prompt_id: {response}")
+    t0 = time.time()
+    deadline = t0 + IMAGE_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        history = _comfy_get_json(f"/history/{prompt_id}", timeout=10)
+        if prompt_id in history:
+            item = history[prompt_id]
+            status = item.get("status", {})
+            images = [
+                (img["filename"], img.get("subfolder", ""), img.get("type", "output"))
+                for output in item.get("outputs", {}).values()
+                for img in output.get("images", [])
+                if img.get("filename")
+            ]
+            return time.time() - t0, status.get("status_str", ""), images, item
+        time.sleep(0.1)
+    raise ImageRequestError(504, f"image generation timed out after {IMAGE_TIMEOUT_SECONDS:.0f}s")
+
+
+def _fetch_image_blob(filename: str, subfolder: str, typ: str) -> bytes:
+    query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": typ})
+    with urllib.request.urlopen(f"{IMAGE_COMFY_URL}/view?{query}", timeout=IMAGE_TIMEOUT_SECONDS) as resp:
+        return resp.read()
+
+
+def _clamp_int(value: int | None, default: int, min_value: int, max_value: int, label: str) -> int:
+    if value is None:
+        return default
+    if value < min_value or value > max_value:
+        raise ImageRequestError(400, f"{label} must be between {min_value} and {max_value}")
+    return value
+
+
+def _generate_images(req) -> dict:
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise ImageRequestError(400, "empty prompt")
+    model = (req.model or "nvfp4").strip().lower()
+    if model not in IMAGE_PRESETS:
+        raise ImageRequestError(400, f"unknown image model: {model}")
+
+    steps = _clamp_int(req.steps, 4, 1, IMAGE_MAX_STEPS, "steps")
+    width = _clamp_int(req.width, 1024, 64, IMAGE_MAX_WIDTH, "width")
+    height = _clamp_int(req.height, 1024, 64, IMAGE_MAX_HEIGHT, "height")
+    batch_raw = req.batch if req.batch is not None else req.batch_size
+    batch = _clamp_int(batch_raw, 1, 1, IMAGE_MAX_BATCH, "batch")
+    cfg = 1.0 if req.cfg is None else float(req.cfg)
+    if cfg <= 0.0 or cfg > 20.0:
+        raise ImageRequestError(400, "cfg must be > 0 and <= 20")
+    seed = int(req.seed) if req.seed is not None else random.randint(0, 2**31 - 1)
+
+    with _image_lock:
+        _ensure_image_server()
+        run_id = uuid.uuid4().hex
+        graph = _build_image_workflow(prompt, steps, seed, width, height, batch, cfg, model, f"gmlab_{run_id}")
+        elapsed, status, images, full = _submit_image_workflow(graph)
+        if status != "success" or not images:
+            detail = full.get("status", {}) if isinstance(full, dict) else full
+            raise ImageRequestError(502, f"ComfyUI generation failed: {detail}")
+
+        run_dir = IMAGE_OUTPUT_DIR / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        out = []
+        for index, (filename, subfolder, typ) in enumerate(images):
+            blob = _fetch_image_blob(filename, subfolder, typ)
+            out_name = f"image_{index}.png"
+            out_path = run_dir / out_name
+            out_path.write_bytes(blob)
+            out.append({
+                "filename": out_name,
+                "url": f"/image-files/{run_id}/{out_name}",
+                "bytes": len(blob),
+            })
+
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "seed": seed,
+        "model": model,
+        "steps": steps,
+        "width": width,
+        "height": height,
+        "batch": batch,
+        "cfg": cfg,
+        "elapsed_seconds": elapsed,
+        "images": out,
+    }
+
+
+def _shutdown_image_server() -> None:
+    proc = STATE.get("image_process")
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=10)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    STATE["image_process"] = None
+
+
+def _generated_image_path(run_id: str, filename: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", run_id or ""):
+        raise ImageRequestError(400, "invalid run_id")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", filename or ""):
+        raise ImageRequestError(400, "invalid filename")
+    root = IMAGE_OUTPUT_DIR.resolve()
+    path = (root / run_id / filename).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise ImageRequestError(400, "invalid image path")
+    if not path.is_file():
+        raise ImageRequestError(404, "image not found")
+    return path
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t0 = time.time()
@@ -286,10 +586,23 @@ async def lifespan(app: FastAPI):
             STATE["tts"] = _load_tts()
         except Exception as e:
             print(f"[sidecar] TTS load FAILED (/speak disabled): {e}", flush=True)
+    if IMAGE_ENABLED:
+        try:
+            IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            err = _image_runtime_error()
+            if err:
+                print(f"[sidecar] image runtime unavailable: {err}", flush=True)
+            else:
+                print(f"[sidecar] image runtime ready at {IMAGE_RUNTIME_ROOT}", flush=True)
+        except Exception as e:
+            print(f"[sidecar] image runtime init FAILED (/images/generate disabled): {e}", flush=True)
     _warmup_text_models()
-    up = [k for k, v in STATE.items() if v is not None]
+    up = [k for k in ("embedder", "reranker", "tts") if STATE.get(k) is not None]
+    if IMAGE_ENABLED and _image_runtime_error() is None:
+        up.append("image")
     print(f"[sidecar] ready in {time.time()-t0:.1f}s on {HOST}:{PORT} — up: {up}", flush=True)
     yield
+    _shutdown_image_server()
     STATE.clear()
 
 
@@ -320,6 +633,18 @@ class SpeakReq(BaseModel):
     voice: str | None = "gm"
 
 
+class ImageGenerateReq(BaseModel):
+    prompt: str
+    steps: int | None = None
+    seed: int | None = None
+    width: int | None = None
+    height: int | None = None
+    batch: int | None = None
+    batch_size: int | None = None
+    cfg: float | None = None
+    model: str | None = None
+
+
 # ── Health ──────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
@@ -339,6 +664,7 @@ def health():
                      "quant": RERANKER_QUANT, "scores": "raw cosine [-1,1], not 0..1"},
         "tts": {"up": STATE["tts"] is not None, "model": TTS_MODEL_ID,
                 "voices": list(VOICES) if STATE["tts"] is not None else []},
+        "image": _image_status(),
         "flash": USE_FLASH,
         "rerank_top_n_default": RERANK_TOP_N,
     }
@@ -509,6 +835,39 @@ def speak_stream(req: SpeakReq):
             _tts_lock.release()
 
     return StreamingResponse(gen(), media_type="audio/pcm", headers={"X-Sample-Rate": str(sr)})
+
+
+@app.post("/images/generate")
+async def images_generate(req: ImageGenerateReq):
+    try:
+        return await run_in_threadpool(_generate_images, req)
+    except ImageRequestError as e:
+        return JSONResponse({"ok": False, "error": e.message}, status_code=e.status_code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/images/start")
+async def images_start():
+    try:
+        def start():
+            with _image_lock:
+                _ensure_image_server()
+            return {"ok": True, "image": _image_status()}
+        return await run_in_threadpool(start)
+    except ImageRequestError as e:
+        return JSONResponse({"ok": False, "error": e.message}, status_code=e.status_code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/image-files/{run_id}/{filename}")
+def image_file(run_id: str, filename: str):
+    try:
+        path = _generated_image_path(run_id, filename)
+    except ImageRequestError as e:
+        return JSONResponse({"ok": False, "error": e.message}, status_code=e.status_code)
+    return FileResponse(path, media_type="image/png")
 
 
 if __name__ == "__main__":

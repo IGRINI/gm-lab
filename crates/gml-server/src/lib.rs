@@ -118,6 +118,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/export", get(get_export))
         .route("/codex/status", get(get_codex_status))
         .route("/sidecar/status", get(get_sidecar_status))
+        .route("/images/generate", post(post_generate_image))
+        .route("/image-files/{run_id}/{filename}", get(get_generated_image))
+        .route("/images/{run_id}/{filename}", get(get_generated_image))
         // POST
         .route("/chats/{id}/activate", post(post_activate_chat))
         .route("/chats/{id}/delete", post(post_delete_chat))
@@ -918,7 +921,8 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
     let rag_enabled = state.config.rag_enabled;
     let reranker_enabled = state.config.rag_enabled && state.config.rag_rerank_enabled;
     let tts_enabled = state.settings.tts_enabled(None);
-    let enabled = rag_enabled || tts_enabled;
+    let image_enabled = image_generation_enabled(state);
+    let enabled = rag_enabled || tts_enabled || image_enabled;
 
     let Some(sidecar) = &state.sidecar else {
         return json!({
@@ -928,15 +932,20 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
             "ready": false,
             "pid": Value::Null,
             "base_url": state.config.infer_base_url.clone(),
-            "components": sidecar_components(None, state, tts_enabled),
+            "components": sidecar_components(None, state, tts_enabled, image_enabled),
             "error": if enabled { "sidecar manager is not attached" } else { "" },
         });
     };
 
     let snapshot = sidecar.snapshot();
     let health = sidecar.health_payload().await.ok();
-    let health_ready =
-        sidecar_health_ready(health.as_ref(), rag_enabled, reranker_enabled, tts_enabled);
+    let health_ready = sidecar_health_ready(
+        health.as_ref(),
+        rag_enabled,
+        reranker_enabled,
+        tts_enabled,
+        image_enabled,
+    );
     let state_label = if health_ready {
         "ready".to_string()
     } else {
@@ -954,8 +963,40 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
         "base_url": snapshot.base_url,
         "elapsed_ms": snapshot.started_elapsed.map(|d| d.as_millis()),
         "ready_timeout_ms": snapshot.ready_timeout.as_millis(),
-        "components": sidecar_components(health.as_ref(), state, tts_enabled),
+        "components": sidecar_components(health.as_ref(), state, tts_enabled, image_enabled),
     })
+}
+
+fn image_generation_enabled(state: &AppState) -> bool {
+    state.config.image_enabled && state.settings.image_enabled(None)
+}
+
+fn start_image_sidecar_in_background(state: &AppState) {
+    let Some(sidecar) = state.sidecar.clone() else {
+        return;
+    };
+    let http = state.http.clone();
+    let base_url = state.config.infer_base_url.clone();
+    let timeout =
+        std::time::Duration::from_secs_f64((state.config.image_timeout_seconds + 10.0).max(1.0));
+    tokio::spawn(async move {
+        if let Err(e) = sidecar.ensure_started(true).await {
+            tracing::warn!("image sidecar start after settings update failed: {e}");
+            return;
+        }
+        match http
+            .post(format!("{base_url}/images/start"))
+            .timeout(timeout)
+            .send()
+            .await
+        {
+            Ok(resp) if !resp.status().is_success() => {
+                tracing::warn!("image ComfyUI warmup returned {}", resp.status());
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("image ComfyUI warmup request failed: {e}"),
+        }
+    });
 }
 
 fn sidecar_health_ready(
@@ -963,6 +1004,7 @@ fn sidecar_health_ready(
     rag_enabled: bool,
     reranker_enabled: bool,
     tts_enabled: bool,
+    image_enabled: bool,
 ) -> bool {
     let Some(health) = health else {
         return false;
@@ -972,6 +1014,7 @@ fn sidecar_health_ready(
         (rag_enabled, "embedder"),
         (reranker_enabled, "reranker"),
         (tts_enabled, "tts"),
+        (image_enabled, "image"),
     ] {
         if enabled {
             any = true;
@@ -997,7 +1040,12 @@ fn component_field<'a>(health: Option<&'a Value>, key: &str, field: &str) -> Opt
         .and_then(|v| v.get(field))
 }
 
-fn sidecar_components(health: Option<&Value>, state: &AppState, tts_enabled: bool) -> Value {
+fn sidecar_components(
+    health: Option<&Value>,
+    state: &AppState,
+    tts_enabled: bool,
+    image_enabled: bool,
+) -> Value {
     json!({
         "embedder": {
             "enabled": state.config.rag_enabled,
@@ -1025,6 +1073,16 @@ fn sidecar_components(health: Option<&Value>, state: &AppState, tts_enabled: boo
             "up": health.map(|body| component_up(body, "tts")).unwrap_or(false),
             "model": component_field(health, "tts", "model").cloned().unwrap_or(Value::Null),
             "voices": component_field(health, "tts", "voices").cloned().unwrap_or(Value::Array(vec![])),
+        },
+        "image": {
+            "enabled": image_enabled,
+            "up": health.map(|body| component_up(body, "image")).unwrap_or(false),
+            "runtime_root": component_field(health, "image", "runtime_root").cloned().unwrap_or(Value::Null),
+            "output_dir": component_field(health, "image", "output_dir").cloned().unwrap_or(Value::Null),
+            "comfy_url": component_field(health, "image", "comfy_url").cloned().unwrap_or(Value::Null),
+            "comfy_up": component_field(health, "image", "comfy_up").cloned().unwrap_or(Value::Bool(false)),
+            "models": component_field(health, "image", "models").cloned().unwrap_or(Value::Array(vec![])),
+            "error": component_field(health, "image", "error").cloned().unwrap_or(Value::String(String::new())),
         },
     })
 }
@@ -1702,7 +1760,11 @@ async fn post_settings(State(state): State<AppState>, body: Bytes) -> Response {
         Some(_) => Some(Map::new()),
         None => Some(data.clone()),
     };
+    let image_was_enabled = image_generation_enabled(&state);
     let settings_map = state.settings.update(update.as_ref());
+    if !image_was_enabled && image_generation_enabled(&state) {
+        start_image_sidecar_in_background(&state);
+    }
     let cfg = state.config.clone();
     let settings = state.settings.clone();
     match with_active(&state, move |rt| payload::state(rt, &cfg, &settings)).await {
@@ -1989,6 +2051,115 @@ fn placeholder_session(state: &AppState) -> Session {
 // =========================================================================
 // transcribe / tts / codex
 // =========================================================================
+
+async fn post_generate_image(State(state): State<AppState>, body: Bytes) -> Response {
+    if !image_generation_enabled(&state) {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": "image generation disabled"}),
+        );
+    }
+    let Some(sidecar) = &state.sidecar else {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": "sidecar manager is not attached"}),
+        );
+    };
+    if let Err(e) = sidecar.ensure_started(true).await {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": format!("image sidecar unavailable: {e}")}),
+        );
+    }
+
+    let url = format!("{}/images/generate", state.config.infer_base_url);
+    let timeout = std::time::Duration::from_secs_f64(state.config.image_timeout_seconds + 10.0);
+    match state
+        .http
+        .post(url)
+        .timeout(timeout)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(resp) => proxy_sidecar_response(resp, "application/json; charset=utf-8").await,
+        Err(e) => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": format!("image sidecar request failed: {e}")}),
+        ),
+    }
+}
+
+async fn get_generated_image(
+    State(state): State<AppState>,
+    AxPath((run_id, filename)): AxPath<(String, String)>,
+) -> Response {
+    if !image_generation_enabled(&state) {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": "image generation disabled"}),
+        );
+    }
+    let Some(sidecar) = &state.sidecar else {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": "sidecar manager is not attached"}),
+        );
+    };
+    if let Err(e) = sidecar.ensure_started(true).await {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": format!("image sidecar unavailable: {e}")}),
+        );
+    }
+
+    let url = format!(
+        "{}/image-files/{}/{}",
+        state.config.infer_base_url,
+        urlencoding::encode(&run_id),
+        urlencoding::encode(&filename)
+    );
+    match state
+        .http
+        .get(url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+    {
+        Ok(resp) => proxy_sidecar_response(resp, "image/png").await,
+        Err(e) => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": format!("image fetch failed: {e}")}),
+        ),
+    }
+}
+
+async fn proxy_sidecar_response(resp: reqwest::Response, default_content_type: &str) -> Response {
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(default_content_type)
+        .to_string();
+    match resp.bytes().await {
+        Ok(bytes) => {
+            let mut out = Response::new(Body::from(bytes));
+            *out.status_mut() = status;
+            out.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(&content_type)
+                    .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+            );
+            out
+        }
+        Err(e) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &json!({"ok": false, "error": format!("sidecar response read failed: {e}")}),
+        ),
+    }
+}
 
 async fn post_transcribe(
     State(state): State<AppState>,

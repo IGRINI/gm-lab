@@ -162,6 +162,7 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
     // The server reads `GM_BACKEND` (via Config) and `GM_CHAT_SCOPE_ID`; pin both.
     std::env::set_var("GM_BACKEND", "mock");
     std::env::set_var("GM_CHAT_SCOPE_ID", "shared");
+    std::env::set_var("GM_IMAGE_ENABLED", "1");
 
     let mut cfg = Config::from_env();
     cfg.backend = "mock".to_string();

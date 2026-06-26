@@ -357,6 +357,11 @@ impl RuntimeSettings {
         self.bool_setting(settings, "tts_enabled", false)
     }
 
+    /// `image_enabled(settings?)` (default from GM_IMAGE_ENABLED).
+    pub fn image_enabled(&self, settings: Option<&SettingsMap>) -> bool {
+        self.bool_setting(settings, "image_enabled", true)
+    }
+
     /// `max_tool_hops(settings?)` — clamp `>= 0` (Python re-clamps at read).
     pub fn max_tool_hops(&self, settings: Option<&SettingsMap>) -> i64 {
         let owned;
@@ -511,6 +516,7 @@ impl RuntimeSettings {
             "gm_suggest_options",
             "tts_enabled",
             "tts_autoplay",
+            "image_enabled",
         ] {
             if data.contains_key(key) {
                 out.insert(key.into(), Value::from(bool_of(data.get(key), false)));
@@ -839,6 +845,7 @@ fn compute_defaults(cfg: &Config) -> (SettingsMap, String) {
         "tts_autoplay".into(),
         Value::from(config::env_bool("GM_TTS_AUTOPLAY", false)),
     );
+    defaults.insert("image_enabled".into(), Value::from(cfg.image_enabled));
     defaults.insert("max_tool_hops".into(), Value::from(0i64));
     // max_output_tokens = int(config.MAX_TOKENS or 0)
     defaults.insert(
@@ -920,6 +927,7 @@ mod tests {
         std::env::remove_var("GM_TEXT_VERBOSITY");
         std::env::remove_var("GM_TOOL_CHOICE");
         std::env::remove_var("GM_MAX_TOKENS");
+        std::env::remove_var("GM_IMAGE_ENABLED");
         let cfg = Config::from_env();
         (RuntimeSettings::new(&cfg, path), dir)
     }
@@ -954,6 +962,7 @@ mod tests {
         assert_eq!(d.get("gm_suggest_options"), Some(&Value::from(false)));
         assert_eq!(d.get("tts_enabled"), Some(&Value::from(false)));
         assert_eq!(d.get("tts_autoplay"), Some(&Value::from(false)));
+        assert_eq!(d.get("image_enabled"), Some(&Value::from(true)));
         assert_eq!(d.get("max_tool_hops"), Some(&Value::from(0i64)));
         assert_eq!(d.get("max_output_tokens"), Some(&Value::from(0i64)));
     }

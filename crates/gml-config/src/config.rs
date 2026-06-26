@@ -302,6 +302,12 @@ pub struct Config {
     pub infer_base_url: String, // GM_INFER_URL — single source for the sidecar URLs
     pub embedder_quant: String, // GM_EMBEDDER_QUANT, bf16 | nf4 (default bf16)
     pub reranker_quant: String, // GM_RERANKER_QUANT, bf16 | nf4 (default bf16)
+    pub image_enabled: bool,    // GM_IMAGE_ENABLED, true
+    pub image_timeout_seconds: f64, // GM_IMAGE_TIMEOUT_SECONDS, 300
+    pub image_max_width: i64,   // GM_IMAGE_MAX_WIDTH, 2048
+    pub image_max_height: i64,  // GM_IMAGE_MAX_HEIGHT, 2048
+    pub image_max_batch: i64,   // GM_IMAGE_MAX_BATCH, 4
+    pub image_max_steps: i64,   // GM_IMAGE_MAX_STEPS, 50
 
     // --- Prompt cache hints ---
     pub prompt_cache_key: String,       // GM_PROMPT_CACHE_KEY, ""
@@ -444,6 +450,12 @@ impl Config {
                     "bf16".to_string()
                 }
             },
+            image_enabled: env_bool("GM_IMAGE_ENABLED", true),
+            image_timeout_seconds: env_float_or("GM_IMAGE_TIMEOUT_SECONDS", 300.0),
+            image_max_width: env_int_or("GM_IMAGE_MAX_WIDTH", 2048),
+            image_max_height: env_int_or("GM_IMAGE_MAX_HEIGHT", 2048),
+            image_max_batch: env_int_or("GM_IMAGE_MAX_BATCH", 4),
+            image_max_steps: env_int_or("GM_IMAGE_MAX_STEPS", 50),
 
             prompt_cache_key,
             prompt_cache_retention: env_str("GM_PROMPT_CACHE_RETENTION", ""),

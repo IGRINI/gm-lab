@@ -25,6 +25,9 @@ gm_lab_settings.json
 tts_cache/
 *.log
 
+# Local image generation runtime (venv, ComfyUI checkout, model weights, generated PNGs).
+sidecar/image_runtime/
+
 # OS / editor
 .DS_Store
 Thumbs.db

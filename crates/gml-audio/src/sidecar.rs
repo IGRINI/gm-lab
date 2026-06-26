@@ -22,6 +22,7 @@
 //! The state transitions are factored into [`StateMachine`] so they can be
 //! unit-tested against a stubbed health check with zero process spawning.
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -30,20 +31,15 @@ use serde_json::Value;
 
 use crate::proc::ProcessTree;
 
-/// Env var holding the spawn command line for the sidecar. Default launches the
-/// unified `serve.py` (embeddings + rerank + TTS) on the rag312 Python env.
+/// Env var holding the spawn command line for the sidecar. When unset, the
+/// manager launches `serve.py` with `PYTHON`, `python`, or `python3`.
 pub const SPAWN_CMD_ENV: &str = "GM_TTS_SPAWN_CMD";
 /// Env var pointing at the sidecar working directory (the `serve.py` dir).
 pub const SPAWN_DIR_ENV: &str = "GM_TTS_SPAWN_DIR";
 /// Env var: how long (seconds) to wait for the sidecar to become healthy.
 pub const READY_TIMEOUT_ENV: &str = "GM_TTS_READY_TIMEOUT";
 
-/// Default Python interpreter (the rag312 env: torch 2.7 cu128 + flash-attn +
-/// transformers 4.57.3 + sentence-transformers + qwen-tts).
-pub const DEFAULT_PYTHON: &str = r"E:/gemma/rag312/Scripts/python.exe";
-/// Default spawn working directory (the gm-lab-rs `sidecar/` dir with serve.py).
-pub const DEFAULT_SPAWN_DIR: &str = r"E:/gemma/gm-lab-rs/sidecar";
-/// Default sidecar script, relative to [`DEFAULT_SPAWN_DIR`].
+/// Default sidecar script, relative to the resolved sidecar directory.
 pub const DEFAULT_SCRIPT: &str = "serve.py";
 /// Default HF cache home (where the TTS weights live, on E:).
 pub const DEFAULT_HF_HOME: &str = r"E:/gemma/gm-lab/hf_models/.hf-home";
@@ -129,14 +125,14 @@ impl SidecarConfig {
     /// Build the config from environment + sensible defaults.
     ///
     /// `GM_TTS_SPAWN_CMD` is split on whitespace (first token = program). If
-    /// unset, the default is `python demo/server.py` run from the
-    /// faster-qwen3-tts directory. The base URL comes from `GM_TTS_URL`.
+    /// unset, the manager uses `PYTHON`/`python`/`python3` and runs `serve.py`
+    /// from the resolved sidecar directory. The base URL comes from `GM_TTS_URL`.
     pub fn from_env() -> Self {
         let base_url = crate::tts::tts_url();
         let spawn_dir = {
             let d = std::env::var(SPAWN_DIR_ENV).unwrap_or_default();
             if d.trim().is_empty() {
-                DEFAULT_SPAWN_DIR.to_string()
+                default_spawn_dir()
             } else {
                 d
             }
@@ -147,7 +143,10 @@ impl SidecarConfig {
                 let prog = parts.next().unwrap_or_else(|| default_python().to_string());
                 (prog, parts.collect())
             }
-            _ => (DEFAULT_PYTHON.to_string(), vec![DEFAULT_SCRIPT.to_string()]),
+            _ => (
+                default_python().to_string(),
+                vec![DEFAULT_SCRIPT.to_string()],
+            ),
         };
         let ready_timeout = std::env::var(READY_TIMEOUT_ENV)
             .ok()
@@ -189,12 +188,45 @@ fn env_or(key: &str, default: &str) -> String {
     }
 }
 
-fn default_python() -> &'static str {
-    if cfg!(windows) {
-        "python"
-    } else {
-        "python3"
+fn default_python() -> String {
+    let from_env = std::env::var("PYTHON").unwrap_or_default();
+    if !from_env.trim().is_empty() {
+        return from_env;
     }
+    if cfg!(windows) {
+        "python".to_string()
+    } else {
+        "python3".to_string()
+    }
+}
+
+fn default_spawn_dir() -> String {
+    resolve_sidecar_dir()
+        .unwrap_or_else(|| PathBuf::from("sidecar"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn resolve_sidecar_dir() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok();
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf));
+
+    let candidates = [
+        cwd.as_ref().map(|p| p.join("sidecar")),
+        cwd,
+        exe_dir.as_ref().map(|p| p.join("sidecar")),
+        exe_dir
+            .as_ref()
+            .and_then(|p| p.parent().map(|parent| parent.join("sidecar"))),
+        exe_dir,
+    ];
+
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|dir| dir.join(DEFAULT_SCRIPT).is_file())
 }
 
 /// The pure readiness state machine, decoupled from any real process / network
@@ -483,6 +515,7 @@ fn health_payload_ready(cfg: &SidecarConfig, body: &Value) -> bool {
         ("EMBEDDER_ENABLED", "embedder"),
         ("RERANKER_ENABLED", "reranker"),
         ("TTS_ENABLED", "tts"),
+        ("IMAGE_ENABLED", "image"),
     ];
     let mut any_expected = false;
     for (env_key, health_key) in expected {

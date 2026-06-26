@@ -313,6 +313,29 @@ async fn build_app() -> Result<App, String> {
         "TTS_ENABLED".to_string(),
         b01(state.settings.tts_enabled(None)),
     ));
+    sidecar_cfg
+        .envs
+        .push(("IMAGE_ENABLED".to_string(), b01(state.config.image_enabled)));
+    sidecar_cfg.envs.push((
+        "IMAGE_TIMEOUT_SECONDS".to_string(),
+        state.config.image_timeout_seconds.to_string(),
+    ));
+    sidecar_cfg.envs.push((
+        "IMAGE_MAX_WIDTH".to_string(),
+        state.config.image_max_width.to_string(),
+    ));
+    sidecar_cfg.envs.push((
+        "IMAGE_MAX_HEIGHT".to_string(),
+        state.config.image_max_height.to_string(),
+    ));
+    sidecar_cfg.envs.push((
+        "IMAGE_MAX_BATCH".to_string(),
+        state.config.image_max_batch.to_string(),
+    ));
+    sidecar_cfg.envs.push((
+        "IMAGE_MAX_STEPS".to_string(),
+        state.config.image_max_steps.to_string(),
+    ));
     let sidecar = Arc::new(Sidecar::new(sidecar_cfg));
     state.sidecar = Some(sidecar.clone());
 
@@ -401,13 +424,16 @@ async fn run_server() {
         let sidecar = app.sidecar.clone();
         let rag = app.state.config.rag_enabled;
         let tts = app.state.settings.tts_enabled(None);
+        let image = app.state.config.image_enabled && app.state.settings.image_enabled(None);
         tokio::spawn(async move {
-            if !(rag || tts) {
-                tracing::info!("RAG + TTS both disabled; inference sidecar not started");
+            if !(rag || tts || image) {
+                tracing::info!("RAG + TTS + image all disabled; inference sidecar not started");
                 return;
             }
             match sidecar.ensure_started(true).await {
-                Ok(()) => tracing::info!("inference sidecar ready (rag={rag} tts={tts})"),
+                Ok(()) => {
+                    tracing::info!("inference sidecar ready (rag={rag} tts={tts} image={image})")
+                }
                 Err(e) => {
                     tracing::warn!("inference sidecar not started ({e}); continuing degraded")
                 }
@@ -533,7 +559,11 @@ fn run_desktop() {
     let sidecar = app.sidecar.clone();
     handle.spawn(async move {
         let _ = sidecar
-            .ensure_started(state.config.rag_enabled || state.settings.tts_enabled(None))
+            .ensure_started(
+                state.config.rag_enabled
+                    || state.settings.tts_enabled(None)
+                    || (state.config.image_enabled && state.settings.image_enabled(None)),
+            )
             .await;
     });
     let router = build_router(app.state.clone());

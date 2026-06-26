@@ -92,8 +92,11 @@ function componentLine(component, fallback) {
   if (!component?.enabled) return `${fallback}: выкл`;
   const label = component.up ? "готов" : "загрузка";
   const model = component.model ? ` · ${component.model}` : "";
+  const models = Array.isArray(component.models) && component.models.length
+    ? ` · ${component.models.join(", ")}`
+    : "";
   const quant = component.quant ? ` · ${component.quant}` : "";
-  return `${fallback}: ${label}${model}${quant}`;
+  return `${fallback}: ${label}${model}${models}${quant}`;
 }
 
 function sidecarUiStatus(status) {
@@ -101,7 +104,12 @@ function sidecarUiStatus(status) {
   const c = status.components || {};
   const hasRag = !!(c.embedder?.enabled || c.reranker?.enabled);
   const hasTts = !!c.tts?.enabled;
-  const name = hasRag && hasTts ? "RAG/TTS" : hasTts ? "TTS" : "RAG";
+  const hasImage = !!c.image?.enabled;
+  const parts = [];
+  if (hasRag) parts.push("RAG");
+  if (hasTts) parts.push("TTS");
+  if (hasImage) parts.push("Image");
+  const name = parts.join("/") || "Инференс";
   if (status.ready) {
     return { level: "ok", label: `${name} готов`, title: "Инференс готов" };
   }
@@ -130,6 +138,7 @@ function SidecarTooltip({ status, ui }) {
       componentLine(c.embedder, "Эмбеддер"),
       componentLine(c.reranker, "Реранкер"),
       componentLine(c.tts, "TTS"),
+      componentLine(c.image, "Image"),
     ].join("\n");
 
   return (
@@ -527,6 +536,15 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
             type="checkbox"
             checked={!!draft.tts_autoplay}
             onChange={(e) => set({ tts_autoplay: e.target.checked })}
+          />
+        </label>
+
+        <label className="field check-field">
+          <span>Генерация картинок</span>
+          <input
+            type="checkbox"
+            checked={draft.image_enabled !== false}
+            onChange={(e) => set({ image_enabled: e.target.checked })}
           />
         </label>
 

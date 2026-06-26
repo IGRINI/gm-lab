@@ -1,17 +1,19 @@
 # gm-lab-rs unified inference sidecar
 
-One Python process (`serve.py`) that hosts **embeddings + reranker + TTS** for the
+One Python process (`serve.py`) that hosts **embeddings + reranker + TTS + image generation** for the
 gm-lab-rs app, on a single FastAPI server (`:8077`). It replaces the old llama.cpp
-embedder/reranker and the standalone TTS server.
+embedder/reranker, the standalone TTS server, and the old local image sandbox.
 
 ```
                           ┌────────────────────────────────────────────┐
-  Rust app (gml-app)      │  serve.py  (rag312 python, ONE process)      │
+  Rust app (gml-app)      │  serve.py  (Python 3.12, ONE process)        │
   ─ build_app()           │                                              │
      spawns ──────────────┼─►  uvicorn :8077                             │
   ─ gml-rag client  ──HTTP─┼─►  POST /v1/embeddings   Qwen3-Embedding-0.6B│
   ─ gml-audio tts.rs ─HTTP─┼─►  POST /speak | /speak_stream  Qwen3-TTS 1.7B│
   ─ gml-rag engine ──HTTP─┼─►  POST /rerank          jina-reranker-v3     │
+  ─ gml-server      ──HTTP─┼─►  POST /images/generate  ComfyUI FLUX.2 klein│
+  ─ gml-server      ──HTTP─┼─►  GET  /image-files/{run}/{file} generated PNG│
   ─ Sidecar health poll ──┼─►  GET  /health                              │
                           └────────────────────────────────────────────┘
 ```
@@ -22,7 +24,7 @@ its candidate texts; the sidecar only re-scores what it's given.
 
 ---
 
-## Environment — `E:\gemma\rag312` (Python 3.12)
+## Environment — Python 3.12
 
 | Package | Version | Note |
 |---|---|---|
@@ -50,6 +52,7 @@ Voice refs + the local 1.7B model live in `E:\gemma\gm-lab\hf_models\faster-qwen
 | Embedder | `Qwen/Qwen3-Embedding-0.6B` | 1024-dim, last-token pooling, L2-normalized, asymmetric (query instruction) |
 | Reranker | `jinaai/jina-reranker-v3` | listwise 0.6B, multilingual incl. Russian, **raw-cosine scores [-1,1]** |
 | TTS | local `qwen17b_base/` (Qwen3-TTS-12Hz-1.7B-Base) | CUDA-graph capture, 24 kHz, voice-clone |
+| Image | ComfyUI FLUX.2 klein NVFP4 runtime in `sidecar/image_runtime/` | lazy ComfyUI startup, generated PNGs in `image_runtime/generated/<run_id>/` |
 
 TTS voices (all voice-clones on the one model, primed at startup):
 
@@ -107,9 +110,32 @@ ordering / per-query thresholding only; never apply an extra sigmoid.
 ### `POST /speak_stream` → raw PCM16 mono, header `X-Sample-Rate: 24000`
 Same body as `/speak`; streams chunks head-first as the model generates.
 
+### `POST /images/generate`
+```jsonc
+// request
+{ "prompt": "…",
+  "steps": 4, "seed": 42,
+  "width": 1024, "height": 1024,
+  "batch": 1,
+  "cfg": 1.0,
+  "model": "nvfp4" }
+// response
+{ "ok": true, "run_id": "…", "seed": 42,
+  "images": [ { "filename": "image_0.png", "url": "/image-files/…/image_0.png", "bytes": 123 } ] }
+```
+
+The endpoint creates `IMAGE_OUTPUT_DIR/<run_id>/` and writes the final PNGs
+there. ComfyUI is started lazily on the first generation request; `/health`
+reports `image.up=true` when the runtime files/models are present and
+`image.comfy_up` when the ComfyUI server is already listening.
+
+### `GET /image-files/{run_id}/{filename}` → `image/png`
+Safe file server for generated PNGs. The Rust server proxies the same path, so
+response URLs are same-origin for the app.
+
 ### `GET /health`
 Per-model `up` flags, embedder `dim`, reranker score note, TTS voices,
-`rerank_top_n_default`.
+image runtime/ComfyUI status, `rerank_top_n_default`.
 
 ---
 
@@ -141,6 +167,16 @@ via the sidecar's spawn env (see "Rust wiring").
 | `GMLAB_SIDECAR_HOST` / `GMLAB_SIDECAR_PORT` | `127.0.0.1` / `8077` | bind |
 | `GMLAB_SIDECAR_LOG` | `<dir>/serve.log` | tee of stdout/stderr (spawner nulls the pipes) |
 | `TTS_LOCK_TIMEOUT` | `180` | bounded wait for the TTS lock → 503 on timeout, never hangs |
+| `IMAGE_ENABLED` | `1` | enable image generation component |
+| `IMAGE_RUNTIME_ROOT` | `<sidecar>/image_runtime` | local ComfyUI + venv + model runtime |
+| `IMAGE_COMFY_DIR` | `<runtime>/ComfyUI` | ComfyUI checkout |
+| `IMAGE_PYTHON` | `<runtime>/.venv-flux/Scripts/python.exe` | Python used to run ComfyUI |
+| `IMAGE_OUTPUT_DIR` | `<runtime>/generated` | per-run generated PNG folders |
+| `IMAGE_HF_HOME` | `<runtime>/hf-cache` | HF cache for image runtime |
+| `IMAGE_COMFY_HOST` / `IMAGE_COMFY_PORT` | `127.0.0.1` / `8188` | ComfyUI bind |
+| `IMAGE_TIMEOUT_SECONDS` | `300` | ComfyUI startup/generation timeout |
+| `IMAGE_MAX_WIDTH` / `IMAGE_MAX_HEIGHT` | `2048` / `2048` | request limits |
+| `IMAGE_MAX_BATCH` / `IMAGE_MAX_STEPS` | `4` / `50` | request limits |
 
 `int8` quant was dropped (≈5× slower than bf16). `nf4` remains available as an
 explicit override, but the default is `bf16`.
@@ -150,16 +186,26 @@ explicit override, but the default is `bf16`.
 ## Rust wiring (already done — informational)
 
 - **Spawn:** `gml-audio::Sidecar` (`crates/gml-audio/src/sidecar.rs`) launches
-  `E:/gemma/rag312/Scripts/python.exe serve.py` from `E:/gemma/gm-lab-rs/sidecar`,
-  health-polls `GET /health` (ready timeout 300 s), kills the process tree on exit.
+  `serve.py` with `PYTHON`, then `python`/`python3`, from the resolved `sidecar/`
+  directory; `GM_TTS_SPAWN_CMD` / `GM_TTS_SPAWN_DIR` are the explicit overrides.
+  It health-polls `GET /health` (ready timeout 300 s) and kills the process tree on exit.
 - **Start point:** `gml-app build_app()` builds the `SidecarConfig`, pushes
   `EMBEDDER_QUANT` / `RERANKER_QUANT` / `EMBEDDER_ENABLED` / `RERANKER_ENABLED` /
-  `TTS_ENABLED` into `SidecarConfig.envs` from `Config` + runtime settings, then
-  starts it when `rag_enabled || tts_enabled`.
+  `TTS_ENABLED` / `IMAGE_ENABLED` / `IMAGE_*` limits into `SidecarConfig.envs`
+  from `Config` + runtime settings, then starts it when
+  `rag_enabled || tts_enabled || image_enabled`.
 - **Config (gml-config):** `GM_EMBEDDER_QUANT` / `GM_RERANKER_QUANT` (`bf16`|`nf4`,
   default `bf16`). **`GM_INFER_URL`** (default `http://127.0.0.1:8077`)
   is the single source: `rag_embeddings_url`, `rag_rerank_url`, and the TTS base
   all derive from it (so they never disagree on host:port).
+- **Images (wired & live):** `gml-server` exposes `POST /images/generate` and
+  `GET /image-files/{run_id}/{filename}` as same-origin proxies to the sidecar.
+  `GM_IMAGE_ENABLED` and `GM_IMAGE_*` limits are read by `gml-config` and passed
+  to `serve.py`. `GM_IMAGE_ENABLED` is the default/global switch; the UI/runtime
+  setting `image_enabled` gates whether the Rust server starts and accepts image
+  requests. Switching `image_enabled` from off to on kicks the Python sidecar and
+  ComfyUI startup in the background; the first generation request still waits if
+  the warmup has not finished yet.
 - **Reranking (wired & live):** `GM_RAG_RERANK_ENABLED` (default **true**),
   `GM_RAG_RERANK_CANDIDATES` (default **64** — jina single-pass sweet spot) = how
   many fused RRF candidates `engine.rs` sends to `/rerank`; results reorder the
@@ -211,7 +257,9 @@ by `embed_query_uses_sidecar_query_instruction_live` (`cargo test -p gml-rag -- 
 
 ```powershell
 $env:HF_HOME="E:\gemma\gm-lab\hf_models\.hf-home"; $env:GMLAB_SIDECAR_PORT="8077"
-E:\gemma\rag312\Scripts\python.exe E:\gemma\gm-lab-rs\sidecar\serve.py
+Push-Location .\sidecar
+python .\serve.py
+Pop-Location
 ```
 - **Logs**: the Rust spawner runs the sidecar with stdout/stderr → null, so the
   process tees everything to **`serve.log`** (next to `serve.py`, override with
