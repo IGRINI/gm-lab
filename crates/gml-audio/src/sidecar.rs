@@ -85,6 +85,7 @@ pub struct SidecarSnapshot {
     pub base_url: String,
     pub started_elapsed: Option<Duration>,
     pub ready_timeout: Duration,
+    pub error: Option<String>,
 }
 
 /// Sidecar failures.
@@ -96,6 +97,9 @@ pub enum SidecarError {
     /// The sidecar process failed to spawn.
     #[error("failed to spawn TTS sidecar: {0}")]
     Spawn(String),
+    /// The spawned sidecar process exited before it became healthy.
+    #[error("TTS sidecar process exited before readiness: {0}")]
+    Exited(String),
     /// The sidecar did not become healthy within the timeout.
     #[error("TTS sidecar did not become ready within {0:?}")]
     Timeout(Duration),
@@ -318,6 +322,7 @@ pub struct Sidecar {
     cfg: SidecarConfig,
     http: reqwest::Client,
     inner: OnceCell<Mutex<Inner>>,
+    env_overrides: Mutex<Vec<(String, String)>>,
 }
 
 struct Inner {
@@ -326,6 +331,7 @@ struct Inner {
     /// failed.
     child: Option<tokio::process::Child>,
     tree: Option<ProcessTree>,
+    last_error: Option<String>,
 }
 
 impl Sidecar {
@@ -338,6 +344,7 @@ impl Sidecar {
             cfg,
             http,
             inner: OnceCell::new(),
+            env_overrides: Mutex::new(Vec::new()),
         }
     }
 
@@ -346,29 +353,62 @@ impl Sidecar {
         Self::new(SidecarConfig::from_env())
     }
 
+    /// Override one spawn environment variable for future starts.
+    pub fn set_env(&self, key: impl Into<String>, value: impl Into<String>) {
+        let key = key.into();
+        let value = value.into();
+        let mut overrides = self.env_overrides.lock().unwrap();
+        if let Some((_, current)) = overrides.iter_mut().find(|(k, _)| k == &key) {
+            *current = value;
+        } else {
+            overrides.push((key, value));
+        }
+    }
+
+    fn effective_envs(&self) -> Vec<(String, String)> {
+        let mut envs = self.cfg.envs.clone();
+        envs.extend(self.env_overrides.lock().unwrap().iter().cloned());
+        envs
+    }
+
+    fn env_enabled(&self, key: &str) -> bool {
+        self.effective_envs()
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.trim() == "1")
+            .unwrap_or(false)
+    }
+
     fn inner(&self) -> &Mutex<Inner> {
         self.inner.get_or_init(|| {
             Mutex::new(Inner {
                 sm: StateMachine::new(self.cfg.ready_timeout),
                 child: None,
                 tree: None,
+                last_error: None,
             })
         })
     }
 
     /// Current state.
     pub fn state(&self) -> SidecarState {
-        self.inner().lock().unwrap().sm.state()
+        let mut g = self.inner().lock().unwrap();
+        let _ = reap_exited_child(&mut g);
+        g.sm.state()
     }
 
     /// Whether the sidecar is ready.
     pub fn is_ready(&self) -> bool {
-        self.inner().lock().unwrap().sm.is_ready()
+        let mut g = self.inner().lock().unwrap();
+        let _ = reap_exited_child(&mut g);
+        g.sm.is_ready()
     }
 
     /// Current read-only process/readiness snapshot.
     pub fn snapshot(&self) -> SidecarSnapshot {
-        let g = self.inner().lock().unwrap();
+        let mut g = self.inner().lock().unwrap();
+        let _ = reap_exited_child(&mut g);
         SidecarSnapshot {
             state: g.sm.state(),
             ready: g.sm.is_ready(),
@@ -376,6 +416,7 @@ impl Sidecar {
             base_url: self.cfg.base_url.clone(),
             started_elapsed: g.sm.started_elapsed(),
             ready_timeout: g.sm.timeout(),
+            error: g.last_error.clone(),
         }
     }
 
@@ -394,6 +435,9 @@ impl Sidecar {
         // Fast path / spawn-once decision under the lock.
         {
             let mut g = self.inner().lock().unwrap();
+            if let Some(message) = reap_exited_child(&mut g) {
+                return Err(SidecarError::Exited(message));
+            }
             match g.sm.state() {
                 SidecarState::Ready => return Ok(()),
                 SidecarState::Disabled | SidecarState::Failed => {
@@ -402,10 +446,12 @@ impl Sidecar {
                         Ok((child, tree)) => {
                             g.child = Some(child);
                             g.tree = Some(tree);
+                            g.last_error = None;
                             g.sm.on_spawned(Instant::now());
                         }
                         Err(e) => {
                             g.sm.on_spawn_failed();
+                            g.last_error = Some(e.clone());
                             return Err(SidecarError::Spawn(e));
                         }
                     }
@@ -416,6 +462,12 @@ impl Sidecar {
 
         // Poll health until Ready / Failed.
         loop {
+            if let Some(message) = {
+                let mut g = self.inner().lock().unwrap();
+                reap_exited_child(&mut g)
+            } {
+                return Err(SidecarError::Exited(message));
+            }
             let healthy = self.probe_health().await;
             let new_state = {
                 let mut g = self.inner().lock().unwrap();
@@ -423,7 +475,17 @@ impl Sidecar {
             };
             match new_state {
                 SidecarState::Ready => return Ok(()),
-                SidecarState::Failed => return Err(SidecarError::Timeout(self.cfg.ready_timeout)),
+                SidecarState::Failed => {
+                    let message = format!(
+                        "sidecar did not become ready within {:?}",
+                        self.cfg.ready_timeout
+                    );
+                    let mut g = self.inner().lock().unwrap();
+                    if g.last_error.is_none() {
+                        g.last_error = Some(message);
+                    }
+                    return Err(SidecarError::Timeout(self.cfg.ready_timeout));
+                }
                 _ => tokio::time::sleep(HEALTH_POLL_INTERVAL).await,
             }
         }
@@ -438,7 +500,7 @@ impl Sidecar {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        for (k, v) in &self.cfg.envs {
+        for (k, v) in self.effective_envs() {
             cmd.env(k, v);
         }
         crate::proc::no_window(&mut cmd);
@@ -455,8 +517,27 @@ impl Sidecar {
     async fn probe_health(&self) -> bool {
         self.health_payload()
             .await
-            .map(|body| health_payload_ready(&self.cfg, &body))
+            .map(|body| self.health_payload_ready(&body))
             .unwrap_or(false)
+    }
+
+    fn health_payload_ready(&self, body: &Value) -> bool {
+        let expected = [
+            ("EMBEDDER_ENABLED", "embedder"),
+            ("RERANKER_ENABLED", "reranker"),
+            ("TTS_ENABLED", "tts"),
+            ("IMAGE_ENABLED", "image"),
+        ];
+        let mut any_expected = false;
+        for (env_key, health_key) in expected {
+            if self.env_enabled(env_key) {
+                any_expected = true;
+                if !health_component_up(body, health_key) {
+                    return false;
+                }
+            }
+        }
+        any_expected
     }
 
     /// Fetch the raw sidecar `/health` payload for status UIs.
@@ -481,6 +562,7 @@ impl Sidecar {
         let (mut child, mut tree) = {
             let mut g = self.inner().lock().unwrap();
             g.sm.on_shutdown();
+            g.last_error = None;
             (g.child.take(), g.tree.take())
         };
         if let Some(t) = tree.as_mut() {
@@ -494,6 +576,31 @@ impl Sidecar {
     }
 }
 
+fn reap_exited_child(g: &mut Inner) -> Option<String> {
+    let status = match g.child.as_mut() {
+        Some(child) => match child.try_wait() {
+            Ok(Some(status)) => status,
+            Ok(None) => return None,
+            Err(e) => {
+                let message = format!("failed to poll sidecar process: {e}");
+                g.child = None;
+                g.tree = None;
+                g.sm.on_spawn_failed();
+                g.last_error = Some(message.clone());
+                return Some(message);
+            }
+        },
+        None => return None,
+    };
+    let message = format!("sidecar process exited before readiness: {status}");
+    g.child = None;
+    g.tree = None;
+    g.sm.on_spawn_failed();
+    g.last_error = Some(message.clone());
+    Some(message)
+}
+
+#[cfg(test)]
 fn sidecar_env_enabled(cfg: &SidecarConfig, key: &str) -> bool {
     cfg.envs
         .iter()
@@ -510,6 +617,7 @@ fn health_component_up(body: &Value, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn health_payload_ready(cfg: &SidecarConfig, body: &Value) -> bool {
     let expected = [
         ("EMBEDDER_ENABLED", "embedder"),
@@ -673,5 +781,39 @@ mod tests {
         let err = s.ensure_started(true).await.unwrap_err();
         assert!(matches!(err, SidecarError::Spawn(_)));
         assert_eq!(s.state(), SidecarState::Failed);
+    }
+
+    #[tokio::test]
+    async fn ensure_started_reports_fast_child_exit() {
+        let (program, args) = if cfg!(windows) {
+            (
+                "cmd".to_string(),
+                vec!["/C".to_string(), "exit 7".to_string()],
+            )
+        } else {
+            (
+                "sh".to_string(),
+                vec!["-c".to_string(), "exit 7".to_string()],
+            )
+        };
+        let cfg = SidecarConfig {
+            base_url: "http://127.0.0.1:59997".to_string(),
+            spawn_program: program,
+            spawn_args: args,
+            spawn_dir: ".".to_string(),
+            ready_timeout: Duration::from_secs(5),
+            envs: vec![],
+        };
+        let s = Sidecar::new(cfg);
+        let err = s.ensure_started(true).await.unwrap_err();
+        assert!(matches!(err, SidecarError::Exited(_)));
+        let snapshot = s.snapshot();
+        assert_eq!(snapshot.state, SidecarState::Failed);
+        assert_eq!(snapshot.pid, None);
+        assert!(snapshot
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("exited"));
     }
 }

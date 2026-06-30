@@ -428,6 +428,14 @@ fn provided_world_lore_populates_canon_lore() {
         WorldLore {
             name: "Город Железных Снов".to_string(),
             public_premise: "Люди живут в тени спящего машинного бога.".to_string(),
+            world_image_prompt_en:
+                "A vast dieselpunk city built around a sleeping machine god, brass towers, steam haze."
+                    .to_string(),
+            world_map_prompt_en:
+                "A readable isometric city-region map with ring districts, machine temples, rail lines and labeled gates."
+                    .to_string(),
+            world_image_url: "/image-files/world-run/image_0.png".to_string(),
+            world_map_url: "/image-files/world-map-run/image_0.png".to_string(),
             religions: vec!["церковь Спящего Механизма".to_string()],
             gods: vec!["Машинный Бог под городом".to_string()],
             regions: vec!["Нижние кольца города".to_string()],
@@ -441,12 +449,26 @@ fn provided_world_lore_populates_canon_lore() {
     let lore = &world.world_canon.world_lore;
     assert_eq!(lore.name, "Город Железных Снов");
     assert_eq!(lore.genre, "fantasy isekai");
+    assert_eq!(
+        lore.world_image_prompt_en,
+        "A vast dieselpunk city built around a sleeping machine god, brass towers, steam haze."
+    );
+    assert_eq!(
+        lore.world_map_prompt_en,
+        "A readable isometric city-region map with ring districts, machine temples, rail lines and labeled gates."
+    );
+    assert_eq!(lore.world_image_url, "/image-files/world-run/image_0.png");
+    assert_eq!(lore.world_map_url, "/image-files/world-map-run/image_0.png");
     assert!(!lore.lore_id.is_empty());
     let context = world.canon_world_context();
     assert!(context.contains("Город Железных Снов"));
     assert!(context.contains("Religions/creeds"));
     assert!(context.contains("Машинный Бог"));
     assert!(context.contains("Location generation rules"));
+    assert!(!context.contains("dieselpunk city"));
+    assert!(!context.contains("isometric city-region map"));
+    assert!(!context.contains("/image-files/world-run/image_0.png"));
+    assert!(!context.contains("/image-files/world-map-run/image_0.png"));
 }
 
 #[test]

@@ -29,6 +29,18 @@ pub struct WorldLore {
     /// GM-only backstage premise.
     #[serde(default)]
     pub hidden_premise: String,
+    /// English prompt for an overview image of the world.
+    #[serde(default)]
+    pub world_image_prompt_en: String,
+    /// English prompt for a readable world map.
+    #[serde(default)]
+    pub world_map_prompt_en: String,
+    /// Same-origin or absolute URL of the generated overview image.
+    #[serde(default)]
+    pub world_image_url: String,
+    /// Same-origin or absolute URL of the generated world map image.
+    #[serde(default)]
+    pub world_map_url: String,
     /// Broad cultural/metaphysical assumptions people live by.
     #[serde(default)]
     pub dogmas: Vec<String>,
@@ -108,6 +120,10 @@ impl WorldLore {
             && self.scale.is_empty()
             && self.public_premise.is_empty()
             && self.hidden_premise.is_empty()
+            && self.world_image_prompt_en.is_empty()
+            && self.world_map_prompt_en.is_empty()
+            && self.world_image_url.is_empty()
+            && self.world_map_url.is_empty()
             && self.dogmas.is_empty()
             && self.world_laws.is_empty()
             && self.inhabitants.is_empty()
@@ -143,6 +159,10 @@ impl WorldLore {
         trim_string(&mut self.scale);
         trim_string(&mut self.public_premise);
         trim_string(&mut self.hidden_premise);
+        trim_string(&mut self.world_image_prompt_en);
+        trim_string(&mut self.world_map_prompt_en);
+        trim_string(&mut self.world_image_url);
+        trim_string(&mut self.world_map_url);
         trim_list(&mut self.dogmas);
         trim_list(&mut self.world_laws);
         trim_list(&mut self.inhabitants);

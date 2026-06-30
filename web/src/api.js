@@ -39,13 +39,13 @@ export const api = {
 
   updateWorld: (worldId, body) => _post(`/worlds/${encodeURIComponent(worldId)}`, body),
 
-  worldArchitectChat: (body) => _post("/world-architect/chat", body),
-
   activateChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/activate`),
 
   deleteChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/delete`),
 
   deleteWorld: (worldId) => _post(`/worlds/${encodeURIComponent(worldId)}/delete`),
+
+  generateImage: (body) => _post("/images/generate", body),
 
   setModel: (model) =>
     getJSON("/model", {
@@ -117,6 +117,38 @@ export async function transcribeAudio(blob) {
     throw new Error(data.error || `Ошибка распознавания (${resp.status})`);
   }
   return String(data.text || "");
+}
+
+// Stream a world-architect agent turn (SSE). `onEvent` fires for every event:
+//   architect_delta {channel:"thinking"|"content", text, sid} — per-hop deltas
+//   architect_tool  {name, arguments, sid}                    — a tool call
+//   architect_done  {…}                                       — final payload
+//   architect_error {…}
+// Returns when the stream ends. Throws on network error.
+export async function streamArchitect(body, onEvent) {
+  const resp = await fetch("/world-architect/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      if (chunk.startsWith("data: ")) {
+        const ev = JSON.parse(chunk.slice(6));
+        if (ev.kind === "done") continue;
+        onEvent(ev);
+      }
+    }
+  }
 }
 
 // Stream a player turn. `onEvent` is called for every SSE event object.

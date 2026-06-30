@@ -1,7 +1,10 @@
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import Modal from "./Modal.jsx";
 import ToolCard from "./ToolCard.jsx";
+import Spoiler from "./Spoiler.jsx";
+import MarkdownText from "./MarkdownText.jsx";
+import ImageThumbnail from "./ImagePreview.jsx";
 import { fmtK } from "../util.js";
 import { VisibilityContext } from "../devSettings.js";
 
@@ -120,6 +123,27 @@ const LORE_PREVIEW_FIELDS = [
   ["prohibited_elements", "Нельзя без причины"],
 ];
 
+const VISUAL_PROMPT_FIELDS = [
+  [
+    "world_image_prompt_en",
+    "Prompt изображения мира (EN)",
+    "English prompt for a world overview image: how the world looks, key landscapes, settlements, peoples, magic/technology cues, mood.",
+    "world_image_url",
+    "Изображение мира",
+  ],
+  [
+    "world_map_prompt_en",
+    "Prompt карты мира (EN)",
+    "English prompt for a readable world map: geography, regions, borders, routes, settlements, labels, cartography style.",
+    "world_map_url",
+    "Карта мира",
+  ],
+];
+const VISUAL_OUTPUT_FIELDS = VISUAL_PROMPT_FIELDS.map(([, , , outputField, outputLabel]) => [
+  outputField,
+  outputLabel,
+]);
+
 function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -183,7 +207,9 @@ function normalizeVisibleMessage(value) {
       args: value.args && typeof value.args === "object" ? value.args : {},
     };
   }
-  if (role !== "user" && role !== "assistant") return null;
+  // `think` = a reasoning segment, rendered as a collapsible spoiler (like the
+  // main chat's "ГМ думает").
+  if (role !== "user" && role !== "assistant" && role !== "think") return null;
   const content = textValue(value.content);
   if (!content) return null;
   return { role, content };
@@ -251,6 +277,10 @@ function lorePreviewRows(lore) {
   const rows = [];
   if (textValue(lore.public_premise)) rows.push(["Публично", textValue(lore.public_premise)]);
   if (textValue(lore.hidden_premise)) rows.push(["Скрыто", textValue(lore.hidden_premise)]);
+  for (const [field, label] of VISUAL_PROMPT_FIELDS) {
+    const prompt = textValue(lore[field]);
+    if (prompt) rows.push([label, prompt]);
+  }
   for (const [field, label] of LORE_PREVIEW_FIELDS) {
     const values = loreArray(lore[field]);
     if (values.length > 0) rows.push([label, values.join("; ")]);
@@ -299,6 +329,16 @@ function finalizeWorldLore(payload) {
   const hidden = textValue(lore.hidden_premise);
   if (hidden) lore.hidden_premise = hidden;
   else delete lore.hidden_premise;
+  for (const [field] of VISUAL_PROMPT_FIELDS) {
+    const prompt = textValue(lore[field]);
+    if (prompt) lore[field] = prompt;
+    else delete lore[field];
+  }
+  for (const [field] of VISUAL_OUTPUT_FIELDS) {
+    const url = textValue(lore[field]);
+    if (url) lore[field] = url;
+    else delete lore[field];
+  }
   if (!textValue(lore.public_premise) && textValue(payload.publicPremise)) {
     lore.public_premise = textValue(payload.publicPremise);
   }
@@ -310,7 +350,60 @@ function finalizeWorldLore(payload) {
   return lore;
 }
 
-export default function WorldArchitectPanel({ world, locked, onCreateWorld, onArchitectTurn, className = "" }) {
+// A textarea that grows to fit its content (no fixed rows, no inner scroll) so
+// the whole field is readable. Height is recomputed on every value change (incl.
+// the architect filling fields) and on viewport resize (wrapping changes).
+function AutoTextarea({ value, onChange, className = "", placeholder, disabled, minRows = 2 }) {
+  const ref = useRef(null);
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  useLayoutEffect(fit, [value]);
+  useEffect(() => {
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
+  return (
+    <textarea
+      ref={ref}
+      className={className}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      disabled={disabled}
+      rows={minRows}
+    />
+  );
+}
+
+function visualPromptSnapshot(lore) {
+  return VISUAL_PROMPT_FIELDS.map(([promptField, , , outputField]) => ({
+    promptField,
+    outputField,
+    prompt: textValue(lore?.[promptField]),
+    imageUrl: textValue(lore?.[outputField]),
+  }));
+}
+
+function visualJobLabel(job, prompt, imageUrl) {
+  if (job?.loading) return "Генерация...";
+  if (job?.queued) return "В очереди...";
+  if (imageUrl) return "Готово";
+  if (prompt) return "Ожидает генерации";
+  return "Нет prompt";
+}
+
+export default function WorldArchitectPanel({
+  world,
+  locked,
+  onCreateWorld,
+  onArchitectStream,
+  onGenerateImage,
+  className = "",
+}) {
   const [architectCache, setArchitectCache] = useState(() => architectCacheFromWorld(world));
   const [worldDraft, setWorldDraft] = useState(() => worldDraftFromSaved(world));
   const [messages, setMessages] = useState(() => architectMessagesFromWorld(world));
@@ -322,10 +415,31 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
   const [architectUsage, setArchitectUsage] = useState(EMPTY_ARCHITECT_USAGE);
   const [architectDebug, setArchitectDebug] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [imageJobs, setImageJobs] = useState({});
+  const imageAutoRequestsRef = useRef({});
+  const imagePromptLatestRef = useRef({});
+  const imageQueueRef = useRef([]);
+  const imageQueueRunningRef = useRef(false);
+  const imageScopeRef = useRef(0);
   const inputRef = useRef(null);
+  const logRef = useRef(null);
+  const [architectElapsed, setArchitectElapsed] = useState(0);
+  // In-flight segments for the current turn (think / reply text / tool), folded
+  // from the SSE stream in production order. Mirrors the main chat's live view.
+  const [liveSegments, setLiveSegments] = useState([]);
+  const liveSegmentsRef = useRef([]);
+  const loadedWorldIdRef = useRef(world?.id ?? null);
   const vis = useContext(VisibilityContext);
   const worldPayload = useMemo(() => cleanWorldDraft(worldDraft), [worldDraft]);
-  const loreFilled = useMemo(() => loreHasContent(worldPayload.worldLore), [worldPayload.worldLore]);
+  // "Filled" for the bible label / auto-open = real DETAIL (hidden premise or any
+  // list field), not just a public premise mirrored from the top-level field —
+  // otherwise the label reads "заполнена" while every detail field is empty.
+  const loreFilled = useMemo(() => {
+    const lore = worldPayload.worldLore;
+    if (!lore || typeof lore !== "object") return false;
+    if (textValue(lore.hidden_premise)) return true;
+    return LORE_PREVIEW_FIELDS.some(([field]) => loreArray(lore[field]).length > 0);
+  }, [worldPayload.worldLore]);
   // Creatable manually too: the basics plus either a public premise or any lore.
   const loreReady = !!textValue(worldPayload.publicPremise) || loreFilled;
   const worldCreateLocked =
@@ -339,17 +453,31 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
   const architectLocked = locked || architectBusy;
 
   useEffect(() => {
+    const id = world?.id ?? null;
+    // Only reload when the user switches to a DIFFERENT world. The world our own
+    // turn just created/updated (App syncs selectedWorldId) is already ours —
+    // reloading it would wipe the live conversation.
+    if (id === loadedWorldIdRef.current) return undefined;
+    loadedWorldIdRef.current = id;
     const nextDraft = worldDraftFromSaved(world);
     setArchitectCache(architectCacheFromWorld(world));
     setWorldDraft(nextDraft);
     setMessages(architectMessagesFromWorld(world));
     setModelMessages(modelMessagesFromWorld(world));
+    setLiveSegments([]);
+    liveSegmentsRef.current = [];
     setInput("");
     setArchitectError("");
     setArchitectUsage(EMPTY_ARCHITECT_USAGE);
     setArchitectDebug(null);
     setDebugOpen(false);
+    setImageJobs({});
+    imageScopeRef.current += 1;
+    imageAutoRequestsRef.current = {};
+    imagePromptLatestRef.current = {};
+    imageQueueRef.current = [];
     setBibleOpen(loreHasContent(nextDraft.worldLore));
+    return undefined;
   }, [world?.id]);
 
   // Reveal the bible editor the first time real lore appears (architect draft or
@@ -367,6 +495,35 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
     el.style.height = `${el.scrollHeight}px`;
   }, [input]);
 
+  // Keep the architect log pinned to the newest message / the typing indicator so
+  // progress, replies and errors are always visible (never below the fold).
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, architectBusy, liveSegments]);
+
+  // Tick an elapsed-seconds counter while the architect works, so a slow model
+  // still shows visible progress instead of a frozen-looking screen.
+  useEffect(() => {
+    if (!architectBusy) {
+      setArchitectElapsed(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const id = window.setInterval(() => {
+      setArchitectElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [architectBusy]);
+
+  useEffect(() => {
+    const latest = {};
+    for (const { promptField, prompt } of visualPromptSnapshot(worldDraft.worldLore)) {
+      latest[promptField] = prompt;
+    }
+    imagePromptLatestRef.current = latest;
+  }, [worldDraft.worldLore]);
+
   const updateWorldDraft = (field, value) => {
     setWorldDraft((current) => ({ ...current, [field]: value }));
   };
@@ -375,20 +532,147 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
     setWorldDraft((current) => applyPresetValues(current, preset));
   };
 
-  const updateWorldLore = (field, value) => {
+  const updateWorldLore = useCallback((field, value) => {
     setWorldDraft((current) => {
       const lore = current.worldLore && typeof current.worldLore === "object" ? { ...current.worldLore } : {};
       lore[field] = value;
       return { ...current, worldLore: lore };
     });
-  };
+  }, []);
   const updateLoreText = (field, text) => updateWorldLore(field, text);
   const updateLoreList = (field, text) => updateWorldLore(field, text.split("\n"));
+
+  const setImageJob = useCallback((field, patch) => {
+    setImageJobs((current) => ({ ...current, [field]: { ...(current[field] || {}), ...patch } }));
+  }, []);
+
+  const runVisualGeneration = useCallback(async (promptField, outputField, prompt, scope) => {
+    const isCurrentScope = () => scope === imageScopeRef.current;
+    const setScopedImageJob = (patch) => {
+      if (isCurrentScope()) setImageJob(promptField, patch);
+    };
+    const releaseAutoRequest = () => {
+      if (imageAutoRequestsRef.current[promptField] === prompt) delete imageAutoRequestsRef.current[promptField];
+    };
+    if (!isCurrentScope() || imagePromptLatestRef.current[promptField] !== prompt) {
+      releaseAutoRequest();
+      setScopedImageJob({ queued: false, loading: false });
+      return;
+    }
+    setScopedImageJob({ queued: false, loading: true, error: "" });
+    try {
+      if (typeof onGenerateImage !== "function") {
+        throw new Error("генерация картинок недоступна");
+      }
+      const isMap = outputField === "world_map_url";
+      const data = await onGenerateImage({
+        prompt,
+        model: "nvfp4",
+        width: isMap ? 1536 : 1024,
+        height: 1024,
+      });
+      if (!data.ok) throw new Error(data.error || "картинка не сгенерирована");
+      const image = Array.isArray(data.images) ? data.images.find((item) => textValue(item?.url)) : null;
+      const url = textValue(image?.url);
+      if (!url) throw new Error("sidecar не вернул URL картинки");
+      if (!isCurrentScope() || imagePromptLatestRef.current[promptField] !== prompt) {
+        releaseAutoRequest();
+        setScopedImageJob({ queued: false, loading: false });
+        return;
+      }
+      updateWorldLore(outputField, url);
+      setScopedImageJob({ queued: false, loading: false, error: "", seed: data.seed, url });
+    } catch (error) {
+      setScopedImageJob({
+        queued: false,
+        loading: false,
+        error: error?.message || "не удалось сгенерировать картинку",
+      });
+    }
+  }, [onGenerateImage, setImageJob, updateWorldLore]);
+
+  const drainVisualQueue = useCallback(async () => {
+    if (imageQueueRunningRef.current) return;
+    const next = imageQueueRef.current.shift();
+    if (!next) return;
+    imageQueueRunningRef.current = true;
+    try {
+      await runVisualGeneration(next.promptField, next.outputField, next.prompt, next.scope);
+    } finally {
+      imageQueueRunningRef.current = false;
+      if (imageQueueRef.current.length > 0) {
+        window.setTimeout(() => {
+          void drainVisualQueue();
+        }, 0);
+      }
+    }
+  }, [runVisualGeneration]);
+
+  const enqueueVisualGeneration = useCallback((job) => {
+    const duplicate = imageQueueRef.current.some(
+      (queued) => queued.promptField === job.promptField && queued.prompt === job.prompt
+    );
+    if (duplicate) return;
+    imageQueueRef.current = imageQueueRef.current.filter((queued) => queued.promptField !== job.promptField);
+    imageQueueRef.current.push({ ...job, scope: imageScopeRef.current });
+    setImageJob(job.promptField, { queued: true, loading: false, error: "" });
+    void drainVisualQueue();
+  }, [drainVisualQueue, setImageJob]);
+
+  useEffect(() => {
+    if (locked || architectBusy || typeof onGenerateImage !== "function") return undefined;
+    const runnable = visualPromptSnapshot(worldDraft.worldLore).filter(({ promptField, prompt, imageUrl }) => {
+      if (!prompt || imageUrl || imageJobs[promptField]?.loading) return false;
+      return imageAutoRequestsRef.current[promptField] !== prompt;
+    });
+    if (!runnable.length) return undefined;
+
+    const timer = window.setTimeout(() => {
+      for (const { promptField, outputField, prompt } of runnable) {
+        imageAutoRequestsRef.current[promptField] = prompt;
+        enqueueVisualGeneration({ promptField, outputField, prompt });
+      }
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [worldDraft.worldLore, imageJobs, locked, architectBusy, onGenerateImage, enqueueVisualGeneration]);
 
   const submitWorld = (event) => {
     event.preventDefault();
     if (worldCreateLocked) return;
     onCreateWorld?.({ ...worldPayload, worldLore: finalizeWorldLore(worldPayload) });
+  };
+
+  // Fold a streaming delta into the in-flight segments: append to the latest
+  // segment with the same hop (sid) + role, or start a new one. Keeps the ref in
+  // sync so an aborted turn can still recover the partial output.
+  const appendLiveDelta = (sid, role, text) => {
+    if (!text) return;
+    setLiveSegments((segs) => {
+      const next = segs.slice();
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].sid === sid && next[i].role === role) {
+          next[i] = { ...next[i], content: (next[i].content || "") + text };
+          liveSegmentsRef.current = next;
+          return next;
+        }
+      }
+      next.push({ role, sid, content: text });
+      liveSegmentsRef.current = next;
+      return next;
+    });
+  };
+
+  const pushLiveTool = (sid, name, args) => {
+    setLiveSegments((segs) => {
+      const next = [...segs, { role: "tool", sid, name, args }];
+      liveSegmentsRef.current = next;
+      return next;
+    });
+  };
+
+  const clearLive = () => {
+    liveSegmentsRef.current = [];
+    setLiveSegments([]);
   };
 
   const sendArchitectMessage = async (event) => {
@@ -401,71 +685,153 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
     setInput("");
     setArchitectError("");
     setArchitectBusy(true);
+    clearLive();
     setMessages(visibleMessages);
+    let adopted = false;
+    let failure = "";
     try {
-      const data = await onArchitectTurn?.({
-        message: text,
-        history,
-        draft: worldPayload,
-        visible_messages: visibleMessages,
-        cache_session_id: architectCache.sessionId,
-        cache_thread_id: architectCache.threadId,
-      });
-      if (!data?.ok) throw new Error(data?.error || "Архитектор не ответил");
-      const reply = textValue(data.reply) || "Черновик мира обновлён.";
-      const usage = data.usage && typeof data.usage === "object" ? data.usage : null;
-      if (usage) {
-        setArchitectUsage((current) => ({
-          in: current.in + (Number(usage.in) || 0),
-          out: current.out + (Number(usage.out) || 0),
-          cached: current.cached + (Number(usage.cached) || 0),
-          tokens: current.tokens + (Number(usage.tokens) || 0),
-          calls: current.calls + 1,
-        }));
-      }
-      setArchitectDebug({
-        request: data.request_messages ?? null,
-        response: data.assistant_message ?? null,
-        thinking: textValue(data.thinking),
-        stats: data.stats ?? null,
-        calls: Array.isArray(data.calls) ? data.calls : [],
-        usage,
-      });
-      const nextSessionId = textValue(data.cache_session_id);
-      const nextThreadId = textValue(data.cache_thread_id);
-      if (nextSessionId || nextThreadId) {
-        setArchitectCache((current) => ({
-          sessionId: nextSessionId || current.sessionId,
-          threadId: nextThreadId || current.threadId,
-        }));
-      }
-      if (data.draft && typeof data.draft === "object") {
-        setWorldDraft((current) => mergeArchitectDraft(current, data.draft));
-      }
-      const modelUserMessage = normalizeModelMessage(data.user_message);
-      const modelAssistantMessage =
-        normalizeModelMessage(data.assistant_history_message) || { role: "assistant", content: reply };
-      if (modelUserMessage) {
-        setModelMessages((current) => [...current, modelUserMessage, modelAssistantMessage]);
-      }
-      // Surface tool calls (e.g. draft_world_bible) inline in the chat, like the
-      // main GM chat — rendered only in debug mode (vis.toolCalls).
-      const toolEntries = (Array.isArray(data.calls) ? data.calls : [])
-        .filter((call) => textValue(call?.name))
-        .map((call) => ({
-          role: "tool",
-          name: textValue(call.name),
-          args: call.arguments && typeof call.arguments === "object" ? call.arguments : {},
-        }));
-      setMessages((current) => [...current, ...toolEntries, { role: "assistant", content: reply }]);
+      await onArchitectStream?.(
+        {
+          message: text,
+          history,
+          draft: worldPayload,
+          visible_messages: visibleMessages,
+          cache_session_id: architectCache.sessionId,
+          cache_thread_id: architectCache.threadId,
+        },
+        (ev) => {
+          if (ev.kind === "architect_delta") {
+            // Per-hop content/thinking delta. Reasoning streams into a collapsed
+            // spoiler; reply text streams into its own bubble — like the main chat.
+            const d = ev.data || {};
+            const sid = textValue(d.sid) || "arch";
+            const role = d.channel === "thinking" ? "think" : "assistant";
+            appendLiveDelta(sid, role, String(d.text || ""));
+          } else if (ev.kind === "architect_tool") {
+            // Surface each tool call inline, in order, and fill the inspector live.
+            const call = ev.data || {};
+            const name = textValue(call.name);
+            if (!name) return;
+            const args = call.arguments && typeof call.arguments === "object" ? call.arguments : {};
+            const sid = textValue(call.sid) || "arch";
+            pushLiveTool(sid, name, args);
+            if (name === "draft_world_bible") {
+              setWorldDraft((current) => mergeArchitectDraft(current, args));
+            }
+          } else if (ev.kind === "architect_error") {
+            failure = textValue(ev.data) || "Архитектор не ответил";
+          } else if (ev.kind === "architect_done") {
+            adopted = true;
+            const data = ev.data || {};
+            const usage = data.usage && typeof data.usage === "object" ? data.usage : null;
+            if (usage) {
+              setArchitectUsage((current) => ({
+                in: current.in + (Number(usage.in) || 0),
+                out: current.out + (Number(usage.out) || 0),
+                cached: current.cached + (Number(usage.cached) || 0),
+                tokens: current.tokens + (Number(usage.tokens) || 0),
+                calls: current.calls + 1,
+              }));
+            }
+            setArchitectDebug({
+              request: data.request_messages ?? null,
+              response: data.assistant_message ?? null,
+              thinking: textValue(data.thinking),
+              stats: data.stats ?? null,
+              calls: Array.isArray(data.calls) ? data.calls : [],
+              usage,
+            });
+            const nextSessionId = textValue(data.cache_session_id);
+            const nextThreadId = textValue(data.cache_thread_id);
+            if (nextSessionId || nextThreadId) {
+              setArchitectCache((current) => ({
+                sessionId: nextSessionId || current.sessionId,
+                threadId: nextThreadId || current.threadId,
+              }));
+            }
+            if (data.draft && typeof data.draft === "object") {
+              setWorldDraft((current) => mergeArchitectDraft(current, data.draft));
+            }
+            const modelUserMessage = normalizeModelMessage(data.user_message);
+            const modelAssistantMessage = normalizeModelMessage(data.assistant_history_message);
+            if (modelUserMessage) {
+              setModelMessages((current) =>
+                modelAssistantMessage
+                  ? [...current, modelUserMessage, modelAssistantMessage]
+                  : [...current, modelUserMessage]
+              );
+            }
+            // The world we just created/updated is ours — keep the `world` prop
+            // sync (App.setSelectedWorldId) from wiping this live conversation.
+            if (data.world?.id) loadedWorldIdRef.current = data.world.id;
+            // Adopt the server's persisted, interleaved log (reasoning → tool →
+            // reply) as the new committed view, and drop the live segments.
+            setMessages(architectMessagesFromWorld(data.world));
+            clearLive();
+          }
+        }
+      );
+      if (failure) throw new Error(failure);
     } catch (error) {
       const message = error?.message || "Не удалось вызвать архитектора";
       setArchitectError(message);
-      setMessages((current) => [...current, { role: "assistant", content: `Не получилось обновить мир: ${message}` }]);
+      if (!adopted) {
+        // Keep whatever streamed before the failure, then append the error note.
+        setMessages((current) => [
+          ...current,
+          ...liveSegmentsRef.current,
+          { role: "assistant", content: `Не получилось обновить мир: ${message}` },
+        ]);
+        clearLive();
+      }
     } finally {
       setArchitectBusy(false);
     }
   };
+
+  // One renderer for both the committed log and the in-flight segments, so the
+  // live view and the reloaded history look identical: reasoning → spoiler,
+  // tool → detailed card, user/assistant → bubble (with a caret while streaming).
+  const renderSegment = (message, key, live = false) => {
+    if (message.role === "think") {
+      return (
+        <div key={key} className="world-architect-step">
+          <Spoiler label="🧠 Архитектор рассуждает">
+            <MarkdownText>{textValue(message.content) || "—"}</MarkdownText>
+          </Spoiler>
+        </div>
+      );
+    }
+    if (message.role === "tool") {
+      // Show the full detailed card to the player too. Dev mode ("full") adds the
+      // raw-JSON spoilers + raw tool name; the player view ("detail") is the same
+      // rich body without that developer noise.
+      return (
+        <ToolCard
+          key={key}
+          name={message.name}
+          args={message.args}
+          mode={vis.toolCalls ? "full" : "detail"}
+        />
+      );
+    }
+    const isLiveAssistant = live && message.role === "assistant";
+    return (
+      <div
+        key={key}
+        className={`world-architect-msg ${message.role}${isLiveAssistant ? " world-architect-live" : ""}`}
+      >
+        <MarkdownText>{message.content}</MarkdownText>
+        {isLiveAssistant && <span className="world-architect-caret" aria-hidden="true" />}
+      </div>
+    );
+  };
+
+  // The typing indicator shows whenever the architect is working but no reply
+  // text is currently streaming (initial think, tool execution, between hops).
+  const liveReplyStreaming = liveSegments.some(
+    (segment) => segment.role === "assistant" && textValue(segment.content)
+  );
 
   return (
     <form className={`world-studio${className ? ` ${className}` : ""}`} onSubmit={submitWorld}>
@@ -539,33 +905,36 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
               </Tooltip>
             </div>
           </div>
-          <div className="world-architect-log" aria-live="polite">
-            {messages.map((message, index) => {
-              if (message.role === "tool") {
-                if (!vis.toolCalls) return null;
-                return (
-                  <ToolCard
-                    key={`tool-${index}`}
-                    name={message.name}
-                    args={message.args}
-                    mode="full"
-                  />
-                );
-              }
-              return (
-                <div key={`${message.role}-${index}`} className={`world-architect-msg ${message.role}`}>
-                  {message.content}
-                </div>
-              );
-            })}
-            {architectBusy && <div className="world-architect-msg assistant">Думаю над черновиком...</div>}
+          <div ref={logRef} className="world-architect-log" aria-live="polite">
+            {messages.map((message, index) => renderSegment(message, `msg-${index}`))}
+            {liveSegments.map((segment, index) =>
+              renderSegment(segment, `live-${segment.sid}-${segment.role}-${index}`, true)
+            )}
+            {architectBusy && !liveReplyStreaming && (
+              <div className="world-architect-msg assistant world-architect-typing">
+                <span className="world-architect-dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span>Архитектор печатает…{architectElapsed > 0 ? ` ${architectElapsed} с` : ""}</span>
+              </div>
+            )}
           </div>
           <div className="world-architect-input-row">
             <textarea
               ref={inputRef}
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги..."
+              onKeyDown={(event) => {
+                // Enter sends, Shift+Enter (and IME composition) makes a newline —
+                // same as the main chat composer.
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  sendArchitectMessage(event);
+                }
+              }}
+              placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги… (Enter — отправить)"
               rows={2}
               disabled={architectLocked}
             />
@@ -637,18 +1006,17 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
 
             <label className="world-field">
               <span>Размер мира</span>
-              <textarea
+              <AutoTextarea
                 value={worldDraft.worldSize}
                 onChange={(event) => updateWorldDraft("worldSize", event.target.value)}
                 placeholder="Например: один континент; школа внутри большого магического общества; сектор галактики с десятками планет."
-                rows={3}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
               <span>Население</span>
-              <input
+              <AutoTextarea
                 value={worldDraft.population}
                 onChange={(event) => updateWorldDraft("population", event.target.value)}
                 placeholder="Например: десятки миллионов, 5 разумных видов, сотни культур."
@@ -658,14 +1026,51 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
 
             <label className="world-field">
               <span>Публичное описание мира</span>
-              <textarea
+              <AutoTextarea
                 value={worldDraft.publicPremise}
                 onChange={(event) => updateWorldDraft("publicPremise", event.target.value)}
                 placeholder="Что можно безопасно рассказать игроку о мире без стартового квеста и скрытых секретов GM."
-                rows={4}
                 disabled={locked}
               />
             </label>
+
+            {visualPromptSnapshot(worldDraft.worldLore).some(({ prompt, imageUrl }) => prompt || imageUrl) && (
+              <div className="world-visual-gallery" aria-label="Изображения мира">
+                <div className="world-visual-gallery-head">
+                  <span className="world-inspector-label">Изображения мира</span>
+                </div>
+                <div className="world-visual-gallery-grid">
+                  {VISUAL_PROMPT_FIELDS.map(([field, , , outputField, outputLabel]) => {
+                    const prompt = textValue(worldDraft.worldLore?.[field]);
+                    const imageUrl = textValue(worldDraft.worldLore?.[outputField]);
+                    const job = imageJobs[field] || {};
+                    if (!prompt && !imageUrl && !job.loading && !job.error) return null;
+                    return (
+                      <div key={field} className="world-visual-card">
+                        <div className="world-visual-card-head">
+                          <b>{outputLabel}</b>
+                          <span className="world-visual-state">{visualJobLabel(job, prompt, imageUrl)}</span>
+                        </div>
+                        {imageUrl ? (
+                          <ImageThumbnail
+                            src={imageUrl}
+                            alt={outputLabel}
+                            caption={outputLabel}
+                            className="world-visual-thumb"
+                          />
+                        ) : (
+                          <div className="world-visual-pending">
+                            {visualJobLabel(job, prompt, imageUrl)}
+                          </div>
+                        )}
+                        {job.seed != null && <span className="world-visual-seed">seed {job.seed}</span>}
+                        {job.error && <div className="world-visual-error">{job.error}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="world-bible">
               <button
@@ -688,22 +1093,51 @@ export default function WorldArchitectPanel({ world, locked, onCreateWorld, onAr
                   </p>
                   <label className="world-field">
                     <span>Скрытая предпосылка (секрет GM)</span>
-                    <textarea
+                    <AutoTextarea
                       value={worldDraft.worldLore?.hidden_premise || ""}
                       onChange={(event) => updateLoreText("hidden_premise", event.target.value)}
                       placeholder="То, что знает только GM и чего не должен знать игрок."
-                      rows={2}
                       disabled={locked}
                     />
                   </label>
+                  {VISUAL_PROMPT_FIELDS.map(([field, label, placeholder, outputField, outputLabel]) => {
+                    const prompt = textValue(worldDraft.worldLore?.[field]);
+                    const imageUrl = textValue(worldDraft.worldLore?.[outputField]);
+                    const job = imageJobs[field] || {};
+                    return (
+                      <div key={field} className="world-visual-field">
+                        <label className="world-field">
+                          <span>{label}</span>
+                          <AutoTextarea
+                            value={worldDraft.worldLore?.[field] || ""}
+                            onChange={(event) => updateLoreText(field, event.target.value)}
+                            placeholder={placeholder}
+                            disabled={locked}
+                          />
+                        </label>
+                        <div className="world-visual-actions">
+                          <span className="world-visual-state">{visualJobLabel(job, prompt, imageUrl)}</span>
+                          {job.seed != null && <span className="world-visual-seed">seed {job.seed}</span>}
+                        </div>
+                        {job.error && <div className="world-visual-error">{job.error}</div>}
+                        {imageUrl && (
+                          <ImageThumbnail
+                            src={imageUrl}
+                            alt={outputLabel}
+                            caption={outputLabel}
+                            className="world-visual-thumb"
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
                   {LORE_PREVIEW_FIELDS.map(([field, label]) => (
                     <label key={field} className="world-field">
                       <span>{label}</span>
-                      <textarea
+                      <AutoTextarea
                         value={loreFieldText(worldDraft.worldLore, field)}
                         onChange={(event) => updateLoreList(field, event.target.value)}
                         placeholder="по пункту на строку"
-                        rows={2}
                         disabled={locked}
                       />
                     </label>

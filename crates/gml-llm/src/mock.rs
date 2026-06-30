@@ -72,7 +72,13 @@ impl MockClient {
         self.remember("chat");
         let system_text = join_role_contents(messages, "system");
         if system_text.contains("GM-Lab world architect") {
-            return world_architect_chat_output();
+            // Agent loop: first hop drafts the bible (tool call); once the draft
+            // result is fed back, finish with a chat reply (no tool) so the loop
+            // ends — mirrors a real model's think → draft → reply flow.
+            if count_tool_messages(messages) == 0 {
+                return world_architect_chat_output();
+            }
+            return world_architect_reply_output();
         }
         let n_tool = count_tool_messages(messages);
 
@@ -255,122 +261,10 @@ impl MockClient {
 }
 
 fn world_architect_chat_output() -> ChatOutput {
-    let world_lore = Value::Object(obj([
-        ("name", Value::String("Порог Второго Неба".to_string())),
-        ("genre", Value::String("fantasy isekai".to_string())),
-        ("tone", Value::String("tense hopeful".to_string())),
-        (
-            "world_size",
-            Value::String(
-                "Континент с несколькими королевствами, духами дорог и дальними землями за картой."
-                    .to_string(),
-            ),
-        ),
-        (
-            "population",
-            Value::String(
-                "Десятки миллионов жителей: люди, духи мест, малые народы и редкие призванные чужаки."
-                    .to_string(),
-            ),
-        ),
-        (
-            "public_premise",
-            Value::String(
-                "Мир держится на клятвах, духах мест и долгах между призванными чужаками и местными домами."
-                    .to_string(),
-            ),
-        ),
-        (
-            "hidden_premise",
-            Value::String(
-                "Призванные появляются потому, что старый договор мира треснул и ищет внешнюю переменную."
-                    .to_string(),
-            ),
-        ),
-        (
-            "dogmas",
-            Value::Array(vec![
-                Value::String("имя и клятва имеют юридическую и мистическую силу".to_string()),
-                Value::String("духи мест помнят долги лучше людей".to_string()),
-            ]),
-        ),
-        (
-            "world_laws",
-            Value::Array(vec![
-                Value::String("магия требует имени, цены или признанного права".to_string()),
-                Value::String("дальняя дорога меняет слухи и баланс сил".to_string()),
-            ]),
-        ),
-        (
-            "regions",
-            Value::Array(vec![Value::String(
-                "Семь земель под Осколочной Луной".to_string(),
-            )]),
-        ),
-        (
-            "power_centers",
-            Value::Array(vec![Value::String(
-                "Корона Второго Неба и храмовые суды".to_string(),
-            )]),
-        ),
-        (
-            "religions",
-            Value::Array(vec![Value::String(
-                "культ дорожных духов и официальная вера клятв".to_string(),
-            )]),
-        ),
-        (
-            "gods",
-            Value::Array(vec![Value::String(
-                "Старшие Духи Порогов".to_string(),
-            )]),
-        ),
-        (
-            "cultures",
-            Value::Array(vec![Value::String(
-                "родовые дома, гильдии рунников и призванные чужаки".to_string(),
-            )]),
-        ),
-        (
-            "history",
-            Value::Array(vec![Value::String(
-                "После войны семи клятв границы стали держаться на договорах с духами."
-                    .to_string(),
-            )]),
-        ),
-        (
-            "economy",
-            Value::Array(vec![Value::String(
-                "долги, дорожные пошлины, рунические замки и сезонные караваны".to_string(),
-            )]),
-        ),
-        (
-            "daily_life",
-            Value::Array(vec![Value::String(
-                "люди боятся нарушить клятву публично и ценят свидетелей сделки".to_string(),
-            )]),
-        ),
-        (
-            "hidden_secrets",
-            Value::Array(vec![Value::String(
-                "часть пророчеств написана прошлыми призванными".to_string(),
-            )]),
-        ),
-        (
-            "location_rules",
-            Value::Array(vec![Value::String(
-                "каждая новая локация должна иметь связь с долгом, властью, дорогой или духом места"
-                    .to_string(),
-            )]),
-        ),
-        (
-            "prohibited_elements",
-            Value::Array(vec![Value::String(
-                "технологический постапокалипсис без объяснения как чужеродный артефакт"
-                    .to_string(),
-            )]),
-        ),
-    ]));
+    // FLAT draft args — matches the flat draft_world_bible schema. The backend
+    // (nest_draft_args) folds these into the canonical nested `world_lore`.
+    let arr =
+        |items: &[&str]| Value::Array(items.iter().map(|s| Value::String(s.to_string())).collect());
     let calls = vec![ParsedCall::new(
         "draft_world_bible",
         obj([
@@ -398,13 +292,52 @@ fn world_architect_chat_output() -> ChatOutput {
                         .to_string(),
                 ),
             ),
-            ("world_lore", world_lore),
             (
-                "open_questions",
-                Value::Array(vec![Value::String(
-                    "Насколько широко показывать мир: один континент, несколько морей или соседние планы?"
+                "hidden_premise",
+                Value::String(
+                    "Призванные появляются потому, что старый договор мира треснул и ищет внешнюю переменную."
                         .to_string(),
-                )]),
+                ),
+            ),
+            (
+                "dogmas",
+                arr(&[
+                    "имя и клятва имеют юридическую и мистическую силу",
+                    "духи мест помнят долги лучше людей",
+                ]),
+            ),
+            (
+                "world_laws",
+                arr(&[
+                    "магия требует имени, цены или признанного права",
+                    "дальняя дорога меняет слухи и баланс сил",
+                ]),
+            ),
+            ("regions", arr(&["Семь земель под Осколочной Луной"])),
+            ("power_centers", arr(&["Корона Второго Неба и храмовые суды"])),
+            ("religions", arr(&["культ дорожных духов и официальная вера клятв"])),
+            ("gods", arr(&["Старшие Духи Порогов"])),
+            ("cultures", arr(&["родовые дома, гильдии рунников и призванные чужаки"])),
+            (
+                "history",
+                arr(&["После войны семи клятв границы стали держаться на договорах с духами."]),
+            ),
+            (
+                "economy",
+                arr(&["долги, дорожные пошлины, рунические замки и сезонные караваны"]),
+            ),
+            (
+                "daily_life",
+                arr(&["люди боятся нарушить клятву публично и ценят свидетелей сделки"]),
+            ),
+            ("hidden_secrets", arr(&["часть пророчеств написана прошлыми призванными"])),
+            (
+                "location_rules",
+                arr(&["каждая новая локация должна иметь связь с долгом, властью, дорогой или духом места"]),
+            ),
+            (
+                "prohibited_elements",
+                arr(&["технологический постапокалипсис без объяснения как чужеродный артефакт"]),
             ),
         ]),
         "mock_world_architect0",
@@ -414,6 +347,23 @@ fn world_architect_chat_output() -> ChatOutput {
         content: String::new(),
         assistant_msg: toolmsg(&calls),
         calls,
+    }
+}
+
+/// Second hop of the mock architect: after the `draft_world_bible` tool result is
+/// fed back, the agent finishes with a short chat reply (no more tool calls), so
+/// the loop terminates — the same shape a real model produces.
+fn world_architect_reply_output() -> ChatOutput {
+    let reply = "Собрал черновик мира «Порог Второго Неба»: клятвы как закон, духи мест, \
+                 призванные чужаки и трещина в старом договоре. Что усилить дальше — веру, \
+                 политику дворов или историю войны клятв?"
+        .to_string();
+    ChatOutput {
+        thinking: "Черновик собран — проверяю, чего ещё не хватает, и отвечаю пользователю."
+            .to_string(),
+        content: reply.clone(),
+        assistant_msg: assistant_plain(&reply),
+        calls: Vec::new(),
     }
 }
 

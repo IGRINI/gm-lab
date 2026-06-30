@@ -172,6 +172,10 @@ IMAGE_MAX_WIDTH = int(os.environ.get("IMAGE_MAX_WIDTH", "2048") or "2048")
 IMAGE_MAX_HEIGHT = int(os.environ.get("IMAGE_MAX_HEIGHT", "2048") or "2048")
 IMAGE_MAX_BATCH = int(os.environ.get("IMAGE_MAX_BATCH", "4") or "4")
 IMAGE_MAX_STEPS = int(os.environ.get("IMAGE_MAX_STEPS", "50") or "50")
+IMAGE_WARMUP_MODEL = os.environ.get("IMAGE_WARMUP_MODEL", "nvfp4").strip().lower() or "nvfp4"
+IMAGE_WARMUP_STEPS = int(os.environ.get("IMAGE_WARMUP_STEPS", "1") or "1")
+IMAGE_WARMUP_WIDTH = int(os.environ.get("IMAGE_WARMUP_WIDTH", "1024") or "1024")
+IMAGE_WARMUP_HEIGHT = int(os.environ.get("IMAGE_WARMUP_HEIGHT", "1024") or "1024")
 IMAGE_COMFY_LOG = Path(os.environ.get("IMAGE_COMFY_LOG", str(IMAGE_COMFY_DIR / "server_image.log"))).resolve()
 
 # model presets: (diffusion_model, text_encoder)
@@ -206,7 +210,14 @@ VOICES = {
 }
 SAMPLING = dict(temperature=0.75, top_k=50, top_p=1.0, repetition_penalty=1.1)
 
-STATE = {"embedder": None, "reranker": None, "tts": None, "image_process": None}
+STATE = {
+    "embedder": None,
+    "reranker": None,
+    "tts": None,
+    "image_process": None,
+    "image_warm": False,
+    "image_error": "",
+}
 # The single GPU is shared; these models are not guaranteed re-entrant and the
 # handlers are sync `def` (Starlette runs them in a threadpool), so serialize
 # each model's inference with its own lock. (GIL + one GPU => no real parallel
@@ -338,19 +349,24 @@ def _image_server_up(timeout: float = 2.0) -> bool:
 
 def _image_status() -> dict:
     runtime_error = None if not IMAGE_ENABLED else _image_runtime_error()
+    error = runtime_error or str(STATE.get("image_error") or "")
+    comfy_up = _image_server_up(timeout=0.2) if IMAGE_ENABLED else False
+    warm = bool(IMAGE_ENABLED and runtime_error is None and STATE.get("image_warm") and comfy_up)
     return {
-        "up": bool(IMAGE_ENABLED and runtime_error is None),
+        "up": warm,
         "enabled": IMAGE_ENABLED,
+        "warm": warm,
+        "runtime_ready": bool(IMAGE_ENABLED and runtime_error is None),
         "runtime_root": str(IMAGE_RUNTIME_ROOT),
         "output_dir": str(IMAGE_OUTPUT_DIR),
         "comfy_url": IMAGE_COMFY_URL,
-        "comfy_up": _image_server_up(timeout=0.2) if IMAGE_ENABLED else False,
+        "comfy_up": comfy_up,
         "models": list(IMAGE_PRESETS),
         "max_width": IMAGE_MAX_WIDTH,
         "max_height": IMAGE_MAX_HEIGHT,
         "max_batch": IMAGE_MAX_BATCH,
         "max_steps": IMAGE_MAX_STEPS,
-        "error": runtime_error or "",
+        "error": error,
     }
 
 
@@ -466,6 +482,76 @@ def _submit_image_workflow(graph: dict) -> tuple[float, str, list[tuple[str, str
     raise ImageRequestError(504, f"image generation timed out after {IMAGE_TIMEOUT_SECONDS:.0f}s")
 
 
+def _delete_comfy_outputs(images: list[tuple[str, str, str]]) -> None:
+    output_root = (IMAGE_COMFY_DIR / "output").resolve()
+    for filename, subfolder, typ in images:
+        if typ != "output":
+            continue
+        path = (output_root / subfolder / filename).resolve()
+        try:
+            path.relative_to(output_root)
+        except ValueError:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _warmup_image_model(model: str | None = None) -> dict:
+    model = (model or IMAGE_WARMUP_MODEL or "nvfp4").strip().lower()
+    if model not in IMAGE_PRESETS:
+        raise ImageRequestError(400, f"unknown image warmup model: {model}")
+    if STATE.get("image_warm") and _image_server_up():
+        return {"ok": True, "warm": True, "model": model, "skipped": True, "image": _image_status()}
+
+    try:
+        STATE["image_warm"] = False
+        STATE["image_error"] = ""
+        _ensure_image_server()
+        steps = _clamp_int(IMAGE_WARMUP_STEPS, 1, 1, IMAGE_MAX_STEPS, "warmup steps")
+        width = _clamp_int(IMAGE_WARMUP_WIDTH, 1024, 64, IMAGE_MAX_WIDTH, "warmup width")
+        height = _clamp_int(IMAGE_WARMUP_HEIGHT, 1024, 64, IMAGE_MAX_HEIGHT, "warmup height")
+        seed = 1
+        prefix = f"gmlab_warmup_{uuid.uuid4().hex}"
+        graph = _build_image_workflow(
+            "warmup, simple neutral test image",
+            steps,
+            seed,
+            width,
+            height,
+            1,
+            1.0,
+            model,
+            prefix,
+        )
+        elapsed, status, images, full = _submit_image_workflow(graph)
+        if status != "success" or not images:
+            detail = full.get("status", {}) if isinstance(full, dict) else full
+            raise ImageRequestError(502, f"ComfyUI image warmup failed: {detail}")
+        _delete_comfy_outputs(images)
+        STATE["image_warm"] = True
+        STATE["image_error"] = ""
+        print(
+            f"[sidecar] image model warm ({model}, {width}x{height}, steps={steps}, {elapsed:.1f}s)",
+            flush=True,
+        )
+        return {
+            "ok": True,
+            "warm": True,
+            "model": model,
+            "steps": steps,
+            "width": width,
+            "height": height,
+            "elapsed_seconds": elapsed,
+            "image": _image_status(),
+        }
+    except Exception as e:
+        STATE["image_warm"] = False
+        STATE["image_error"] = str(e)
+        raise
+
+
 def _fetch_image_blob(filename: str, subfolder: str, typ: str) -> bytes:
     query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": typ})
     with urllib.request.urlopen(f"{IMAGE_COMFY_URL}/view?{query}", timeout=IMAGE_TIMEOUT_SECONDS) as resp:
@@ -520,6 +606,9 @@ def _generate_images(req) -> dict:
                 "url": f"/image-files/{run_id}/{out_name}",
                 "bytes": len(blob),
             })
+        _delete_comfy_outputs(images)
+        STATE["image_warm"] = True
+        STATE["image_error"] = ""
 
     return {
         "ok": True,
@@ -588,17 +677,15 @@ async def lifespan(app: FastAPI):
             print(f"[sidecar] TTS load FAILED (/speak disabled): {e}", flush=True)
     if IMAGE_ENABLED:
         try:
-            IMAGE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            err = _image_runtime_error()
-            if err:
-                print(f"[sidecar] image runtime unavailable: {err}", flush=True)
-            else:
-                print(f"[sidecar] image runtime ready at {IMAGE_RUNTIME_ROOT}", flush=True)
+            with _image_lock:
+                result = _warmup_image_model()
+            print(f"[sidecar] image runtime ready at {IMAGE_RUNTIME_ROOT} ({result['elapsed_seconds']:.1f}s warmup)", flush=True)
         except Exception as e:
-            print(f"[sidecar] image runtime init FAILED (/images/generate disabled): {e}", flush=True)
+            STATE["image_error"] = str(e)
+            print(f"[sidecar] image warmup FAILED (/images/generate disabled): {e}", flush=True)
     _warmup_text_models()
     up = [k for k in ("embedder", "reranker", "tts") if STATE.get(k) is not None]
-    if IMAGE_ENABLED and _image_runtime_error() is None:
+    if IMAGE_ENABLED and STATE.get("image_warm"):
         up.append("image")
     print(f"[sidecar] ready in {time.time()-t0:.1f}s on {HOST}:{PORT} — up: {up}", flush=True)
     yield
@@ -852,8 +939,7 @@ async def images_start():
     try:
         def start():
             with _image_lock:
-                _ensure_image_server()
-            return {"ok": True, "image": _image_status()}
+                return _warmup_image_model()
         return await run_in_threadpool(start)
     except ImageRequestError as e:
         return JSONResponse({"ok": False, "error": e.message}, status_code=e.status_code)

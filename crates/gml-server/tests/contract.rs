@@ -32,6 +32,7 @@ struct IdentitySpyState {
     session_id: String,
     thread_id: String,
     messages: Vec<Value>,
+    tools: Vec<Value>,
 }
 
 struct IdentitySpyBackend {
@@ -83,15 +84,15 @@ impl Backend for IdentitySpyBackend {
     async fn chat(
         &self,
         messages: &Value,
-        _tools: Option<&Value>,
+        tools: Option<&Value>,
         _think: Option<bool>,
         _reasoning_role: &str,
     ) -> Result<ChatOutput, BackendError> {
-        self.state
-            .lock()
-            .expect("identity spy lock")
-            .messages
-            .push(messages.clone());
+        let mut state = self.state.lock().expect("identity spy lock");
+        state.messages.push(messages.clone());
+        if let Some(tools) = tools {
+            state.tools.push(tools.clone());
+        }
         Ok(ChatOutput {
             thinking: String::new(),
             content: "Ответ архитектора".to_string(),
@@ -121,18 +122,18 @@ impl Backend for IdentitySpyBackend {
     async fn chat_stream(
         &self,
         messages: &Value,
-        _tools: Option<&Value>,
+        tools: Option<&Value>,
         _think: Option<bool>,
         _reasoning_role: &str,
         _sink: &mut (dyn DeltaSink + Send),
     ) -> Result<ChatStreamOutput, BackendError> {
         // Mirror `chat`: the world-architect handler now drives `chat_stream`, so
         // the spy must record the sent messages and return the same canned reply.
-        self.state
-            .lock()
-            .expect("identity spy lock")
-            .messages
-            .push(messages.clone());
+        let mut state = self.state.lock().expect("identity spy lock");
+        state.messages.push(messages.clone());
+        if let Some(tools) = tools {
+            state.tools.push(tools.clone());
+        }
         Ok(ChatStreamOutput {
             thinking: String::new(),
             content: "Ответ архитектора".to_string(),
@@ -155,6 +156,29 @@ impl Backend for IdentitySpyBackend {
             stats: Map::new(),
         })
     }
+}
+
+fn install_identity_spy(state: &mut AppState) -> Arc<std::sync::Mutex<IdentitySpyState>> {
+    let spy = Arc::new(std::sync::Mutex::new(IdentitySpyState::default()));
+    let spy_factory = spy.clone();
+    state.make_client = Arc::new(move || {
+        Arc::new(IdentitySpyBackend {
+            state: spy_factory.clone(),
+        }) as Arc<dyn Backend>
+    });
+    spy
+}
+
+fn draft_world_bible_properties(tools: &Value) -> &Map<String, Value> {
+    let draft_tool = tools
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|tool| tool["function"]["name"] == "draft_world_bible")
+        .expect("draft_world_bible tool");
+    draft_tool["function"]["parameters"]["properties"]
+        .as_object()
+        .expect("draft_world_bible properties")
 }
 
 /// Build an [`AppState`] with the mock backend and a fresh temp DB.
@@ -861,6 +885,27 @@ async fn create_procedural_chat_applies_world_manager_story_fields() {
     );
 }
 
+/// Parse the architect SSE stream and return the `architect_done` payload (or the
+/// last `architect_error` frame). The handler streams `data: {json}\n\n` frames.
+fn architect_result(body: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(body);
+    let mut error = Value::Null;
+    for frame in text.split("\n\n") {
+        let Some(json) = frame.trim().strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(ev) = serde_json::from_str::<Value>(json) else {
+            continue;
+        };
+        match ev.get("kind").and_then(Value::as_str) {
+            Some("architect_done") => return ev.get("data").cloned().unwrap_or(Value::Null),
+            Some("architect_error") => error = ev,
+            _ => {}
+        }
+    }
+    error
+}
+
 #[tokio::test]
 async fn world_architect_chat_returns_structured_draft() {
     let tmp = tempfile::tempdir().unwrap();
@@ -876,8 +921,10 @@ async fn world_architect_chat_returns_structured_draft() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let got: Value = serde_json::from_slice(&body).unwrap();
+    let got = architect_result(&body);
     assert_eq!(got["ok"], true);
+    // Agent loop: the model drafts the bible (hop 1, tool call) then finishes with
+    // a chat reply (hop 2). The reply is the model's own text, no canned fallback.
     assert!(got["reply"]
         .as_str()
         .unwrap_or("")
@@ -903,12 +950,12 @@ async fn world_architect_chat_returns_structured_draft() {
         "Старшие Духи Порогов"
     );
     assert_eq!(got["calls"][0]["name"], "draft_world_bible");
-    // The architect now surfaces per-call usage (for the token readout) and the
-    // raw request/stats (for the debug view).
-    assert_eq!(got["usage"]["in"], 760);
-    assert_eq!(got["usage"]["out"], 120);
-    assert_eq!(got["usage"]["tokens"], 880);
-    assert_eq!(got["stats"]["eval_count"], 120);
+    // Usage is summed across both hops (per-hop token counts add up like the main
+    // chat's per-turn total): 2 × {in: 760, out: 120}.
+    assert_eq!(got["usage"]["in"], 1520);
+    assert_eq!(got["usage"]["out"], 240);
+    assert_eq!(got["usage"]["tokens"], 1760);
+    assert_eq!(got["stats"]["eval_count"], 240);
     assert!(got["request_messages"].is_array());
 }
 
@@ -935,7 +982,7 @@ async fn world_architect_chat_creates_world_and_persists_history() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
-    let got: Value = serde_json::from_slice(&body).unwrap();
+    let got = architect_result(&body);
     assert_eq!(got["ok"], true);
     let world_id = got["world"]["id"].as_str().expect("world id");
     assert_eq!(got["world_id"], json!(world_id));
@@ -945,14 +992,23 @@ async fn world_architect_chat_creates_world_and_persists_history() {
         got["world"]["architect_messages"][1]["content"],
         "Хочу фентезийный иссекай с богами и клятвами."
     );
+    // The turn is now interleaved like the main chat: reasoning (think) → draft
+    // tool call → reasoning → chat reply. Index 2 is the hop-1 reasoning, index 3
+    // the draft tool, the last entry the model's chat reply.
+    assert_eq!(got["world"]["architect_messages"][2]["role"], "think");
     assert_eq!(
-        got["world"]["architect_messages"][2]["name"],
+        got["world"]["architect_messages"][3]["name"],
         "draft_world_bible"
     );
-    assert!(got["world"]["architect_messages"][3]["content"]
+    let visible = got["world"]["architect_messages"].as_array().unwrap();
+    // [intro assistant, user, think, tool, think, assistant reply] = 6 segments.
+    assert_eq!(visible.len(), 6);
+    assert_eq!(visible.last().unwrap()["role"], "assistant");
+    assert!(visible.last().unwrap()["content"]
         .as_str()
         .unwrap_or("")
         .contains("Порог Второго Неба"));
+    // Model history keeps the user turn and the final assistant reply.
     assert_eq!(
         got["world"]["architect_model_history"]
             .as_array()
@@ -995,7 +1051,7 @@ async fn update_world_marks_ready_and_preserves_architect_history() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let created: Value = serde_json::from_slice(&body).unwrap();
+    let created = architect_result(&body);
     let world_id = created["world"]["id"].as_str().expect("world id");
 
     let (status, body) = post(
@@ -1025,6 +1081,8 @@ async fn update_world_marks_ready_and_preserves_architect_history() {
         updated["world"]["architect_messages"][0]["content"],
         "Хочу мир клятв."
     );
+    // The agent loop ends with a chat reply, so model history keeps the user turn
+    // and the final assistant reply; the /worlds update preserves both.
     assert_eq!(
         updated["world"]["architect_model_history"]
             .as_array()
@@ -1038,13 +1096,7 @@ async fn update_world_marks_ready_and_preserves_architect_history() {
 async fn world_architect_chat_restores_cache_identity_and_returns_model_history() {
     let tmp = tempfile::tempdir().unwrap();
     let mut state = mock_state(&tmp);
-    let spy = Arc::new(std::sync::Mutex::new(IdentitySpyState::default()));
-    let spy_factory = spy.clone();
-    state.make_client = Arc::new(move || {
-        Arc::new(IdentitySpyBackend {
-            state: spy_factory.clone(),
-        }) as Arc<dyn Backend>
-    });
+    let spy = install_identity_spy(&mut state);
 
     let prior_user = gml_agents::world_architect_user_message(
         &json!({"title": "Первый черновик"}),
@@ -1067,7 +1119,7 @@ async fn world_architect_chat_restores_cache_identity_and_returns_model_history(
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let got: Value = serde_json::from_slice(&body).unwrap();
+    let got = architect_result(&body);
     assert_eq!(got["ok"], true);
     assert_eq!(got["cache_session_id"], "world-architect:test-session");
     assert_eq!(got["cache_thread_id"], "world-architect:test-thread");
@@ -1095,6 +1147,56 @@ async fn world_architect_chat_restores_cache_identity_and_returns_model_history(
         .as_str()
         .unwrap()
         .contains("Второй черновик"));
+}
+
+#[tokio::test]
+async fn world_architect_chat_tools_follow_image_generation_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = mock_state(&tmp);
+    let spy = install_identity_spy(&mut state);
+
+    let (status, _body) = post(
+        &state,
+        "/world-architect/chat",
+        json!({"message": "Собери мир с картой."}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let tools = {
+        let spy = spy.lock().expect("identity spy lock");
+        spy.tools.last().cloned().expect("architect tools")
+    };
+    let props = draft_world_bible_properties(&tools);
+    assert!(props.contains_key("world_image_prompt_en"));
+    assert!(props.contains_key("world_map_prompt_en"));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = mock_state(&tmp);
+    let spy = install_identity_spy(&mut state);
+    let (status, _body) = post(
+        &state,
+        "/settings",
+        json!({"settings": {"image_enabled": false}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _body) = post(
+        &state,
+        "/world-architect/chat",
+        json!({"message": "Собери мир без картинок."}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let tools = {
+        let spy = spy.lock().expect("identity spy lock");
+        spy.tools.last().cloned().expect("architect tools")
+    };
+    let props = draft_world_bible_properties(&tools);
+    assert!(!props.contains_key("world_image_prompt_en"));
+    assert!(!props.contains_key("world_map_prompt_en"));
 }
 
 #[tokio::test]

@@ -40,6 +40,15 @@ use gml_server::{build_router, AppState, MakeClient};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8000;
 const DEFAULT_HTTPS_PORT: u16 = 8443;
+/// Stable loopback port for the desktop (Tauri) window. The webview origin is
+/// `http://127.0.0.1:<port>`, and browser storage (localStorage/IndexedDB — e.g.
+/// the developer-mode UI prefs) is keyed by that origin. A fresh ephemeral port
+/// each launch would mint a new origin and silently wipe every client-side
+/// setting, so we bind a fixed, app-specific port (overridable via GM_PORT, with
+/// an ephemeral fallback only if it's already in use). Only the desktop (gui)
+/// path binds it; the headless `--server` path uses GM_PORT / DEFAULT_PORT.
+#[cfg(feature = "gui")]
+const DESKTOP_LOOPBACK_PORT: u16 = 8313;
 
 fn main() {
     init_tracing();
@@ -313,9 +322,10 @@ async fn build_app() -> Result<App, String> {
         "TTS_ENABLED".to_string(),
         b01(state.settings.tts_enabled(None)),
     ));
-    sidecar_cfg
-        .envs
-        .push(("IMAGE_ENABLED".to_string(), b01(state.config.image_enabled)));
+    sidecar_cfg.envs.push((
+        "IMAGE_ENABLED".to_string(),
+        b01(state.config.image_enabled && state.settings.image_enabled(None)),
+    ));
     sidecar_cfg.envs.push((
         "IMAGE_TIMEOUT_SECONDS".to_string(),
         state.config.image_timeout_seconds.to_string(),
@@ -336,6 +346,17 @@ async fn build_app() -> Result<App, String> {
         "IMAGE_MAX_STEPS".to_string(),
         state.config.image_max_steps.to_string(),
     ));
+    if state.config.image_enabled && state.settings.image_enabled(None) {
+        let image_timeout = if state.config.image_timeout_seconds.is_finite()
+            && state.config.image_timeout_seconds > 0.0
+        {
+            state.config.image_timeout_seconds
+        } else {
+            300.0
+        };
+        let image_ready_timeout = std::time::Duration::from_secs_f64(image_timeout * 2.0 + 180.0);
+        sidecar_cfg.ready_timeout = std::cmp::max(sidecar_cfg.ready_timeout, image_ready_timeout);
+    }
     let sidecar = Arc::new(Sidecar::new(sidecar_cfg));
     state.sidecar = Some(sidecar.clone());
 
@@ -539,12 +560,26 @@ fn run_desktop() {
         std::process::exit(1);
     });
 
-    // Loopback bind: fixed GM_PORT if set, else an ephemeral port.
+    // Loopback bind: GM_PORT if set, else a STABLE per-app port so the webview
+    // origin stays constant across launches and client-side settings (e.g. the
+    // developer-mode UI prefs in localStorage) survive. Fall back to an ephemeral
+    // port only if the stable one is busy (a stray instance) — that session won't
+    // persist client settings, but the app still starts.
     let requested_port = env_u16_opt("GM_PORT");
     let listener = handle
         .block_on(async move {
-            let port = requested_port.unwrap_or(0);
-            tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await
+            let primary = requested_port.unwrap_or(DESKTOP_LOOPBACK_PORT);
+            match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, primary)).await {
+                Ok(listener) => Ok(listener),
+                Err(_) if requested_port.is_none() => {
+                    tracing::warn!(
+                        "loopback port {primary} is busy; using an ephemeral port \
+                         (client-side settings will not persist this session)"
+                    );
+                    tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await
+                }
+                Err(e) => Err(e),
+            }
         })
         .unwrap_or_else(|e| {
             eprintln!("gml-app: failed to bind loopback server: {e}");
@@ -554,7 +589,7 @@ fn run_desktop() {
     let origin = format!("http://127.0.0.1:{}", local_addr.port());
     tracing::info!("embedded server on {origin}");
 
-    // Start the TTS sidecar (best-effort) and the axum server on our runtime.
+    // Start the inference sidecar (best-effort) and the axum server on our runtime.
     let state = app.state.clone();
     let sidecar = app.sidecar.clone();
     handle.spawn(async move {

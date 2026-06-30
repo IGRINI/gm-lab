@@ -31,6 +31,8 @@ a{color:var(--acc)}
 .chat-pane{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;position:relative}
 .world-creation-pane{flex:1;min-width:0;min-height:0;overflow:hidden;padding:16px 18px;
   display:flex;justify-content:center;background:linear-gradient(180deg,rgba(20,20,32,.98),rgba(12,12,20,.98))}
+.image-lab-pane{flex:1;min-width:0;min-height:0;overflow:auto;padding:16px 18px;
+  display:flex;justify-content:center;background:linear-gradient(180deg,rgba(20,20,32,.98),rgba(12,12,20,.98))}
 .world-hud{position:absolute;top:14px;right:18px;z-index:3;width:220px;
   display:flex;flex-direction:column;gap:8px;padding:10px 11px;
   background:rgba(24,24,37,.86);border:1px solid rgba(255,255,255,.1);
@@ -234,7 +236,7 @@ header h1 b{color:var(--acc)}
 .chat-sidebar-close{display:none}
 .chat-sidebar-actions{flex:none;display:flex;flex-direction:column;align-items:stretch;gap:9px;padding:10px 12px;
   border-bottom:1px solid rgba(255,255,255,.055)}
-.chat-sidebar-tabs{flex:none;display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px 0}
+.chat-sidebar-tabs{flex:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:6px;padding:10px 12px 0}
 .chat-sidebar-tab{cursor:pointer;min-width:0;border:1px solid var(--line);border-radius:8px;
   background:var(--bg);color:var(--mut);padding:7px 8px;font:inherit;font-size:12.5px;font-weight:700;
   transition:background .15s ease,border-color .15s ease,color .15s ease}
@@ -246,6 +248,7 @@ header h1 b{color:var(--acc)}
   background:rgba(224,134,152,.08);border-radius:8px;color:var(--redo);font-size:12px;line-height:1.35}
 .chat-sidebar-error.inline{display:block;margin:0;padding:6px 8px}
 .world-sidebar-actions{border-bottom:1px solid rgba(255,255,255,.055)}
+.image-sidebar-actions{border-bottom:1px solid rgba(255,255,255,.055)}
 .story-picker{display:flex;flex-direction:column;gap:6px;min-width:0}
 .story-picker label{color:var(--acc);font-size:10px;text-transform:uppercase;letter-spacing:.8px}
 .story-picker select{width:100%;min-width:0;background:var(--bg);color:var(--tx);
@@ -261,7 +264,7 @@ header h1 b{color:var(--acc)}
    are exactly two scroll containers: the architect log (left) and the inspector
    body (right). Every ancestor carries min-height:0 so overflow lands on those
    two elements instead of bubbling up to the pane (the old triple-scroll bug). */
-.world-studio{flex:0 1 auto;min-width:0;min-height:0;width:min(1240px,100%);
+.world-studio{flex:1;min-width:0;min-height:0;width:100%;max-width:1760px;
   display:flex;flex-direction:column;gap:12px}
 
 /* slim pane header — never scrolls, never shrinks */
@@ -283,7 +286,7 @@ header h1 b{color:var(--acc)}
 
 /* two-pane body fills the rest; min-height:0 lets the columns own the scroll */
 .world-studio-body{flex:1;min-height:0;display:grid;
-  grid-template-columns:minmax(360px,1.1fr) minmax(340px,.9fr);gap:14px;align-items:stretch}
+  grid-template-columns:minmax(420px,1fr) minmax(480px,1.05fr);gap:16px;align-items:stretch}
 .world-studio-pane{min-width:0;min-height:0;display:flex;flex-direction:column;
   border:1px solid var(--line);border-radius:10px;background:var(--bg2);overflow:hidden}
 
@@ -319,11 +322,35 @@ header h1 b{color:var(--acc)}
   white-space:pre-wrap;word-break:break-word;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
 .world-architect-log{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px;
   padding:13px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
-.world-architect-msg{padding:7px 9px;border-radius:8px;font-size:13px;line-height:1.4;white-space:pre-wrap}
+.world-architect-msg{padding:7px 9px;border-radius:8px;font-size:13px;line-height:1.4}
 .world-architect-msg.assistant{background:rgba(255,255,255,.045);color:var(--sub);
   border:1px solid rgba(255,255,255,.07)}
 .world-architect-msg.user{margin-left:18px;background:rgba(137,220,235,.1);color:var(--tx);
   border:1px solid rgba(137,220,235,.18)}
+/* markdown inside bubbles: tight paragraph rhythm so it reads like a chat line */
+.world-architect-msg p{margin:0}
+.world-architect-msg p + p{margin-top:.5em}
+.world-architect-msg ul,.world-architect-msg ol{margin:.35em 0;padding-left:1.2em}
+/* reasoning spoiler row (collapsed by default, like "ГМ думает" in the main chat) */
+.world-architect-step{font-size:12.5px}
+.world-architect-step .spoiler-summary{color:var(--mut)}
+.world-architect-typing{display:flex;align-items:center;gap:8px;color:var(--mut)}
+.world-architect-dots{display:inline-flex;gap:4px;flex:none}
+.world-architect-dots i{width:5px;height:5px;border-radius:50%;background:var(--acc);
+  animation:world-typing 1s infinite ease-in-out}
+.world-architect-dots i:nth-child(2){animation-delay:.15s}
+.world-architect-dots i:nth-child(3){animation-delay:.3s}
+@keyframes world-typing{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+/* live streaming reply bubble with a blinking caret */
+.world-architect-live{position:relative}
+.world-architect-caret{display:inline-block;width:7px;height:14px;margin-left:2px;
+  vertical-align:text-bottom;background:var(--acc);border-radius:1px;animation:world-caret 1s steps(1) infinite}
+@keyframes world-caret{0%,50%{opacity:1}51%,100%{opacity:0}}
+/* compact, always-visible note that the architect updated the draft (outside debug) */
+.world-architect-draft-note{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+  border:1px solid rgba(166,203,160,.32);background:rgba(166,203,160,.08);
+  color:var(--gm);font-size:12.5px;line-height:1.35}
+.world-architect-draft-ico{flex:none;font-size:13px}
 .world-architect-input-row{flex:none;display:grid;gap:8px;
   padding:10px 13px;border-top:1px solid rgba(156,207,216,.14);background:rgba(18,18,28,.55)}
 .world-architect-input-row textarea{width:100%;min-width:0;background:var(--bg);color:var(--tx);
@@ -363,7 +390,27 @@ header h1 b{color:var(--acc)}
 .world-bible-caret{flex:none;color:var(--mut);font-size:12px}
 .world-bible-fields{display:grid;gap:9px;padding-top:3px;border-top:1px solid rgba(255,255,255,.06)}
 .world-bible-hint{margin:0;color:var(--mut);font-size:11.5px;line-height:1.35}
-.world-bible-fields .world-field textarea{min-height:46px}
+.world-bible-fields .world-field textarea{min-height:36px}
+.world-visual-field{display:grid;gap:8px;padding:9px;border:1px solid rgba(156,207,216,.16);
+  border-radius:8px;background:rgba(156,207,216,.035)}
+.world-visual-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.world-visual-state{display:inline-flex;align-items:center;min-height:24px;padding:3px 8px;border:1px solid rgba(156,207,216,.22);
+  border-radius:999px;background:rgba(156,207,216,.07);color:var(--mut);font-size:11px;font-weight:700}
+.world-visual-seed{color:var(--mut);font-size:11px;font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+.world-visual-error{padding:7px 9px;border:1px solid rgba(224,134,152,.34);border-radius:8px;
+  background:rgba(224,134,152,.08);color:var(--redo);font-size:12px;line-height:1.35}
+.world-visual-thumb{width:min(320px,100%)}
+.world-visual-gallery{display:grid;gap:8px}
+.world-visual-gallery-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.world-visual-gallery-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.world-visual-card{display:grid;gap:8px;min-width:0;padding:9px;border:1px solid rgba(156,207,216,.18);
+  border-radius:8px;background:rgba(156,207,216,.035)}
+.world-visual-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.world-visual-card-head b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--tx);font-size:12.5px;line-height:1.2}
+.world-visual-card .world-visual-thumb{width:100%}
+.world-visual-pending{display:grid;height:190px;place-items:center;border:1px dashed rgba(156,207,216,.22);
+  border-radius:8px;background:rgba(0,0,0,.16);color:var(--mut);font-size:12px;text-align:center}
 
 /* presets — readable 3-up cards promoted to the top of the inspector */
 .world-manager-presets{display:grid;gap:8px;grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -381,7 +428,9 @@ header h1 b{color:var(--acc)}
 .world-field input,.world-field select,.world-field textarea{width:100%;min-width:0;background:var(--bg);
   color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;
   outline:none}
-.world-field textarea{resize:vertical;min-height:74px;line-height:1.35}
+/* Inspector textareas auto-grow to fit their content (JS sets the height), so the
+   whole bible is readable without an inner scrollbar. The column itself scrolls. */
+.world-field textarea{resize:none;overflow:hidden;min-height:40px;line-height:1.45}
 .world-field input:focus,.world-field select:focus,.world-field textarea:focus{border-color:var(--acc)}
 .world-field input:disabled,.world-field select:disabled,.world-field textarea:disabled{opacity:.58;cursor:default}
 
@@ -399,12 +448,47 @@ header h1 b{color:var(--acc)}
 .world-lore-preview-row p{margin:0;color:var(--sub);font-size:12px;line-height:1.38;overflow-wrap:anywhere}
 .world-manager-note{margin:0;color:var(--mut);font-size:12px;line-height:1.35}
 
+/* developer-only manual image generation lab */
+.image-lab{flex:1;min-width:0;min-height:0;width:100%;max-width:1180px;
+  display:flex;flex-direction:column;gap:12px}
+.image-lab-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+.image-lab-id{display:flex;align-items:center;gap:12px;min-width:0}
+.image-lab-emblem{flex:none;display:grid;place-items:center;width:36px;height:36px;border-radius:8px;
+  background:rgba(156,207,216,.1);border:1px solid rgba(156,207,216,.25);color:var(--acc);font-size:18px}
+.image-lab-title{display:grid;gap:1px;min-width:0}
+.image-lab-kicker{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.9px;text-transform:uppercase}
+.image-lab-title b{color:var(--tx);font-size:17px;line-height:1.2}
+.image-lab-chip{flex:none;padding:5px 10px;border-radius:999px;border:1px solid rgba(230,192,138,.34);
+  background:rgba(230,192,138,.08);color:var(--md-strong);font-size:11px;font-weight:800}
+.image-lab-chip.ready{border-color:rgba(166,203,160,.36);background:rgba(166,203,160,.1);color:var(--ok)}
+.image-lab-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(320px,.9fr) minmax(360px,1.1fr);
+  gap:14px;align-items:start;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+.image-lab-prompt{display:grid;gap:7px;min-width:0}
+.image-lab-prompt span{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.8px;text-transform:uppercase}
+.image-lab-prompt textarea{width:100%;min-width:0;resize:vertical;min-height:220px;max-height:52vh;
+  background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:8px;
+  padding:10px 11px;font:inherit;font-size:13px;line-height:1.45;outline:none}
+.image-lab-prompt textarea:focus{border-color:var(--acc)}
+.image-lab-prompt textarea:disabled{opacity:.58;cursor:default}
+.image-lab-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;grid-column:1}
+.image-lab-actions .btn{min-height:36px}
+.image-lab-meta{color:var(--mut);font:11px/1.25 ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+.image-lab-error{grid-column:1;padding:8px 10px;border:1px solid rgba(224,134,152,.34);border-radius:8px;
+  background:rgba(224,134,152,.08);color:var(--redo);font-size:12px;line-height:1.35}
+.image-lab-output{grid-column:2;grid-row:1 / span 4;min-width:0;min-height:310px;
+  display:grid;place-items:center;border:1px dashed rgba(156,207,216,.22);border-radius:10px;
+  background:rgba(0,0,0,.16);padding:12px}
+.image-lab-empty{color:var(--mut);font-size:13px;text-align:center}
+.image-lab-thumb{--img-thumb-h:min(58vh,560px);width:100%;margin:0}
+
 /* tablet/narrow: stack the panes; the whole studio becomes the single scroller.
    The body must drop to content-height (flex:none) and the panes must stop
    clipping (overflow:visible), otherwise the stacked inspector gets squished by
    the flex column and clips its fields + the Create button out of reach. */
 @media(max-width:980px){
   .world-creation-pane{padding:12px}
+  .image-lab-pane{padding:12px}
   .world-studio{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
   .world-studio-body{flex:none;display:flex;flex-direction:column;gap:12px}
   .world-studio-pane{overflow:visible}
@@ -412,15 +496,26 @@ header h1 b{color:var(--acc)}
   .world-architect-log{flex:none;max-height:46vh}
   .world-inspector-body{flex:none;overflow:visible}
   .world-manager-presets{grid-template-columns:1fr}
+  .image-lab{overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+  .image-lab-body{display:flex;flex-direction:column;align-items:stretch}
+  .image-lab-output{min-height:260px}
+  .image-lab-thumb{--img-thumb-h:360px}
 }
 /* mobile drawer: tighten chrome, keep the chat usable */
 @media(max-width:700px){
   .world-creation-pane{padding:10px}
+  .image-lab-pane{padding:10px}
   .world-studio{gap:10px}
   .world-studio-title b{font-size:15px}
   .world-studio-sub{display:none}
   .world-architect-log{max-height:40vh}
   .world-field-grid{grid-template-columns:1fr}
+  .image-lab{gap:10px}
+  .image-lab-head{align-items:flex-start;flex-direction:column}
+  .image-lab-chip{align-self:flex-start}
+  .image-lab-body{padding:10px}
+  .image-lab-prompt textarea{min-height:190px}
+  .image-lab-thumb{--img-thumb-h:280px}
 }
 .chat-list{flex:1;min-height:0;overflow:auto;padding:10px 8px 12px;display:flex;flex-direction:column;gap:6px;
   scrollbar-width:thin;scrollbar-color:var(--line) transparent}
@@ -890,6 +985,64 @@ header h1 b{color:var(--acc)}
   color:var(--md-del);text-decoration-color:var(--md-del);text-decoration-thickness:2px}
 .md a{color:var(--md-link);text-decoration:none;border-bottom:1px dashed rgba(155,196,214,.5)}
 .md a:hover{border-bottom-style:solid}
+.image-thumb{--img-thumb-h:240px;display:inline-grid;width:min(360px,100%);max-width:100%;
+  overflow:hidden;vertical-align:top;text-align:left;padding:0;margin:.35em 0;border-radius:8px;
+  border:1px solid rgba(156,207,216,.24);background:var(--bg);color:var(--sub);
+  cursor:zoom-in;transition:border-color .12s ease,background .12s ease}
+.image-thumb:hover:not(:disabled),.image-thumb:focus-visible{border-color:rgba(156,207,216,.58);
+  background:rgba(156,207,216,.06);outline:none}
+.image-thumb:disabled{cursor:default;opacity:.78}
+.image-thumb img{display:block;width:100%;height:var(--img-thumb-h);object-fit:contain;
+  background:#0d0d16;opacity:0;grid-area:1 / 1;transition:opacity .12s ease;user-select:none}
+.image-thumb.loaded img{opacity:1}
+.image-thumb-placeholder{display:grid;grid-area:1 / 1;height:var(--img-thumb-h);place-items:center;
+  padding:16px;color:var(--mut);font-size:12px;background:
+    linear-gradient(90deg,transparent,rgba(255,255,255,.045),transparent),
+    #0d0d16;background-size:240px 100%,100% 100%;animation:image-thumb-sheen 1.35s ease-in-out infinite}
+.image-thumb-placeholder.error{animation:none;color:var(--redo);background:rgba(224,134,152,.08)}
+.image-thumb-caption{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  border-top:1px solid rgba(156,207,216,.14);padding:6px 8px;color:var(--mut);
+  font:11px/1.25 ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+@keyframes image-thumb-sheen{0%{background-position:-240px 0,0 0}100%{background-position:240px 0,0 0}}
+
+.image-viewer-overlay{position:fixed;inset:0;z-index:2500;display:grid;grid-template-rows:auto minmax(0,1fr);
+  background:rgba(7,8,14,.94);color:var(--tx)}
+.image-viewer-toolbar{display:flex;align-items:center;gap:12px;min-height:44px;padding:0 14px;
+  border-bottom:1px solid rgba(156,207,216,.16);background:rgba(18,18,28,.88);backdrop-filter:blur(10px)}
+.image-viewer-title{display:flex;align-items:baseline;gap:10px;min-width:0}
+.image-viewer-title strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--tx);font-size:13px;font-weight:700}
+.image-viewer-title span{flex:none;color:var(--mut);font:11px/1 ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+.image-viewer-stage{position:relative;min-width:0;min-height:0;overflow:hidden;cursor:grab;touch-action:none}
+.image-viewer-stage.dragging{cursor:grabbing}
+.image-viewer-canvas{position:absolute;top:50%;left:50%;transform:
+  translate(calc(-50% + var(--preview-x)),calc(-50% + var(--preview-y))) scale(var(--preview-scale));
+  transform-origin:center center;will-change:transform}
+.image-viewer-canvas img{display:block;width:auto;max-width:min(94vw,1800px);max-height:calc(100vh - 130px);
+  border-radius:6px;box-shadow:0 18px 70px rgba(0,0,0,.7);user-select:none}
+.image-viewer-empty{display:grid;place-items:center;min-width:min(72vw,720px);min-height:min(58vh,520px);
+  border:1px dashed rgba(224,134,152,.34);border-radius:10px;background:rgba(224,134,152,.08);
+  color:var(--redo);font-size:13px}
+.image-viewer-dock{position:absolute;left:50%;bottom:16px;z-index:2;display:inline-flex;align-items:center;gap:6px;
+  transform:translateX(-50%);padding:6px;border:1px solid rgba(156,207,216,.18);border-radius:10px;
+  background:rgba(18,18,28,.86);box-shadow:0 12px 44px rgba(0,0,0,.52);backdrop-filter:blur(10px)}
+.image-viewer-dock button{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:34px;
+  padding:0 9px;border:1px solid rgba(156,207,216,.22);border-radius:8px;background:var(--bg2);
+  color:var(--tx);font:12px/1 ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;cursor:pointer}
+.image-viewer-dock button:hover,.image-viewer-dock button:focus-visible{border-color:var(--acc);outline:none}
+.image-viewer-dock button.image-viewer-close:hover{border-color:rgba(224,134,152,.55);
+  background:rgba(224,134,152,.12);color:#ffd8df}
+.image-viewer-zoom{min-width:48px;color:var(--mut);text-align:center;
+  font:11px/1 ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+@media(max-width:700px){
+  .image-thumb{--img-thumb-h:190px;width:100%}
+  .image-viewer-toolbar{min-height:42px}
+  .image-viewer-canvas img{max-width:96vw;max-height:calc(100vh - 120px)}
+  .image-viewer-dock{bottom:10px;max-width:calc(100vw - 20px);overflow:auto}
+}
+@media(prefers-reduced-motion:reduce){
+  .image-thumb-placeholder{animation:none}
+}
 .entity-ref{display:inline-flex;vertical-align:baseline;cursor:help;max-width:100%;
   white-space:normal;outline:none}
 .entity-ref > span{display:inline;min-width:0;color:var(--entity-color);
@@ -1052,6 +1205,11 @@ footer{flex:none;background:var(--bg2);border-top:1px solid var(--line);padding:
   transform:rotate(45deg)}
 .tip b{color:var(--acc)}
 .tip.tool-tip{max-width:360px}
+/* world-bible section chip tooltip: label header + the actual entries as a list */
+.tc-bible-tip{display:grid;gap:5px;text-align:left;white-space:normal}
+.tc-bible-tip-h{font-weight:700;color:var(--acc)}
+.tc-bible-tip ul{margin:0;padding-left:16px;display:grid;gap:3px}
+.tc-bible-tip li{line-height:1.35}
 .tip.ui-tip-wrap{max-width:360px;white-space:normal;line-height:1.35}
 .ui-tip{width:min(320px,calc(100vw - 36px));display:grid;gap:8px}
 .ui-tip-head{display:grid;gap:2px}

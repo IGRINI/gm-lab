@@ -19,6 +19,8 @@ const ACCENT = {
   roll_dice: "var(--md-strong)",
   get_world_fact: "var(--md-link)",
   ask_player: "var(--player)",
+  draft_world_bible: "var(--gm)",
+  edit_world_bible: "var(--md-em)",
   query_world_state: "var(--md-link)",
   update_world_state: "var(--entity-note)",
   update_player_character: "var(--player)",
@@ -84,7 +86,60 @@ const TOOL_HELP = {
   advance_time: "Сдвигает скрытые часы мира на прошедшие минуты этого хода.",
   get_npc_profile: "Запрос отдельных безопасных полей карточки NPC для броска, описания или социальной оценки.",
   tool_search: "ГМ догружает скрытый инструмент по ключевым словам.",
+  draft_world_bible: "Архитектор мира создаёт или обновляет структурированную библию мира (черновик): жанр, тон, размер, население, публичная предпосылка и разделы лора.",
+  edit_world_bible: "Архитектор точечно правит библию мира: меняет отдельные поля или добавляет/убирает/заменяет записи в разделах, не переписывая весь черновик.",
 };
+
+// Labels for edit_world_bible patch ops.
+const OP_LABEL = { add: "Добавлено", remove: "Убрано", replace: "Заменено" };
+
+// Tooltip body for a bible-section chip: header + the actual entries.
+function bibleTip(label, items) {
+  return (
+    <div className="tc-bible-tip">
+      <span className="tc-bible-tip-h">{label} · {items.length}</span>
+      <ul>
+        {items.map((item, i) => (
+          <li key={i}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Lore sections shown as count chips in the draft_world_bible card (dev view).
+const BIBLE_SECTIONS = [
+  ["dogmas", "догматы"],
+  ["world_laws", "законы мира"],
+  ["inhabitants", "народы"],
+  ["creatures", "существа"],
+  ["regions", "регионы"],
+  ["power_centers", "власть"],
+  ["religions", "вера"],
+  ["gods", "боги"],
+  ["cultures", "культуры"],
+  ["history", "история"],
+  ["economy", "экономика"],
+  ["daily_life", "быт"],
+  ["story_hooks", "зацепки"],
+  ["hidden_secrets", "секреты"],
+  ["location_rules", "правила локаций"],
+  ["prohibited_elements", "запреты"],
+];
+const BIBLE_VISUAL_PROMPTS = [
+  ["world_image_prompt_en", "Prompt изображения мира (EN)"],
+  ["world_map_prompt_en", "Prompt карты мира (EN)"],
+];
+const BIBLE_SET_LABELS = Object.fromEntries([
+  ["title", "Название"],
+  ["genre", "Жанр"],
+  ["tone", "Тон"],
+  ["world_size", "Размер мира"],
+  ["population", "Население"],
+  ["public_premise", "Публичная предпосылка"],
+  ["hidden_premise", "Скрытая предпосылка (GM)"],
+  ...BIBLE_VISUAL_PROMPTS,
+]);
 const FIELD_HELP = {
   "Ситуация": "Коротко и нейтрально описывает, что персонаж видит/слышит и на что должен отреагировать.",
   "Правка ГМ": "Почему предыдущий ответ персонажа был отправлен на переделку.",
@@ -605,6 +660,106 @@ function toolView(name, args, statusLabels) {
       };
     }
 
+    case "draft_world_bible": {
+      const lore = args.world_lore && typeof args.world_lore === "object" ? args.world_lore : {};
+      const sections = BIBLE_SECTIONS
+        .map(([field, label]) => [
+          label,
+          Array.isArray(lore[field])
+            ? lore[field].filter((item) => typeof item === "string" && item.trim())
+            : [],
+        ])
+        .filter(([, items]) => items.length > 0);
+      return {
+        icon: "📜",
+        accent: ACCENT.draft_world_bible,
+        title: "Черновик мира",
+        body: (
+          <>
+            {nonEmpty(args.title) && (
+              <Tooltip className="tc-scene-title" tipClassName="tool-tip" content="Название мира в черновике.">
+                {args.title}
+              </Tooltip>
+            )}
+            <div className="tc-chips">
+              {nonEmpty(args.genre) && <Badge tone="muted">{args.genre}</Badge>}
+              {nonEmpty(args.tone) && <Badge tone="muted">{args.tone}</Badge>}
+            </div>
+            {nonEmpty(args.world_size) && <Field label="Размер мира"><TextBlock>{args.world_size}</TextBlock></Field>}
+            {nonEmpty(args.population) && <Field label="Население"><TextBlock>{args.population}</TextBlock></Field>}
+            {nonEmpty(args.public_premise) && (
+              <Field label="Публичная предпосылка"><TextBlock>{args.public_premise}</TextBlock></Field>
+            )}
+            {nonEmpty(lore.hidden_premise) && (
+              <Field label="Скрытая предпосылка (GM)"><TextBlock tone="redo">{lore.hidden_premise}</TextBlock></Field>
+            )}
+            {BIBLE_VISUAL_PROMPTS.map(([field, label]) =>
+              nonEmpty(lore[field]) ? (
+                <Field key={field} label={label}>
+                  <TextBlock>{lore[field]}</TextBlock>
+                </Field>
+              ) : null
+            )}
+            {sections.length > 0 && (
+              <Field label="Разделы лора">
+                <div className="tc-chips">
+                  {sections.map(([label, items]) => (
+                    <Badge key={label} tip={bibleTip(label, items)}>
+                      {label}: {items.length}
+                    </Badge>
+                  ))}
+                </div>
+              </Field>
+            )}
+          </>
+        ),
+      };
+    }
+
+    case "edit_world_bible": {
+      const set = args.set && typeof args.set === "object" ? args.set : {};
+      const setKeys = Object.keys(set).filter((k) => nonEmpty(set[k]));
+      const ops = [
+        ["add", args.add],
+        ["remove", args.remove],
+        ["replace", args.replace],
+      ].map(([op, obj]) => [
+        op,
+        obj && typeof obj === "object"
+          ? Object.entries(obj).filter(([, v]) => Array.isArray(v) && v.length)
+          : [],
+      ]);
+      const empty = setKeys.length === 0 && ops.every(([, entries]) => entries.length === 0);
+      return {
+        icon: "✏️",
+        accent: ACCENT.edit_world_bible,
+        title: "Правка мира",
+        body: (
+          <>
+            {setKeys.map((k) => (
+              <Field key={`set-${k}`} label={BIBLE_SET_LABELS[k] || k}>
+                <TextBlock>{String(set[k])}</TextBlock>
+              </Field>
+            ))}
+            {ops.map(([op, entries]) =>
+              entries.length === 0 ? null : (
+                <Field key={op} label={OP_LABEL[op]}>
+                  <div className="tc-chips">
+                    {entries.map(([section, items]) => (
+                      <Badge key={section} tip={bibleTip(section, items)}>
+                        {section}: {items.length}
+                      </Badge>
+                    ))}
+                  </div>
+                </Field>
+              )
+            )}
+            {empty && <div className="tc-text">нет изменений</div>}
+          </>
+        ),
+      };
+    }
+
     default: {
       const entries = Object.entries(args || {});
       return {
@@ -697,7 +852,10 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId, 
     return null;
   }
 
-  const showCall = mode === "full"; // request body + raw JSON spoilers (developer only)
+  // 'full'   — developer view: rich body + raw JSON spoilers + raw tool name.
+  // 'detail' — player view: the same rich body, no dev-only JSON/raw-name noise.
+  const showBody = mode === "full" || mode === "detail";
+  const showRaw = mode === "full";
   return (
     <div className={"tool-card" + (hasResult ? " has-result" : "")} style={{ "--tc": accent }}>
       <div className="tc-hd">
@@ -705,12 +863,14 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId, 
           {view.icon}
         </Tooltip>
         <span className="tc-title">{view.title}</span>
-        <Tooltip className="tc-name" tipClassName="tool-tip" content={`Сырое имя инструмента модели: ${name}\n${toolHelp(name)}`}>
-          {name}
-        </Tooltip>
+        {showRaw && (
+          <Tooltip className="tc-name" tipClassName="tool-tip" content={`Сырое имя инструмента модели: ${name}\n${toolHelp(name)}`}>
+            {name}
+          </Tooltip>
+        )}
       </div>
-      {showCall && <div className="tc-body">{view.body}</div>}
-      {showCall && (
+      {showBody && <div className="tc-body">{view.body}</div>}
+      {showRaw && (
         <Spoiler label="сырой вызов (JSON)">
           <MarkdownText>{"```json\n" + JSON.stringify(args, null, 2) + "\n```"}</MarkdownText>
         </Spoiler>
@@ -723,7 +883,7 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId, 
           ) : (
             <>
               <div className="tc-body"><ToolResultBody name={name} payload={result} /></div>
-              {showCall && (
+              {showRaw && (
                 <Spoiler label="сырой результат (JSON)">
                   <MarkdownText>{"```json\n" + JSON.stringify(result, null, 2) + "\n```"}</MarkdownText>
                 </Spoiler>

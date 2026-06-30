@@ -691,8 +691,10 @@ fn world_architect_has_static_prompt_and_draft_tool() {
     assert_eq!(messages[0]["role"], "system");
     let system = messages[0]["content"].as_str().unwrap();
     assert!(system.contains("GM-Lab world architect"));
-    assert!(system.contains("Religions/creeds"));
-    assert!(system.contains("History"));
+    // The field list lives in the tool schema now (not restated in the prompt), so
+    // the prompt asserts on its stable behavioral markers, not the field names.
+    assert!(system.contains("draft_world_bible"));
+    assert!(system.contains("hidden_premise"));
     assert!(system.contains("world_size"));
     assert!(system.contains("population"));
     assert!(!system.contains("story_brief"));
@@ -704,16 +706,35 @@ fn world_architect_has_static_prompt_and_draft_tool() {
         .contains("Current Draft JSON"));
 
     let tools = agents::world_architect_tools();
-    assert_eq!(tools.len(), 1);
+    assert_eq!(tools.len(), 2);
     assert_eq!(
         tools[0]["function"]["name"], "draft_world_bible",
-        "architect has its own draft tool"
+        "architect builds with draft_world_bible"
     );
+    assert_eq!(
+        tools[1]["function"]["name"], "edit_world_bible",
+        "architect patches with edit_world_bible"
+    );
+    // The edit tool exposes the patch ops.
+    let edit_props = &tools[1]["function"]["parameters"]["properties"];
+    assert!(edit_props["set"].is_object());
+    assert!(edit_props["add"].is_object());
+    assert!(edit_props["remove"].is_object());
+    assert!(edit_props["replace"].is_object());
     let props = &tools[0]["function"]["parameters"]["properties"];
-    assert!(props["world_lore"].is_object());
+    // The schema is FLAT now: bible sections are top-level fields, not nested in a
+    // `world_lore` object. The backend folds them back into `world_lore` for storage.
+    assert!(
+        props["world_lore"].is_null(),
+        "no nested world_lore in the flat schema"
+    );
     assert!(props["world_size"].is_object());
     assert!(props["population"].is_object());
     assert!(props["public_premise"].is_object());
+    assert!(props["hidden_premise"].is_object());
+    assert!(props["dogmas"]["type"] == "array");
+    assert!(props["religions"]["type"] == "array");
+    assert!(props["prohibited_elements"]["type"] == "array");
     assert!(props["scale"].is_null());
     assert!(props["story_brief"].is_null());
     assert!(props["public_intro"].is_null());

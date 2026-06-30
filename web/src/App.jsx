@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { api, streamTurn } from "./api.js";
+import { api, streamTurn, streamArchitect } from "./api.js";
 import { createTimeline } from "./timelineStore.js";
 import {
   ttsPrime,
@@ -16,6 +16,7 @@ import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
 import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
 import WorldArchitectPanel from "./components/WorldArchitectPanel.jsx";
+import ImageLabPanel from "./components/ImageLabPanel.jsx";
 import WorldDetailModal from "./components/WorldDetailModal.jsx";
 import Tooltip, { TipContent } from "./components/Tooltip.jsx";
 import { normalizeEntities } from "./entityContext.js";
@@ -315,6 +316,7 @@ export default function App() {
     () => (Array.isArray(worlds) ? worlds : []).find((world) => sameChatId(world.id, selectedWorldId)) || null,
     [worlds, selectedWorldId]
   );
+  const imageLabEnabled = !!dev.developerMode && settings.image_enabled === true;
 
   // Auto-generate TTS as GM/NPC lines finalize, read live inside the stream closure.
   const ttsEnabledRef = useRef(false);
@@ -633,6 +635,14 @@ export default function App() {
     closeChatsOnMobile();
   }, [busy, chatActionBusy, closeChatsOnMobile]);
 
+  const showImageLab = useCallback(() => {
+    if (busy || chatActionBusy || !imageLabEnabled) return;
+    setPlayerOptions(null);
+    setStatus("");
+    setMainView("image");
+    closeChatsOnMobile();
+  }, [busy, chatActionBusy, closeChatsOnMobile, imageLabEnabled]);
+
   const openNewWorldCreator = useCallback(() => {
     if (busy || chatActionBusy) return;
     setSelectedWorldId("");
@@ -662,6 +672,12 @@ export default function App() {
       /* localStorage unavailable (private mode) — non-fatal */
     }
   }, [chatsOpen]);
+
+  useEffect(() => {
+    if (mainView === "image" && !imageLabEnabled) {
+      setMainView("chat");
+    }
+  }, [imageLabEnabled, mainView]);
 
   const onCreateChat = useCallback(async () => {
     if (busy || chatActionBusy) return;
@@ -739,18 +755,24 @@ export default function App() {
     [busy, chatActionBusy, selectedWorldId, store, refreshWorlds]
   );
 
-  const onWorldArchitectTurn = useCallback(
-    async (body) => {
-      const data = await api.worldArchitectChat({
-        ...body,
-        ...(selectedWorldId ? { world_id: selectedWorldId } : {}),
-      });
-      if (Array.isArray(data.worlds)) setWorlds(data.worlds);
-      if (data.world?.id) setSelectedWorldId(data.world.id);
-      return data;
+  const onWorldArchitectStream = useCallback(
+    async (body, onEvent) => {
+      await streamArchitect(
+        { ...body, ...(selectedWorldId ? { world_id: selectedWorldId } : {}) },
+        (ev) => {
+          if (ev.kind === "architect_done") {
+            const data = ev.data || {};
+            if (Array.isArray(data.worlds)) setWorlds(data.worlds);
+            if (data.world?.id) setSelectedWorldId(data.world.id);
+          }
+          onEvent(ev);
+        }
+      );
     },
     [selectedWorldId]
   );
+
+  const onGenerateImage = useCallback((body) => api.generateImage(body), []);
 
   const onActivateChat = useCallback(
     async (chatId) => {
@@ -947,10 +969,13 @@ export default function App() {
           onCreateWorld={openNewWorldCreator}
           onShowWorldCreator={showWorldCreator}
           onShowChats={showChatView}
+          onShowImageLab={showImageLab}
           onSelectWorld={onSelectWorld}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
           onDeleteWorld={onDeleteWorld}
+          sidebarMode={mainView === "world" ? "world" : mainView === "image" ? "image" : "chats"}
+          imageLabEnabled={imageLabEnabled}
         />
         {mainView === "world" ? (
           <main className="world-creation-pane">
@@ -958,7 +983,16 @@ export default function App() {
               world={selectedWorld}
               locked={interactionBusy}
               onCreateWorld={onCreateWorld}
-              onArchitectTurn={onWorldArchitectTurn}
+              onArchitectStream={onWorldArchitectStream}
+              onGenerateImage={onGenerateImage}
+            />
+          </main>
+        ) : mainView === "image" && imageLabEnabled ? (
+          <main className="image-lab-pane">
+            <ImageLabPanel
+              locked={interactionBusy}
+              sidecarStatus={sidecarStatus}
+              onGenerateImage={onGenerateImage}
             />
           </main>
         ) : (

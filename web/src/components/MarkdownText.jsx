@@ -1,8 +1,11 @@
 import { Fragment, useContext } from "react";
 import Tooltip from "./Tooltip.jsx";
+import ImageThumbnail from "./ImagePreview.jsx";
 import { EntityRegistryContext, canonicalKind, resolveEntity } from "../entityContext.js";
 
-const SAFE_LINK_RE = /^(https?:|mailto:)/i;
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+const SAFE_ABSOLUTE_RE = /^(https?:|mailto:)/i;
+const SAFE_IMAGE_ABSOLUTE_RE = /^https?:/i;
 const ENTITY_KIND_LABELS = {
   npc: "персонаж",
   loc: "локация",
@@ -250,6 +253,24 @@ function splitInline(text) {
   return parts;
 }
 
+function cleanMarkdownHref(raw) {
+  let href = String(raw || "").trim();
+  if (href.startsWith("<") && href.endsWith(">")) href = href.slice(1, -1).trim();
+  return href;
+}
+
+function isSafeRelativeHref(href) {
+  return !!href && !href.startsWith("//") && !SCHEME_RE.test(href);
+}
+
+function isSafeLinkHref(href) {
+  return SAFE_ABSOLUTE_RE.test(href) || isSafeRelativeHref(href);
+}
+
+function isSafeImageHref(href) {
+  return SAFE_IMAGE_ABSOLUTE_RE.test(href) || isSafeRelativeHref(href);
+}
+
 function inlineNodes(text, keyPrefix = "i", registry = null, options = {}) {
   const opts = { autoEntities: true, ...options };
   return splitInline(text).map((part, idx) => {
@@ -276,9 +297,12 @@ function inlineNodes(text, keyPrefix = "i", registry = null, options = {}) {
       const offset = image ? 1 : 0;
       const close = part.indexOf("]", offset);
       const label = part.slice(offset + 1, close);
-      const href = part.slice(close + 2, -1).trim();
-      if (image) return <span key={key}>{label || href}</span>;
-      if (!SAFE_LINK_RE.test(href)) return <span key={key}>{part}</span>;
+      const href = cleanMarkdownHref(part.slice(close + 2, -1));
+      if (image) {
+        if (!isSafeImageHref(href)) return <span key={key}>{part}</span>;
+        return <ImageThumbnail key={key} src={href} alt={label} caption={label} />;
+      }
+      if (!isSafeLinkHref(href)) return <span key={key}>{part}</span>;
       return (
         <a key={key} href={href} target="_blank" rel="noreferrer">
           {inlineNodes(label, key, registry, { ...opts, autoEntities: false })}

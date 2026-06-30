@@ -413,7 +413,7 @@ fn clean_architect_visible_messages(value: Option<&Value>) -> Option<Vec<Value>>
             .and_then(Value::as_str)
             .unwrap_or_default();
         match role {
-            "user" | "assistant" => {
+            "user" | "assistant" | "think" => {
                 let content = object
                     .get("content")
                     .and_then(Value::as_str)
@@ -651,6 +651,44 @@ async fn get_stories() -> Response {
     }))
 }
 
+/// Forwards the architect agent loop's segments into the SSE channel so the chat
+/// renders live like the main GM turn: `architect_delta` carries per-hop
+/// content/thinking deltas (tagged with a `sid`), `architect_tool` surfaces each
+/// tool call as it happens. The UI groups by `sid` into separate reasoning
+/// spoilers and reply bubbles, interleaved with the tool cards.
+struct ArchitectStreamSink {
+    tx: tokio::sync::mpsc::UnboundedSender<Value>,
+}
+
+impl gml_agents::ArchitectStream for ArchitectStreamSink {
+    fn delta(&mut self, channel: &str, text: &str, sid: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let chan = if channel == gml_llm::channel::THINKING {
+            "thinking"
+        } else {
+            "content"
+        };
+        let _ = self.tx.send(json!({
+            "kind": "architect_delta",
+            "data": { "channel": chan, "text": text, "sid": sid },
+        }));
+    }
+
+    fn tool(&mut self, call: &Value, sid: &str) {
+        let mut data = call.as_object().cloned().unwrap_or_default();
+        data.insert("sid".to_string(), Value::String(sid.to_string()));
+        let _ = self
+            .tx
+            .send(json!({ "kind": "architect_tool", "data": Value::Object(data) }));
+    }
+}
+
+/// `POST /world-architect/chat` — Server-Sent Events. Streams the architect's
+/// reply as it generates (`architect_delta`), surfaces each tool call
+/// (`architect_tool`), then sends the full result (`architect_done`) carrying the
+/// draft, usage, debug info and the persisted world. Terminates with `done`.
 async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let message = body_str(&data, "message");
@@ -680,80 +718,138 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
         Some(world_id)
     };
     let visible_messages = visible_architect_messages_for_request(&data, &message);
-    let initial_payload = architect_world_payload(
-        &draft,
-        visible_messages.clone(),
-        history.clone(),
-        cache_session_id.as_deref(),
-        cache_thread_id.as_deref(),
-    );
-    let (mut world, mut worlds) =
-        match persist_world_payload(&state, world_id, initial_payload).await {
-            Ok(saved) => saved,
-            Err(resp) => return resp,
-        };
-    let persisted_world_id = world
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
 
-    let client = (state.make_client)();
-    client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
-    match gml_agents::world_architect_turn(client.as_ref(), &history, &draft, &message).await {
-        Ok(output) => {
-            let mut visible_after = visible_messages;
-            visible_after.extend(architect_tool_messages(&output.calls));
-            visible_after.push(json!({"role": "assistant", "content": output.reply.clone()}));
-            let mut model_history_after = history;
-            model_history_after.push(output.user_msg.clone());
-            model_history_after.push(output.assistant_history_msg.clone());
-            let final_payload = architect_world_payload(
-                output.draft.as_ref().unwrap_or(&Value::Null),
-                visible_after,
-                model_history_after,
-                Some(client.session_id().as_str()),
-                Some(client.thread_id().as_str()),
-            );
-            match persist_world_payload(&state, Some(persisted_world_id.clone()), final_payload)
-                .await
-            {
-                Ok((saved_world, saved_worlds)) => {
-                    world = saved_world;
-                    worlds = saved_worlds;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let app = state.clone();
+    tokio::spawn(async move {
+        let initial_payload = architect_world_payload(
+            &draft,
+            visible_messages.clone(),
+            history.clone(),
+            cache_session_id.as_deref(),
+            cache_thread_id.as_deref(),
+        );
+        let (mut world, mut worlds) =
+            match persist_world_payload(&app, world_id, initial_payload).await {
+                Ok(saved) => saved,
+                Err(_resp) => {
+                    let _ = tx.send(json!({
+                        "kind": "architect_error",
+                        "data": "не удалось сохранить черновик мира",
+                    }));
+                    return;
                 }
-                Err(resp) => return resp,
+            };
+        let persisted_world_id = world
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+
+        let client = (app.make_client)();
+        client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
+        let mut sink = ArchitectStreamSink { tx: tx.clone() };
+        let architect_options = gml_agents::WorldArchitectOptions {
+            image_prompts: image_generation_enabled(&app),
+        };
+        match gml_agents::world_architect_turn_with_options(
+            client.as_ref(),
+            &history,
+            &draft,
+            &message,
+            architect_options,
+            &mut sink,
+        )
+        .await
+        {
+            Ok(output) => {
+                // The agent loop already streamed each tool call live (architect_tool)
+                // via the sink. Persist the ordered visible segments (think / reply /
+                // tool) so reopening the world restores the interleaved view.
+                let mut visible_after = visible_messages;
+                visible_after.extend(output.visible_segments.clone());
+                let mut model_history_after = history;
+                model_history_after.push(output.user_msg.clone());
+                model_history_after.push(output.assistant_history_msg.clone());
+                let final_payload = architect_world_payload(
+                    output.draft.as_ref().unwrap_or(&Value::Null),
+                    visible_after,
+                    model_history_after,
+                    Some(client.session_id().as_str()),
+                    Some(client.thread_id().as_str()),
+                );
+                match persist_world_payload(&app, Some(persisted_world_id.clone()), final_payload)
+                    .await
+                {
+                    Ok((saved_world, saved_worlds)) => {
+                        world = saved_world;
+                        worlds = saved_worlds;
+                    }
+                    Err(_resp) => {
+                        let _ = tx.send(json!({
+                            "kind": "architect_error",
+                            "data": "не удалось сохранить мир",
+                            "world": world,
+                            "worlds": worlds,
+                            "world_id": persisted_world_id,
+                        }));
+                        return;
+                    }
+                }
+                let _ = tx.send(json!({
+                    "kind": "architect_done",
+                    "data": {
+                        "ok": true,
+                        "reply": output.reply,
+                        "draft": output.draft,
+                        "user_message": output.user_msg,
+                        "assistant_history_message": output.assistant_history_msg,
+                        "assistant_message": output.assistant_msg,
+                        "calls": output.calls,
+                        "cache_session_id": client.session_id(),
+                        "cache_thread_id": client.thread_id(),
+                        "usage": architect_usage(&output.stats),
+                        "stats": output.stats,
+                        "thinking": output.thinking,
+                        "request_messages": output.request_messages,
+                        "world_id": persisted_world_id,
+                        "world": world,
+                        "worlds": worlds,
+                    }
+                }));
             }
-            ok_json(&json!({
-                "ok": true,
-                "reply": output.reply,
-                "draft": output.draft,
-                "user_message": output.user_msg,
-                "assistant_history_message": output.assistant_history_msg,
-                "assistant_message": output.assistant_msg,
-                "calls": output.calls,
-                "cache_session_id": client.session_id(),
-                "cache_thread_id": client.thread_id(),
-                "usage": architect_usage(&output.stats),
-                "stats": output.stats,
-                "thinking": output.thinking,
-                "request_messages": output.request_messages,
-                "world_id": persisted_world_id,
-                "world": world,
-                "worlds": worlds,
-            }))
+            Err(e) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": e.to_string(),
+                    "world": world,
+                    "worlds": worlds,
+                    "world_id": persisted_world_id,
+                }));
+            }
         }
-        Err(e) => json_response(
-            StatusCode::BAD_GATEWAY,
-            &json!({
-                "ok": false,
-                "error": e.to_string(),
-                "world_id": persisted_world_id,
-                "world": world,
-                "worlds": worlds,
-            }),
-        ),
-    }
+    });
+
+    let stream = async_stream::stream! {
+        let mut rx = rx;
+        while let Some(ev) = rx.recv().await {
+            let line = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
+        }
+        yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    let body = Body::from_stream(stream);
+    (headers, body).into_response()
 }
 
 fn visible_architect_messages_for_request(map: &Map<String, Value>, message: &str) -> Vec<Value> {
@@ -837,23 +933,6 @@ fn draft_payload_fields(draft: &Value) -> Map<String, Value> {
         }
     }
     payload
-}
-
-fn architect_tool_messages(calls: &[Value]) -> Vec<Value> {
-    calls
-        .iter()
-        .filter_map(|call| {
-            let name = call.get("name").and_then(Value::as_str)?.trim();
-            if name.is_empty() {
-                return None;
-            }
-            Some(json!({
-                "role": "tool",
-                "name": name,
-                "args": call.get("arguments").cloned().unwrap_or_else(|| json!({})),
-            }))
-        })
-        .collect()
 }
 
 async fn persist_world_payload(
@@ -951,6 +1030,11 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
     } else {
         snapshot.state.as_str().to_string()
     };
+    let error = if health_ready {
+        String::new()
+    } else {
+        snapshot.error.clone().unwrap_or_default()
+    };
 
     json!({
         "ok": true,
@@ -964,6 +1048,7 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
         "elapsed_ms": snapshot.started_elapsed.map(|d| d.as_millis()),
         "ready_timeout_ms": snapshot.ready_timeout.as_millis(),
         "components": sidecar_components(health.as_ref(), state, tts_enabled, image_enabled),
+        "error": error,
     })
 }
 
@@ -971,17 +1056,36 @@ fn image_generation_enabled(state: &AppState) -> bool {
     state.config.image_enabled && state.settings.image_enabled(None)
 }
 
-fn start_image_sidecar_in_background(state: &AppState) {
+fn bool_env(on: bool) -> String {
+    if on { "1" } else { "0" }.to_string()
+}
+
+fn restart_sidecar_in_background(
+    state: &AppState,
+    tts_enabled: bool,
+    image_enabled: bool,
+    warm_image: bool,
+) {
     let Some(sidecar) = state.sidecar.clone() else {
         return;
     };
+    sidecar.set_env("TTS_ENABLED", bool_env(tts_enabled));
+    sidecar.set_env("IMAGE_ENABLED", bool_env(image_enabled));
+    let should_start = state.config.rag_enabled || tts_enabled || image_enabled;
     let http = state.http.clone();
     let base_url = state.config.infer_base_url.clone();
     let timeout =
         std::time::Duration::from_secs_f64((state.config.image_timeout_seconds + 10.0).max(1.0));
     tokio::spawn(async move {
+        sidecar.shutdown().await;
+        if !should_start {
+            return;
+        }
         if let Err(e) = sidecar.ensure_started(true).await {
-            tracing::warn!("image sidecar start after settings update failed: {e}");
+            tracing::warn!("sidecar restart after settings update failed: {e}");
+            return;
+        }
+        if !warm_image {
             return;
         }
         match http
@@ -1077,6 +1181,8 @@ fn sidecar_components(
         "image": {
             "enabled": image_enabled,
             "up": health.map(|body| component_up(body, "image")).unwrap_or(false),
+            "warm": component_field(health, "image", "warm").cloned().unwrap_or(Value::Bool(false)),
+            "runtime_ready": component_field(health, "image", "runtime_ready").cloned().unwrap_or(Value::Bool(false)),
             "runtime_root": component_field(health, "image", "runtime_root").cloned().unwrap_or(Value::Null),
             "output_dir": component_field(health, "image", "output_dir").cloned().unwrap_or(Value::Null),
             "comfy_url": component_field(health, "image", "comfy_url").cloned().unwrap_or(Value::Null),
@@ -1760,10 +1866,19 @@ async fn post_settings(State(state): State<AppState>, body: Bytes) -> Response {
         Some(_) => Some(Map::new()),
         None => Some(data.clone()),
     };
+    let tts_was_enabled = state.settings.tts_enabled(None);
     let image_was_enabled = image_generation_enabled(&state);
     let settings_map = state.settings.update(update.as_ref());
-    if !image_was_enabled && image_generation_enabled(&state) {
-        start_image_sidecar_in_background(&state);
+    let tts_now_enabled = state.settings.tts_enabled(Some(&settings_map));
+    let image_now_enabled =
+        state.config.image_enabled && state.settings.image_enabled(Some(&settings_map));
+    if tts_was_enabled != tts_now_enabled || image_was_enabled != image_now_enabled {
+        restart_sidecar_in_background(
+            &state,
+            tts_now_enabled,
+            image_now_enabled,
+            !image_was_enabled && image_now_enabled,
+        );
     }
     let cfg = state.config.clone();
     let settings = state.settings.clone();

@@ -38,7 +38,9 @@ function turnCount(chat) {
 }
 
 function worldMeta(world) {
-  const parts = [world?.genre, world?.tone, world?.world_size]
+  // Genre + tone only — short labels. world_size is now a 1-3 sentence
+  // description, so it belongs in the panel, not this one-line meta.
+  const parts = [world?.genre, world?.tone]
     .map((value) => (typeof value === "string" ? value.trim() : ""))
     .filter(Boolean);
   return parts.length > 0 ? parts.join(" · ") : "мир";
@@ -73,17 +75,20 @@ export default function ChatHistorySidebar({
   onCreateWorld,
   onShowWorldCreator,
   onShowChats,
+  onShowImageLab,
   onSelectWorld,
   onActivate,
   onDelete,
   onDeleteWorld,
+  sidebarMode = "chats",
+  imageLabEnabled = false,
 }) {
   const closeRef = useRef(null);
   const createChatRef = useRef(null);
   const createWorldRef = useRef(null);
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [tab, setTab] = useState("chats");
+  const [tab, setTab] = useState(sidebarMode);
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
   const sortedWorlds = useMemo(() => (Array.isArray(worlds) ? worlds : []), [worlds]);
   const storyOptions = useMemo(() => (Array.isArray(stories) ? stories : []), [stories]);
@@ -92,7 +97,9 @@ export default function ChatHistorySidebar({
   const locked = busy || loading;
   const storyLocked = locked || storiesLoading || Boolean(storiesError) || !hasStories;
   const createLocked = locked || storyLocked || !selectedStoryId;
-  const isWorldTab = tab === "world";
+  const activeTab = imageLabEnabled ? tab : tab === "image" ? "chats" : tab;
+  const isWorldTab = activeTab === "world";
+  const isImageTab = activeTab === "image";
   const worldLocked = busy || worldsLoading;
   const visibleChats = sortedChats;
   const visibleWorlds = sortedWorlds;
@@ -102,6 +109,8 @@ export default function ChatHistorySidebar({
       ? sortedWorlds.find((world) => sameChatId(world.id, confirmTarget?.id)) || null
       : sortedChats.find((chat) => sameChatId(chat.id, confirmTarget?.id)) || null;
   const confirmTitle = confirmKind === "world" ? worldTitle(confirmItem) : chatTitle(confirmItem);
+  const headKicker = isImageTab ? "Картинки" : isWorldTab ? "Миры" : "История";
+  const headTitle = isImageTab ? "Image Lab" : isWorldTab ? "Миры" : "Чаты";
 
   const cancelDelete = () => {
     if (!deleting) setConfirmTarget(null);
@@ -130,6 +139,10 @@ export default function ChatHistorySidebar({
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
   }, [confirmTarget, deleting]);
+
+  useEffect(() => {
+    setTab(imageLabEnabled ? sidebarMode : sidebarMode === "image" ? "chats" : sidebarMode);
+  }, [imageLabEnabled, sidebarMode]);
 
   useEffect(() => {
     if (!open || typeof document === "undefined") return undefined;
@@ -181,8 +194,8 @@ export default function ChatHistorySidebar({
       >
         <div className="chat-sidebar-head">
           <div>
-            <span>{isWorldTab ? "Миры" : "История"}</span>
-            <h2>{isWorldTab ? "Миры" : "Чаты"}</h2>
+            <span>{headKicker}</span>
+            <h2>{headTitle}</h2>
           </div>
           <button
             ref={closeRef}
@@ -198,13 +211,13 @@ export default function ChatHistorySidebar({
         <div className="chat-sidebar-tabs" role="tablist" aria-label="Режим боковой панели">
           <button
             type="button"
-            className={"chat-sidebar-tab" + (!isWorldTab ? " active" : "")}
+            className={"chat-sidebar-tab" + (activeTab === "chats" ? " active" : "")}
             onClick={() => {
               setTab("chats");
               onShowChats?.();
             }}
             role="tab"
-            aria-selected={!isWorldTab}
+            aria-selected={activeTab === "chats"}
           >
             Чаты
           </button>
@@ -224,9 +237,28 @@ export default function ChatHistorySidebar({
           >
             Миры
           </button>
+          {imageLabEnabled && (
+            <button
+              type="button"
+              className={"chat-sidebar-tab" + (isImageTab ? " active" : "")}
+              onClick={() => {
+                if (locked) return;
+                setTab("image");
+                onShowImageLab?.();
+              }}
+              role="tab"
+              aria-selected={isImageTab}
+            >
+              Картинки
+            </button>
+          )}
         </div>
 
-        {!isWorldTab ? (
+        {isImageTab ? (
+          <div className="chat-sidebar-actions image-sidebar-actions">
+            <span className="chat-sidebar-status">Ручная генерация открыта в рабочей области.</span>
+          </div>
+        ) : !isWorldTab ? (
           <div className="chat-sidebar-actions">
             <div className="story-picker">
               <label htmlFor="new-chat-story">История</label>
@@ -291,22 +323,27 @@ export default function ChatHistorySidebar({
           </div>
         )}
 
-        {(isWorldTab ? worldsError : error) && (
+        {!isImageTab && (isWorldTab ? worldsError : error) && (
           <div className="chat-sidebar-error">{isWorldTab ? worldsError : error}</div>
         )}
 
-        <nav className="chat-list" aria-label={isWorldTab ? "Сохранённые миры" : "Предыдущие чаты"}>
+        <nav className="chat-list" aria-label={isImageTab ? "Image Lab" : isWorldTab ? "Сохранённые миры" : "Предыдущие чаты"}>
+          {isImageTab ? (
+            <div className="chat-sidebar-empty">
+              Вкладка видна только при включённых режиме разработчика и генерации картинок.
+            </div>
+          ) : null}
           {isWorldTab && visibleWorlds.length === 0 && !worldsLoading ? (
             <div className="chat-sidebar-empty">
               Сохранённых миров пока нет.
             </div>
           ) : null}
-          {!isWorldTab && visibleChats.length === 0 && !loading ? (
+          {!isWorldTab && !isImageTab && visibleChats.length === 0 && !loading ? (
             <div className="chat-sidebar-empty">
               Сохранённых чатов пока нет.
             </div>
           ) : null}
-          {isWorldTab
+          {isImageTab ? null : isWorldTab
             ? visibleWorlds.map((world) => {
               const active = sameChatId(world.id, selectedWorldId);
               return (

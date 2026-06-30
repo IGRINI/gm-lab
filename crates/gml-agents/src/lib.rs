@@ -58,8 +58,9 @@ pub use tools::{
     load_gm_tool_schema, search_gm_tools, CANON_GM_TOOL_NAMES,
 };
 pub use world_architect::{
-    world_architect_messages, world_architect_tools, world_architect_turn,
-    world_architect_user_message,
+    world_architect_messages, world_architect_tools, world_architect_tools_with_options,
+    world_architect_turn, world_architect_turn_with_options, world_architect_user_message,
+    ArchitectStream, NullArchitectStream, WorldArchitectOptions, WorldArchitectOutput,
 };
 
 /// `world._public_gender(value)` — RU grammatical-gender label, faithful port

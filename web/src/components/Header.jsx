@@ -99,6 +99,16 @@ function componentLine(component, fallback) {
   return `${fallback}: ${label}${model}${models}${quant}`;
 }
 
+function imageComponentLine(component) {
+  if (!component?.enabled) return "Image: выкл";
+  const label = component.up ? "готов" : component.runtime_ready ? "прогрев" : "загрузка";
+  const models = Array.isArray(component.models) && component.models.length
+    ? ` · ${component.models.join(", ")}`
+    : "";
+  const comfy = component.comfy_up ? " · ComfyUI" : "";
+  return `Image: ${label}${models}${comfy}`;
+}
+
 function sidecarUiStatus(status) {
   if (!status || status.enabled === false) return null;
   const c = status.components || {};
@@ -138,7 +148,7 @@ function SidecarTooltip({ status, ui }) {
       componentLine(c.embedder, "Эмбеддер"),
       componentLine(c.reranker, "Реранкер"),
       componentLine(c.tts, "TTS"),
-      componentLine(c.image, "Image"),
+      imageComponentLine(c.image),
     ].join("\n");
 
   return (

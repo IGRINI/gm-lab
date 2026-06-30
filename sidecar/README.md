@@ -52,7 +52,7 @@ Voice refs + the local 1.7B model live in `E:\gemma\gm-lab\hf_models\faster-qwen
 | Embedder | `Qwen/Qwen3-Embedding-0.6B` | 1024-dim, last-token pooling, L2-normalized, asymmetric (query instruction) |
 | Reranker | `jinaai/jina-reranker-v3` | listwise 0.6B, multilingual incl. Russian, **raw-cosine scores [-1,1]** |
 | TTS | local `qwen17b_base/` (Qwen3-TTS-12Hz-1.7B-Base) | CUDA-graph capture, 24 kHz, voice-clone |
-| Image | ComfyUI FLUX.2 klein NVFP4 runtime in `sidecar/image_runtime/` | lazy ComfyUI startup, generated PNGs in `image_runtime/generated/<run_id>/` |
+| Image | ComfyUI FLUX.2 klein NVFP4 runtime in `sidecar/image_runtime/` | ComfyUI + NVFP4 workflow warm at sidecar startup, generated PNGs in `image_runtime/generated/<run_id>/` |
 
 TTS voices (all voice-clones on the one model, primed at startup):
 
@@ -125,9 +125,17 @@ Same body as `/speak`; streams chunks head-first as the model generates.
 ```
 
 The endpoint creates `IMAGE_OUTPUT_DIR/<run_id>/` and writes the final PNGs
-there. ComfyUI is started lazily on the first generation request; `/health`
-reports `image.up=true` when the runtime files/models are present and
-`image.comfy_up` when the ComfyUI server is already listening.
+there. When `IMAGE_ENABLED=1`, sidecar startup starts ComfyUI and runs a minimal
+NVFP4 workflow so the image model is already resident in VRAM before `/health`
+reports `image.up=true`. `/health.image.runtime_ready` means the files/models
+exist on disk; `/health.image.comfy_up` means the ComfyUI server is listening;
+`/health.image.warm` and `up` mean the warmup workflow succeeded.
+
+### `POST /images/start`
+
+Starts ComfyUI and runs the same idempotent NVFP4 warmup workflow used by
+startup. It returns immediately with `skipped:true` when the model is already
+warm in the current sidecar process.
 
 ### `GET /image-files/{run_id}/{filename}` → `image/png`
 Safe file server for generated PNGs. The Rust server proxies the same path, so
@@ -177,6 +185,9 @@ via the sidecar's spawn env (see "Rust wiring").
 | `IMAGE_TIMEOUT_SECONDS` | `300` | ComfyUI startup/generation timeout |
 | `IMAGE_MAX_WIDTH` / `IMAGE_MAX_HEIGHT` | `2048` / `2048` | request limits |
 | `IMAGE_MAX_BATCH` / `IMAGE_MAX_STEPS` | `4` / `50` | request limits |
+| `IMAGE_WARMUP_MODEL` | `nvfp4` | model preset warmed at sidecar startup |
+| `IMAGE_WARMUP_WIDTH` / `IMAGE_WARMUP_HEIGHT` | `1024` / `1024` | warmup workflow image size |
+| `IMAGE_WARMUP_STEPS` | `1` | warmup workflow steps |
 
 `int8` quant was dropped (≈5× slower than bf16). `nf4` remains available as an
 explicit override, but the default is `bf16`.
@@ -203,9 +214,10 @@ explicit override, but the default is `bf16`.
   `GM_IMAGE_ENABLED` and `GM_IMAGE_*` limits are read by `gml-config` and passed
   to `serve.py`. `GM_IMAGE_ENABLED` is the default/global switch; the UI/runtime
   setting `image_enabled` gates whether the Rust server starts and accepts image
-  requests. Switching `image_enabled` from off to on kicks the Python sidecar and
-  ComfyUI startup in the background; the first generation request still waits if
-  the warmup has not finished yet.
+  requests. When enabled, Python sidecar startup blocks until the ComfyUI NVFP4
+  warmup workflow succeeds, so the first generation request should not pay the
+  model-load cost. Switching `image_enabled` from off to on restarts the sidecar
+  with the same eager image warmup.
 - **Reranking (wired & live):** `GM_RAG_RERANK_ENABLED` (default **true**),
   `GM_RAG_RERANK_CANDIDATES` (default **64** — jina single-pass sweet spot) = how
   many fused RRF candidates `engine.rs` sends to `/rerank`; results reorder the
