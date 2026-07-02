@@ -24,7 +24,7 @@ use gml_config::{Config, RuntimeSettings};
 use gml_llm::{
     Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput, MockClient,
 };
-use gml_persistence::{DialogStore, WorldStore};
+use gml_persistence::{CharacterStore, DialogStore, WorldStore};
 use gml_server::{build_router, AppState};
 
 #[derive(Default)]
@@ -212,11 +212,15 @@ fn mock_state_with_infer_url(tmp: &tempfile::TempDir, infer_base_url: &str) -> A
     let story_store = Arc::new(std::sync::Mutex::new(
         gml_stories::StoryStore::new(tmp.path().join("library")).expect("open temp story store"),
     ));
+    let character_store = Arc::new(std::sync::Mutex::new(
+        CharacterStore::new(tmp.path().join("library")).expect("open temp character store"),
+    ));
 
     AppState {
         store,
         world_store,
         story_store,
+        character_store,
         make_client,
         config: cfg,
         settings,
@@ -258,11 +262,15 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
     let story_store = Arc::new(std::sync::Mutex::new(
         gml_stories::StoryStore::new(tmp.path().join("library")).expect("open temp story store"),
     ));
+    let character_store = Arc::new(std::sync::Mutex::new(
+        CharacterStore::new(tmp.path().join("library")).expect("open temp character store"),
+    ));
 
     AppState {
         store,
         world_store,
         story_store,
+        character_store,
         make_client,
         config: cfg,
         settings,
@@ -2781,4 +2789,366 @@ async fn launch_unpinned_story_ref_records_no_pin_and_no_warning() {
             assert_eq!(w.world_ref.as_ref().map(|r| r.id.as_str()), Some(world_id.as_str()));
         })
         .unwrap();
+}
+
+// =========================================================================
+// K1 characters (docs/CHARACTERS_AND_STORY_TZ.md §К1.1–К1.4)
+// =========================================================================
+
+/// Create a character via `POST /characters` and return its id.
+async fn create_character_via_api(state: &AppState, title: &str, payload: Value) -> String {
+    let body = if payload.is_null() {
+        json!({ "title": title })
+    } else {
+        json!({ "title": title, "payload": payload })
+    };
+    let (status, resp) = post(state, "/characters", body).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create character: {}",
+        String::from_utf8_lossy(&resp)
+    );
+    let v: Value = serde_json::from_slice(&resp).unwrap();
+    v["character"]["id"].as_str().unwrap().to_string()
+}
+
+/// CRUD over the HTTP surface: create (default hero), list, update metadata
+/// (version bump + rename), delete.
+#[tokio::test]
+async fn character_crud_over_http() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    // Create with the DEFAULT hero payload (no payload in the body).
+    let id = create_character_via_api(&state, "Мой герой", Value::Null).await;
+
+    // Listed, version 1, default hero name in the payload.
+    let (status, body) = get(&state, "/characters").await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: Value = serde_json::from_slice(&body).unwrap();
+    let chars = listed["characters"].as_array().unwrap();
+    assert_eq!(chars.len(), 1);
+    assert_eq!(chars[0]["id"], json!(id));
+    assert_eq!(chars[0]["version"], json!(1));
+    assert_eq!(chars[0]["title"], json!("Мой герой"));
+    assert_eq!(
+        chars[0]["payload"]["player_character"]["name"],
+        json!("Искатель"),
+        "default hero name from PlayerCharacter::default()"
+    );
+
+    // Update metadata (rename) -> version 2.
+    let (status, body) =
+        post(&state, &format!("/characters/{id}"), json!({"title": "Переименован"})).await;
+    assert_eq!(status, StatusCode::OK, "update: {}", String::from_utf8_lossy(&body));
+    let updated: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(updated["character"]["version"], json!(2));
+    assert_eq!(updated["character"]["title"], json!("Переименован"));
+
+    // Empty-title create is a 400.
+    let (status, _b) = post(&state, "/characters", json!({"title": "   "})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Update of a missing id is a 400.
+    let (status, _b) = post(&state, "/characters/nope", json!({"title": "x"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Delete -> gone from the list.
+    let (status, body) = post(&state, &format!("/characters/{id}/delete"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "delete: {}", String::from_utf8_lossy(&body));
+    let deleted: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(deleted["deleted"], json!(true));
+    let (status, body) = get(&state, "/characters").await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: Value = serde_json::from_slice(&body).unwrap();
+    assert!(listed["characters"].as_array().unwrap().is_empty());
+}
+
+/// Build a single-entry `character.json` zip with the given manifest value.
+fn build_character_zip(manifest: Value) -> Vec<u8> {
+    use std::io::Write;
+    let mut buf = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("character.json", options).unwrap();
+        zip.write_all(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+/// Export -> import roundtrip into a fresh library; plus structural-validation
+/// rejection (400) and id-collision (409).
+#[tokio::test]
+async fn character_export_import_roundtrip_reject_and_collision() {
+    let src_tmp = tempfile::tempdir().unwrap();
+    let src = mock_state(&src_tmp);
+    let id = create_character_via_api(
+        &src,
+        "Переносимый герой",
+        json!({"player_character": {"name": "Ариан", "card_revision": 3}}),
+    )
+    .await;
+
+    // Export is a .gmchar.zip carrying character.json.
+    let (status, exported) = get(&src, &format!("/characters/{id}/export")).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&exported));
+    let names = zip_entry_names(&exported);
+    assert!(names.iter().any(|n| n == "character.json"), "names={names:?}");
+    // Missing character -> 404.
+    let (status, _b) = get(&src, "/characters/does-not-exist/export").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Import into a FRESH library.
+    let dst_tmp = tempfile::tempdir().unwrap();
+    let dst = mock_state(&dst_tmp);
+    let (status, body) =
+        post_bytes(&dst, "/library/import", "application/zip", exported.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["kind"], "character");
+    let imported_id = got["id"].as_str().unwrap().to_string();
+
+    // The character is live (reload happened) and the card_revision travelled.
+    let (status, body) = get(&dst, "/characters").await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: Value = serde_json::from_slice(&body).unwrap();
+    let found = listed["characters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == json!(imported_id))
+        .expect("imported character present");
+    assert_eq!(found["payload"]["player_character"]["card_revision"], json!(3));
+
+    // Re-import WITHOUT overwrite -> 409 collision (same manifest id).
+    let (status, _b) =
+        post_bytes(&dst, "/library/import", "application/zip", exported.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "collision without overwrite -> 409");
+    // WITH overwrite=1 -> OK.
+    let (status, _b) =
+        post_bytes(&dst, "/library/import?overwrite=1", "application/zip", exported).await;
+    assert_eq!(status, StatusCode::OK, "overwrite import ok");
+
+    // Structural-validation rejection: a character.json whose payload has no
+    // player_character object -> 400, nothing lands.
+    let bad = build_character_zip(json!({
+        "format": "gmlab.character/1",
+        "id": "badchar",
+        "version": 1,
+        "title": "Плохой",
+        "payload": {"not_pc": {}}
+    }));
+    let (status, body) = post_bytes(&dst, "/library/import", "application/zip", bad).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "reject: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+/// Launch with a `character_id` overlays the PC and stamps `char_ref`. The
+/// `story_pc_override` warning fires EXACTLY when the story carries its own
+/// player_character: authored-with-PC story -> warn; procedural -> no warn;
+/// no character_id -> no warn, no char_ref.
+#[tokio::test]
+async fn launch_with_character_overlays_pc_and_sets_char_ref() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Мир Персонажей").await;
+
+    // A character package with a distinctive hero name + card_revision.
+    let char_id = create_character_via_api(
+        &state,
+        "Заглавный герой",
+        json!({"player_character": {"name": "Кассандра", "card_revision": 7}}),
+    )
+    .await;
+
+    // ---- Case A: authored story that CARRIES its own player_character ----
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "authored",
+            "world_id": world_id,
+            "title": "История со своим героем",
+            "plot": {
+                "story_brief": "Пролог.",
+                "player_character": {"name": "Авторский протагонист", "card_revision": 0}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create authored: {}", String::from_utf8_lossy(&body));
+    let authored: Value = serde_json::from_slice(&body).unwrap();
+    let authored_story_id = authored["story"]["id"].as_str().unwrap().to_string();
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": authored_story_id, "character_id": char_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch authored+char: {}", String::from_utf8_lossy(&body));
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    // The override warning is present (story carried its own PC).
+    let warnings = launched["warnings"].as_array().expect("warnings present");
+    assert!(
+        warnings.iter().any(|w| w["code"] == json!("story_pc_override")),
+        "authored-with-PC + character_id must warn story_pc_override: {warnings:?}"
+    );
+    // The PC was OVERLAID from the package (full replace, card_revision verbatim)
+    // and char_ref stamped.
+    state
+        .store
+        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
+            let w = &rt.session.world;
+            assert_eq!(w.player_character.name, "Кассандра", "package PC overlaid");
+            assert_eq!(w.player_character.card_revision, 7, "card_revision travels verbatim");
+            assert_eq!(
+                w.char_ref.as_ref().map(|r| r.id.as_str()),
+                Some(char_id.as_str()),
+                "char_ref stamped"
+            );
+        })
+        .unwrap();
+
+    // ---- Case B: procedural story -> NO override warning ----
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "procedural",
+            "world_id": world_id,
+            "title": "Процедурная история",
+            "plot": {"story_brief": "Смена."}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create procedural: {}", String::from_utf8_lossy(&body));
+    let proc: Value = serde_json::from_slice(&body).unwrap();
+    let proc_story_id = proc["story"]["id"].as_str().unwrap().to_string();
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": proc_story_id, "character_id": char_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch procedural+char: {}", String::from_utf8_lossy(&body));
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    let has_override = launched
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|ws| ws.iter().any(|w| w["code"] == json!("story_pc_override")))
+        .unwrap_or(false);
+    assert!(!has_override, "procedural story must NOT warn story_pc_override: {launched}");
+    // Overlay still applies + char_ref set.
+    state
+        .store
+        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
+            let w = &rt.session.world;
+            assert_eq!(w.player_character.name, "Кассандра");
+            assert_eq!(w.char_ref.as_ref().map(|r| r.id.as_str()), Some(char_id.as_str()));
+        })
+        .unwrap();
+
+    // ---- Case C: no character_id -> no warn, no char_ref ----
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": proc_story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch no-char: {}", String::from_utf8_lossy(&body));
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    let has_override = launched
+        .get("warnings")
+        .and_then(Value::as_array)
+        .map(|ws| ws.iter().any(|w| w["code"] == json!("story_pc_override")))
+        .unwrap_or(false);
+    assert!(!has_override, "no character_id -> no story_pc_override");
+    state
+        .store
+        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
+            assert!(rt.session.world.char_ref.is_none(), "no char_ref without character_id");
+        })
+        .unwrap();
+
+    // A supplied-but-unknown character_id is a 400 (no-fallback).
+    let (status, _b) = post(
+        &state,
+        "/chats",
+        json!({"story_id": proc_story_id, "character_id": "ghost", "activate": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unknown character_id -> 400");
+}
+
+/// `POST /chats/{chat_id}/save-character`: create-new (no id) then update
+/// (with id, snapshot + version bump), and missing-id -> 400.
+#[tokio::test]
+async fn save_character_new_update_and_missing_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    // A procedural chat gives us a default hero to save. The procedural launch
+    // requires world_lore, so use inline lore.
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({
+            "story_id": "procedural",
+            "seed": "save-char-test",
+            "activate": true,
+            "world_lore": {
+                "name": "Тестовый мир",
+                "public_premise": "Мир для теста сохранения героя.",
+                "world_laws": ["закон один"],
+                "location_rules": ["правило одно"]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create chat: {}", String::from_utf8_lossy(&body));
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    let chat_id = launched["active_chat_id"].as_str().unwrap().to_string();
+
+    // Save-back WITHOUT an id -> creates a NEW character (title = hero name).
+    let (status, body) = post(&state, &format!("/chats/{chat_id}/save-character"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "save new: {}", String::from_utf8_lossy(&body));
+    let saved: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(saved["ok"], true);
+    let new_id = saved["character"]["id"].as_str().unwrap().to_string();
+    assert_eq!(saved["character"]["version"], json!(1));
+    // title = the default hero name.
+    assert_eq!(saved["character"]["title"], json!("Искатель"));
+
+    // Save-back WITH the id -> snapshot the existing character (version bump).
+    let (status, body) = post(
+        &state,
+        &format!("/chats/{chat_id}/save-character"),
+        json!({"character_id": new_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "save update: {}", String::from_utf8_lossy(&body));
+    let updated: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(updated["character"]["id"], json!(new_id));
+    assert_eq!(updated["character"]["version"], json!(2), "snapshot bumps version");
+
+    // Save-back with an UNKNOWN id -> 400.
+    let (status, _b) = post(
+        &state,
+        &format!("/chats/{chat_id}/save-character"),
+        json!({"character_id": "ghost"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unknown id -> 400");
 }

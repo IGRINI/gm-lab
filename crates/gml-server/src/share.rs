@@ -24,6 +24,8 @@ use zip::{ZipArchive, ZipWriter};
 pub const WORLD_FORMAT: &str = "gmlab.world/1";
 /// `format` tag of a story manifest (`story.json`).
 pub const STORY_FORMAT: &str = "gmlab.story/1";
+/// `format` tag of a character manifest (`character.json`).
+pub const CHARACTER_FORMAT: &str = "gmlab.character/1";
 
 /// An error in the share (export/import) flow. All variants are hard errors that
 /// leave the filesystem unchanged.
@@ -58,6 +60,7 @@ impl std::error::Error for ShareError {}
 pub enum PackageKind {
     World,
     Story,
+    Character,
 }
 
 impl PackageKind {
@@ -65,6 +68,7 @@ impl PackageKind {
         match self {
             PackageKind::World => "world",
             PackageKind::Story => "story",
+            PackageKind::Character => "character",
         }
     }
 }
@@ -159,8 +163,12 @@ impl Archive {
             check_format(bytes, STORY_FORMAT)?;
             return Ok(PackageKind::Story);
         }
+        if let Some(bytes) = self.top_level("character.json") {
+            check_format(bytes, CHARACTER_FORMAT)?;
+            return Ok(PackageKind::Character);
+        }
         Err(ShareError::Unrecognized(
-            "archive has no top-level world.json or story.json".to_string(),
+            "archive has no top-level world.json, story.json, or character.json".to_string(),
         ))
     }
 
@@ -170,6 +178,7 @@ impl Archive {
         let name = match kind {
             PackageKind::World => "world.json",
             PackageKind::Story => "story.json",
+            PackageKind::Character => "character.json",
         };
         let bytes = self.top_level(name)?;
         let value: Value = serde_json::from_slice(bytes).ok()?;
@@ -178,6 +187,13 @@ impl Archive {
             .and_then(Value::as_str)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+    }
+
+    /// Parse the top-level `character.json` manifest into a [`Value`] (K1
+    /// import structural validation). Returns `None` when absent or unparsable.
+    pub fn character_manifest(&self) -> Option<Value> {
+        let bytes = self.top_level("character.json")?;
+        serde_json::from_slice(bytes).ok()
     }
 
     /// All top-level entries (no `/` after the first segment is irrelevant — this
@@ -498,6 +514,27 @@ mod tests {
 
         let dir2 = tempfile::tempdir().unwrap();
         std::fs::write(dir2.path().join("world.json"), br#"{"format":"bogus/9"}"#).unwrap();
+        let bytes2 = zip_dir(dir2.path(), "").unwrap();
+        let arch2 = Archive::from_zip_bytes(&bytes2).unwrap();
+        assert!(arch2.detect_kind().is_err());
+    }
+
+    #[test]
+    fn detect_kind_recognizes_character() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("character.json"),
+            r#"{"format":"gmlab.character/1","id":"c","payload":{"player_character":{"name":"hero"}}}"#.as_bytes(),
+        )
+        .unwrap();
+        let bytes = zip_dir(dir.path(), "").unwrap();
+        let arch = Archive::from_zip_bytes(&bytes).unwrap();
+        assert_eq!(arch.detect_kind().unwrap(), PackageKind::Character);
+        assert_eq!(arch.manifest_id(PackageKind::Character).as_deref(), Some("c"));
+
+        // Wrong format tag is rejected.
+        let dir2 = tempfile::tempdir().unwrap();
+        std::fs::write(dir2.path().join("character.json"), br#"{"format":"bogus/9"}"#).unwrap();
         let bytes2 = zip_dir(dir2.path(), "").unwrap();
         let arch2 = Archive::from_zip_bytes(&bytes2).unwrap();
         assert!(arch2.detect_kind().is_err());

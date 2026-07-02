@@ -23,7 +23,9 @@ use gml_config::Config;
 use gml_llm::Backend;
 use gml_orchestrator::{ClientFactory, CompactionThresholds, Session};
 
+pub mod character_store;
 pub mod world_store;
+pub use character_store::{CharacterStore, CHARACTER_FORMAT};
 pub use world_store::{WorldStore, ASSETS_DIR as ASSETS_DIR_NAME};
 
 /// `SCHEMA_VERSION = 1` — hard-checked on load (no migrations exist).
@@ -40,6 +42,8 @@ pub enum StoreError {
     ChatNotFound(String),
     #[error("world not found: {0}")]
     WorldNotFound(String),
+    #[error("character not found: {0}")]
+    CharacterNotFound(String),
     #[error("unsupported schema version: {0}")]
     SchemaVersion(String),
     #[error("invalid payload: {0}")]

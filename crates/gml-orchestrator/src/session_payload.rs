@@ -608,6 +608,14 @@ fn world_to_payload(world: &World) -> Value {
             Value::Number(authored.into()),
         );
     }
+    // K1 CHARACTER package provenance (`docs/CHARACTERS_AND_STORY_TZ.md` §К1.3):
+    // which character package's hero was overlaid at launch. Trailing + emitted
+    // only when `Some` (right after `world_ref_authored_version`), so pre-K1 and
+    // no-character launches stay byte-identical. Provenance only — the PC
+    // snapshot itself lives in `player_character` above.
+    if let Some(char_ref) = &world.char_ref {
+        m.insert("char_ref".into(), package_ref_to_payload(char_ref));
+    }
 
     Value::Object(m)
 }
@@ -758,6 +766,7 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
     world.world_ref_authored_version = data
         .get("world_ref_authored_version")
         .and_then(Value::as_u64);
+    world.char_ref = package_ref_from_payload(data.get("char_ref"));
     if !world.world_canon.is_empty() {
         world.migrate_legacy_state_records_to_memory();
     }
@@ -1014,6 +1023,25 @@ fn player_character_from_payload(v: Option<&Value>) -> PlayerCharacter {
         features: str_list(m.get("features")),
         card_revision: card_revision(&m),
     }
+}
+
+/// THE canonical player-character serializer for the K1 character package
+/// (`docs/CHARACTERS_AND_STORY_TZ.md` §К1.1): the character package's
+/// `payload.player_character` uses the EXACT same shape as the save payload's
+/// `player_character` (this is `player_character_to_payload`), NOT the
+/// UI/tool-facing `World::player_character_export` projection. Exposed so the
+/// SERVER (which has both `gml-persistence` and this crate as deps) can build
+/// the package payload while the `CharacterStore` treats `player_character` as an
+/// opaque object it never interprets (the clean dependency seam).
+pub fn player_character_payload(pc: &PlayerCharacter) -> Value {
+    player_character_to_payload(pc)
+}
+
+/// Inverse of [`player_character_payload`]: coerce a canonical
+/// `player_character` payload object back into a [`PlayerCharacter`] (missing
+/// fields fall back to the default hero). Public for the same seam.
+pub fn player_character_from_value(v: Option<&Value>) -> PlayerCharacter {
+    player_character_from_payload(v)
 }
 
 fn scene_to_payload(scene: &SceneState) -> Value {
@@ -1371,5 +1399,48 @@ mod package_ref_tests {
         assert_eq!(restored.world_ref, None);
         assert_eq!(restored.story_ref, None);
         assert_eq!(restored.world_ref_authored_version, None);
+    }
+
+    /// K1: a `Some` char_ref serializes `{id, version}` (right after
+    /// `world_ref_authored_version`) and round-trips to an EQUAL `PackageRef`.
+    #[test]
+    fn char_ref_round_trips_when_set() {
+        let mut world = worldgen_world();
+        world.char_ref = Some(PackageRef {
+            id: "char-hero".to_string(),
+            version: 4,
+        });
+
+        let payload = world_to_payload(&world);
+        let obj = payload.as_object().expect("payload object");
+        assert_eq!(obj["char_ref"]["id"], json!("char-hero"));
+        assert_eq!(obj["char_ref"]["version"], json!(4));
+
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert_eq!(
+            restored.char_ref,
+            Some(PackageRef {
+                id: "char-hero".to_string(),
+                version: 4,
+            })
+        );
+    }
+
+    /// K1: an unset char_ref must emit NO `char_ref` key (byte-identity for pre-K1
+    /// and no-character launches), and a restore yields `None`.
+    #[test]
+    fn absent_char_ref_emits_no_key() {
+        let mut world = worldgen_world();
+        world.char_ref = None;
+
+        let payload = world_to_payload(&world);
+        let obj = payload.as_object().expect("payload object");
+        assert!(
+            !obj.contains_key("char_ref"),
+            "an unset char_ref must not appear in the payload"
+        );
+
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert_eq!(restored.char_ref, None);
     }
 }

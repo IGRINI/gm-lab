@@ -37,7 +37,7 @@ use gml_audio::{cache_lookup, cache_store, compress_audio, tts_format, tts_synth
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::Backend;
 use gml_orchestrator::{run_turn_into, CompactionThresholds, Session};
-use gml_persistence::{DialogRuntime, DialogStore, WorldStore};
+use gml_persistence::{CharacterStore, DialogRuntime, DialogStore, WorldStore};
 use gml_stories::{StoryStore, StoryWorldRef};
 use gml_world::{PackageRef, World, WorldLore, WorldSpec};
 
@@ -74,6 +74,11 @@ pub struct AppState {
     /// Behind a `Mutex` because Phase-4 creation/deletion mutate the in-memory
     /// scan list; reads (`list_stories`/`seed`/`world_ref`) take the lock briefly.
     pub story_store: Arc<std::sync::Mutex<StoryStore>>,
+    /// Filesystem-backed CHARACTER package store (K1). Behind a `Mutex` because
+    /// creation/snapshot/metadata/delete/import all mutate the in-memory scan
+    /// list; reads (`list_characters`/`get_character`/`version`) take the lock
+    /// briefly. Mirrors `story_store`.
+    pub character_store: Arc<std::sync::Mutex<CharacterStore>>,
     /// Builds fresh GM/NPC clients (codex/llamacpp/openai/mock by config).
     pub make_client: MakeClient,
     /// Immutable startup config.
@@ -122,6 +127,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stories", get(get_stories).post(post_create_story))
         .route("/stories/{id}/delete", post(post_delete_story))
         .route("/chats", get(get_chats).post(post_create_chat))
+        .route("/characters", get(get_characters).post(post_create_character))
         .route("/worlds", get(get_worlds).post(post_create_world))
         .route("/world-architect/chat", post(post_world_architect_chat))
         .route("/export", get(get_export))
@@ -147,9 +153,13 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/worlds/{id}/export", get(get_world_export))
         .route("/stories/{id}/export", get(get_story_export))
+        .route("/characters/{id}/export", get(get_character_export))
         // POST
         .route("/chats/{id}/activate", post(post_activate_chat))
         .route("/chats/{id}/delete", post(post_delete_chat))
+        .route("/chats/{id}/save-character", post(post_save_character))
+        .route("/characters/{id}", post(post_update_character))
+        .route("/characters/{id}/delete", post(post_delete_character))
         .route("/worlds/{id}", post(post_update_world))
         .route("/worlds/{id}/delete", post(post_delete_world))
         .route("/model", post(post_model))
@@ -820,6 +830,270 @@ async fn post_delete_story(
         Ok(deleted) => ok_json(&json!({"ok": true, "deleted": deleted})),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
+}
+
+// =========================================================================
+// K1 characters (docs/CHARACTERS_AND_STORY_TZ.md §К1.1–К1.4)
+// =========================================================================
+
+/// The canonical character-package payload for a fresh default hero: the
+/// default [`gml_world::PlayerCharacter`] serialized through THE canonical PC
+/// serializer, wrapped as `{player_character: {...}}`. This is the SERVER's job
+/// (it owns both the persistence and orchestrator deps) — the store keeps the
+/// payload opaque.
+fn default_character_payload() -> Value {
+    let pc = gml_world::PlayerCharacter::default();
+    json!({ "player_character": gml_orchestrator::session_payload::player_character_payload(&pc) })
+}
+
+/// `GET /characters` — list every character package
+/// (`{id, version, title, preview, created_at, updated_at, payload}`), newest
+/// first. Returns `{ok, characters:[...]}`.
+async fn get_characters(State(state): State<AppState>) -> Response {
+    let characters = {
+        let store = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        store.list_characters()
+    };
+    ok_json(&json!({"ok": true, "characters": characters}))
+}
+
+/// `POST /characters` — create a character package. Body `{title, payload?}`.
+/// `payload` defaults to a default-hero package payload (`§К1.2`); `title`
+/// is required (non-empty after trim). Returns `{ok, character:{...}}`.
+async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Response {
+    let data = parse_body(&body);
+    let title = body_str(&data, "title");
+    if title.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "title is required"}),
+        );
+    }
+    // payload: an explicit object, or the default-hero package payload. A
+    // non-object explicit payload is a 400 (the store also validates, but we
+    // reject early with a clear message).
+    let payload = match data.get("payload") {
+        Some(Value::Object(m)) => Value::Object(m.clone()),
+        Some(Value::Null) | None => default_character_payload(),
+        Some(_) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": "payload must be an object"}),
+            )
+        }
+    };
+
+    let result = {
+        let mut store = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        store.create_character(&title, payload)
+    };
+    match result {
+        Ok(character) => ok_json(&json!({"ok": true, "character": character})),
+        Err(e) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
+}
+
+/// `POST /characters/{id}` — shallow-merge metadata (`title`/`preview`, null-drop)
+/// into an existing character (`§К1.1`). Bumps version. Returns
+/// `{ok, character:{...}}`. Missing id -> 400.
+async fn post_update_character(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    body: Bytes,
+) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let patch = match serde_json::from_slice::<Value>(&body) {
+        Ok(v @ Value::Object(_)) => v,
+        _ => Value::Object(Map::new()),
+    };
+    let result = {
+        let mut store = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        store.update_metadata(&id, patch)
+    };
+    match result {
+        Ok(character) => ok_json(&json!({"ok": true, "character": character})),
+        Err(gml_persistence::StoreError::CharacterNotFound(_)) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": format!("character not found: {id}")}),
+        ),
+        Err(e) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
+}
+
+/// `POST /characters/{id}/delete` — remove a character package. NEVER touches
+/// saves (a `char_ref` may dangle; the save's snapshot is self-sufficient).
+/// Returns `{ok, deleted:bool}`.
+async fn post_delete_character(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let result = {
+        let mut store = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        store.delete_character(&id)
+    };
+    match result {
+        Ok(deleted) => ok_json(&json!({"ok": true, "deleted": deleted})),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
+}
+
+/// `GET /characters/{id}/export` — stream a `{id}.gmchar.zip` of the character
+/// package. 404 when the character is absent.
+async fn get_character_export(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    if !validate_world_id_segment(&id) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid character id"}),
+        );
+    }
+    let (exists, dir) = {
+        let store = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        (store.character_exists(&id), store.character_dir(&id))
+    };
+    if !exists {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": "character not found"}),
+        );
+    }
+    let id_for_file = id.clone();
+    let zipped =
+        tokio::task::spawn_blocking(move || share::zip_dir(&dir, "")).await;
+    match zipped {
+        Ok(Ok(bytes)) => zip_attachment_response(bytes, &format!("{id_for_file}.gmchar.zip")),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("export failed: {e}")}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+/// `POST /chats/{chat_id}/save-character`, body `{character_id?}` (§К1.4):
+/// export the chat's CURRENT player-character snapshot back into the library.
+/// Without `character_id` -> create a NEW character (title = the hero's name,
+/// fallback "Персонаж"). With `character_id` -> `snapshot_character` (REPLACE +
+/// version bump); an unknown id is a 400 (the front offers "create new").
+///
+/// The PC is read UNIFORMLY THROUGH THE CACHE (`ensure_cached` + `with_runtime`)
+/// under the per-chat lock — a bare `load_chat` of the ACTIVE chat would return
+/// the stale DB row. The snapshot's `card_revision` travels into the package
+/// verbatim (the canonical serializer preserves it).
+async fn post_save_character(
+    State(state): State<AppState>,
+    AxPath(chat_id): AxPath<String>,
+    body: Bytes,
+) -> Response {
+    let chat_id = urlencoding::decode(&chat_id)
+        .map(|c| c.into_owned())
+        .unwrap_or(chat_id);
+    let data = parse_body(&body);
+    let target_id = body_str(&data, "character_id");
+
+    // Read the live PC through the cache, under the per-chat lock. Returns the
+    // canonical PC payload object.
+    let scope = chat_scope_id();
+    let lock = state.chat_lock(&chat_id);
+    let _guard = lock.lock().await;
+    let store = state.store.clone();
+    let scope2 = scope.clone();
+    let chat_id2 = chat_id.clone();
+    let read = tokio::task::spawn_blocking(move || -> Result<Option<Value>, gml_persistence::StoreError> {
+        store.with_runtime(&scope2, &chat_id2, |rt| {
+            gml_orchestrator::session_payload::player_character_payload(&rt.session.world.player_character)
+        })
+    })
+    .await;
+    let pc = match read {
+        Ok(Ok(Some(pc))) => pc,
+        Ok(Ok(None)) => {
+            return json_response(
+                StatusCode::NOT_FOUND,
+                &json!({"ok": false, "error": "chat not found"}),
+            )
+        }
+        Ok(Err(e)) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": e.to_string()}),
+            )
+        }
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("join error: {e}")}),
+            )
+        }
+    };
+
+    let result = {
+        let mut cstore = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        if target_id.is_empty() {
+            // Create a new character. title = the hero's name, fallback "Персонаж".
+            let name = pc
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let title = if name.is_empty() { "Персонаж" } else { name };
+            cstore.create_character(title, json!({ "player_character": pc }))
+        } else {
+            // Snapshot an existing character (FULL REPLACE + version bump).
+            cstore.snapshot_character(&target_id, pc)
+        }
+    };
+    match result {
+        Ok(character) => ok_json(&json!({
+            "ok": true,
+            "character": {
+                "id": character.get("id").cloned().unwrap_or(Value::Null),
+                "version": character.get("version").cloned().unwrap_or(Value::Null),
+                "title": character.get("title").cloned().unwrap_or(Value::Null),
+            }
+        })),
+        Err(gml_persistence::StoreError::CharacterNotFound(_)) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": format!("character not found: {target_id}")}),
+        ),
+        Err(e) => json_response(
+            StatusCode::BAD_REQUEST,
             &json!({"ok": false, "error": e.to_string()}),
         ),
     }
@@ -1875,6 +2149,18 @@ fn attach_story_ref(mut world: World, story_ref: Option<PackageRef>) -> World {
     world
 }
 
+/// K1 (§К1.3): whether a STORY's plot/seed carries its OWN player character (an
+/// authored protagonist). Mirrors `World`'s seed logic which reads
+/// `player_character` (or the legacy `player` alias): a non-empty OBJECT under
+/// either key counts. This is the trigger for the `story_pc_override` warning
+/// when the launch ALSO selects a character package.
+fn story_plot_has_pc(plot: &Value) -> bool {
+    let pc = plot
+        .get("player_character")
+        .or_else(|| plot.get("player"));
+    matches!(pc, Some(Value::Object(m)) if !m.is_empty())
+}
+
 /// Overlay a story's identity (title / story_brief / public_intro) onto a
 /// procedurally generated world, falling back to the world lore's own name /
 /// public premise when the story leaves a field blank.
@@ -1926,7 +2212,53 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     };
     let title = body_str(&data, "title");
     let world_id = body_str(&data, "world_id");
+    let character_id = body_str(&data, "character_id");
     let activate = bool_from_body(data.get("activate"), true);
+
+    // K1 (§К1.3): an optional `character_id` selects a CHARACTER package whose
+    // hero is overlaid onto the launched world. A supplied-but-unknown id is a
+    // 400 BEFORE anything is written (no-fallback). We resolve it up front and
+    // carry the `{payload, version}` into the single overlay tail below.
+    let selected_character: Option<(Value, u64)> = if character_id.is_empty() {
+        None
+    } else {
+        let resolved = {
+            let store = state
+                .character_store
+                .lock()
+                .expect("character store lock poisoned");
+            store
+                .get_character(&character_id)
+                .map(|c| (c, store.version(&character_id).unwrap_or(0)))
+        };
+        match resolved {
+            Ok((character, version)) => {
+                // Extract the opaque `payload.player_character` object; the store
+                // guarantees it is an object on create/import, but be defensive.
+                let pc = character
+                    .get("payload")
+                    .and_then(|p| p.get("player_character"))
+                    .cloned();
+                match pc {
+                    Some(pc @ Value::Object(_)) => Some((pc, version)),
+                    _ => {
+                        return json_response(
+                            StatusCode::BAD_REQUEST,
+                            &json!({"ok": false, "error": format!(
+                                "character package {character_id} has no player_character object"
+                            )}),
+                        )
+                    }
+                }
+            }
+            Err(_) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": format!("unknown character_id: {character_id}")}),
+                )
+            }
+        }
+    };
 
     let is_procedural = effective_story_id == PROCEDURAL_STORY_ID;
     // A non-procedural story_id must resolve to a real package (catalog default
@@ -1964,16 +2296,25 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     // by `build_story_world`). Non-empty only on a story-launch with drift; every
     // other branch leaves this empty and no `warnings` key is emitted.
     let mut launch_warnings: Vec<Value> = Vec::new();
-    let session = if !brief.is_empty() {
+
+    // K1 (§К1.3) launch refactor: each of the three launch shapes (brief /
+    // procedural / named story) now yields `(World, client, story_carries_pc)`
+    // WITHOUT building the session. A SINGLE tail then applies the character
+    // overlay, sets `char_ref`, surfaces the `story_pc_override` warning, and
+    // builds the session exactly once. `is_brief` selects the session builder
+    // (only the brief path threads a live world-seed client through
+    // `build_session`; the other two use `story_session`). `story_carries_pc` is
+    // true only when the launching STORY's plot/seed carries its own
+    // `player_character` key — the trigger for the override warning.
+    let is_brief = !brief.is_empty();
+    let (mut world, client, story_carries_pc) = if is_brief {
         let client = (make_client)();
         if !model_hint.is_empty() {
             client.set_model(&model_hint);
         }
         match gml_agents::build_world_seed(client.as_ref(), &brief).await {
-            Ok(seed) => {
-                let world = World::from_seed(&seed);
-                build_session(client, world, &make_client, &cfg, &model_hint)
-            }
+            // A brief-seeded world never carries an authored PC of its own.
+            Ok(seed) => (World::from_seed(&seed), client, false),
             Err(e) => {
                 return json_response(
                     StatusCode::BAD_REQUEST,
@@ -2040,7 +2381,8 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             let public_premise = world.world_canon.world_lore.public_premise.clone();
             world.set_public_intro(&public_premise);
         }
-        story_session(client, world, &cfg, &model_hint)
+        // Procedural worldgen never carries an authored player_character.
+        (world, client, false)
     } else {
         // Launch a saved/catalog STORY package. Three shapes
         // (`docs/MODS_PACKAGES_TZ.md` Phase 4):
@@ -2061,6 +2403,10 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                 )
             }
         };
+        // The override warning fires when the STORY's plot/seed carries its own
+        // player_character (an authored protagonist) — read from the plot BEFORE
+        // it is consumed by `build_story_world`.
+        let story_carries_pc = story_plot_has_pc(&launch.plot);
         let client = (make_client)();
         let world = match build_story_world(&state, launch) {
             Ok((w, warnings)) => {
@@ -2074,6 +2420,37 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                 )
             }
         };
+        (world, client, story_carries_pc)
+    };
+
+    // K1 (§К1.3) UNIFIED overlay tail — runs for all three launch shapes.
+    // Precedence: chosen character package > player_character from plot/seed >
+    // default. When a package is chosen we overlay it via `seed_player_character`
+    // (FULL REPLACE, no event, no revision bump — the package's card_revision
+    // travels verbatim), record `char_ref` provenance, and — if the STORY also
+    // carried its own player_character — surface the `story_pc_override` warning
+    // (warn-but-allow, like world_version_drift).
+    if let Some((pc_payload, char_version)) = &selected_character {
+        world.seed_player_character(Some(pc_payload));
+        world.char_ref = Some(PackageRef {
+            id: character_id.clone(),
+            version: *char_version,
+        });
+        if story_carries_pc {
+            launch_warnings.push(json!({
+                "code": "story_pc_override",
+                "character_id": character_id,
+                "message": "История написана под своего героя; выбранный персонаж \
+                            перекрывает его — сюжет, улики и NPC могут ссылаться на \
+                            исходного протагониста.",
+            }));
+        }
+    }
+
+    // Build the session ONCE, choosing the builder by launch shape.
+    let session = if is_brief {
+        build_session(client, world, &make_client, &cfg, &model_hint)
+    } else {
         story_session(client, world, &cfg, &model_hint)
     };
 
@@ -3303,6 +3680,13 @@ async fn post_library_import(
         let store = state.story_store.lock().expect("story store lock poisoned");
         store.story_dir("")
     };
+    let characters_dir = {
+        let store = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        store.character_dir("")
+    };
 
     let bytes = body.to_vec();
     let config = state.config.clone();
@@ -3325,6 +3709,10 @@ async fn post_library_import(
                     )?;
                     Ok((kind, id))
                 }
+                share::PackageKind::Character => {
+                    let id = import_character_into(&archive, &characters_dir, overwrite)?;
+                    Ok((kind, id))
+                }
             }
         },
     )
@@ -3332,16 +3720,31 @@ async fn post_library_import(
 
     match imported {
         Ok(Ok((kind, id))) => {
-            // Stories cache their scanned list in memory; rescan so the new
-            // package is live. Worlds read disk per call (no rescan needed).
-            if kind == share::PackageKind::Story {
-                let mut store = state.story_store.lock().expect("story store lock poisoned");
-                if let Err(e) = store.reload() {
-                    return json_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        &json!({"ok": false, "error": format!("rescan after import failed: {e}")}),
-                    );
+            // Stories and characters cache their scanned list in memory; rescan
+            // so the new package is live. Worlds read disk per call (no rescan).
+            match kind {
+                share::PackageKind::Story => {
+                    let mut store = state.story_store.lock().expect("story store lock poisoned");
+                    if let Err(e) = store.reload() {
+                        return json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &json!({"ok": false, "error": format!("rescan after import failed: {e}")}),
+                        );
+                    }
                 }
+                share::PackageKind::Character => {
+                    let mut store = state
+                        .character_store
+                        .lock()
+                        .expect("character store lock poisoned");
+                    if let Err(e) = store.reload() {
+                        return json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &json!({"ok": false, "error": format!("rescan after import failed: {e}")}),
+                        );
+                    }
+                }
+                share::PackageKind::World => {}
             }
             ok_json(&json!({"ok": true, "kind": kind.as_str(), "id": id}))
         }
@@ -3509,6 +3912,67 @@ fn import_story_into(
     }
     swap_in(&story_staging, &dest)?;
     Ok(id)
+}
+
+/// Import a character archive into `characters_dir` (`§К1.2`). Mirrors
+/// `import_world_into` (staging + swap_in + 409-on-collision) but runs STRUCTURAL
+/// validation BEFORE swap_in: `character.json` present with the right `format`,
+/// `payload` is an object, `payload.player_character` is an object, and `title`
+/// non-empty — otherwise a hard error and nothing is written to the library.
+/// Deep stat validation is deferred to launch (lazy coercion), like worlds. No
+/// per-world RAG cache GC (characters carry none).
+fn import_character_into(
+    archive: &share::Archive,
+    characters_dir: &std::path::Path,
+    overwrite: bool,
+) -> Result<String, share::ShareError> {
+    // Structural validation of the manifest BEFORE any id allocation / write.
+    let manifest = archive
+        .character_manifest()
+        .ok_or_else(|| share::ShareError::Unrecognized("archive has no character.json".to_string()))?;
+    validate_imported_character_manifest(&manifest)?;
+
+    let id = resolve_import_id(archive, share::PackageKind::Character, characters_dir, overwrite)?;
+    let dest = characters_dir.join(&id);
+    std::fs::create_dir_all(characters_dir).map_err(|e| share::ShareError::Io(e.to_string()))?;
+    let staging = characters_dir.join(format!(".import-{id}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    archive.extract_all(&staging)?;
+    swap_in(&staging, &dest)?;
+    Ok(id)
+}
+
+/// Structural validation of an imported `character.json` (`§К1.2`): `format` is
+/// the character tag, `title` non-empty after trim, `payload` is an object, and
+/// `payload.player_character` is an object. Any failure is a hard
+/// [`share::ShareError::Unrecognized`] (400) — the package never lands.
+fn validate_imported_character_manifest(manifest: &Value) -> Result<(), share::ShareError> {
+    let obj = manifest
+        .as_object()
+        .ok_or_else(|| share::ShareError::Unrecognized("character.json is not an object".to_string()))?;
+    let format = obj.get("format").and_then(Value::as_str).unwrap_or("");
+    if format != share::CHARACTER_FORMAT {
+        return Err(share::ShareError::Unrecognized(format!(
+            "character.json format {format:?} is not {:?}",
+            share::CHARACTER_FORMAT
+        )));
+    }
+    let title = obj.get("title").and_then(Value::as_str).unwrap_or("").trim();
+    if title.is_empty() {
+        return Err(share::ShareError::Unrecognized(
+            "character.json title must be non-empty".to_string(),
+        ));
+    }
+    let payload = obj
+        .get("payload")
+        .and_then(Value::as_object)
+        .ok_or_else(|| share::ShareError::Unrecognized("character.json payload must be an object".to_string()))?;
+    match payload.get("player_character") {
+        Some(Value::Object(_)) => Ok(()),
+        _ => Err(share::ShareError::Unrecognized(
+            "character.json payload.player_character must be an object".to_string(),
+        )),
+    }
 }
 
 /// Rewrite the `world_ref.id` field of a staged `story.json` to `world_id` so an

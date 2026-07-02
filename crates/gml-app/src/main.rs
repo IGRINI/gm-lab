@@ -34,7 +34,7 @@ use std::sync::Arc;
 use gml_audio::{Sidecar, SidecarConfig};
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::{make_client, Backend, BackendError, CodexHook};
-use gml_persistence::{DialogStore, WorldStore};
+use gml_persistence::{CharacterStore, DialogStore, WorldStore};
 use gml_server::{build_router, AppState, MakeClient};
 use gml_stories::StoryStore;
 
@@ -292,6 +292,13 @@ async fn build_app() -> Result<App, String> {
             .map_err(|e| format!("open story store: {e}"))?,
     ));
 
+    // Filesystem character package store (K1): scans the library's `characters/`
+    // (no built-in defaults). Mirrors the story store's Mutex-wrapped shape.
+    let character_store = Arc::new(std::sync::Mutex::new(
+        CharacterStore::new(CharacterStore::default_root())
+            .map_err(|e| format!("open character store: {e}"))?,
+    ));
+
     // Fold any legacy per-guest chats into the single shared scope (server.py
     // main(): `merge_all_chats_into_scope(CHAT_SCOPE_ID)`).
     let scope = gml_server::chat_scope_id();
@@ -305,6 +312,7 @@ async fn build_app() -> Result<App, String> {
         store,
         world_store,
         story_store,
+        character_store,
         make_client,
         config,
         settings,

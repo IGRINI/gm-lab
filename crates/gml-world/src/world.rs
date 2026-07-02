@@ -278,6 +278,18 @@ pub struct World {
     /// (trailing `world_ref_authored_version` key emitted only when `Some`, so
     /// pre-existing saves stay byte-identical).
     pub world_ref_authored_version: Option<u64>,
+    /// K1 CHARACTER package provenance (`docs/CHARACTERS_AND_STORY_TZ.md` §К1.3):
+    /// which saved CHARACTER package's player-character was overlaid onto this
+    /// session at launch (`{id, version}`). `None` when no character package was
+    /// chosen (the story's/default hero is used). Provenance ONLY: the snapshot
+    /// inside the save is self-sufficient, so this ref MAY dangle after the
+    /// character package is deleted — loads NEVER break on a missing character.
+    /// It is the FOURTH ref field. Persisted additively — a trailing `char_ref`
+    /// key emitted only when `Some` (right after `world_ref_authored_version`),
+    /// so pre-K1 saves stay byte-identical. NOT part of
+    /// `player_character_to_payload` (that shape is shared with the character
+    /// package and must not carry save-only provenance).
+    pub char_ref: Option<PackageRef>,
 }
 
 /// A reference to a saved content package (a world or a story) by its stable id
@@ -355,6 +367,7 @@ impl World {
             world_ref: None,
             story_ref: None,
             world_ref_authored_version: None,
+            char_ref: None,
         }
     }
 
@@ -4321,6 +4334,20 @@ impl World {
             }
         }
         changed
+    }
+
+    /// K1 launch overlay (`docs/CHARACTERS_AND_STORY_TZ.md` §К1.3): FULLY REPLACE
+    /// the world's player character from a character-package `player_character`
+    /// object. Unlike [`Self::update_player_character`] (the tool path) this is a
+    /// SEED, not an edit: it does NOT emit an event and does NOT bump
+    /// `card_revision` — the package's `card_revision` travels VERBATIM (the
+    /// hero's edu-counter rides with the package; the package `version` is a
+    /// separate counter shown in the UI). Missing/absent fields fall back to the
+    /// default hero via the shared `seed_player_character` coercion, so a partial
+    /// package payload still yields a valid card. `raw` is the
+    /// `payload.player_character` object; a non-object seeds the default hero.
+    pub fn seed_player_character(&mut self, raw: Option<&Value>) {
+        self.player_character = seed_player_character(raw);
     }
 
     pub fn update_player_character(&mut self, fields: &Value, reason: &str) -> Value {
