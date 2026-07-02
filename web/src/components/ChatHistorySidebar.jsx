@@ -77,6 +77,12 @@ export default function ChatHistorySidebar({
   onShowChats,
   onShowImageLab,
   onSelectWorld,
+  onPlayWorld,
+  onCreateStory,
+  onExportWorld,
+  onExportStory,
+  onRevealLibrary,
+  onImportPackage,
   onActivate,
   onDelete,
   onDeleteWorld,
@@ -86,8 +92,12 @@ export default function ChatHistorySidebar({
   const closeRef = useRef(null);
   const createChatRef = useRef(null);
   const createWorldRef = useRef(null);
+  const importInputRef = useRef(null);
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importNotice, setImportNotice] = useState("");
   const [tab, setTab] = useState(sidebarMode);
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
   const sortedWorlds = useMemo(() => (Array.isArray(worlds) ? worlds : []), [worlds]);
@@ -124,6 +134,53 @@ export default function ChatHistorySidebar({
       setConfirmTarget(null);
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const onPickImport = () => {
+    if (importing || locked) return;
+    setImportError("");
+    setImportNotice("");
+    importInputRef.current?.click();
+  };
+
+  const runImport = async (file, overwrite) => {
+    const data = await onImportPackage?.(file, overwrite);
+    const kind = data?.kind === "story" ? "История" : "Мир";
+    setImportNotice(`${kind} импортирован: ${data?.id || ""}`.trim());
+  };
+
+  // True when an import failure is an id collision (the backend returns 409 with a
+  // dedicated message). importPackage tags the Error with .status/.collision; the
+  // text check is a fallback if a future error path loses the status.
+  const isCollision = (e) =>
+    e?.collision === true || e?.status === 409 || /already exists|уже существует/i.test(e?.message || "");
+
+  const onImportFile = async (event) => {
+    const file = event.target.files?.[0];
+    // Reset the input so re-picking the same file fires change again.
+    event.target.value = "";
+    if (!file) return;
+    setImporting(true);
+    setImportError("");
+    setImportNotice("");
+    try {
+      await runImport(file, false);
+    } catch (e) {
+      // On an id collision, keep the picked File and offer to replace the existing
+      // package; on confirm re-import with overwrite=1.
+      if (isCollision(e) && typeof window !== "undefined" &&
+          window.confirm("Пакет с таким id уже существует. Заменить?")) {
+        try {
+          await runImport(file, true);
+        } catch (e2) {
+          setImportError(e2.message || "импорт не выполнен");
+        }
+      } else {
+        setImportError(e.message || "импорт не выполнен");
+      }
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -291,6 +348,26 @@ export default function ChatHistorySidebar({
                   {storyDescription(selectedStory)}
                 </Tooltip>
               )}
+              {selectedStory && (
+                <div className="story-export-actions">
+                  <button
+                    type="button"
+                    className="btn story-export"
+                    onClick={() => onExportStory?.(selectedStory.id, false)}
+                    disabled={locked}
+                  >
+                    ⬇ Экспорт истории
+                  </button>
+                  <button
+                    type="button"
+                    className="btn story-export"
+                    onClick={() => onExportStory?.(selectedStory.id, true)}
+                    disabled={locked}
+                  >
+                    ⬇ С миром
+                  </button>
+                </div>
+              )}
               {storiesLoading && <span className="chat-sidebar-status">Загружаю истории...</span>}
               {storiesError && <span className="chat-sidebar-error inline">{storiesError}</span>}
               {!storiesLoading && !storiesError && !hasStories && (
@@ -306,7 +383,27 @@ export default function ChatHistorySidebar({
             >
               + Новый чат
             </button>
+            <div className="library-actions">
+              <button
+                type="button"
+                className="btn library-action"
+                onClick={onRevealLibrary}
+                disabled={locked}
+              >
+                📂 Открыть папку
+              </button>
+              <button
+                type="button"
+                className="btn library-action"
+                onClick={onPickImport}
+                disabled={importing || locked}
+              >
+                {importing ? "Импорт…" : "⬆ Импорт"}
+              </button>
+            </div>
             {loading && <span className="chat-sidebar-status">Обновляю...</span>}
+            {importNotice && <span className="chat-sidebar-status">{importNotice}</span>}
+            {importError && <span className="chat-sidebar-error inline">{importError}</span>}
           </div>
         ) : (
           <div className="chat-sidebar-actions world-sidebar-actions">
@@ -319,9 +416,39 @@ export default function ChatHistorySidebar({
             >
               + Создать мир
             </button>
+            <div className="library-actions">
+              <button
+                type="button"
+                className="btn library-action"
+                onClick={onRevealLibrary}
+                disabled={locked}
+              >
+                📂 Открыть папку
+              </button>
+              <button
+                type="button"
+                className="btn library-action"
+                onClick={onPickImport}
+                disabled={importing || locked}
+              >
+                {importing ? "Импорт…" : "⬆ Импорт"}
+              </button>
+            </div>
             {worldsLoading && <span className="chat-sidebar-status">Обновляю...</span>}
+            {importNotice && <span className="chat-sidebar-status">{importNotice}</span>}
+            {importError && <span className="chat-sidebar-error inline">{importError}</span>}
           </div>
         )}
+
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".zip,application/zip"
+          className="visually-hidden-input"
+          onChange={onImportFile}
+          tabIndex={-1}
+          aria-hidden="true"
+        />
 
         {!isImageTab && (isWorldTab ? worldsError : error) && (
           <div className="chat-sidebar-error">{isWorldTab ? worldsError : error}</div>
@@ -368,6 +495,32 @@ export default function ChatHistorySidebar({
                       {active && <span>открыт</span>}
                     </span>
                   </button>
+                  <div className="world-row-actions">
+                    <button
+                      type="button"
+                      className="btn world-row-play"
+                      onClick={() => onPlayWorld?.(world.id)}
+                      disabled={worldLocked}
+                    >
+                      ▶ Играть
+                    </button>
+                    <button
+                      type="button"
+                      className="btn world-row-story"
+                      onClick={() => onCreateStory?.(world.id)}
+                      disabled={worldLocked}
+                    >
+                      + История
+                    </button>
+                    <button
+                      type="button"
+                      className="btn world-row-export"
+                      onClick={() => onExportWorld?.(world.id)}
+                      disabled={worldLocked}
+                    >
+                      ⬇ Экспорт
+                    </button>
+                  </div>
                   <Tooltip
                     className="tooltip-wrap"
                     tipClassName="ui-tip-wrap"

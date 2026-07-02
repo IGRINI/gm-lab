@@ -590,7 +590,34 @@ fn world_to_payload(world: &World) -> Value {
         }
     }
 
+    // Phase-4 package provenance (`docs/MODS_PACKAGES_TZ.md`): emitted as
+    // trailing keys ONLY when set, so pre-Phase-4 saves (and every world not
+    // launched from a package) stay byte-identical to before.
+    if let Some(world_ref) = &world.world_ref {
+        m.insert("world_ref".into(), package_ref_to_payload(world_ref));
+    }
+    if let Some(story_ref) = &world.story_ref {
+        m.insert("story_ref".into(), package_ref_to_payload(story_ref));
+    }
+
     Value::Object(m)
+}
+
+fn package_ref_to_payload(r: &gml_world::PackageRef) -> Value {
+    json!({ "id": r.id, "version": r.version })
+}
+
+fn package_ref_from_payload(v: Option<&Value>) -> Option<gml_world::PackageRef> {
+    let obj = v?.as_object()?;
+    let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
+    if id.is_empty() {
+        return None;
+    }
+    let version = obj.get("version").and_then(Value::as_u64).unwrap_or(0);
+    Some(gml_world::PackageRef {
+        id: id.to_string(),
+        version,
+    })
 }
 
 fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
@@ -717,6 +744,8 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
         .unwrap_or(0);
     world.forced_die_next = int_or_none(data.get("forced_die_next"));
     world.forced_die_all = int_or_none(data.get("forced_die_all"));
+    world.world_ref = package_ref_from_payload(data.get("world_ref"));
+    world.story_ref = package_ref_from_payload(data.get("story_ref"));
     if !world.world_canon.is_empty() {
         world.migrate_legacy_state_records_to_memory();
     }
@@ -1240,4 +1269,84 @@ fn first_nonempty(m: &Map<String, Value>, keys: &[&str]) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod package_ref_tests {
+    use super::*;
+    use gml_world::{PackageRef, World, WorldSpec};
+
+    /// A deterministic, fully-formed World (worldgen populates npcs/scene/
+    /// fact_records so the payload round-trips through `world_from_payload`).
+    fn worldgen_world() -> World {
+        World::from_worldgen_with_dice_seed(&WorldSpec::from_seed("20260622"), 20260622)
+    }
+
+    /// `Some` world_ref / story_ref => the payload carries `{id, version}` and a
+    /// round-trip restores an EQUAL `PackageRef`.
+    #[test]
+    fn package_refs_round_trip_when_set() {
+        let mut world = worldgen_world();
+        world.world_ref = Some(PackageRef {
+            id: "world-abc".to_string(),
+            version: 7,
+        });
+        world.story_ref = Some(PackageRef {
+            id: "story-xyz".to_string(),
+            version: 0,
+        });
+
+        let payload = world_to_payload(&world);
+        let obj = payload.as_object().expect("payload object");
+
+        // The payload carries both refs as `{id, version}` objects.
+        assert_eq!(obj["world_ref"]["id"], json!("world-abc"));
+        assert_eq!(obj["world_ref"]["version"], json!(7));
+        assert_eq!(obj["story_ref"]["id"], json!("story-xyz"));
+        assert_eq!(obj["story_ref"]["version"], json!(0));
+
+        // Restore the whole world; the refs come back equal.
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert_eq!(
+            restored.world_ref,
+            Some(PackageRef {
+                id: "world-abc".to_string(),
+                version: 7,
+            })
+        );
+        assert_eq!(
+            restored.story_ref,
+            Some(PackageRef {
+                id: "story-xyz".to_string(),
+                version: 0,
+            })
+        );
+    }
+
+    /// `None` refs => the payload has NO `world_ref` / `story_ref` keys at all.
+    /// This guards the byte-identical claim for pre-Phase-4 / unbound saves: an
+    /// absent ref must never serialize a `null` (or any) key.
+    #[test]
+    fn absent_package_refs_emit_no_keys() {
+        let mut world = worldgen_world();
+        world.world_ref = None;
+        world.story_ref = None;
+
+        let payload = world_to_payload(&world);
+        let obj = payload.as_object().expect("payload object");
+
+        assert!(
+            !obj.contains_key("world_ref"),
+            "an unset world_ref must not appear in the payload"
+        );
+        assert!(
+            !obj.contains_key("story_ref"),
+            "an unset story_ref must not appear in the payload"
+        );
+
+        // And a restore yields None (no fabricated ref).
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert_eq!(restored.world_ref, None);
+        assert_eq!(restored.story_ref, None);
+    }
 }

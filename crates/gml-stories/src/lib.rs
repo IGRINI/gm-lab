@@ -1,16 +1,15 @@
 //! gml-stories — faithful port of `gm-lab/stories.py`, the story/scenario
 //! catalog for GM-Lab.
 //!
-//! The Python module is pure DATA plus six trivial accessor functions; there is
-//! no game logic. All concrete canon, NPC cards, public facts, and starting
-//! scene data live in [`STORY_DEFINITIONS`], embedded here as JSON via
-//! `include_str!` (exported from `stories.py` byte-for-byte, key order
-//! preserved). serde_json is configured workspace-wide with the
-//! `preserve_order` feature, so parsing keeps each dict's insertion order — the
-//! World seed loader (`gml-world`) consumes the same [`serde_json::Value`] shape
-//! a Python seed `dict` would.
+//! Story data is the StoryStore/package model: each story is a filesystem
+//! package read at runtime, not a compiled-in table. There is no game logic
+//! here — concrete canon, NPC cards, public facts, and starting scene data all
+//! live in each package's `story.json` `seed` object. serde_json is configured
+//! workspace-wide with the `preserve_order` feature, so parsing keeps each
+//! dict's insertion order — the World seed loader (`gml-world`) consumes the
+//! resulting [`serde_json::Value`] shape directly.
 //!
-//! Public surface matches `stories.py`:
+//! Public surface:
 //! - [`DEFAULT_STORY_ID`]
 //! - [`story_ids`]
 //! - [`story_metadata`]
@@ -19,33 +18,43 @@
 //! - [`default_story_seed`]
 //!
 //! Each call to [`story_seed`] / [`default_story_seed`] returns an OWNED, deep
-//! [`Value`] clone (Python `copy.deepcopy`), so every session gets an
-//! independent world with no shared mutable state across sessions.
+//! [`Value`] clone, so every session gets an independent world with no shared
+//! mutable state across sessions.
+//!
+//! ## Stories are filesystem packages (Phase 3 of `docs/MODS_PACKAGES_TZ.md`)
+//!
+//! Story data is read ONLY from runtime FILE PACKAGES under
+//! `<root>/stories/<story_id>/story.json` (scanned by [`StoryStore`]). A user
+//! can add a story by dropping a folder — no recompile. The three built-in
+//! stories (`frozen-harbor`, `glass-garden`, `turnvale-murder`) ship as DEFAULT
+//! packages materialized on first run.
+//!
+//! The embedded [`CATALOG_JSON`] exists ONLY as the SOURCE used to materialize
+//! those three defaults — it is never a live read path. Prefer constructing a
+//! [`StoryStore`] explicitly (the server threads one through `AppState`); the
+//! free functions below delegate to a process-global default-rooted store for
+//! callers that cannot receive an injected store (tests, library helpers).
 
 use std::collections::BTreeSet;
 
 use once_cell::sync::Lazy;
 use serde_json::{Map, Value};
 
+mod story_store;
+pub use story_store::{StoryStore, StoryStoreError, StoryWorldRef, STORY_FORMAT};
+
 /// `DEFAULT_STORY_ID = "turnvale-murder"`.
 pub const DEFAULT_STORY_ID: &str = "turnvale-murder";
 
-/// Embedded catalog (exported verbatim from `stories.py` `STORY_DEFINITIONS`).
-/// Each element is an object `{id, title, description, seed}`.
-const CATALOG_JSON: &str = include_str!("catalog.json");
+/// Embedded catalog of the three built-in default stories. Each element is an
+/// object `{id, title, description, seed}`.
+///
+/// This is NOT a live read path: it is consumed solely by [`StoryStore`] to
+/// materialize the three built-in default packages on first run. All live story
+/// reads go through scanned packages.
+pub(crate) const CATALOG_JSON: &str = include_str!("catalog.json");
 
-/// Parsed `STORY_DEFINITIONS`. Key order is preserved (serde_json
-/// `preserve_order`), so seeds round-trip into byte-identical structures.
-static STORY_DEFINITIONS: Lazy<Vec<Value>> = Lazy::new(|| {
-    let parsed: Value =
-        serde_json::from_str(CATALOG_JSON).expect("embedded catalog.json must be valid JSON");
-    match parsed {
-        Value::Array(items) => items,
-        _ => panic!("embedded catalog.json must be a JSON array of story definitions"),
-    }
-});
-
-/// Raised when a story id is not present in the catalog (Python `KeyError`).
+/// Raised when a story id is not present in the library (Python `KeyError`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownStory(pub String);
 
@@ -57,110 +66,44 @@ impl std::fmt::Display for UnknownStory {
 
 impl std::error::Error for UnknownStory {}
 
-fn def_str(def: &Value, key: &str) -> String {
-    def.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
+/// Process-global story store rooted at [`StoryStore::default_root`]. Backs the
+/// free functions for callers that cannot receive an explicitly-injected store.
+/// This is the SAME `StoryStore` type the server injects — there is only one live
+/// data source (the scanned packages on disk), never two.
+static DEFAULT_STORE: Lazy<StoryStore> = Lazy::new(|| {
+    StoryStore::new(StoryStore::default_root())
+        .expect("default story library must materialize and scan")
+});
 
-fn seed_str(def: &Value, key: &str) -> String {
-    def.get("seed")
-        .and_then(Value::as_object)
-        .and_then(|seed| seed.get(key))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// `story_ids() -> set[str]` — the set of catalog story ids.
+/// `story_ids() -> set[str]` — the set of story ids in the default library.
 pub fn story_ids() -> BTreeSet<String> {
-    STORY_DEFINITIONS
-        .iter()
-        .map(|story| def_str(story, "id"))
-        .collect()
+    DEFAULT_STORE.story_ids()
 }
 
 /// `story_metadata(story_id) -> {id, title, description, story_brief}`.
 ///
-/// Returns [`UnknownStory`] for an unknown id (Python raises `KeyError`).
-/// The returned map preserves the public catalog key order: `id`, `title`,
-/// `description`, `story_brief`.
+/// Returns [`UnknownStory`] for an unknown id. The returned map preserves the
+/// public catalog key order: `id`, `title`, `description`, `story_brief`.
 pub fn story_metadata(story_id: &str) -> Result<Map<String, Value>, UnknownStory> {
-    for story in STORY_DEFINITIONS.iter() {
-        if def_str(story, "id") == story_id {
-            let mut meta = Map::new();
-            meta.insert(
-                "id".to_string(),
-                story.get("id").cloned().unwrap_or(Value::Null),
-            );
-            meta.insert(
-                "title".to_string(),
-                story.get("title").cloned().unwrap_or(Value::Null),
-            );
-            meta.insert(
-                "description".to_string(),
-                story.get("description").cloned().unwrap_or(Value::Null),
-            );
-            let story_brief = {
-                let brief = seed_str(story, "story_brief");
-                if !brief.is_empty() {
-                    brief
-                } else {
-                    seed_str(story, "public_intro")
-                }
-            };
-            meta.insert("story_brief".to_string(), Value::String(story_brief));
-            return Ok(meta);
-        }
-    }
-    Err(UnknownStory(story_id.to_string()))
+    DEFAULT_STORE.story_metadata(story_id)
 }
 
-/// `list_stories() -> list[{id, title, description}]` — catalog order.
+/// `list_stories() -> list[{id, title, description, story_brief}]` — discovery
+/// order.
 pub fn list_stories() -> Vec<Map<String, Value>> {
-    STORY_DEFINITIONS
-        .iter()
-        .map(|story| {
-            // Mirrors Python: `story_metadata(story["id"])` for each entry.
-            story_metadata(&def_str(story, "id")).expect("catalog id must resolve")
-        })
-        .collect()
+    DEFAULT_STORE.list_stories()
 }
 
-/// `story_seed(story_id) -> dict`.
-///
-/// Deep-clones the story's `seed`, then overwrites `seed["id"]` / `seed["title"]`
-/// from the outer story entry. The clone makes every session's world
-/// independent — no shared mutable state. Returns [`UnknownStory`] for an
-/// unknown id (Python raises `KeyError`).
+/// `story_seed(story_id) -> dict` — an OWNED deep clone of the story's seed with
+/// `id`/`title` overwritten from the package envelope. Returns [`UnknownStory`]
+/// for an unknown id.
 pub fn story_seed(story_id: &str) -> Result<Value, UnknownStory> {
-    for story in STORY_DEFINITIONS.iter() {
-        if def_str(story, "id") == story_id {
-            // copy.deepcopy(story["seed"]) — serde_json::Value::clone is deep.
-            let mut seed = story.get("seed").cloned().unwrap_or(Value::Null);
-            if let Value::Object(map) = &mut seed {
-                // Re-inserting an existing key keeps its position (IndexMap),
-                // matching Python's in-place `seed["id"] = ...` on a dict whose
-                // first keys are already `id` then `title`.
-                map.insert(
-                    "id".to_string(),
-                    story.get("id").cloned().unwrap_or(Value::Null),
-                );
-                map.insert(
-                    "title".to_string(),
-                    story.get("title").cloned().unwrap_or(Value::Null),
-                );
-            }
-            return Ok(seed);
-        }
-    }
-    Err(UnknownStory(story_id.to_string()))
+    DEFAULT_STORE.seed(story_id)
 }
 
 /// `default_story_seed() -> dict` — `story_seed(DEFAULT_STORY_ID)`.
 pub fn default_story_seed() -> Value {
-    story_seed(DEFAULT_STORY_ID).expect("DEFAULT_STORY_ID must be present in the catalog")
+    DEFAULT_STORE.default_seed()
 }
 
 #[cfg(test)]
@@ -168,11 +111,23 @@ mod tests {
     use super::*;
     use gml_world::World;
 
+    /// Build a hermetic [`StoryStore`] over a fresh tempdir. These tests must
+    /// NEVER touch the real user library, so they construct an explicit store
+    /// rather than going through the [`DEFAULT_STORE`]-backed free functions
+    /// (which materialize the builtins into the live library when
+    /// `GM_PACKAGES_DIR` is unset). Mirrors `story_store::tests::temp_store`.
+    fn temp_store() -> (tempfile::TempDir, StoryStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = StoryStore::new(dir.path()).expect("open store");
+        (dir, store)
+    }
+
     #[test]
     fn default_story_id_present() {
-        assert!(story_ids().contains(DEFAULT_STORY_ID));
+        let (_dir, store) = temp_store();
+        assert!(store.story_ids().contains(DEFAULT_STORY_ID));
         // Metadata resolves for the default id.
-        let meta = story_metadata(DEFAULT_STORY_ID).expect("default metadata");
+        let meta = store.story_metadata(DEFAULT_STORY_ID).expect("default metadata");
         assert_eq!(
             meta.get("id").and_then(Value::as_str),
             Some(DEFAULT_STORY_ID)
@@ -181,20 +136,21 @@ mod tests {
 
     #[test]
     fn expected_number_of_stories() {
-        // stories.py ships exactly three scenarios.
-        assert_eq!(STORY_DEFINITIONS.len(), 3);
-        assert_eq!(story_ids().len(), 3);
-        assert_eq!(list_stories().len(), 3);
+        let (_dir, store) = temp_store();
+        // The library ships exactly three built-in scenarios.
+        assert_eq!(store.story_ids().len(), 3);
+        assert_eq!(store.list_stories().len(), 3);
         let expected: BTreeSet<String> = ["frozen-harbor", "glass-garden", "turnvale-murder"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(story_ids(), expected);
+        assert_eq!(store.story_ids(), expected);
     }
 
     #[test]
     fn metadata_shape_and_order() {
-        let meta = story_metadata("turnvale-murder").expect("metadata");
+        let (_dir, store) = temp_store();
+        let meta = store.story_metadata("turnvale-murder").expect("metadata");
         let keys: Vec<&String> = meta.keys().collect();
         assert_eq!(keys, vec!["id", "title", "description", "story_brief"]);
         assert_eq!(
@@ -210,19 +166,21 @@ mod tests {
 
     #[test]
     fn unknown_story_errors() {
+        let (_dir, store) = temp_store();
         assert_eq!(
-            story_metadata("nope").unwrap_err(),
+            store.story_metadata("nope").unwrap_err(),
             UnknownStory("nope".to_string())
         );
         assert_eq!(
-            story_seed("nope").unwrap_err(),
+            store.seed("nope").unwrap_err(),
             UnknownStory("nope".to_string())
         );
     }
 
     #[test]
     fn seed_overwrites_id_and_title() {
-        let seed = story_seed("frozen-harbor").expect("seed");
+        let (_dir, store) = temp_store();
+        let seed = store.seed("frozen-harbor").expect("seed");
         assert_eq!(
             seed.get("id").and_then(Value::as_str),
             Some("frozen-harbor")
@@ -238,7 +196,8 @@ mod tests {
 
     #[test]
     fn default_seed_round_trips_into_world() {
-        let seed = default_story_seed();
+        let (_dir, store) = temp_store();
+        let seed = store.default_seed();
         let world = World::from_seed_with_dice_seed(&seed, 424242);
         // The seed builds a real World: story identity and roster populate.
         assert_eq!(world.story_id, DEFAULT_STORY_ID);
@@ -259,8 +218,9 @@ mod tests {
 
     #[test]
     fn every_story_seed_builds_a_world() {
-        for id in story_ids() {
-            let seed = story_seed(&id).expect("seed");
+        let (_dir, store) = temp_store();
+        for id in store.story_ids() {
+            let seed = store.seed(&id).expect("seed");
             // Must not panic; builds a World deterministically.
             let _world = World::from_seed_with_dice_seed(&seed, 1);
         }
@@ -268,8 +228,9 @@ mod tests {
 
     #[test]
     fn every_story_has_a_non_midnight_start_time() {
-        for id in story_ids() {
-            let seed = story_seed(&id).expect("seed");
+        let (_dir, store) = temp_store();
+        for id in store.story_ids() {
+            let seed = store.seed(&id).expect("seed");
             let world = World::from_seed_with_dice_seed(&seed, 1);
             assert!(
                 world.time.absolute_minutes > 0,
@@ -290,15 +251,16 @@ mod tests {
     #[test]
     fn seed_compact_byte_lengths_match_python() {
         // Captured from `json.dumps(story_seed(id), ensure_ascii=False,
-        // separators=(',',':'))` on the Python source — proves the embedded
-        // catalog preserves every byte of content and key order.
+        // separators=(',',':'))` on the Python source — proves the materialized
+        // package seeds preserve every byte of content and key order.
+        let (_dir, store) = temp_store();
         let expected: &[(&str, usize)] = &[
             ("frozen-harbor", 28901),
             ("glass-garden", 29465),
             ("turnvale-murder", 25727),
         ];
         for (id, py_len) in expected {
-            let seed = story_seed(id).expect("seed");
+            let seed = store.seed(id).expect("seed");
             // serde_json compact (preserve_order) == Python separators=(',',':').
             let compact = serde_json::to_string(&seed).expect("compact");
             assert_eq!(
@@ -311,9 +273,10 @@ mod tests {
 
     #[test]
     fn deep_clone_isolation_across_sessions() {
+        let (_dir, store) = temp_store();
         // Two independent sessions from the same story.
-        let seed_a = story_seed(DEFAULT_STORY_ID).expect("seed a");
-        let seed_b = story_seed(DEFAULT_STORY_ID).expect("seed b");
+        let seed_a = store.seed(DEFAULT_STORY_ID).expect("seed a");
+        let seed_b = store.seed(DEFAULT_STORY_ID).expect("seed b");
 
         let mut world_a = World::from_seed_with_dice_seed(&seed_a, 1);
         let world_b = World::from_seed_with_dice_seed(&seed_b, 1);
@@ -328,8 +291,8 @@ mod tests {
         // world_b's roster is untouched by world_a's removal.
         assert!(world_b.npcs.contains_key("borin"));
 
-        // The catalog seed Value itself is untouched by either session.
-        let fresh = story_seed(DEFAULT_STORY_ID).expect("fresh seed");
+        // The store seed Value itself is untouched by either session.
+        let fresh = store.seed(DEFAULT_STORY_ID).expect("fresh seed");
         assert_eq!(fresh, seed_b);
     }
 }

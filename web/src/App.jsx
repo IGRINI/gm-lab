@@ -16,6 +16,7 @@ import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
 import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
 import WorldArchitectPanel from "./components/WorldArchitectPanel.jsx";
+import CreateStoryModal from "./components/CreateStoryModal.jsx";
 import ImageLabPanel from "./components/ImageLabPanel.jsx";
 import WorldDetailModal from "./components/WorldDetailModal.jsx";
 import Tooltip, { TipContent } from "./components/Tooltip.jsx";
@@ -309,6 +310,7 @@ export default function App() {
   const [selectedStoryId, setSelectedStoryId] = useState("");
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [storiesError, setStoriesError] = useState("");
+  const [createStoryWorldId, setCreateStoryWorldId] = useState("");
   const [playerOptions, setPlayerOptions] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const [mainView, setMainView] = useState("chat");
@@ -745,8 +747,12 @@ export default function App() {
         else await refreshWorlds();
         if (data.world?.id) setSelectedWorldId(data.world.id);
         setMainView("world");
+        // Return the persisted world so the editor can adopt the server-rewritten
+        // image URLs (/world-assets/...) instead of keeping volatile sidecar URLs.
+        return data.world || null;
       } catch (e) {
         store.dispatch({ kind: "error", agent: "мир", data: e.message });
+        return null;
       } finally {
         setChatActionBusy(false);
         setStatus("");
@@ -835,6 +841,116 @@ export default function App() {
       }
     },
     [refreshWorlds, selectedWorldId, store]
+  );
+
+  // Play a saved world: launch a procedural campaign from the world package
+  // (the backend resolves the world's lore and stamps world_ref). A missing
+  // world surfaces as a 400 error — never a default/empty world.
+  const onPlayWorld = useCallback(
+    async (worldId) => {
+      if (!worldId || busy || chatActionBusy) return;
+      setChatActionBusy(true);
+      setStatus("Запускаю мир...");
+      try {
+        const data = await api.createChat({
+          activate: true,
+          story_id: "procedural",
+          world_id: worldId,
+        });
+        if (!data.ok) throw new Error(data.error || "мир не запущен");
+        restoreChatSession(data);
+        setMainView("chat");
+        await refreshChats();
+        closeChatsOnMobile();
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "мир", data: e.message });
+      } finally {
+        setChatActionBusy(false);
+        setStatus("");
+      }
+    },
+    [busy, chatActionBusy, restoreChatSession, refreshChats, closeChatsOnMobile, store]
+  );
+
+  const onCreateStory = useCallback(
+    (worldId) => {
+      if (!worldId || busy || chatActionBusy) return;
+      setCreateStoryWorldId(worldId);
+    },
+    [busy, chatActionBusy]
+  );
+
+  // Phase 5: download a world/story package zip via a fetch-based blob download.
+  // A failed export reads the backend JSON error and surfaces it through the same
+  // in-app error channel as import/reveal (never navigates the SPA away).
+  const onExportWorld = useCallback(
+    async (worldId) => {
+      if (!worldId) return;
+      try {
+        await api.downloadExport(api.exportWorldUrl(worldId), `${worldId}.gmworld.zip`);
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "экспорт", data: e.message || "экспорт не выполнен" });
+      }
+    },
+    [store]
+  );
+
+  const onExportStory = useCallback(
+    async (storyId, bake) => {
+      if (!storyId) return;
+      try {
+        await api.downloadExport(api.exportStoryUrl(storyId, !!bake), `${storyId}.gmstory.zip`);
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "экспорт", data: e.message || "экспорт не выполнен" });
+      }
+    },
+    [store]
+  );
+
+  // Open the library root folder in the OS file manager. A failed open surfaces
+  // as an error (never a silent success).
+  const onRevealLibrary = useCallback(async () => {
+    try {
+      const data = await api.revealLibrary();
+      if (!data.ok) throw new Error(data.error || "не удалось открыть папку библиотеки");
+    } catch (e) {
+      store.dispatch({ kind: "error", agent: "библиотека", data: e.message });
+    }
+  }, [store]);
+
+  // Import a picked .zip package, then refresh worlds + stories so the imported
+  // world/story appears. Backend errors (collision, malformed) propagate to the
+  // caller so the sidebar can show them inline.
+  const onImportPackage = useCallback(
+    async (file, overwrite) => {
+      const data = await api.importPackage(file, overwrite);
+      await Promise.all([refreshWorlds(), loadStories()]);
+      return data;
+    },
+    [refreshWorlds, loadStories]
+  );
+
+  const closeCreateStory = useCallback(() => setCreateStoryWorldId(""), []);
+
+  // Create a story package bound to a world, then refresh + select it so it
+  // appears in the new-chat picker. Throws on failure so the modal can show it.
+  const onSubmitCreateStory = useCallback(
+    async (body) => {
+      const data = await api.createStory(body);
+      if (!data.ok) throw new Error(data.error || "история не создана");
+      const nextStories = await loadStories();
+      const newId = data.story?.id == null ? "" : String(data.story.id).trim();
+      if (newId && nextStories.some((story) => story.id === newId)) {
+        setSelectedStoryId(newId);
+      }
+      return data.story || null;
+    },
+    [loadStories]
+  );
+
+  const createStoryWorld = useMemo(
+    () => (Array.isArray(worlds) ? worlds : []).find((world) => sameChatId(world.id, createStoryWorldId)) || null,
+    [worlds, createStoryWorldId]
   );
 
   const send = useCallback(
@@ -971,6 +1087,12 @@ export default function App() {
           onShowChats={showChatView}
           onShowImageLab={showImageLab}
           onSelectWorld={onSelectWorld}
+          onPlayWorld={onPlayWorld}
+          onCreateStory={onCreateStory}
+          onExportWorld={onExportWorld}
+          onExportStory={onExportStory}
+          onRevealLibrary={onRevealLibrary}
+          onImportPackage={onImportPackage}
           onActivate={onActivateChat}
           onDelete={onDeleteChat}
           onDeleteWorld={onDeleteWorld}
@@ -985,6 +1107,8 @@ export default function App() {
               onCreateWorld={onCreateWorld}
               onArchitectStream={onWorldArchitectStream}
               onGenerateImage={onGenerateImage}
+              onPlayWorld={onPlayWorld}
+              onCreateStory={onCreateStory}
             />
           </main>
         ) : mainView === "image" && imageLabEnabled ? (
@@ -1018,6 +1142,14 @@ export default function App() {
           </main>
         )}
       </div>
+      {createStoryWorld && (
+        <CreateStoryModal
+          world={createStoryWorld}
+          busy={interactionBusy}
+          onClose={closeCreateStory}
+          onCreate={onSubmitCreateStory}
+        />
+      )}
       {visibility.historyDebug && (
         <DebugPanel
           open={debugOpen}

@@ -34,8 +34,9 @@ use std::sync::Arc;
 use gml_audio::{Sidecar, SidecarConfig};
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::{make_client, Backend, BackendError, CodexHook};
-use gml_persistence::DialogStore;
+use gml_persistence::{DialogStore, WorldStore};
 use gml_server::{build_router, AppState, MakeClient};
+use gml_stories::StoryStore;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8000;
@@ -146,7 +147,8 @@ ENVIRONMENT (headless --server):\n\
 \n\
 ENVIRONMENT (paths, both modes — default to per-OS app-data dirs):\n\
     GM_SETTINGS_PATH, GM_DIALOG_DB, GM_RAG_CACHE_PATH,\n\
-    GM_TTS_CACHE_DIR, GM_CODEX_CREDENTIAL_PATH, GM_BACKEND, GM_MODEL\n",
+    GM_TTS_CACHE_DIR, GM_CODEX_CREDENTIAL_PATH, GM_PACKAGES_DIR,\n\
+    GM_BACKEND, GM_MODEL\n",
         ver = env!("CARGO_PKG_VERSION"),
     );
 }
@@ -216,6 +218,7 @@ fn seed_path_env(dirs: &AppDirs) {
         "GM_CODEX_CREDENTIAL_PATH",
         dirs.config_dir.join("codex_credential.json"),
     );
+    set_if_unset("GM_PACKAGES_DIR", dirs.data_dir.join("library"));
 }
 
 fn set_if_unset(key: &str, value: PathBuf) {
@@ -268,6 +271,24 @@ async fn build_app() -> Result<App, String> {
             .map_err(|e| format!("open dialog store: {e}"))?,
     );
 
+    // Filesystem world package store (source of truth for worlds). On first run
+    // import any legacy SQLite `worlds` rows into packages (one-time, idempotent).
+    let world_store = Arc::new(
+        WorldStore::new(WorldStore::default_root()).map_err(|e| format!("open world store: {e}"))?,
+    );
+    match world_store.migrate_from_sqlite(store.db_path()) {
+        Ok(n) if n > 0 => tracing::info!("migrated {n} worlds from SQLite into packages"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("world migration failed (continuing): {e}"),
+    }
+
+    // Filesystem story package store (source of truth for stories): materializes
+    // the three built-in default packages on first run, then scans the library.
+    let story_store = Arc::new(std::sync::Mutex::new(
+        StoryStore::new(StoryStore::default_root())
+            .map_err(|e| format!("open story store: {e}"))?,
+    ));
+
     // Fold any legacy per-guest chats into the single shared scope (server.py
     // main(): `merge_all_chats_into_scope(CHAT_SCOPE_ID)`).
     let scope = gml_server::chat_scope_id();
@@ -279,6 +300,8 @@ async fn build_app() -> Result<App, String> {
 
     let mut state = AppState {
         store,
+        world_store,
+        story_store,
         make_client,
         config,
         settings,

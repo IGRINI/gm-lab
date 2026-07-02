@@ -24,7 +24,7 @@ use gml_config::{Config, RuntimeSettings};
 use gml_llm::{
     Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput, MockClient,
 };
-use gml_persistence::DialogStore;
+use gml_persistence::{DialogStore, WorldStore};
 use gml_server::{build_router, AppState};
 
 #[derive(Default)]
@@ -181,6 +181,52 @@ fn draft_world_bible_properties(tools: &Value) -> &Map<String, Value> {
         .expect("draft_world_bible properties")
 }
 
+/// Build an [`AppState`] with the mock backend, a fresh temp DB, and an
+/// explicit sidecar (`infer_base_url`) override — used by the world-image
+/// ingestion tests so the server fetches from a local stub HTTP server.
+fn mock_state_with_infer_url(tmp: &tempfile::TempDir, infer_base_url: &str) -> AppState {
+    std::env::set_var("GM_BACKEND", "mock");
+    std::env::set_var("GM_CHAT_SCOPE_ID", "shared");
+    std::env::set_var("GM_IMAGE_ENABLED", "1");
+
+    let mut cfg = Config::from_env();
+    cfg.backend = "mock".to_string();
+    cfg.infer_base_url = infer_base_url.trim_end_matches('/').to_string();
+    let cfg = Arc::new(cfg);
+
+    let settings_path = tmp.path().join("settings.json");
+    let settings = Arc::new(RuntimeSettings::new(&cfg, settings_path));
+
+    let make_client: gml_server::MakeClient =
+        Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>);
+    let factory: gml_orchestrator::ClientFactory =
+        Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>);
+
+    let db_path = tmp.path().join("dialogs.sqlite3");
+    let store = Arc::new(
+        DialogStore::new(db_path.to_string_lossy().to_string(), factory, cfg.clone())
+            .expect("open temp dialog store"),
+    );
+    let world_store =
+        Arc::new(WorldStore::new(tmp.path().join("library")).expect("open temp world store"));
+    let story_store = Arc::new(std::sync::Mutex::new(
+        gml_stories::StoryStore::new(tmp.path().join("library")).expect("open temp story store"),
+    ));
+
+    AppState {
+        store,
+        world_store,
+        story_store,
+        make_client,
+        config: cfg,
+        settings,
+        http: reqwest::Client::new(),
+        sidecar: None,
+        locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        index_html: Arc::new(None),
+    }
+}
+
 /// Build an [`AppState`] with the mock backend and a fresh temp DB.
 fn mock_state(tmp: &tempfile::TempDir) -> AppState {
     // The server reads `GM_BACKEND` (via Config) and `GM_CHAT_SCOPE_ID`; pin both.
@@ -206,8 +252,17 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
             .expect("open temp dialog store"),
     );
 
+    let world_store = Arc::new(
+        WorldStore::new(tmp.path().join("library")).expect("open temp world store"),
+    );
+    let story_store = Arc::new(std::sync::Mutex::new(
+        gml_stories::StoryStore::new(tmp.path().join("library")).expect("open temp story store"),
+    ));
+
     AppState {
         store,
+        world_store,
+        story_store,
         make_client,
         config: cfg,
         settings,
@@ -1255,4 +1310,1267 @@ async fn settings_update_persists_and_reflects() {
     let (_s, sbody) = get(&state, "/state").await;
     let st: Value = serde_json::from_slice(&sbody).unwrap();
     assert_eq!(st["settings"]["gm_suggest_options"], true);
+}
+
+// =========================================================================
+// Phase 2 — world images live INSIDE the package, served independent of the
+// image-generation flag and the sidecar lifecycle.
+// =========================================================================
+
+/// A small PNG-shaped byte payload the stub sidecar serves (a real PNG header
+/// so `Content-Type: image/png` is plausible; the bytes only need to round-trip).
+const STUB_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR-stub-world-image";
+
+/// Spin up a tiny local HTTP server that serves [`STUB_PNG`] at any
+/// `/image-files/...` and `/images/...` path and 404s `/missing/...`. Returns
+/// the base URL (e.g. `http://127.0.0.1:54321`); the server task runs detached
+/// for the test's lifetime.
+async fn spawn_stub_sidecar() -> String {
+    use axum::routing::get as axget;
+    async fn png() -> impl axum::response::IntoResponse {
+        (
+            [(axum::http::header::CONTENT_TYPE, "image/png")],
+            STUB_PNG.to_vec(),
+        )
+    }
+    async fn missing() -> axum::http::StatusCode {
+        axum::http::StatusCode::NOT_FOUND
+    }
+    let app = axum::Router::new()
+        .route("/image-files/{run}/{file}", axget(png))
+        .route("/images/{run}/{file}", axget(png))
+        .route("/missing/{run}/{file}", axget(missing));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stub sidecar");
+    let addr = listener.local_addr().expect("stub addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+/// GET that also returns the `Content-Type` header (for asset-route assertions).
+async fn get_with_content_type(
+    state: &AppState,
+    path: &str,
+) -> (StatusCode, Option<String>, Vec<u8>) {
+    let resp = build_router(state.clone())
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let ctype = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, ctype, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn create_world_ingests_sidecar_image_into_package() {
+    let base = spawn_stub_sidecar().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state_with_infer_url(&tmp, &base);
+
+    let (status, body) = post(
+        &state,
+        "/worlds",
+        json!({
+            "title": "Мир с обложкой",
+            "genre": "fantasy",
+            "tone": "tense",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Образы важны.",
+            "world_lore": {
+                "name": "Мир с обложкой",
+                "public_premise": "Образы важны.",
+                "world_image_url": "/image-files/run-123/image_0.png"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    let world_id = got["world"]["id"].as_str().unwrap().to_string();
+
+    // RESPONSE field is the servable same-origin route.
+    assert_eq!(
+        got["world"]["world_lore"]["world_image_url"],
+        json!(format!("/world-assets/{world_id}/world_image.png"))
+    );
+
+    // Bytes landed inside the package.
+    let on_disk = tmp
+        .path()
+        .join("library")
+        .join("worlds")
+        .join(&world_id)
+        .join("assets")
+        .join("world_image.png");
+    assert!(on_disk.is_file(), "asset written to package");
+    assert_eq!(std::fs::read(&on_disk).unwrap(), STUB_PNG);
+
+    // STORED manifest field is the package-relative path (portable).
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            tmp.path()
+                .join("library")
+                .join("worlds")
+                .join(&world_id)
+                .join("world.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest["payload"]["world_lore"]["world_image_url"],
+        json!("assets/world_image.png")
+    );
+
+    // The static route serves the bytes with image/png.
+    let (status, ctype, asset_bytes) =
+        get_with_content_type(&state, &format!("/world-assets/{world_id}/world_image.png")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ctype.as_deref(), Some("image/png"));
+    assert_eq!(asset_bytes, STUB_PNG);
+
+    // GET /worlds also rewrites to the servable route.
+    let (_s, list_body) = get(&state, "/worlds").await;
+    let list: Value = serde_json::from_slice(&list_body).unwrap();
+    assert_eq!(
+        list["worlds"][0]["world_lore"]["world_image_url"],
+        json!(format!("/world-assets/{world_id}/world_image.png"))
+    );
+}
+
+#[tokio::test]
+async fn update_world_is_idempotent_for_already_ingested_image() {
+    let base = spawn_stub_sidecar().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state_with_infer_url(&tmp, &base);
+
+    let (_s, body) = post(
+        &state,
+        "/worlds",
+        json!({
+            "title": "Мир",
+            "genre": "fantasy",
+            "tone": "tense",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Образы важны.",
+            "world_lore": {"name": "Мир", "world_image_url": "/image-files/run-1/image_0.png"}
+        }),
+    )
+    .await;
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    let world_id = got["world"]["id"].as_str().unwrap().to_string();
+
+    // Re-saving with the already-servable route must NOT re-fetch and must keep
+    // the field as a servable route (the stored manifest re-derives relative).
+    let (status, body2) = post(
+        &state,
+        &format!("/worlds/{world_id}"),
+        json!({
+            "title": "Мир",
+            "genre": "fantasy",
+            "tone": "tense",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Образы важны.",
+            "world_lore": {
+                "name": "Мир",
+                "world_image_url": format!("/world-assets/{world_id}/world_image.png")
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&body2)
+    );
+    let got2: Value = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(
+        got2["world"]["world_lore"]["world_image_url"],
+        json!(format!("/world-assets/{world_id}/world_image.png"))
+    );
+    // Manifest stays relative.
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            tmp.path()
+                .join("library")
+                .join("worlds")
+                .join(&world_id)
+                .join("world.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest["payload"]["world_lore"]["world_image_url"],
+        json!("assets/world_image.png")
+    );
+}
+
+#[tokio::test]
+async fn empty_image_field_is_valid_and_left_empty() {
+    let base = spawn_stub_sidecar().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state_with_infer_url(&tmp, &base);
+
+    let (status, body) = post(
+        &state,
+        "/worlds",
+        json!({
+            "title": "Мир без картинки",
+            "genre": "fantasy",
+            "tone": "tense",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Без образов.",
+            "world_lore": {"name": "Мир без картинки", "world_image_url": ""}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    // Empty stays empty (a valid "no image" state), not an error, not a route.
+    assert_eq!(got["world"]["world_lore"]["world_image_url"], json!(""));
+    let world_id = got["world"]["id"].as_str().unwrap();
+    let assets = tmp
+        .path()
+        .join("library")
+        .join("worlds")
+        .join(world_id)
+        .join("assets");
+    assert!(!assets.exists(), "no assets dir created for an empty image");
+}
+
+#[tokio::test]
+async fn missing_sidecar_image_fails_save_and_writes_no_asset() {
+    let base = spawn_stub_sidecar().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state_with_infer_url(&tmp, &base);
+
+    let (status, body) = post(
+        &state,
+        "/worlds",
+        json!({
+            "title": "Мир со сломанной картинкой",
+            "genre": "fantasy",
+            "tone": "tense",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Образ недоступен.",
+            "world_lore": {
+                "name": "Мир со сломанной картинкой",
+                "world_image_url": "/missing/run-404/image_0.png"
+            }
+        }),
+    )
+    .await;
+    // No-fallback: the save FAILS rather than dropping the reference or writing
+    // a placeholder.
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(
+        got["error"].as_str().unwrap_or("").contains("ingest"),
+        "error mentions ingest: {got:?}"
+    );
+
+    // The pre-allocated package may exist, but NO image asset was written.
+    let worlds_dir = tmp.path().join("library").join("worlds");
+    if let Ok(entries) = std::fs::read_dir(&worlds_dir) {
+        for entry in entries.flatten() {
+            let asset = entry.path().join("assets").join("world_image.png");
+            assert!(!asset.is_file(), "no placeholder asset written");
+        }
+    }
+}
+
+#[tokio::test]
+async fn world_asset_route_works_when_image_generation_disabled() {
+    let base = spawn_stub_sidecar().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state_with_infer_url(&tmp, &base);
+
+    let (status, body) = post(
+        &state,
+        "/worlds",
+        json!({
+            "title": "Мир",
+            "genre": "fantasy",
+            "tone": "tense",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Образы важны.",
+            "world_lore": {"name": "Мир", "world_map_url": "/images/run-9/map_0.png"}
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    let world_id = got["world"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        got["world"]["world_lore"]["world_map_url"],
+        json!(format!("/world-assets/{world_id}/world_map.png"))
+    );
+
+    // Turn OFF image generation at runtime, then confirm the asset still serves.
+    let (s, _b) = post(
+        &state,
+        "/settings",
+        json!({"settings": {"image_enabled": false}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (status, ctype, asset_bytes) =
+        get_with_content_type(&state, &format!("/world-assets/{world_id}/world_map.png")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "asset route must not be gated by image_enabled"
+    );
+    assert_eq!(ctype.as_deref(), Some("image/png"));
+    assert_eq!(asset_bytes, STUB_PNG);
+}
+
+#[tokio::test]
+async fn world_asset_route_rejects_bad_filename_and_404s_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    // Bad filename (extension not allowed) -> 400.
+    let (status, _c, _b) =
+        get_with_content_type(&state, "/world-assets/abc123/world_image.txt").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Missing asset for a syntactically valid id/file -> 404.
+    let (status, _c, _b) =
+        get_with_content_type(&state, "/world-assets/abc123/world_image.png").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// =========================================================================
+// Phase 4 — launch SAVED packages into the game (docs/MODS_PACKAGES_TZ.md):
+// play a saved world procedurally, create stories bound to a world, and
+// launch procedural / authored stories that compose the world + the plot.
+// =========================================================================
+
+/// Create a saved WORLD package via POST /worlds and return its id.
+async fn create_saved_world(state: &AppState, title: &str) -> String {
+    let (status, body) = post(
+        state,
+        "/worlds",
+        json!({
+            "title": title,
+            "genre": "fantasy isekai",
+            "tone": "tense hopeful",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Клятвы и долги имеют силу закона и магии.",
+            "world_lore": {
+                "name": title,
+                "public_premise": "Клятвы и долги имеют силу закона и магии.",
+                "world_laws": ["магия требует имени, цены или признанного права"],
+                "location_rules": ["каждая локация связана с долгом, властью, дорогой или духом"]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create world: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    got["world"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn play_saved_world_procedurally_records_world_ref() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Порог Второго Неба").await;
+
+    // POST /chats {world_id, story_id:"procedural"} -> procedural launch from the
+    // SAVED world's lore (no inline world_lore supplied).
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({
+            "world_id": world_id,
+            "story_id": "procedural",
+            "seed": "play-saved-world",
+            "activate": true,
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "play saved world: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    // The world content came from the saved package: the lore name became the
+    // story title, and the public premise the public intro.
+    assert_eq!(got["state"]["story_title"], "Порог Второго Неба");
+
+    let (status, dbody) = get(&state, "/debug").await;
+    assert_eq!(status, StatusCode::OK);
+    let debug: Value = serde_json::from_slice(&dbody).unwrap();
+    assert_eq!(debug["story"]["title"], "Порог Второго Неба");
+    assert_eq!(debug["story"]["id"], "procedural");
+    assert_eq!(
+        debug["story"]["public_intro"],
+        "Клятвы и долги имеют силу закона и магии."
+    );
+
+    // Provenance: the persisted session.world records world_ref with the right id.
+    state
+        .store
+        .with_runtime("shared", got["active_chat_id"].as_str().unwrap(), |rt| {
+            let world_ref = rt
+                .session
+                .world
+                .world_ref
+                .as_ref()
+                .expect("world_ref recorded");
+            assert_eq!(world_ref.id, world_id);
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn play_saved_world_with_missing_world_id_errors_and_creates_no_chat() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({
+            "world_id": "does-not-exist",
+            "story_id": "procedural",
+            "activate": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "dangling world_id must fail");
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("does-not-exist"));
+    // No chat was created by the failed request. Read the store DIRECTLY
+    // (GET /chats would auto-create a default chat via get_active, which is
+    // unrelated to our failed launch).
+    let chats = state.store.list_chats("shared").unwrap();
+    assert!(
+        chats.is_empty(),
+        "a failed launch must not persist a chat, got {chats:?}"
+    );
+}
+
+#[tokio::test]
+async fn create_and_launch_procedural_story_bound_to_world() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Город Железных Снов").await;
+
+    // POST /stories {kind:"procedural", world_id, title} -> a story package bound
+    // to the world.
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "procedural",
+            "world_id": world_id,
+            "title": "Заводская смена",
+            "description": "Короткий пролог в дымном цеху.",
+            "plot": {"story_brief": "Ты выходишь на смену, когда машины начинают шептать."}
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create procedural story: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(created["ok"], true);
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+    assert_eq!(created["story"]["title"], "Заводская смена");
+
+    // It shows up in GET /stories.
+    let (_s, sbody) = get(&state, "/stories").await;
+    let stories: Value = serde_json::from_slice(&sbody).unwrap();
+    assert!(stories["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == json!(story_id)));
+
+    // Launch it: procedural world from the bound lore + the story title/brief.
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch procedural story: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(launched["ok"], true);
+    assert_eq!(launched["state"]["story_title"], "Заводская смена");
+
+    let (_s, dbody) = get(&state, "/debug").await;
+    let debug: Value = serde_json::from_slice(&dbody).unwrap();
+    assert_eq!(debug["story"]["title"], "Заводская смена");
+    assert_eq!(
+        debug["story"]["brief"],
+        "Ты выходишь на смену, когда машины начинают шептать."
+    );
+    // The public intro fell back to the bound world's premise.
+    assert_eq!(
+        debug["story"]["public_intro"],
+        "Клятвы и долги имеют силу закона и магии."
+    );
+
+    // Provenance: both world_ref and story_ref are recorded.
+    state
+        .store
+        .with_runtime(
+            "shared",
+            launched["active_chat_id"].as_str().unwrap(),
+            |rt| {
+                assert_eq!(
+                    rt.session.world.world_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(world_id.as_str())
+                );
+                assert_eq!(
+                    rt.session.world.story_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(story_id.as_str())
+                );
+            },
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn create_and_launch_authored_story_composes_world_and_plot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Порог Второго Неба").await;
+
+    // POST /stories {kind:"authored", world_id, title, plot{...}}.
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "authored",
+            "world_id": world_id,
+            "title": "Деревня у живой дороги",
+            "plot": {
+                "story_brief": "Ты пришёл в деревню, где дорога просыпается по ночам.",
+                "public_intro": "Деревня живёт по правилам дороги.",
+                "hidden_truth": "Староста скормил дороге собственного сына ради урожая.",
+                "player_character": {"name": "Мира", "class_role": "странствующий писец"},
+                "proper_nouns": ["Живая Дорога"],
+                "npcs": [
+                    {"id": "starosta", "name": "Старый Гедд", "role": "староста",
+                     "persona": "Усталый человек, скрывающий вину."}
+                ],
+                "public_facts": [
+                    {"id": "road_wakes", "text": "Дорога шевелится в полнолуние.", "kind": "public"}
+                ],
+                "scene": {
+                    "id": "village_gate",
+                    "title": "Ворота деревни",
+                    "location_id": "village_gate",
+                    "description": "Покосившиеся ворота у кромки живой дороги.",
+                    "present_npcs": ["starosta"],
+                    "tension": "Дорога вот-вот проснётся."
+                },
+                "time": 1080
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create authored story: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    // Launch it -> the World carries BOTH the world's lore-derived content AND
+    // the authored plot.
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch authored story: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(launched["ok"], true);
+    assert_eq!(launched["state"]["story_title"], "Деревня у живой дороги");
+
+    let (_s, dbody) = get(&state, "/debug").await;
+    let debug: Value = serde_json::from_slice(&dbody).unwrap();
+    // Authored plot present:
+    assert_eq!(debug["story"]["title"], "Деревня у живой дороги");
+    assert_eq!(
+        debug["story"]["hidden_truth"],
+        "Староста скормил дороге собственного сына ради урожая."
+    );
+    assert_eq!(debug["player_character"]["name"], "Мира");
+    assert_eq!(debug["scene"]["title"], "Ворота деревни");
+    assert_eq!(debug["time"]["time_of_day"], "18:00"); // 1080 minutes
+    // The authored NPC is in the roster and present in the authored scene.
+    let npc_ids: Vec<&str> = debug["npcs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
+    assert!(npc_ids.contains(&"starosta"), "authored npc present");
+    // World lore-derived content present: the bound world's proper nouns + its
+    // generated canon survived the overlay (more than just the authored scene).
+    state
+        .store
+        .with_runtime(
+            "shared",
+            launched["active_chat_id"].as_str().unwrap(),
+            |rt| {
+                let w = &rt.session.world;
+                assert_eq!(w.world_ref.as_ref().map(|r| r.id.as_str()), Some(world_id.as_str()));
+                assert_eq!(w.story_ref.as_ref().map(|r| r.id.as_str()), Some(story_id.as_str()));
+                // The world bible flowed in via worldgen (lore name retained on
+                // the canon's world_lore), and the authored scene was upserted on
+                // top of the generated canon (canon has MORE than one place).
+                assert_eq!(w.world_canon.world_lore.name, "Порог Второго Неба");
+                assert!(
+                    w.world_canon.places.len() >= 2,
+                    "authored scene upserted into the generated world canon (got {} places: {:?})",
+                    w.world_canon.places.len(),
+                    w.world_canon.places.keys().collect::<Vec<_>>()
+                );
+                assert!(
+                    w.world_canon.places.contains_key("village_gate"),
+                    "places: {:?}",
+                    w.world_canon.places.keys().collect::<Vec<_>>()
+                );
+            },
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn create_story_with_missing_world_id_errors_and_writes_no_package() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({"kind": "authored", "world_id": "nope-world", "title": "Висящая история"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"].as_str().unwrap_or_default().contains("nope-world"));
+
+    // No story package written: GET /stories still has exactly the 3 builtins +
+    // the procedural pseudo-entry.
+    let (_s, sbody) = get(&state, "/stories").await;
+    let stories: Value = serde_json::from_slice(&sbody).unwrap();
+    assert_eq!(stories["stories"].as_array().unwrap().len(), 3 + 1);
+}
+
+#[tokio::test]
+async fn delete_story_removes_the_package() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Мир для удаления").await;
+
+    let (_s, body) = post(
+        &state,
+        "/stories",
+        json!({"kind": "procedural", "world_id": world_id, "title": "Эфемерная история"}),
+    )
+    .await;
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    let (status, body) = post(&state, &format!("/stories/{story_id}/delete"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["deleted"], true);
+
+    // Gone from the listing.
+    let (_s, sbody) = get(&state, "/stories").await;
+    let stories: Value = serde_json::from_slice(&sbody).unwrap();
+    assert!(!stories["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == json!(story_id)));
+}
+
+// =========================================================================
+// Phase-5 share UX: open library folder, export package zip, import zip.
+// =========================================================================
+
+/// POST raw bytes (e.g. a zip body) to `path` and return `(status, body)`.
+async fn post_bytes(
+    state: &AppState,
+    path: &str,
+    content_type: &str,
+    bytes: Vec<u8>,
+) -> (StatusCode, Vec<u8>) {
+    let resp = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("content-type", content_type)
+                .body(Body::from(bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, body.to_vec())
+}
+
+/// The set of file entry names inside a zip blob.
+fn zip_entry_names(bytes: &[u8]) -> Vec<String> {
+    let reader = std::io::Cursor::new(bytes);
+    let mut zip = zip::ZipArchive::new(reader).expect("valid zip");
+    let mut names = Vec::new();
+    for i in 0..zip.len() {
+        let f = zip.by_index(i).unwrap();
+        if !f.is_dir() {
+            names.push(f.name().to_string());
+        }
+    }
+    names
+}
+
+#[tokio::test]
+async fn export_world_is_a_zip_with_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Экспортируемый мир").await;
+
+    let (status, bytes) = get(&state, &format!("/worlds/{world_id}/export")).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+    let names = zip_entry_names(&bytes);
+    assert!(names.iter().any(|n| n == "world.json"), "names={names:?}");
+
+    // Missing world -> 404.
+    let (status, _b) = get(&state, "/worlds/does-not-exist/export").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn export_then_import_world_roundtrips_into_fresh_library() {
+    let src_tmp = tempfile::tempdir().unwrap();
+    let src = mock_state(&src_tmp);
+    let world_id = create_saved_world(&src, "Переносимый мир").await;
+    let (_s, exported) = get(&src, &format!("/worlds/{world_id}/export")).await;
+
+    // Fresh, separate library.
+    let dst_tmp = tempfile::tempdir().unwrap();
+    let dst = mock_state(&dst_tmp);
+    let (status, body) = post_bytes(&dst, "/library/import", "application/zip", exported).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["kind"], "world");
+    let imported_id = got["id"].as_str().unwrap().to_string();
+
+    // The world now appears in the destination library and round-trips.
+    let (_s, wbody) = get(&dst, "/worlds").await;
+    let worlds: Value = serde_json::from_slice(&wbody).unwrap();
+    let found = worlds["worlds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["id"] == json!(imported_id))
+        .expect("imported world present");
+    assert_eq!(found["title"], json!("Переносимый мир"));
+}
+
+#[tokio::test]
+async fn export_story_baked_then_import_brings_world() {
+    let src_tmp = tempfile::tempdir().unwrap();
+    let src = mock_state(&src_tmp);
+    let world_id = create_saved_world(&src, "Мир истории").await;
+    let (_s, body) = post(
+        &src,
+        "/stories",
+        json!({"kind": "procedural", "world_id": world_id, "title": "История с миром"}),
+    )
+    .await;
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    // Bake the world inside the story zip.
+    let (status, exported) = get(&src, &format!("/stories/{story_id}/export?bake=1")).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&exported));
+    let names = zip_entry_names(&exported);
+    assert!(names.iter().any(|n| n == "story.json"), "names={names:?}");
+    assert!(
+        names.iter().any(|n| n == "world/world.json"),
+        "names={names:?}"
+    );
+
+    // The embedded story.json copy has world_embedded=true.
+    {
+        let reader = std::io::Cursor::new(&exported);
+        let mut zip = zip::ZipArchive::new(reader).unwrap();
+        let mut f = zip.by_name("story.json").unwrap();
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut f, &mut s).unwrap();
+        let manifest: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(manifest["world_embedded"], json!(true));
+    }
+
+    // Import into a fresh library: both story and world appear.
+    let dst_tmp = tempfile::tempdir().unwrap();
+    let dst = mock_state(&dst_tmp);
+    let (status, body) = post_bytes(&dst, "/library/import", "application/zip", exported).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["kind"], "story");
+    let imported_story = got["id"].as_str().unwrap().to_string();
+
+    let (_s, sbody) = get(&dst, "/stories").await;
+    let stories: Value = serde_json::from_slice(&sbody).unwrap();
+    assert!(stories["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == json!(imported_story)));
+
+    // The baked world was imported too (it keeps its source id).
+    let (_s, wbody) = get(&dst, "/worlds").await;
+    let worlds: Value = serde_json::from_slice(&wbody).unwrap();
+    assert!(worlds["worlds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["id"] == json!(world_id)));
+}
+
+#[tokio::test]
+async fn export_story_bake_without_world_ref_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    // A built-in story has no world_ref (it embeds its world in the seed).
+    let (_s, sbody) = get(&state, "/stories").await;
+    let stories: Value = serde_json::from_slice(&sbody).unwrap();
+    let builtin = stories["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] != json!("procedural"))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = get(&state, &format!("/stories/{builtin}/export?bake=1")).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+}
+
+#[tokio::test]
+async fn import_malformed_zip_errors_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (_s, before) = get(&state, "/worlds").await;
+    let before_n = serde_json::from_slice::<Value>(&before).unwrap()["worlds"]
+        .as_array()
+        .unwrap()
+        .len();
+
+    // Garbage bytes -> bad zip.
+    let (status, body) =
+        post_bytes(&state, "/library/import", "application/zip", b"not a zip".to_vec()).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // A valid zip with an unknown manifest format -> rejected.
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(src.path().join("world.json"), br#"{"format":"bogus/1"}"#).unwrap();
+    let unknown = gml_server::share::zip_dir(src.path(), "").unwrap();
+    let (status, body) = post_bytes(&state, "/library/import", "application/zip", unknown).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // Nothing was written.
+    let (_s, after) = get(&state, "/worlds").await;
+    let after_n = serde_json::from_slice::<Value>(&after).unwrap()["worlds"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(before_n, after_n);
+}
+
+#[tokio::test]
+async fn import_collision_requires_overwrite() {
+    let src_tmp = tempfile::tempdir().unwrap();
+    let src = mock_state(&src_tmp);
+    let world_id = create_saved_world(&src, "Коллизия").await;
+    let (_s, exported) = get(&src, &format!("/worlds/{world_id}/export")).await;
+
+    // First import into the destination succeeds.
+    let dst_tmp = tempfile::tempdir().unwrap();
+    let dst = mock_state(&dst_tmp);
+    let (status, _b) =
+        post_bytes(&dst, "/library/import", "application/zip", exported.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Re-importing the SAME id without overwrite -> 409.
+    let (status, body) =
+        post_bytes(&dst, "/library/import", "application/zip", exported.clone()).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // With overwrite=1 -> succeeds.
+    let (status, body) = post_bytes(
+        &dst,
+        "/library/import?overwrite=1",
+        "application/zip",
+        exported,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+}
+
+// =========================================================================
+// CLEANUP/FIX pass — adversarial-review backend findings (F1-F5).
+// =========================================================================
+
+/// F1: a procedural launch carrying a PRESENT but EMPTY `world_lore` ({}) must
+/// be rejected — the empty-lore guard runs BEFORE normalization, so no blank
+/// fabricated world is ever launched and no chat is created.
+#[tokio::test]
+async fn procedural_launch_with_empty_world_lore_is_rejected_and_creates_no_chat() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({
+            "story_id": "procedural",
+            "seed": "empty-lore",
+            "genre": "fantasy",
+            "tone": "tense",
+            "scale": "region",
+            "world_lore": {}
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "empty world_lore must 400: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("world_lore must not be empty"));
+
+    // No chat was created by the failed launch (read the store directly so we
+    // don't trip get_active's auto-create).
+    let chats = state.store.list_chats("shared").unwrap();
+    assert!(
+        chats.is_empty(),
+        "a rejected empty-lore launch must not persist a chat, got {chats:?}"
+    );
+}
+
+/// F1 (saved-world branch): a SAVED world whose stored `world_lore` is empty
+/// must also be rejected on launch (the guard runs pre-normalization there too).
+#[tokio::test]
+async fn launch_saved_world_with_empty_lore_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    // Write a world package directly with an EMPTY world_lore object.
+    let created = state
+        .world_store
+        .create_world(json!({"title": "Пустой мир", "world_lore": {}}))
+        .unwrap();
+    let world_id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"world_id": world_id, "story_id": "procedural", "activate": true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "saved empty lore must 400: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"].as_str().unwrap_or_default().contains("lore is empty"));
+}
+
+/// F2: a crafted `world_lore.world_image_url` (path traversal or an absolute
+/// remote URL) is rejected at ingestion and never fetched. The stub sidecar
+/// 404s `/missing/...`; an absolute remote URL points at an UNREACHABLE host,
+/// so the only way the save could "succeed" with a fetch is if the loose parser
+/// accepted it — which it must not. Either crafted ref yields a save failure
+/// with an "unrecognized reference" message (no fetch attempted).
+#[tokio::test]
+async fn crafted_world_image_url_is_rejected_and_never_fetched() {
+    let base = spawn_stub_sidecar().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state_with_infer_url(&tmp, &base);
+
+    for crafted in [
+        "/image-files/../../secret",
+        "http://169.254.169.254/image-files/run/secret.png",
+        "//evil.example/image-files/run/secret.png",
+    ] {
+        let (status, body) = post(
+            &state,
+            "/worlds",
+            json!({
+                "title": "Мир с подделкой",
+                "genre": "fantasy",
+                "tone": "tense",
+                "world_size": "Континент",
+                "population": "Миллионы",
+                "public_premise": "x",
+                "world_lore": {"name": "Мир", "world_image_url": crafted}
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_GATEWAY,
+            "crafted url {crafted:?} must be rejected: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let got: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(got["ok"], false);
+        assert!(
+            got["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("unrecognized reference"),
+            "expected unrecognized-reference error for {crafted:?}, got {got:?}"
+        );
+    }
+
+    // No world package leaked an image asset for any crafted ref.
+    let worlds_dir = tmp.path().join("library").join("worlds");
+    if let Ok(entries) = std::fs::read_dir(&worlds_dir) {
+        for entry in entries.flatten() {
+            let asset = entry.path().join("assets").join("world_image.png");
+            assert!(!asset.is_file(), "no asset written for a crafted url");
+        }
+    }
+}
+
+/// F3: a CREATE whose image ingest fails (unreachable url) deletes the
+/// just-allocated empty package — GET /worlds shows no new orphan world.
+#[tokio::test]
+async fn failed_create_ingest_leaves_no_orphan_world() {
+    // Point the sidecar base at a dead loopback port: a RECOGNIZED
+    // `/image-files/...` path will be fetched and the GET will FAIL (connection
+    // refused) AFTER the empty package was allocated — exercising the rollback.
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state_with_infer_url(&tmp, "http://127.0.0.1:9");
+
+    let (_s, before) = get(&state, "/worlds").await;
+    let before_n = serde_json::from_slice::<Value>(&before).unwrap()["worlds"]
+        .as_array()
+        .unwrap()
+        .len();
+
+    let (status, body) = post(
+        &state,
+        "/worlds",
+        json!({
+            "title": "Мир-сирота",
+            "genre": "fantasy",
+            "tone": "tense",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "x",
+            "world_lore": {"name": "Мир", "world_image_url": "/image-files/run-404/gone.png"}
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "create with broken image must fail: {}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // The just-created empty package was rolled back: no new world in the list.
+    let (_s, after) = get(&state, "/worlds").await;
+    let after_n = serde_json::from_slice::<Value>(&after).unwrap()["worlds"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(
+        before_n, after_n,
+        "a failed create must leave the library untouched"
+    );
+    // And nothing on disk.
+    let worlds_dir = tmp.path().join("library").join("worlds");
+    let dir_count = std::fs::read_dir(&worlds_dir)
+        .map(|it| it.flatten().filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    assert_eq!(dir_count, 0, "no orphan world directory on disk");
+}
+
+/// Build a baked `.gmstory` zip where `story.json`'s `world_ref.id` (`OLD`)
+/// DIFFERS from the baked world's manifest id (`BAKED`).
+fn craft_baked_story_with_mismatched_ref() -> Vec<u8> {
+    use std::io::Write;
+    let mut buf = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zip = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("story.json", opts).unwrap();
+        zip.write_all(
+            br#"{"format":"gmlab.story/1","id":"crafted-story","world_embedded":true,"world_ref":{"id":"OLD-MISSING-WORLD","version":1}}"#,
+        )
+        .unwrap();
+        zip.start_file("world/world.json", opts).unwrap();
+        zip.write_all(
+            r#"{"format":"gmlab.world/1","id":"BAKED-WORLD","title":"Запечённый мир"}"#.as_bytes(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+/// F4: importing a baked story whose `story.json world_ref.id` differs from the
+/// baked world id rewrites the staged manifest to the ACTUAL imported world id,
+/// and the referenced world exists after import (world swapped in first).
+#[tokio::test]
+async fn import_baked_story_rewrites_world_ref_to_imported_world() {
+    let crafted = craft_baked_story_with_mismatched_ref();
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    let (status, body) =
+        post_bytes(&state, "/library/import", "application/zip", crafted).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["kind"], "story");
+    let story_id = got["id"].as_str().unwrap().to_string();
+
+    // The baked world's manifest id is a safe segment, so it imports under that id.
+    let imported_world_id = "BAKED-WORLD";
+
+    // Read the imported story.json from disk: its world_ref.id was rewritten to
+    // the actual imported world id (no longer the dangling "OLD-MISSING-WORLD").
+    let story_manifest = tmp
+        .path()
+        .join("library")
+        .join("stories")
+        .join(&story_id)
+        .join("story.json");
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(&story_manifest).unwrap()).unwrap();
+    assert_eq!(
+        manifest["world_ref"]["id"], json!(imported_world_id),
+        "world_ref.id must be rewritten to the imported world id, got {manifest:?}"
+    );
+
+    // The referenced world exists in the library.
+    let (_s, wbody) = get(&state, "/worlds").await;
+    let worlds: Value = serde_json::from_slice(&wbody).unwrap();
+    assert!(
+        worlds["worlds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["id"] == json!(imported_world_id)),
+        "imported world must exist: {worlds:?}"
+    );
 }

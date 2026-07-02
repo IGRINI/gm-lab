@@ -402,6 +402,8 @@ export default function WorldArchitectPanel({
   onCreateWorld,
   onArchitectStream,
   onGenerateImage,
+  onPlayWorld,
+  onCreateStory,
   className = "",
 }) {
   const [architectCache, setArchitectCache] = useState(() => architectCacheFromWorld(world));
@@ -636,11 +638,37 @@ export default function WorldArchitectPanel({
     return () => window.clearTimeout(timer);
   }, [worldDraft.worldLore, imageJobs, locked, architectBusy, onGenerateImage, enqueueVisualGeneration]);
 
-  const submitWorld = (event) => {
+  const submitWorld = async (event) => {
     event.preventDefault();
     if (worldCreateLocked) return;
-    onCreateWorld?.({ ...worldPayload, worldLore: finalizeWorldLore(worldPayload) });
+    const saved = await onCreateWorld?.({ ...worldPayload, worldLore: finalizeWorldLore(worldPayload) });
+    // Adopt the server-rewritten image URLs (/world-assets/<id>/<file>) so the
+    // preview points at the package asset instead of the volatile sidecar URL.
+    adoptPersistedImageUrls(saved);
   };
+
+  // Overlay the persisted world's image fields onto the live draft. The server
+  // copies generated images into the package and returns same-origin
+  // /world-assets URLs; keeping the old sidecar URL would 404 once the sidecar
+  // run dir clears. Empty fields stay empty (a valid "no image" state).
+  const adoptPersistedImageUrls = useCallback((savedWorld) => {
+    const lore = savedWorld?.world_lore;
+    if (!lore || typeof lore !== "object") return;
+    setWorldDraft((current) => {
+      const currentLore =
+        current.worldLore && typeof current.worldLore === "object" ? current.worldLore : {};
+      const nextLore = { ...currentLore };
+      let changed = false;
+      for (const [outputField] of VISUAL_OUTPUT_FIELDS) {
+        const persisted = textValue(lore[outputField]);
+        if (persisted && persisted !== textValue(currentLore[outputField])) {
+          nextLore[outputField] = persisted;
+          changed = true;
+        }
+      }
+      return changed ? { ...current, worldLore: nextLore } : current;
+    });
+  }, []);
 
   // Fold a streaming delta into the in-flight segments: append to the latest
   // segment with the same hop (sid) + role, or start a new one. Keeps the ref in
@@ -752,6 +780,11 @@ export default function WorldArchitectPanel({
             if (data.draft && typeof data.draft === "object") {
               setWorldDraft((current) => mergeArchitectDraft(current, data.draft));
             }
+            // The architect draft carries volatile sidecar image URLs; the
+            // persisted world (data.world) carries the package /world-assets
+            // URLs the server rewrote to. Adopt those last so the preview is
+            // stable across sidecar restarts and image-gen toggles.
+            adoptPersistedImageUrls(data.world);
             const modelUserMessage = normalizeModelMessage(data.user_message);
             const modelAssistantMessage = normalizeModelMessage(data.assistant_history_message);
             if (modelUserMessage) {
@@ -1151,6 +1184,26 @@ export default function WorldArchitectPanel({
             <button type="submit" className="btn primary world-create-btn" disabled={worldCreateLocked}>
               Сохранить мир
             </button>
+            {world?.id && (
+              <div className="world-inspector-launch">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => onPlayWorld?.(world.id)}
+                  disabled={locked}
+                >
+                  ▶ Играть в этом мире
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => onCreateStory?.(world.id)}
+                  disabled={locked}
+                >
+                  + Создать историю
+                </button>
+              </div>
+            )}
             <p className="world-manager-note">
               Нужны название, жанр, тон, размер мира, население и публичное описание или библия мира. Сохранение не запускает чат.
             </p>

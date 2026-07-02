@@ -50,8 +50,14 @@ urlencoding = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 
+# Phase 5 share UX: open OS file manager, zip export/import of packages.
+open = { workspace = true }
+zip = { workspace = true }
+
 [dev-dependencies]
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+zip = { workspace = true }
+serde_json = { workspace = true }

@@ -510,6 +510,21 @@ pub fn default_data_path(name: &str) -> String {
     name.to_string()
 }
 
+/// Resolve the default packages/library directory (`<data_dir>/library`),
+/// where filesystem world/story packages live. Mirrors [`default_data_path`]'s
+/// resolution order (app-data dir, else exe dir, else CWD-relative). An explicit
+/// `GM_PACKAGES_DIR` override is honored by callers, not here.
+pub fn default_library_dir() -> String {
+    if let Some(dirs) = directories::ProjectDirs::from("", "", "gm-lab") {
+        let p = dirs.data_dir().join("library");
+        return p.to_string_lossy().into_owned();
+    }
+    if let Some(dir) = exe_dir() {
+        return dir.join("library").to_string_lossy().into_owned();
+    }
+    "library".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

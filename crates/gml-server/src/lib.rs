@@ -16,6 +16,7 @@
 
 pub mod openai_key;
 pub mod payload;
+pub mod share;
 pub mod sys_tokens;
 pub mod tls;
 
@@ -36,8 +37,9 @@ use gml_audio::{cache_lookup, cache_store, compress_audio, tts_format, tts_synth
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::Backend;
 use gml_orchestrator::{run_turn_into, CompactionThresholds, Session};
-use gml_persistence::{DialogRuntime, DialogStore};
-use gml_world::{World, WorldLore, WorldSpec};
+use gml_persistence::{DialogRuntime, DialogStore, WorldStore};
+use gml_stories::{StoryStore, StoryWorldRef};
+use gml_world::{PackageRef, World, WorldLore, WorldSpec};
 
 /// Reserved `story_id` that routes campaign creation through the living-world
 /// canon generator (`World::from_worldgen`) instead of the static story
@@ -66,6 +68,12 @@ pub type MakeClient = Arc<dyn Fn() -> Arc<dyn Backend> + Send + Sync>;
 pub struct AppState {
     /// SQLite-backed dialog persistence (the shared chat scope).
     pub store: Arc<DialogStore>,
+    /// Filesystem-backed world package store (source of truth for worlds).
+    pub world_store: Arc<WorldStore>,
+    /// Filesystem-backed story package store (source of truth for stories).
+    /// Behind a `Mutex` because Phase-4 creation/deletion mutate the in-memory
+    /// scan list; reads (`list_stories`/`seed`/`world_ref`) take the lock briefly.
+    pub story_store: Arc<std::sync::Mutex<StoryStore>>,
     /// Builds fresh GM/NPC clients (codex/llamacpp/openai/mock by config).
     pub make_client: MakeClient,
     /// Immutable startup config.
@@ -111,7 +119,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/models", get(get_models))
         .route("/settings", get(get_settings).post(post_settings))
         .route("/transcript", get(get_transcript))
-        .route("/stories", get(get_stories))
+        .route("/stories", get(get_stories).post(post_create_story))
+        .route("/stories/{id}/delete", post(post_delete_story))
         .route("/chats", get(get_chats).post(post_create_chat))
         .route("/worlds", get(get_worlds).post(post_create_world))
         .route("/world-architect/chat", post(post_world_architect_chat))
@@ -121,6 +130,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/images/generate", post(post_generate_image))
         .route("/image-files/{run_id}/{filename}", get(get_generated_image))
         .route("/images/{run_id}/{filename}", get(get_generated_image))
+        // Static world-package assets — served straight from disk, independent
+        // of the image-generation flag and the sidecar lifecycle.
+        .route("/world-assets/{world_id}/{filename}", get(get_world_asset))
+        // Phase-5 share UX (docs/MODS_PACKAGES_TZ.md §"Фаза 5"): open the
+        // library folder in the OS file manager, export a package to zip, and
+        // import a dropped zip into the library.
+        .route("/library/reveal", post(post_library_reveal))
+        .route(
+            "/library/import",
+            post(post_library_import)
+                // Ceiling on the COMPRESSED upload (axum's default is 2 MiB,
+                // too small for legit packages with images). The uncompressed
+                // zip-bomb caps live in `share::Archive::from_zip_bytes`.
+                .layer(axum::extract::DefaultBodyLimit::max(LIBRARY_IMPORT_BODY_LIMIT)),
+        )
+        .route("/worlds/{id}/export", get(get_world_export))
+        .route("/stories/{id}/export", get(get_story_export))
         // POST
         .route("/chats/{id}/activate", post(post_activate_chat))
         .route("/chats/{id}/delete", post(post_delete_chat))
@@ -277,12 +303,52 @@ fn required_world_lore_from_body(
     }
     let mut lore: WorldLore =
         serde_json::from_value(raw.clone()).map_err(|e| format!("invalid world_lore: {e}"))?;
-    lore.normalize_for_worldgen(&spec.seed, &spec.genre, &spec.tone, &spec.scale);
+    // Reject an empty world_lore on the FRESHLY-DESERIALIZED value, BEFORE
+    // normalize_for_worldgen populates lore_id/genre/tone/scale (after which
+    // is_empty() can never be true). No-fallback: never launch a blank world.
     if lore.is_empty() {
-        Err("world_lore must not be empty".to_string())
-    } else {
-        Ok(lore)
+        return Err("world_lore must not be empty".to_string());
     }
+    lore.normalize_for_worldgen(&spec.seed, &spec.genre, &spec.tone, &spec.scale);
+    Ok(lore)
+}
+
+/// Resolve a SAVED world package's `WorldLore` for a Phase-4 launch
+/// (`docs/MODS_PACKAGES_TZ.md`). HARD RULE: a `world_id` that does not resolve
+/// to an existing package is an ERROR — never a default/empty world. Returns the
+/// normalized lore plus the world `version` for `world_ref` provenance.
+fn resolve_saved_world_lore(
+    state: &AppState,
+    world_id: &str,
+    spec: &WorldSpec,
+) -> Result<(WorldLore, u64), String> {
+    let world_id = world_id.trim();
+    if world_id.is_empty() {
+        return Err("world_id is required".to_string());
+    }
+    let world = state
+        .world_store
+        .get_world(world_id)
+        .map_err(|_| format!("world not found: {world_id}"))?;
+    let version = state
+        .world_store
+        .world_version(world_id)
+        .map_err(|_| format!("world not found: {world_id}"))?;
+    let raw = world
+        .get("world_lore")
+        .cloned()
+        .filter(|v| v.is_object())
+        .ok_or_else(|| format!("world {world_id} has no world_lore"))?;
+    let mut lore: WorldLore =
+        serde_json::from_value(raw).map_err(|e| format!("world {world_id} lore invalid: {e}"))?;
+    // Reject empty lore on the FRESHLY-DESERIALIZED value, BEFORE
+    // normalize_for_worldgen populates lore_id/genre/tone/scale (after which
+    // is_empty() can never be true). No-fallback: never launch a blank world.
+    if lore.is_empty() {
+        return Err(format!("world {world_id} lore is empty"));
+    }
+    lore.normalize_for_worldgen(&spec.seed, &spec.genre, &spec.tone, &spec.scale);
+    Ok((lore, version))
 }
 
 fn reusable_world_payload_from_body(map: &Map<String, Value>) -> Result<Value, String> {
@@ -627,10 +693,13 @@ async fn get_transcript(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn get_stories() -> Response {
+async fn get_stories(State(state): State<AppState>) -> Response {
     // Surface the living-world generator as a selectable "story" so the UI can
     // offer a brief-less procedural campaign (locked decision #4).
-    let mut stories = gml_stories::list_stories();
+    let mut stories = {
+        let store = state.story_store.lock().expect("story store lock poisoned");
+        store.list_stories()
+    };
     let mut procedural = Map::new();
     procedural.insert("id".into(), json!(PROCEDURAL_STORY_ID));
     procedural.insert("title".into(), json!("Процедурный мир"));
@@ -649,6 +718,111 @@ async fn get_stories() -> Response {
         "default_story_id": PROCEDURAL_STORY_ID,
         "stories": stories,
     }))
+}
+
+/// `POST /stories` — create a story package bound to a world
+/// (`docs/MODS_PACKAGES_TZ.md` Phase 4).
+///
+/// Body: `{title, kind:"procedural"|"authored", world_id, description?,
+/// plot{...}? (for authored), world_version?}`. HARD RULE: `world_id` MUST
+/// resolve to an existing world package — a dangling reference is a 400 and NO
+/// package is written. Returns `{ok, story:{id, title, description,
+/// story_brief}}`.
+async fn post_create_story(State(state): State<AppState>, body: Bytes) -> Response {
+    let data = parse_body(&body);
+    let title = body_str(&data, "title");
+    let kind = {
+        let k = body_str(&data, "kind");
+        if k.is_empty() {
+            "authored".to_string()
+        } else {
+            k
+        }
+    };
+    let description = body_str(&data, "description");
+    let world_id = body_str(&data, "world_id");
+
+    if title.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "title is required"}),
+        );
+    }
+    if kind != "procedural" && kind != "authored" {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "kind must be \"procedural\" or \"authored\""}),
+        );
+    }
+    if world_id.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "world_id is required"}),
+        );
+    }
+
+    // No-fallback existence check: the referenced world MUST exist (and gives the
+    // version we pin into world_ref). A missing world -> 400, nothing written.
+    let world_version = match state.world_store.world_version(&world_id) {
+        Ok(v) => v,
+        Err(_) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": format!("world not found: {world_id}")}),
+            )
+        }
+    };
+
+    // The authored plot overlay (object, optional for procedural).
+    let plot = match data.get("plot") {
+        Some(Value::Object(m)) => Value::Object(m.clone()),
+        Some(Value::Null) | None => Value::Object(Map::new()),
+        Some(_) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": "plot must be an object"}),
+            )
+        }
+    };
+
+    let world_ref = StoryWorldRef {
+        id: world_id.clone(),
+        version: world_version,
+    };
+
+    let result = {
+        let mut store = state.story_store.lock().expect("story store lock poisoned");
+        store.create_bound_story(&title, &description, &kind, world_ref, plot)
+    };
+    match result {
+        Ok(meta) => ok_json(&json!({"ok": true, "story": Value::Object(meta)})),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
+}
+
+/// `POST /stories/{id}/delete` — remove a story package. Returns
+/// `{ok, deleted:bool}` (`deleted:false` when no such story existed).
+async fn post_delete_story(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let story_id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let result = {
+        let mut store = state.story_store.lock().expect("story store lock poisoned");
+        store.delete_story(&story_id)
+    };
+    match result {
+        Ok(deleted) => ok_json(&json!({"ok": true, "deleted": deleted})),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
 }
 
 /// Forwards the architect agent loop's segments into the SSE channel so the chat
@@ -935,36 +1109,122 @@ fn draft_payload_fields(draft: &Value) -> Map<String, Value> {
     payload
 }
 
+/// Persist a world payload, copying any sidecar-hosted images INTO the package
+/// first. The returned `world` + `worlds` have their image fields rewritten to
+/// the servable `/world-assets/...` route (the on-disk manifest stays relative).
+///
+/// For an existing world (`world_id = Some`) the world dir already exists, so we
+/// ingest before the write. For a new world we must allocate the id first
+/// (create an empty package), then ingest against that id, then persist the
+/// rewritten payload — so the stored manifest never contains a volatile sidecar
+/// URL.
 async fn persist_world_payload(
     state: &AppState,
     world_id: Option<String>,
-    payload: Value,
+    mut payload: Value,
 ) -> Result<(Value, Vec<Value>), Response> {
-    let scope = chat_scope_id();
-    let store = state.store.clone();
+    let store = state.world_store.clone();
+
+    // Resolve the target world id (allocating a fresh package for a create) so
+    // ingestion can write assets into the right directory. `freshly_created`
+    // tracks a create so a downstream failure can roll the empty package back
+    // (no orphan blank world left in the library).
+    let mut freshly_created = false;
+    let target_id = match world_id {
+        Some(id) => id,
+        None => {
+            let store = store.clone();
+            match tokio::task::spawn_blocking(move || store.create_world(Value::Object(Map::new())))
+                .await
+            {
+                Ok(Ok(created)) => {
+                    freshly_created = true;
+                    created
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                }
+                Ok(Err(e)) => {
+                    return Err(json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &json!({"ok": false, "error": e.to_string()}),
+                    ))
+                }
+                Err(e) => {
+                    return Err(json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &json!({"ok": false, "error": format!("join error: {e}")}),
+                    ))
+                }
+            }
+        }
+    };
+
+    // Delete a just-created (empty) package so a failure leaves the library
+    // untouched. Best-effort: the rollback error never masks the original.
+    async fn rollback_created(store: &Arc<WorldStore>, id: &str) {
+        let store = store.clone();
+        let id = id.to_string();
+        let _ = tokio::task::spawn_blocking(move || store.delete_world(&id)).await;
+    }
+
+    // Copy sidecar images into the package + rewrite fields to assets/<role>.png.
+    // HARD RULE: a referenced-but-unfetchable image FAILS the save.
+    if let Err(e) = ingest_world_images(state, &target_id, &mut payload).await {
+        if freshly_created {
+            rollback_created(&store, &target_id).await;
+        }
+        return Err(json_response(
+            StatusCode::BAD_GATEWAY,
+            &json!({"ok": false, "error": format!("world image ingest failed: {e}")}),
+        ));
+    }
+
+    let store_for_write = store.clone();
+    let target_for_store = target_id.clone();
     let res = tokio::task::spawn_blocking(move || {
-        let world = match world_id {
-            Some(world_id) => store.update_world(&scope, &world_id, payload)?,
-            None => store.create_world(&scope, payload)?,
-        };
-        let worlds = store.list_worlds(&scope)?;
+        // Both create and update funnel through update_world now: the package
+        // already exists (we allocated it above for a create), and update's
+        // shallow merge over an empty payload is identical to a fresh create.
+        let world = store_for_write.update_world(&target_for_store, payload)?;
+        let worlds = store_for_write.list_worlds()?;
         Ok::<(Value, Vec<Value>), gml_persistence::StoreError>((world, worlds))
     })
     .await;
     match res {
-        Ok(Ok(saved)) => Ok(saved),
-        Ok(Err(gml_persistence::StoreError::WorldNotFound(id))) => Err(json_response(
-            StatusCode::NOT_FOUND,
-            &json!({"ok": false, "error": format!("world not found: {id}")}),
-        )),
-        Ok(Err(e)) => Err(json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &json!({"ok": false, "error": e.to_string()}),
-        )),
-        Err(e) => Err(json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &json!({"ok": false, "error": format!("join error: {e}")}),
-        )),
+        Ok(Ok((mut world, mut worlds))) => {
+            rewrite_world_asset_urls(&target_id, &mut world);
+            rewrite_world_list_asset_urls(&mut worlds);
+            Ok((world, worlds))
+        }
+        Ok(Err(gml_persistence::StoreError::WorldNotFound(id))) => {
+            if freshly_created {
+                rollback_created(&store, &target_id).await;
+            }
+            Err(json_response(
+                StatusCode::NOT_FOUND,
+                &json!({"ok": false, "error": format!("world not found: {id}")}),
+            ))
+        }
+        Ok(Err(e)) => {
+            if freshly_created {
+                rollback_created(&store, &target_id).await;
+            }
+            Err(json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": e.to_string()}),
+            ))
+        }
+        Err(e) => {
+            if freshly_created {
+                rollback_created(&store, &target_id).await;
+            }
+            Err(json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("join error: {e}")}),
+            ))
+        }
     }
 }
 
@@ -1330,17 +1590,26 @@ async fn get_chats(State(state): State<AppState>) -> Response {
 }
 
 async fn get_worlds(State(state): State<AppState>) -> Response {
-    let scope = chat_scope_id();
-    let store = state.store.clone();
+    let store = state.world_store.clone();
     let res = tokio::task::spawn_blocking(move || {
-        let worlds = store.list_worlds(&scope)?;
-        Ok::<Value, gml_persistence::StoreError>(json!({
-            "ok": true,
-            "worlds": worlds,
-        }))
+        let worlds = store.list_worlds()?;
+        Ok::<Vec<Value>, gml_persistence::StoreError>(worlds)
     })
     .await;
-    join_json(res)
+    match res {
+        Ok(Ok(mut worlds)) => {
+            rewrite_world_list_asset_urls(&mut worlds);
+            ok_json(&json!({"ok": true, "worlds": worlds}))
+        }
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
 }
 
 async fn post_create_world(State(state): State<AppState>, body: Bytes) -> Response {
@@ -1354,20 +1623,10 @@ async fn post_create_world(State(state): State<AppState>, body: Bytes) -> Respon
             )
         }
     };
-
-    let scope = chat_scope_id();
-    let store = state.store.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let world = store.create_world(&scope, payload)?;
-        let worlds = store.list_worlds(&scope)?;
-        Ok::<Value, gml_persistence::StoreError>(json!({
-            "ok": true,
-            "world": world,
-            "worlds": worlds,
-        }))
-    })
-    .await;
-    join_json(res)
+    match persist_world_payload(&state, None, payload).await {
+        Ok((world, worlds)) => ok_json(&json!({"ok": true, "world": world, "worlds": worlds})),
+        Err(resp) => resp,
+    }
 }
 
 async fn post_update_world(
@@ -1388,33 +1647,9 @@ async fn post_update_world(
             )
         }
     };
-
-    let scope = chat_scope_id();
-    let store = state.store.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let world = store.update_world(&scope, &world_id, payload)?;
-        let worlds = store.list_worlds(&scope)?;
-        Ok::<Value, gml_persistence::StoreError>(json!({
-            "ok": true,
-            "world": world,
-            "worlds": worlds,
-        }))
-    })
-    .await;
-    match res {
-        Ok(Ok(v)) => ok_json(&v),
-        Ok(Err(gml_persistence::StoreError::WorldNotFound(id))) => json_response(
-            StatusCode::NOT_FOUND,
-            &json!({"ok": false, "error": format!("world not found: {id}")}),
-        ),
-        Ok(Err(e)) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &json!({"ok": false, "error": e.to_string()}),
-        ),
-        Err(e) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &json!({"ok": false, "error": format!("join error: {e}")}),
-        ),
+    match persist_world_payload(&state, Some(world_id), payload).await {
+        Ok((world, worlds)) => ok_json(&json!({"ok": true, "world": world, "worlds": worlds})),
+        Err(resp) => resp,
     }
 }
 
@@ -1512,6 +1747,134 @@ async fn get_export(State(state): State<AppState>) -> Response {
 // chat lifecycle
 // =========================================================================
 
+/// A resolved plan for launching a saved/catalog STORY into a playable World
+/// (`docs/MODS_PACKAGES_TZ.md` Phase 4). Captures the story id/version, kind, the
+/// bound world reference (if any), and the authored plot/seed.
+struct StoryLaunch {
+    story_id: String,
+    story_version: u64,
+    kind: String,
+    world_ref: Option<StoryWorldRef>,
+    /// The authored plot overlay (procedural/authored bound to a world) OR the
+    /// full self-contained seed (built-ins).
+    plot: Value,
+}
+
+/// Resolve a story id into a [`StoryLaunch`] from the story store. Errors for an
+/// unknown id (no-fallback).
+fn resolve_story_launch(store: &StoryStore, story_id: &str) -> Result<StoryLaunch, String> {
+    let kind = store.kind(story_id).map_err(|e| e.to_string())?;
+    let world_ref = store.world_ref(story_id).map_err(|e| e.to_string())?;
+    let story_version = store.version(story_id).map_err(|e| e.to_string())?;
+    let plot = store.plot(story_id).map_err(|e| e.to_string())?;
+    Ok(StoryLaunch {
+        story_id: story_id.to_string(),
+        story_version,
+        kind,
+        world_ref,
+        plot,
+    })
+}
+
+/// Build the playable [`World`] for a [`StoryLaunch`], recording `world_ref` /
+/// `story_ref` provenance. HARD RULE: a story whose `world_ref` does not resolve
+/// to an existing world package FAILS — never a default world.
+fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<World, String> {
+    let story_ref = Some(PackageRef {
+        id: launch.story_id.clone(),
+        version: launch.story_version,
+    });
+
+    let mut world = match &launch.world_ref {
+        // Self-contained story (the built-ins): the seed carries the whole world.
+        None => {
+            let world = World::from_seed(&launch.plot);
+            // No world_ref: provenance is the story only.
+            return Ok(attach_story_ref(world, story_ref));
+        }
+        Some(world_ref) => {
+            // Resolve the bound world's lore (no-fallback existence check) and a
+            // WorldSpec derived from it so worldgen is reproducible-by-value.
+            let spec = WorldSpec {
+                seed: World::new_dice_seed().to_string(),
+                ..WorldSpec::default()
+            };
+            let (lore, world_version) =
+                resolve_saved_world_lore(state, &world_ref.id, &spec)?;
+            let world_provenance = PackageRef {
+                id: world_ref.id.clone(),
+                version: world_version,
+            };
+            let world = match launch.kind.as_str() {
+                // Procedural story: generate the world from its bound lore and
+                // overlay the story's identity (title/brief/public_intro).
+                "procedural" => {
+                    let mut world = World::from_worldgen_with_lore(&spec, lore);
+                    overlay_story_identity(&mut world, &launch.plot);
+                    world
+                }
+                // Authored story: compose the world bible + the authored plot.
+                "authored" => World::compose_authored(&spec, lore, &launch.plot),
+                other => {
+                    return Err(format!("unsupported story kind: {other}"));
+                }
+            };
+            let mut world = world;
+            world.world_ref = Some(world_provenance);
+            world
+        }
+    };
+    world.story_ref = story_ref;
+    Ok(world)
+}
+
+/// Attach a `story_ref` to a world and return it (helper for the self-contained
+/// branch's early return).
+fn attach_story_ref(mut world: World, story_ref: Option<PackageRef>) -> World {
+    world.story_ref = story_ref;
+    world
+}
+
+/// Overlay a story's identity (title / story_brief / public_intro) onto a
+/// procedurally generated world, falling back to the world lore's own name /
+/// public premise when the story leaves a field blank.
+fn overlay_story_identity(world: &mut World, plot: &Value) {
+    let title = plot
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if !title.is_empty() {
+        world.set_story_title(&title);
+    } else if !world.world_canon.world_lore.name.is_empty() {
+        let lore_name = world.world_canon.world_lore.name.clone();
+        world.set_story_title(&lore_name);
+    }
+    let story_brief = plot
+        .get("story_brief")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if !story_brief.is_empty() {
+        world.set_story_brief(&story_brief);
+    }
+    let public_intro = plot
+        .get("public_intro")
+        .and_then(Value::as_str)
+        .or_else(|| plot.get("public").and_then(Value::as_str))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if !public_intro.is_empty() {
+        world.set_public_intro(&public_intro);
+    } else if !world.world_canon.world_lore.public_premise.is_empty() {
+        let premise = world.world_canon.world_lore.public_premise.clone();
+        world.set_public_intro(&premise);
+    }
+}
+
 async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let brief = body_str(&data, "brief");
@@ -1522,14 +1885,23 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         story_id.clone()
     };
     let title = body_str(&data, "title");
+    let world_id = body_str(&data, "world_id");
     let activate = bool_from_body(data.get("activate"), true);
 
     let is_procedural = effective_story_id == PROCEDURAL_STORY_ID;
-    if !story_id.is_empty() && !is_procedural && !gml_stories::story_ids().contains(&story_id) {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": format!("unknown story_id: {story_id}")}),
-        );
+    // A non-procedural story_id must resolve to a real package (catalog default
+    // or a Phase-4 created story). No-fallback: an unknown id is a 400.
+    if !story_id.is_empty() && !is_procedural {
+        let known = {
+            let store = state.story_store.lock().expect("story store lock poisoned");
+            store.story_ids().contains(&story_id)
+        };
+        if !known {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": format!("unknown story_id: {story_id}")}),
+            );
+        }
     }
 
     let scope = chat_scope_id();
@@ -1569,18 +1941,41 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         // Living-world canon path (locked decision #4): generate the canon and
         // derive the legacy-facing World from it. The resulting session is
         // canon-authoritative — its scene is rebuilt from the start place.
+        //
+        // Phase 4 "play a saved world": when a `world_id` is supplied, the lore
+        // comes from that SAVED package (and `world_id` takes precedence over any
+        // inline `world_lore`); otherwise the caller must supply inline lore.
         let spec = worldspec_from_body(&data);
-        let world_lore = match required_world_lore_from_body(&data, &spec) {
-            Ok(v) => v,
-            Err(error) => {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    &json!({"ok": false, "error": error}),
-                );
+        let (world_lore, world_ref) = if !world_id.is_empty() {
+            match resolve_saved_world_lore(&state, &world_id, &spec) {
+                Ok((lore, version)) => (
+                    lore,
+                    Some(PackageRef {
+                        id: world_id.clone(),
+                        version,
+                    }),
+                ),
+                Err(error) => {
+                    return json_response(
+                        StatusCode::BAD_REQUEST,
+                        &json!({"ok": false, "error": error}),
+                    );
+                }
+            }
+        } else {
+            match required_world_lore_from_body(&data, &spec) {
+                Ok(v) => (v, None),
+                Err(error) => {
+                    return json_response(
+                        StatusCode::BAD_REQUEST,
+                        &json!({"ok": false, "error": error}),
+                    );
+                }
             }
         };
         let client = (make_client)();
         let mut world = World::from_worldgen_with_lore(&spec, world_lore);
+        world.world_ref = world_ref;
         let story_title = body_str(&data, "story_title");
         if !story_title.is_empty() {
             world.set_story_title(&story_title);
@@ -1603,17 +1998,35 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         }
         story_session(client, world, &cfg, &model_hint)
     } else {
-        let seed = match gml_stories::story_seed(&effective_story_id) {
-            Ok(s) => s,
+        // Launch a saved/catalog STORY package. Three shapes
+        // (`docs/MODS_PACKAGES_TZ.md` Phase 4):
+        //   * self-contained authored (the built-ins; no world_ref) -> from_seed;
+        //   * procedural + world_ref -> worldgen from the bound world's lore,
+        //     overlay the story's title/brief/public_intro;
+        //   * authored + world_ref -> compose the world bible + authored plot.
+        let launch = {
+            let store = state.story_store.lock().expect("story store lock poisoned");
+            resolve_story_launch(&store, &effective_story_id)
+        };
+        let launch = match launch {
+            Ok(l) => l,
             Err(e) => {
                 return json_response(
                     StatusCode::BAD_REQUEST,
-                    &json!({"ok": false, "error": e.to_string()}),
+                    &json!({"ok": false, "error": e}),
                 )
             }
         };
         let client = (make_client)();
-        let world = World::from_seed(&seed);
+        let world = match build_story_world(&state, launch) {
+            Ok(w) => w,
+            Err(e) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": e}),
+                )
+            }
+        };
         story_session(client, world, &cfg, &model_hint)
     };
 
@@ -1771,10 +2184,9 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
     let world_id = urlencoding::decode(&id)
         .map(|c| c.into_owned())
         .unwrap_or(id);
-    let scope = chat_scope_id();
-    let store = state.store.clone();
+    let store = state.world_store.clone();
     let res = tokio::task::spawn_blocking(move || {
-        let result = store.delete_world(&scope, &world_id)?;
+        let result = store.delete_world(&world_id)?;
         if result.get("deleted").and_then(Value::as_bool) != Some(true) {
             let reason = result
                 .get("reason")
@@ -1783,7 +2195,7 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
                 .to_string();
             return Ok(json!({"ok": false, "error": reason, "__status": 404}));
         }
-        let worlds = store.list_worlds(&scope)?;
+        let worlds = store.list_worlds()?;
         Ok::<Value, gml_persistence::StoreError>(json!({
             "ok": true,
             "deleted": true,
@@ -1978,7 +2390,10 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
                     };
                 }
                 let story_id = session.world.story_id.clone();
-                if !gml_stories::story_ids().contains(&story_id) {
+                // Route reset through the INJECTED story store (single live
+                // store), not the global DEFAULT_STORE free functions.
+                let store = app.story_store.lock().expect("story store lock poisoned");
+                if !store.story_ids().contains(&story_id) {
                     let label = if story_id.is_empty() {
                         "unknown".to_string()
                     } else {
@@ -1989,8 +2404,10 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
                         format!("cannot reset non-catalog story: {label}"),
                     ));
                 }
-                let seed = gml_stories::story_seed(&story_id)
+                let seed = store
+                    .seed(&story_id)
                     .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+                drop(store);
                 let world = World::from_seed(&seed);
                 let factory = session.npc_client_factory.clone();
                 let mut new_session = Session::with_world((app.make_client)(), world, factory);
@@ -2274,6 +2691,790 @@ async fn proxy_sidecar_response(resp: reqwest::Response, default_content_type: &
             &json!({"ok": false, "error": format!("sidecar response read failed: {e}")}),
         ),
     }
+}
+
+// =========================================================================
+// world image ingestion (copy generated images INTO the world package)
+// =========================================================================
+
+/// The two image fields inside `world_lore`, each paired with the stable,
+/// role-based filename it is stored under in the package's `assets/` dir.
+/// The stored manifest keeps these fields as the package-relative path
+/// `assets/<role>.png`; responses are rewritten to the servable
+/// `/world-assets/<world_id>/<role>.png` route.
+const WORLD_IMAGE_FIELDS: &[(&str, &str)] = &[
+    ("world_image_url", "world_image.png"),
+    ("world_map_url", "world_map.png"),
+];
+
+/// Allowed asset file extensions for the static `/world-assets` route, mapped
+/// to their `Content-Type`.
+const ASSET_CONTENT_TYPES: &[(&str, &str)] = &[
+    (".png", "image/png"),
+    (".jpg", "image/jpeg"),
+    (".jpeg", "image/jpeg"),
+    (".webp", "image/webp"),
+];
+
+/// Is this a value the package already owns (a stored package-relative
+/// `assets/...` path, or our own servable `/world-assets/...` route)? Such a
+/// value must NOT be re-fetched — ingestion is idempotent.
+fn is_package_asset_ref(value: &str) -> bool {
+    value.starts_with("assets/") || value.starts_with("/world-assets/")
+}
+
+/// Validate ONE sidecar path segment (a run id or a file name): non-empty,
+/// `[A-Za-z0-9._-]` only, and never `.`/`..`. Dots are allowed (file
+/// extensions) but a segment that is solely dots is rejected so it can never act
+/// as a traversal component.
+fn is_safe_sidecar_segment(segment: &str) -> bool {
+    if segment.is_empty() || segment == "." || segment == ".." {
+        return false;
+    }
+    segment
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
+/// If `value` is a sidecar run URL it MUST be EXACTLY
+/// `/image-files/<run>/<file>` or `/images/<run>/<file>` — a SAME-ORIGIN
+/// absolute path with a known prefix and EXACTLY two further non-empty, safe
+/// segments. Anything else (a scheme/host, extra path segments, `..`, an empty
+/// segment) returns `None` so ingestion ERRORS rather than fetches an
+/// attacker-chosen URL (SSRF / path traversal). No-fallback: never fetch a
+/// loosely-parsed client path.
+fn sidecar_image_path(value: &str) -> Option<String> {
+    let value = value.trim();
+    // Reject anything carrying a scheme/host (`http://`, `//host/…`, etc.): the
+    // server GETs `{infer_base_url}{path}`, so only a bare same-origin absolute
+    // path is acceptable. Query/fragment are not part of the sidecar route.
+    if value.contains("://") || value.starts_with("//") || value.contains(['?', '#']) {
+        return None;
+    }
+    let rest = value
+        .strip_prefix("/image-files/")
+        .or_else(|| value.strip_prefix("/images/"))?;
+    let prefix = if value.starts_with("/image-files/") {
+        "/image-files/"
+    } else {
+        "/images/"
+    };
+    // EXACTLY two segments: <run>/<file>. `splitn(3, …)` would let a third
+    // segment slip in; require the split to yield precisely two parts.
+    let mut parts = rest.split('/');
+    let run = parts.next()?;
+    let file = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if !is_safe_sidecar_segment(run) || !is_safe_sidecar_segment(file) {
+        return None;
+    }
+    Some(format!("{prefix}{run}/{file}"))
+}
+
+/// Fetch one image from the sidecar by its `/image-files/...`-shaped path and
+/// return the raw bytes. Errors (transport, non-200, empty body) propagate so
+/// the caller can FAIL the save — never write a placeholder.
+///
+/// This deliberately does NOT call `Sidecar::ensure_started`: ingestion runs
+/// right after the image was generated (so the sidecar is already up), and it
+/// must work purely against `infer_base_url` so a save with images is testable
+/// and does not silently spin up a model process. If the sidecar is unreachable
+/// the GET simply fails and the save fails — which is the intended no-fallback
+/// behavior, never a placeholder.
+async fn fetch_sidecar_image_bytes(state: &AppState, path: &str) -> Result<Vec<u8>, String> {
+    let url = format!("{}{}", state.config.infer_base_url, path);
+    let resp = state
+        .http
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("image fetch failed for {path}: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("image fetch for {path} returned HTTP {status}"));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("image fetch read failed for {path}: {e}"))?;
+    if bytes.is_empty() {
+        return Err(format!("image fetch for {path} returned an empty body"));
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Copy any sidecar-hosted world images referenced in `payload.world_lore`
+/// INTO the world package, rewriting each field to its package-relative
+/// `assets/<role>.png` path. Idempotent: empty fields are left empty (a valid
+/// state — the user simply did not generate an image) and fields that already
+/// point at a package asset are kept as-is.
+///
+/// HARD RULE: if a field references a sidecar image that cannot be fetched,
+/// this returns `Err` so the SAVE fails — it never writes a placeholder and
+/// never silently drops the reference.
+async fn ingest_world_images(
+    state: &AppState,
+    world_id: &str,
+    payload: &mut Value,
+) -> Result<(), String> {
+    for (field, asset_file) in WORLD_IMAGE_FIELDS {
+        let current = payload
+            .get("world_lore")
+            .and_then(|lore| lore.get(*field))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if current.is_empty() {
+            // Empty = valid (no image): leave it empty, do not error.
+            continue;
+        }
+        if is_package_asset_ref(&current) {
+            // Already a package asset (a stored `assets/...` path or our own
+            // servable `/world-assets/...` route): idempotent — do NOT re-fetch.
+            // Normalize the STORED field back to the package-relative path so the
+            // on-disk manifest stays portable even if a servable route was sent
+            // back to us on a re-save.
+            if let Some(lore) = payload.get_mut("world_lore").and_then(Value::as_object_mut) {
+                lore.insert(
+                    (*field).to_string(),
+                    Value::String(format!("{}/{}", gml_persistence::ASSETS_DIR_NAME, asset_file)),
+                );
+            }
+            continue;
+        }
+        let Some(path) = sidecar_image_path(&current) else {
+            // Not empty, not a package ref, not a recognizable sidecar URL.
+            // We cannot fetch it and must not drop or placeholder it.
+            return Err(format!(
+                "world image field {field} has an unrecognized reference: {current}"
+            ));
+        };
+        let bytes = fetch_sidecar_image_bytes(state, &path).await?;
+        let store = state.world_store.clone();
+        let world_id_owned = world_id.to_string();
+        let asset_file_owned = asset_file.to_string();
+        tokio::task::spawn_blocking(move || {
+            store.write_asset(&world_id_owned, &asset_file_owned, &bytes)
+        })
+        .await
+        .map_err(|e| format!("join error writing asset: {e}"))?
+        .map_err(|e| format!("write world asset failed: {e}"))?;
+        // Rewrite the stored field to the package-relative path.
+        if let Some(lore) = payload.get_mut("world_lore").and_then(Value::as_object_mut) {
+            lore.insert(
+                (*field).to_string(),
+                Value::String(format!("{}/{}", gml_persistence::ASSETS_DIR_NAME, asset_file)),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite a world response object's `world_lore` image fields from the stored
+/// package-relative `assets/<file>` paths to the same-origin servable
+/// `/world-assets/<world_id>/<file>` route. The on-disk manifest stays relative
+/// (portable); only the response the frontend receives is rewritten.
+fn rewrite_world_asset_urls(world_id: &str, world_json: &mut Value) {
+    let Some(lore) = world_json.get_mut("world_lore").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (field, _asset_file) in WORLD_IMAGE_FIELDS {
+        let Some(value) = lore.get(*field).and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(file) = value.strip_prefix("assets/") {
+            if file.is_empty() || file.contains('/') {
+                continue;
+            }
+            let servable = format!(
+                "/world-assets/{}/{}",
+                urlencoding::encode(world_id),
+                urlencoding::encode(file)
+            );
+            lore.insert((*field).to_string(), Value::String(servable));
+        }
+    }
+}
+
+/// Apply [`rewrite_world_asset_urls`] to every world object in a list response,
+/// using each world's own `id`.
+fn rewrite_world_list_asset_urls(worlds: &mut [Value]) {
+    for world in worlds.iter_mut() {
+        let id = world
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !id.is_empty() {
+            rewrite_world_asset_urls(&id, world);
+        }
+    }
+}
+
+/// Validate that `segment` is a single safe path component: non-empty, made of
+/// `[A-Za-z0-9_-]` plus a single allowed image extension, with no path
+/// separators or `..`. Returns the matching `Content-Type` on success.
+fn validate_asset_filename(segment: &str) -> Option<&'static str> {
+    if segment.is_empty() || segment.contains('/') || segment.contains('\\') || segment.contains("..")
+    {
+        return None;
+    }
+    let lower = segment.to_ascii_lowercase();
+    let (content_type, ext) = ASSET_CONTENT_TYPES
+        .iter()
+        .find_map(|(ext, ct)| lower.ends_with(ext).then_some((*ct, *ext)))?;
+    let stem = &segment[..segment.len() - ext.len()];
+    if stem.is_empty() {
+        return None;
+    }
+    if stem
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        Some(content_type)
+    } else {
+        None
+    }
+}
+
+/// Validate a `world_id` path segment: non-empty, `[A-Za-z0-9_-]` only (the
+/// urlsafe shape `token_urlsafe` produces), no separators / `..`.
+fn validate_world_id_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// `GET /world-assets/{world_id}/{filename}` — serve an image stored inside a
+/// world package's `assets/` directory, straight from disk. This route is
+/// INDEPENDENT of the image-generation feature flag and the sidecar lifecycle:
+/// once an image is ingested into the package it is always servable.
+async fn get_world_asset(
+    State(state): State<AppState>,
+    AxPath((world_id, filename)): AxPath<(String, String)>,
+) -> Response {
+    if !validate_world_id_segment(&world_id) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid world id"}),
+        );
+    }
+    let Some(content_type) = validate_asset_filename(&filename) else {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid asset filename"}),
+        );
+    };
+
+    let store = state.world_store.clone();
+    let path = store.asset_path(&world_id, &filename);
+    // Canonicalize-check: the resolved file must stay inside the world's
+    // assets directory (defense in depth atop the segment allowlist).
+    let assets_dir = store.assets_dir(&world_id);
+    let read = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, std::io::Error> {
+        match (std::fs::canonicalize(&path), std::fs::canonicalize(&assets_dir)) {
+            (Ok(canon_file), Ok(canon_dir)) => {
+                if !canon_file.starts_with(&canon_dir) {
+                    return Ok(None);
+                }
+                Ok(Some(std::fs::read(&canon_file)?))
+            }
+            // Missing file (or assets dir) -> 404.
+            _ => Ok(None),
+        }
+    })
+    .await;
+
+    match read {
+        Ok(Ok(Some(bytes))) => {
+            let mut out = Response::new(Body::from(bytes));
+            *out.status_mut() = StatusCode::OK;
+            out.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(content_type),
+            );
+            out.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            );
+            out
+        }
+        Ok(Ok(None)) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": "asset not found"}),
+        ),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("read asset failed: {e}")}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+// =========================================================================
+// Phase-5 share UX: open library folder, export package zip, import zip.
+// =========================================================================
+
+/// A downloadable zip Response: `application/zip` + `Content-Disposition`
+/// attachment with the given filename.
+fn zip_attachment_response(bytes: Vec<u8>, filename: &str) -> Response {
+    let mut resp = Response::new(Body::from(bytes));
+    *resp.status_mut() = StatusCode::OK;
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    // The filename is server-derived from an already-validated package id
+    // (`[A-Za-z0-9_-]`), so it is safe to embed verbatim.
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        resp.headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    resp
+}
+
+/// `POST /library/reveal` — open the library root (`<root>`) in the OS file
+/// manager. Returns `{ok:true, path}`. If the OS open fails, returns an error
+/// (no pretend-success).
+async fn post_library_reveal(State(state): State<AppState>) -> Response {
+    let root = state.world_store.root().to_path_buf();
+    let path_str = root.to_string_lossy().to_string();
+    let to_open = root.clone();
+    let opened = tokio::task::spawn_blocking(move || open::that(&to_open)).await;
+    match opened {
+        Ok(Ok(())) => ok_json(&json!({"ok": true, "path": path_str})),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("could not open library folder: {e}")}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+/// `GET /worlds/{id}/export` — stream a `.zip` of the world package directory
+/// (`world.json` + assets). 404 when the world does not exist.
+async fn get_world_export(
+    State(state): State<AppState>,
+    AxPath(world_id): AxPath<String>,
+) -> Response {
+    if !validate_world_id_segment(&world_id) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid world id"}),
+        );
+    }
+    let store = state.world_store.clone();
+    let id = world_id.clone();
+    let zipped = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, share::ShareError> {
+        if !store.world_exists(&id) {
+            return Ok(None);
+        }
+        let dir = store.world_dir(&id);
+        Ok(Some(share::zip_dir(&dir, "")?))
+    })
+    .await;
+
+    match zipped {
+        Ok(Ok(Some(bytes))) => {
+            zip_attachment_response(bytes, &format!("{world_id}.gmworld.zip"))
+        }
+        Ok(Ok(None)) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": "world not found"}),
+        ),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("export failed: {e}")}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+/// `GET /stories/{id}/export?bake=1` — stream a `.zip` of the story package.
+/// With `bake=1` AND a resolvable `world_ref`, also bakes the referenced world
+/// package under `world/` and sets `world_embedded=true` in the embedded
+/// `story.json` copy. 404 when the story is absent; a dangling `world_ref` under
+/// `bake=1` is a hard error (no silent skip).
+async fn get_story_export(
+    State(state): State<AppState>,
+    AxPath(story_id): AxPath<String>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    if !validate_world_id_segment(&story_id) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid story id"}),
+        );
+    }
+    let bake = matches!(params.get("bake").map(String::as_str), Some("1" | "true"));
+
+    // Resolve story dir + (optional) world_ref under the story store lock, then
+    // do the blocking zip work without holding it.
+    let story_dir;
+    let world_ref;
+    let story_exists;
+    {
+        let store = state.story_store.lock().expect("story store lock poisoned");
+        story_exists = store.story_exists(&story_id);
+        story_dir = store.story_dir(&story_id);
+        world_ref = if story_exists {
+            store.world_ref(&story_id).ok().flatten()
+        } else {
+            None
+        };
+    }
+    if !story_exists {
+        return json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": "story not found"}),
+        );
+    }
+
+    if !bake {
+        let zipped = tokio::task::spawn_blocking(move || share::zip_dir(&story_dir, "")).await;
+        return match zipped {
+            Ok(Ok(bytes)) => zip_attachment_response(bytes, &format!("{story_id}.gmstory.zip")),
+            Ok(Err(e)) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("export failed: {e}")}),
+            ),
+            Err(e) => json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("join error: {e}")}),
+            ),
+        };
+    }
+
+    // bake=1: the world_ref MUST exist and resolve to a present world package.
+    let Some(world_ref) = world_ref else {
+        return json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!({"ok": false, "error": "cannot bake: story has no world_ref"}),
+        );
+    };
+    if !validate_world_id_segment(&world_ref.id) {
+        return json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!({"ok": false, "error": "cannot bake: world_ref id is invalid"}),
+        );
+    }
+    let world_store = state.world_store.clone();
+    let world_id = world_ref.id.clone();
+    let story_id_for_file = story_id.clone();
+    let zipped = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, share::ShareError> {
+        if !world_store.world_exists(&world_id) {
+            return Ok(None);
+        }
+        let world_dir = world_store.world_dir(&world_id);
+        // Read the on-disk story.json and flip world_embedded=true for the
+        // embedded copy (key order preserved by serde_json preserve_order).
+        let manifest_path = story_dir.join("story.json");
+        let raw = std::fs::read(&manifest_path)
+            .map_err(|e| share::ShareError::Io(e.to_string()))?;
+        let mut manifest: Value = serde_json::from_slice(&raw)
+            .map_err(|e| share::ShareError::Io(format!("parse story.json: {e}")))?;
+        if let Value::Object(map) = &mut manifest {
+            map.insert("world_embedded".to_string(), Value::Bool(true));
+        }
+        let manifest_bytes = serde_json::to_vec(&manifest)
+            .map_err(|e| share::ShareError::Io(format!("serialize story.json: {e}")))?;
+        let bytes = share::zip_story_with_world(&story_dir, &world_dir, &manifest_bytes)?;
+        Ok(Some(bytes))
+    })
+    .await;
+
+    match zipped {
+        Ok(Ok(Some(bytes))) => {
+            zip_attachment_response(bytes, &format!("{story_id_for_file}.gmstory.zip"))
+        }
+        Ok(Ok(None)) => json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!({"ok": false, "error": format!("cannot bake: referenced world {:?} not found", world_ref.id)}),
+        ),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("export failed: {e}")}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+/// `POST /library/import` (raw `application/zip` body) — inspect the archive and
+/// import it as a world or story package. `?overwrite=1` allows replacing an
+/// existing package id. Returns `{ok:true, kind, id}`.
+///
+/// No-fallback: an unrecognized/malformed archive, a zip-slip path, or a
+/// colliding id without `overwrite` changes nothing on disk.
+async fn post_library_import(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    let overwrite = matches!(
+        params.get("overwrite").map(String::as_str),
+        Some("1" | "true")
+    );
+    if body.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "empty request body (expected zip bytes)"}),
+        );
+    }
+
+    // `world_dir("")` / `story_dir("")` resolve to the `worlds/` / `stories/`
+    // parent directories (a `join("")` is a no-op tail), which is exactly the
+    // parent the import writes into.
+    let worlds_dir = state.world_store.world_dir("");
+    let stories_dir = {
+        let store = state.story_store.lock().expect("story store lock poisoned");
+        store.story_dir("")
+    };
+
+    let bytes = body.to_vec();
+    let imported = tokio::task::spawn_blocking(
+        move || -> Result<(share::PackageKind, String), share::ShareError> {
+            let archive = share::Archive::from_zip_bytes(&bytes)?;
+            let kind = archive.detect_kind()?;
+            match kind {
+                share::PackageKind::World => {
+                    let id = import_world_into(&archive, &worlds_dir, overwrite)?;
+                    Ok((kind, id))
+                }
+                share::PackageKind::Story => {
+                    let id = import_story_into(
+                        &archive,
+                        &stories_dir,
+                        &worlds_dir,
+                        overwrite,
+                    )?;
+                    Ok((kind, id))
+                }
+            }
+        },
+    )
+    .await;
+
+    match imported {
+        Ok(Ok((kind, id))) => {
+            // Stories cache their scanned list in memory; rescan so the new
+            // package is live. Worlds read disk per call (no rescan needed).
+            if kind == share::PackageKind::Story {
+                let mut store = state.story_store.lock().expect("story store lock poisoned");
+                if let Err(e) = store.reload() {
+                    return json_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &json!({"ok": false, "error": format!("rescan after import failed: {e}")}),
+                    );
+                }
+            }
+            ok_json(&json!({"ok": true, "kind": kind.as_str(), "id": id}))
+        }
+        Ok(Err(e)) => {
+            let code = match e {
+                share::ShareError::Zip(_) | share::ShareError::Unrecognized(_) => {
+                    StatusCode::BAD_REQUEST
+                }
+                share::ShareError::Traversal(_) => StatusCode::BAD_REQUEST,
+                share::ShareError::Io(ref m) if m == IMPORT_COLLISION => StatusCode::CONFLICT,
+                share::ShareError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            json_response(code, &json!({"ok": false, "error": e.to_string()}))
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+/// Sentinel message for an id-collision-without-overwrite, mapped to a 409 by the
+/// import handler.
+const IMPORT_COLLISION: &str = "package id already exists (pass overwrite=1 to replace)";
+
+/// Max COMPRESSED body for `POST /library/import` (64 MiB). The uncompressed
+/// zip-bomb caps are enforced separately in `share::Archive::from_zip_bytes`.
+const LIBRARY_IMPORT_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
+/// Allocate a fresh, urlsafe, non-colliding package id under `parent` (the
+/// `worlds/` or `stories/` directory).
+fn allocate_package_id(parent: &std::path::Path) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut n: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    for _ in 0..64 {
+        n = (n ^ (n >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        n ^= n >> 27;
+        let mut v = n;
+        let mut s = String::with_capacity(13);
+        const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        if v == 0 {
+            s.push('0');
+        }
+        while v > 0 {
+            s.push(ALPHABET[(v % 36) as usize] as char);
+            v /= 36;
+        }
+        if !parent.join(&s).exists() {
+            return s;
+        }
+    }
+    // Astronomically unlikely fallthrough; n is mixed each loop.
+    format!("import-{n:x}")
+}
+
+/// Resolve the destination id for an imported package: prefer the manifest id
+/// when it is a safe segment; otherwise allocate a fresh one. Enforces the
+/// overwrite-collision rule.
+fn resolve_import_id(
+    archive: &share::Archive,
+    kind: share::PackageKind,
+    parent: &std::path::Path,
+    overwrite: bool,
+) -> Result<String, share::ShareError> {
+    let id = archive
+        .manifest_id(kind)
+        .filter(|s| validate_world_id_segment(s))
+        .unwrap_or_else(|| allocate_package_id(parent));
+    let dest = parent.join(&id);
+    if dest.exists() && !overwrite {
+        return Err(share::ShareError::Io(IMPORT_COLLISION.to_string()));
+    }
+    Ok(id)
+}
+
+/// Import a world archive into `worlds_dir`. Writes into a fresh temp directory
+/// then atomically swaps it into place so a failed extraction never leaves a
+/// partial package.
+fn import_world_into(
+    archive: &share::Archive,
+    worlds_dir: &std::path::Path,
+    overwrite: bool,
+) -> Result<String, share::ShareError> {
+    let id = resolve_import_id(archive, share::PackageKind::World, worlds_dir, overwrite)?;
+    let dest = worlds_dir.join(&id);
+    std::fs::create_dir_all(worlds_dir).map_err(|e| share::ShareError::Io(e.to_string()))?;
+    let staging = worlds_dir.join(format!(".import-{id}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    archive.extract_all(&staging)?;
+    swap_in(&staging, &dest)?;
+    Ok(id)
+}
+
+/// Import a story archive into `stories_dir`, also importing any baked `world/`
+/// subtree into `worlds_dir`. Both writes go through staging dirs so a failure
+/// leaves the library untouched.
+fn import_story_into(
+    archive: &share::Archive,
+    stories_dir: &std::path::Path,
+    worlds_dir: &std::path::Path,
+    overwrite: bool,
+) -> Result<String, share::ShareError> {
+    let id = resolve_import_id(archive, share::PackageKind::Story, stories_dir, overwrite)?;
+    let dest = stories_dir.join(&id);
+
+    // Baked world (optional) first: validate + stage it, but only swap after the
+    // story stages successfully.
+    let baked = archive.has_baked_world();
+    let world_subtree = archive.subtree("world/");
+    let world_id = if baked {
+        let wid = resolve_import_id(&world_subtree, share::PackageKind::World, worlds_dir, overwrite)?;
+        Some(wid)
+    } else {
+        None
+    };
+
+    std::fs::create_dir_all(stories_dir).map_err(|e| share::ShareError::Io(e.to_string()))?;
+    let story_staging =
+        stories_dir.join(format!(".import-{id}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&story_staging);
+    // Story package without the baked world/ subtree.
+    archive.extract_excluding(&story_staging, "world/")?;
+
+    let world_staging = if let Some(wid) = &world_id {
+        std::fs::create_dir_all(worlds_dir).map_err(|e| share::ShareError::Io(e.to_string()))?;
+        let ws = worlds_dir.join(format!(".import-{wid}.{}.tmp", std::process::id()));
+        let _ = std::fs::remove_dir_all(&ws);
+        world_subtree.extract_all(&ws)?;
+        // Rewrite the staged story.json's world_ref.id to the ACTUAL imported
+        // world id so the bundle is internally consistent (the baked world is
+        // imported under `wid`, which may differ from the manifest's original
+        // ref). No-fallback: a rewrite failure aborts the import.
+        rewrite_staged_story_world_ref(&story_staging, wid)?;
+        Some(ws)
+    } else {
+        None
+    };
+
+    // Swap the baked WORLD in FIRST (the dependency), THEN the story — so a
+    // failure can never leave a live story pointing at a missing world.
+    if let (Some(ws), Some(wid)) = (&world_staging, &world_id) {
+        let world_dest = worlds_dir.join(wid);
+        swap_in(ws, &world_dest)?;
+    }
+    swap_in(&story_staging, &dest)?;
+    Ok(id)
+}
+
+/// Rewrite the `world_ref.id` field of a staged `story.json` to `world_id` so an
+/// imported story always references the world id it was actually imported under.
+/// No-fallback: a missing/unparsable manifest is an error (the bundle would be
+/// inconsistent otherwise).
+fn rewrite_staged_story_world_ref(
+    story_staging: &std::path::Path,
+    world_id: &str,
+) -> Result<(), share::ShareError> {
+    let manifest_path = story_staging.join("story.json");
+    let bytes = std::fs::read(&manifest_path).map_err(|e| share::ShareError::Io(e.to_string()))?;
+    let mut value: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| share::ShareError::Unrecognized(format!("story.json is not valid JSON: {e}")))?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| share::ShareError::Unrecognized("story.json is not an object".to_string()))?;
+    let world_ref = obj
+        .entry("world_ref".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let world_ref = world_ref.as_object_mut().ok_or_else(|| {
+        share::ShareError::Unrecognized("story.json world_ref is not an object".to_string())
+    })?;
+    world_ref.insert("id".to_string(), Value::String(world_id.to_string()));
+    let serialized =
+        serde_json::to_vec(&value).map_err(|e| share::ShareError::Io(e.to_string()))?;
+    std::fs::write(&manifest_path, serialized).map_err(|e| share::ShareError::Io(e.to_string()))?;
+    Ok(())
+}
+
+/// Atomically replace `dest` with `staging`: remove an existing `dest`, then
+/// rename `staging` over it. On rename failure the staging dir is cleaned up.
+fn swap_in(staging: &std::path::Path, dest: &std::path::Path) -> Result<(), share::ShareError> {
+    if dest.exists() {
+        std::fs::remove_dir_all(dest).map_err(|e| share::ShareError::Io(e.to_string()))?;
+    }
+    if let Err(e) = std::fs::rename(staging, dest) {
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(share::ShareError::Io(e.to_string()));
+    }
+    Ok(())
 }
 
 async fn post_transcribe(
@@ -2969,4 +4170,43 @@ fn load_key(path: &std::path::Path) -> std::io::Result<rustls::pki_types::Privat
     rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "no private key in PEM")
     })
+}
+
+#[cfg(test)]
+mod sidecar_image_path_tests {
+    use super::sidecar_image_path;
+
+    #[test]
+    fn accepts_exactly_two_safe_segments() {
+        assert_eq!(
+            sidecar_image_path("/image-files/run-123/image_0.png").as_deref(),
+            Some("/image-files/run-123/image_0.png")
+        );
+        assert_eq!(
+            sidecar_image_path("/images/run-9/map_0.png").as_deref(),
+            Some("/images/run-9/map_0.png")
+        );
+    }
+
+    #[test]
+    fn rejects_traversal_and_remote_urls() {
+        // Path traversal — `..` is never a safe segment.
+        assert_eq!(sidecar_image_path("/image-files/../../secret"), None);
+        assert_eq!(sidecar_image_path("/image-files/run/../secret.png"), None);
+        // Absolute remote URL (SSRF) — a scheme/host is rejected outright.
+        assert_eq!(sidecar_image_path("http://evil.example/image-files/a/b"), None);
+        assert_eq!(sidecar_image_path("https://169.254.169.254/image-files/a/b"), None);
+        assert_eq!(sidecar_image_path("//evil.example/image-files/a/b"), None);
+        // Wrong segment count.
+        assert_eq!(sidecar_image_path("/image-files/run-1"), None);
+        assert_eq!(sidecar_image_path("/image-files/run-1/a/b.png"), None);
+        // Empty segment.
+        assert_eq!(sidecar_image_path("/image-files//b.png"), None);
+        assert_eq!(sidecar_image_path("/image-files/run-1/"), None);
+        // Query/fragment smuggling.
+        assert_eq!(sidecar_image_path("/image-files/run-1/a.png?x=1"), None);
+        assert_eq!(sidecar_image_path("/image-files/run-1/a.png#frag"), None);
+        // Unknown prefix.
+        assert_eq!(sidecar_image_path("/missing/run-1/a.png"), None);
+    }
 }

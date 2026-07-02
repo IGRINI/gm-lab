@@ -256,6 +256,29 @@ pub struct World {
     /// `set_public_intro` (the single prefix-mutating world method). Mirrors the
     /// PROMPT-CACHE PREFIX DISCIPLINE invariant for the orchestrator port.
     pub prefix_dirty: bool,
+
+    /// Phase-4 package provenance (`docs/MODS_PACKAGES_TZ.md`): which saved
+    /// WORLD package this session was launched from (`{id, version}`). `None`
+    /// for sessions that were not launched from a saved world package (e.g. a
+    /// catalog story or a brief-seeded chat). Persisted additively — a trailing
+    /// `world_ref` key emitted only when `Some`, so pre-Phase-4 saves stay
+    /// byte-identical.
+    pub world_ref: Option<PackageRef>,
+    /// Phase-4 package provenance: which saved STORY package this session was
+    /// launched from (`{id, version}`). `None` for procedural-world and catalog
+    /// launches. Persisted additively (trailing `story_ref` key when `Some`).
+    pub story_ref: Option<PackageRef>,
+}
+
+/// A reference to a saved content package (a world or a story) by its stable id
+/// and the package `version` that was launched, so a save is reproducible and
+/// linked back to its package (`docs/MODS_PACKAGES_TZ.md` Phase 4).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct PackageRef {
+    /// The package id (folder name in the library).
+    pub id: String,
+    /// The package `version` at launch time (0 when unknown).
+    pub version: u64,
 }
 
 impl World {
@@ -319,6 +342,8 @@ impl World {
             npc_whereabouts: BTreeMap::new(),
             world_canon: WorldCanon::default(),
             prefix_dirty: false,
+            world_ref: None,
+            story_ref: None,
         }
     }
 
@@ -480,6 +505,207 @@ impl World {
             }
         }
         self.constraints = self.scene.constraints.clone();
+    }
+
+    /// Phase-4 composition (`docs/MODS_PACKAGES_TZ.md`): build a playable World
+    /// from a world bible (`lore`) PLUS an authored plot overlay (`plot`).
+    ///
+    /// This is the engine-faithful realization of the TZ note
+    /// "load(world.json.lore) + наложение story.json.plot": the world is first
+    /// generated procedurally from the lore via [`World::from_worldgen_with_lore`]
+    /// — so the resulting World carries the world's lore-derived content (the
+    /// world `name`/`public_premise`, the procedural canon places, and one canon
+    /// actor + NPC card per generated actor) — and then the authored plot is
+    /// OVERLAID on top of that world WITHOUT discarding the worldgen canon:
+    ///
+    /// * `player_character`, `hidden_truth`, `story_brief`, `public_intro` and
+    ///   the story `title` from the plot replace the procedural defaults;
+    /// * authored `npcs` are merged into the worldgen roster (an authored npc id
+    ///   that collides with a generated one overrides it);
+    /// * authored `public_facts` / `proper_nouns` / `state_records` are merged;
+    /// * the authored starting `scene` is applied via [`World::set_scene`], which
+    ///   UPSERTS the scene as a canon place wired into the worldgen graph with a
+    ///   transition from the procedural start place — so both the authored start
+    ///   AND the rest of the generated world remain reachable in the canon.
+    ///
+    /// `spec` drives worldgen (seed/genre/tone/scale); a numeric `spec.seed`
+    /// makes the generated world reproducible.
+    pub fn compose_authored(
+        spec: &crate::canon::WorldSpec,
+        lore: crate::canon::WorldLore,
+        plot: &Value,
+    ) -> Self {
+        let mut world = World::from_worldgen_with_lore(spec, lore);
+        world.overlay_authored_plot(plot);
+        world
+    }
+
+    /// Overlay an authored plot (a story-seed-shaped object) onto an already
+    /// generated/loaded World, preserving the existing world canon. See
+    /// [`World::compose_authored`] for the field-by-field contract.
+    pub fn overlay_authored_plot(&mut self, plot: &Value) {
+        // Story identity (title/brief/public/hidden_truth) and the player
+        // character are read from the RAW plot: `normalize_seed` rebuilds a
+        // loose seed and folds `title` into the derived scene title (dropping the
+        // top-level key), so identity must be captured before normalization. The
+        // normalized form is used only for the structural pieces (npcs / scene /
+        // facts / state_records) that benefit from its lenient coercion.
+        let raw = plot.as_object().cloned().unwrap_or_default();
+        let plot = normalize_seed(plot);
+
+        // --- story identity ------------------------------------------------
+        let title = get_str(&raw, "title");
+        if !title.is_empty() {
+            self.set_story_title(&title);
+        }
+        let story_brief = {
+            let v = get_str(&plot, "story_brief");
+            if !v.is_empty() {
+                v
+            } else {
+                let v = get_str(&plot, "player_brief");
+                if !v.is_empty() {
+                    v
+                } else {
+                    get_str(&plot, "brief")
+                }
+            }
+        };
+        if !story_brief.is_empty() {
+            self.set_story_brief(&story_brief);
+        }
+        let public_intro = {
+            let v = get_str(&plot, "public_intro");
+            if !v.is_empty() {
+                v
+            } else {
+                get_str(&plot, "public")
+            }
+        };
+        if !public_intro.is_empty() {
+            self.set_public_intro(&public_intro);
+        }
+
+        // --- hidden truth / canon -----------------------------------------
+        let hidden_truth = {
+            let v = get_str(&plot, "hidden_truth");
+            if !v.is_empty() {
+                v
+            } else {
+                get_str(&plot, "canon")
+            }
+        };
+        if !hidden_truth.is_empty() {
+            self.set_hidden_truth(&hidden_truth);
+        }
+
+        // --- player character (read from RAW: normalize_seed drops it) -----
+        let pc_raw = if raw.contains_key("player_character") {
+            raw.get("player_character")
+        } else {
+            raw.get("player")
+        };
+        if pc_raw.is_some() {
+            self.player_character = seed_player_character(pc_raw);
+        }
+
+        // --- proper nouns --------------------------------------------------
+        for noun in as_list(plot.get("proper_nouns").unwrap_or(&Value::Null))
+            .iter()
+            .map(as_str)
+            .filter(|s| !s.is_empty())
+        {
+            if !self.extra_proper_nouns.contains(&noun) {
+                self.extra_proper_nouns.push(noun);
+            }
+        }
+
+        // --- authored npcs (merge into the worldgen roster) ---------------
+        // `seed_npcs` returns the authored cards (and appends their names to
+        // `extra_proper_nouns`); merge them over the generated roster so an
+        // authored id overrides a generated one but the rest of the world's
+        // actors remain.
+        let authored_npcs = self.seed_npcs(&plot);
+        // `seed_npcs` returns a single default "stranger" when the plot has no
+        // npcs; do not inject it over a populated worldgen roster.
+        let plot_has_npcs = !as_list(plot.get("npcs").unwrap_or(&Value::Null)).is_empty();
+        if plot_has_npcs {
+            for (id, npc) in authored_npcs {
+                self.npcs.insert(id, npc);
+            }
+        }
+
+        // --- authored public facts (merge) --------------------------------
+        let authored_facts = self.seed_facts(&plot);
+        for fact in authored_facts {
+            self.fact_records.retain(|r| r.fact_id != fact.fact_id);
+            self.fact_records.push(fact);
+        }
+
+        // --- authored state records (merge) -------------------------------
+        let authored_state = self.seed_state_records(&plot);
+        for record in authored_state {
+            self.state_records.push(record.clone());
+            self.sync_legacy_state_record_to_memory(&record);
+        }
+
+        // --- time (read from RAW: normalize_seed drops it) -----------------
+        // The plot's `time` may be a full WorldTime object OR a bare integer of
+        // absolute start minutes (the `story.json` shorthand in the TZ).
+        match raw.get("time") {
+            Some(Value::Object(_)) => {
+                self.time = seed_time(raw.get("time"));
+                self.world_canon.clock_minutes = self.time.absolute_minutes;
+            }
+            Some(num @ Value::Number(_)) => {
+                if let Some(minutes) = as_int_or_none(num) {
+                    self.time.absolute_minutes = std::cmp::max(0, minutes);
+                    self.world_canon.clock_minutes = self.time.absolute_minutes;
+                }
+            }
+            _ => {}
+        }
+
+        // --- authored starting scene (upsert into the worldgen canon) ------
+        // Apply the scene via `set_scene`, which adds the authored place to the
+        // existing canon (with a transition from the procedural start place)
+        // rather than rebuilding the canon from scratch — keeping BOTH the
+        // authored start AND the generated world reachable. Only when the AUTHOR
+        // actually supplied a scene (or present npcs) — `normalize_seed` always
+        // synthesizes a placeholder scene, which must not clobber the worldgen
+        // start scene for a plot that left the scene unspecified.
+        // Read the scene from the RAW plot so the author's explicit
+        // `location_id` (and other ids) are honored verbatim — `normalize_seed`
+        // re-derives the scene location id from the title, which would lose an
+        // authored canonical id.
+        let authored_scene = raw.contains_key("scene") || raw.contains_key("present_npcs");
+        if let (true, Some(Value::Object(scene))) = (authored_scene, raw.get("scene")) {
+            let location_id = get_str(scene, "location_id");
+            let scene_title = {
+                let t = get_str(scene, "title");
+                if !t.is_empty() {
+                    t
+                } else {
+                    get_str(scene, "location")
+                }
+            };
+            let description = get_str(scene, "description");
+            let present_npcs = scene.get("present_npcs").cloned().unwrap_or(Value::Null);
+            let items = scene.get("items").cloned().unwrap_or(Value::Null);
+            let exits = scene.get("exits").cloned().unwrap_or(Value::Null);
+            let constraints = scene.get("constraints").cloned().unwrap_or(Value::Null);
+            let tension = get_str(scene, "tension");
+            self.set_scene(
+                &scene_title,
+                &description,
+                &location_id,
+                &present_npcs,
+                &items,
+                &exits,
+                &constraints,
+                &tension,
+            );
+        }
     }
 
     // --- RNG accessors for persistence -----------------------------------
@@ -5848,5 +6074,122 @@ fn value_as_str_vec(v: Value) -> Vec<String> {
             .filter_map(|x| x.as_str().map(|s| s.to_string()))
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod compose_authored_tests {
+    use super::*;
+    use crate::canon::{WorldLore, WorldSpec};
+    use serde_json::json;
+
+    /// A deterministic worldgen base (fixed numeric seed => reproducible canon).
+    fn base_spec() -> WorldSpec {
+        WorldSpec {
+            seed: "20260622".to_string(),
+            genre: "fantasy".to_string(),
+            tone: "tense".to_string(),
+            scale: "town".to_string(),
+        }
+    }
+
+    /// Alias keys are folded into the canonical world fields: `player_brief` /
+    /// `brief` -> story_brief, `canon` -> hidden_truth, `player` ->
+    /// player_character, and `public` -> public_intro (through
+    /// `normalize_seed`, which maps the `public` alias onto the scene/intro).
+    #[test]
+    fn overlay_alias_keys_populate_canonical_fields() {
+        // `brief` alias (story_brief absent and player_brief absent), `canon`
+        // alias (hidden_truth absent), `player` alias (player_character absent),
+        // and the canonical `public_intro` key.
+        let plot = json!({
+            "brief": "Краткое описание для игрока.",
+            "public_intro": "Публичное вступление в сцену.",
+            "canon": "Скрытая истина, известная только мастеру.",
+            "player": {"name": "Тестовый Герой", "class_role": "следователь"},
+        });
+        let world = World::compose_authored(&base_spec(), WorldLore::default(), &plot);
+
+        assert_eq!(world.story_brief, "Краткое описание для игрока.");
+        assert_eq!(world.public, "Публичное вступление в сцену.");
+        assert_eq!(world.canon, "Скрытая истина, известная только мастеру.");
+        assert_eq!(world.player_character.name, "Тестовый Герой");
+
+        // `player_brief` alias takes precedence over `brief` (matches the
+        // story_brief precedence ladder: story_brief > player_brief > brief).
+        let plot2 = json!({
+            "player_brief": "Бриф из player_brief.",
+            "brief": "Бриф из brief.",
+        });
+        let world2 = World::compose_authored(&base_spec(), WorldLore::default(), &plot2);
+        assert_eq!(world2.story_brief, "Бриф из player_brief.");
+    }
+
+    /// A plot with NO npcs must NOT overwrite the procedural worldgen roster
+    /// (the authored "stranger" default must never clobber generated actors).
+    #[test]
+    fn empty_plot_preserves_worldgen_roster() {
+        let generated = World::from_worldgen_with_dice_seed(&base_spec(), 20260622);
+        let generated_ids: BTreeSet<String> = generated.npcs.keys().cloned().collect();
+        assert!(
+            !generated_ids.is_empty(),
+            "worldgen must produce at least one actor for this test to be meaningful"
+        );
+
+        // An empty plot (no `npcs` key) overlaid on the same deterministic base.
+        let plot = json!({"brief": "Только текст, без ролей."});
+        let composed = World::compose_authored(&base_spec(), WorldLore::default(), &plot);
+        let composed_ids: BTreeSet<String> = composed.npcs.keys().cloned().collect();
+
+        assert_eq!(
+            composed_ids, generated_ids,
+            "empty plot must leave the worldgen roster untouched"
+        );
+    }
+
+    /// An authored scene upserts its place into the canon while the generated
+    /// places remain reachable (set_scene adds, it does not rebuild).
+    #[test]
+    fn authored_scene_upserts_place_keeping_generated_places() {
+        let generated = World::from_worldgen_with_dice_seed(&base_spec(), 20260622);
+        let generated_place_ids: BTreeSet<String> =
+            generated.world_canon.places.keys().cloned().collect();
+        assert!(
+            generated_place_ids.len() >= 2,
+            "worldgen must produce several places for this test to be meaningful"
+        );
+
+        let plot = json!({
+            "brief": "Сцена с авторским местом.",
+            "scene": {
+                "location_id": "authored_start_room",
+                "title": "Авторская комната",
+                "description": "Тесная комната, которой не было в процедурном мире.",
+            },
+        });
+        let composed = World::compose_authored(&base_spec(), WorldLore::default(), &plot);
+
+        // The authored place was upserted into the canon.
+        assert!(
+            composed
+                .world_canon
+                .places
+                .contains_key("authored_start_room"),
+            "authored scene place must be present in the canon"
+        );
+        // The current scene points at the authored location.
+        assert_eq!(composed.scene.location_id, "authored_start_room");
+
+        // Every generated place still exists (set_scene added, did not replace).
+        for id in &generated_place_ids {
+            assert!(
+                composed.world_canon.places.contains_key(id),
+                "generated place {id} must remain after authored scene upsert"
+            );
+        }
+        assert!(
+            composed.world_canon.places.len() > generated_place_ids.len(),
+            "authored scene must ADD a place, keeping the generated ones"
+        );
     }
 }

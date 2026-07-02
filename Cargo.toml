@@ -70,6 +70,10 @@ local-ip-address = "0.6"
 directories = "5"
 tempfile = "3"
 open = "5"
+# Phase-5 package zip export/import. Deflate-only: drop the heavy optional
+# codecs (aes/bzip2/zstd/lzma) and their C build deps — our packages are JSON +
+# PNG, and we both write and read the archives ourselves.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # utilities
 thiserror = "2"

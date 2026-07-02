@@ -259,6 +259,15 @@ header h1 b{color:var(--acc)}
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .story-picker .chat-sidebar-status{white-space:normal}
 .story-picker .chat-sidebar-empty.inline{margin:0;padding:7px 9px;font-size:12px}
+
+/* Phase 5 — share UX: library reveal/import + per-row export controls */
+.library-actions{display:flex;gap:6px;flex-wrap:wrap}
+.library-actions .library-action{flex:1;min-width:0;padding:6px 8px;font-size:12px;white-space:nowrap}
+.story-export-actions{display:flex;gap:6px;flex-wrap:wrap}
+.story-export-actions .story-export{flex:1;min-width:0;padding:5px 7px;font-size:11px;white-space:nowrap}
+.world-row-export{border-color:rgba(156,207,216,.3)}
+.visually-hidden-input{position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 /* ===== World creator — "Студия миров": full-height two-pane workspace =====
    The pane is a non-scrolling flex host (mirrors .chat-pane). On desktop there
    are exactly two scroll containers: the architect log (left) and the inspector
@@ -550,6 +559,32 @@ header h1 b{color:var(--acc)}
 .chat-row-delete:hover{color:var(--redo);background:rgba(224,134,152,.12);border-color:rgba(224,134,152,.34)}
 .chat-row-delete:focus-visible{opacity:1;outline:2px solid var(--acc);outline-offset:2px}
 .chat-row-delete:disabled{opacity:.3;cursor:default}
+
+/* saved-world row: play / create-story actions on a line below the row */
+.world-history-item{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;
+  column-gap:4px;row-gap:6px}
+.world-history-item>.world-history-row{grid-column:1;grid-row:1}
+.world-history-item>.chat-row-delete{grid-column:2;grid-row:1}
+.world-row-actions{grid-column:1 / -1;grid-row:2;display:flex;gap:6px;flex-wrap:wrap}
+.world-row-actions .btn{flex:1;min-width:0;padding:6px 8px;font-size:12px;white-space:nowrap}
+.world-row-play{border-color:rgba(166,203,160,.34);color:var(--acc)}
+
+/* world-studio launch actions (play / create story for a saved world) */
+.world-inspector-launch{display:flex;gap:8px;flex-wrap:wrap}
+.world-inspector-launch .btn{flex:1;min-width:0}
+
+/* create-story-from-world modal form */
+.story-form{display:grid;gap:12px}
+.story-form-kind{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.story-kind-btn{display:grid;gap:3px;text-align:left;padding:10px 11px;border:1px solid var(--line);
+  border-radius:9px;background:rgba(255,255,255,.02);color:var(--tx);cursor:pointer;
+  transition:border-color .15s ease,background .15s ease}
+.story-kind-btn:hover:not(:disabled){border-color:rgba(156,207,216,.3)}
+.story-kind-btn.active{border-color:var(--acc);background:rgba(156,207,216,.08)}
+.story-kind-btn:disabled{opacity:.6;cursor:default}
+.story-kind-btn b{font-size:13px}
+.story-kind-btn span{color:var(--mut);font-size:11.5px;line-height:1.35}
+.story-form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:2px}
 
 /* delete-chat confirmation dialog */
 .confirm-backdrop{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.6);

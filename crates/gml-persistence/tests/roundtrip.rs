@@ -12,7 +12,7 @@ use serde_json::{json, Map, Value};
 use gml_config::Config;
 use gml_llm::{Backend, MockClient};
 use gml_orchestrator::{ClientFactory, Session};
-use gml_persistence::{DialogRuntime, DialogStore, SCHEMA_VERSION};
+use gml_persistence::{DialogRuntime, DialogStore, WorldStore, SCHEMA_VERSION};
 use gml_world::World;
 
 fn factory() -> ClientFactory {
@@ -271,90 +271,101 @@ fn crud_create_save_load_list_delete() {
     assert_eq!(res["deleted"], json!(false));
 }
 
-#[test]
-fn worlds_are_stored_separately_from_chats() {
-    let (store, _dir) = temp_store();
-    let guest = "worlds-guest";
+fn temp_world_store() -> (WorldStore, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = WorldStore::new(dir.path().join("library")).expect("create world store");
+    (store, dir)
+}
 
-    assert!(store.list_worlds(guest).expect("list worlds").is_empty());
-    assert_eq!(
-        store.active_chat_id(guest).expect("active before worlds"),
-        None,
-        "listing worlds must not create an active chat"
-    );
+#[test]
+fn world_store_create_update_list_get_delete_roundtrip() {
+    let (store, _dir) = temp_world_store();
+
+    assert!(store.list_worlds().expect("list worlds").is_empty());
 
     let world = store
-        .create_world(
-            guest,
-            json!({
-                "title": "Порог Второго Неба",
-                "genre": "fantasy isekai",
-                "tone": "tense hopeful",
-                "world_size": "Континент с несколькими королевствами",
-                "population": "Десятки миллионов жителей",
+        .create_world(json!({
+            "title": "Порог Второго Неба",
+            "genre": "fantasy isekai",
+            "tone": "tense hopeful",
+            "world_size": "Континент с несколькими королевствами",
+            "population": "Десятки миллионов жителей",
+            "public_premise": "Клятвы и долги имеют силу закона и магии.",
+            "world_lore": {
+                "name": "Порог Второго Неба",
                 "public_premise": "Клятвы и долги имеют силу закона и магии.",
-                "world_lore": {
-                    "name": "Порог Второго Неба",
-                    "public_premise": "Клятвы и долги имеют силу закона и магии.",
-                    "world_laws": ["магия требует имени, цены или признанного права"]
-                }
-            }),
-        )
+                "world_laws": ["магия требует имени, цены или признанного права"]
+            }
+        }))
         .expect("create world");
     let world_id = world["id"].as_str().expect("world id").to_string();
     assert_eq!(world["kind"], json!("world"));
     assert_eq!(world["title"], json!("Порог Второго Неба"));
     assert_eq!(world["genre"], json!("fantasy isekai"));
     assert!(world["preview"].as_str().unwrap_or("").contains("Клятвы"));
-    assert_eq!(
-        store
-            .active_chat_id(guest)
-            .expect("active after create world"),
-        None,
-        "creating a world must not create or activate a chat"
-    );
 
-    let worlds = store.list_worlds(guest).expect("list worlds after create");
+    // world.json is the source of truth on disk.
+    let world_file = _dir
+        .path()
+        .join("library")
+        .join("worlds")
+        .join(&world_id)
+        .join("world.json");
+    assert!(world_file.is_file(), "world.json written to package dir");
+
+    let worlds = store.list_worlds().expect("list worlds after create");
     assert_eq!(worlds.len(), 1);
     assert_eq!(worlds[0]["id"], json!(world_id));
 
-    let deleted = store.delete_world(guest, &world_id).expect("delete world");
+    // get_world returns the same flattened shape.
+    let got = store.get_world(&world_id).expect("get world");
+    assert_eq!(got["id"], json!(world_id));
+    assert_eq!(got["title"], json!("Порог Второго Неба"));
+
+    // Shallow merge: a patch overwrites only the supplied keys.
+    let updated = store
+        .update_world(&world_id, json!({"genre": "dark fantasy"}))
+        .expect("update world");
+    assert_eq!(updated["genre"], json!("dark fantasy"));
+    assert_eq!(updated["world_size"], json!("Континент с несколькими королевствами"));
+
+    let deleted = store.delete_world(&world_id).expect("delete world");
     assert_eq!(deleted["deleted"], json!(true));
     assert!(store
-        .list_worlds(guest)
+        .list_worlds()
         .expect("list worlds after delete")
         .is_empty());
+
+    // Deleting/getting a missing world.
+    let missing = store.delete_world("nope").expect("delete missing");
+    assert_eq!(missing["deleted"], json!(false));
+    assert!(store.get_world("nope").is_err());
 }
 
 #[test]
-fn update_world_preserves_architect_history() {
-    let (store, _dir) = temp_store();
-    let guest = "world-update-guest";
+fn world_store_update_preserves_architect_history() {
+    let (store, _dir) = temp_world_store();
 
     let world = store
-        .create_world(
-            guest,
-            json!({
-                "status": "draft",
-                "genre": "fantasy",
-                "architect_messages": [
-                    {"role": "assistant", "content": "Опиши мир."},
-                    {"role": "user", "content": "Хочу мир клятв."}
-                ],
-                "architect_model_history": [
-                    {"role": "user", "content": "## Current Draft JSON\n{}"},
-                    {"role": "assistant", "content": "Собираю основу."}
-                ],
-                "architect_cache_session_id": "world-architect:test-session",
-                "architect_cache_thread_id": "world-architect:test-thread"
-            }),
-        )
+        .create_world(json!({
+            "status": "draft",
+            "genre": "fantasy",
+            "architect_messages": [
+                {"role": "assistant", "content": "Опиши мир."},
+                {"role": "user", "content": "Хочу мир клятв."}
+            ],
+            "architect_model_history": [
+                {"role": "user", "content": "## Current Draft JSON\n{}"},
+                {"role": "assistant", "content": "Собираю основу."}
+            ],
+            "architect_cache_session_id": "world-architect:test-session",
+            "architect_cache_thread_id": "world-architect:test-thread"
+        }))
         .expect("create draft world");
     let world_id = world["id"].as_str().expect("world id");
 
     let updated = store
         .update_world(
-            guest,
             world_id,
             json!({
                 "status": "ready",
@@ -387,12 +398,131 @@ fn update_world_preserves_architect_history() {
         updated["architect_cache_session_id"],
         "world-architect:test-session"
     );
+}
+
+#[test]
+fn world_store_migrates_legacy_sqlite_rows() {
+    use rusqlite::Connection;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("dialogs.sqlite3");
+
+    // Seed an old-style SQLite `worlds` row (the legacy schema).
+    {
+        let con = Connection::open(&db_path).expect("open legacy db");
+        con.execute_batch(
+            r#"
+            CREATE TABLE worlds (
+                guest_id TEXT NOT NULL,
+                world_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                preview TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guest_id, world_id)
+            );
+            "#,
+        )
+        .expect("create legacy worlds table");
+        let payload = json!({
+            "title": "Старый Мир",
+            "genre": "fantasy",
+            "public_premise": "Наследие былых эпох.",
+            "world_lore": {"name": "Старый Мир"}
+        })
+        .to_string();
+        con.execute(
+            "INSERT INTO worlds (guest_id, world_id, title, preview, payload, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "shared",
+                "legacy-world-1",
+                "Старый Мир",
+                "Наследие былых эпох.",
+                payload,
+                "2026-06-01 10:00:00",
+                "2026-06-02 11:00:00"
+            ],
+        )
+        .expect("insert legacy world");
+    }
+
+    let store = WorldStore::new(dir.path().join("library")).expect("create world store");
+    let imported = store
+        .migrate_from_sqlite(db_path.to_string_lossy().as_ref())
+        .expect("migrate");
+    assert_eq!(imported, 1, "one legacy world imported");
+
+    // The package now exists and round-trips the payload + timestamps.
+    let worlds = store.list_worlds().expect("list after migrate");
+    assert_eq!(worlds.len(), 1);
+    assert_eq!(worlds[0]["id"], json!("legacy-world-1"));
+    assert_eq!(worlds[0]["title"], json!("Старый Мир"));
+    assert_eq!(worlds[0]["genre"], json!("fantasy"));
+    assert_eq!(worlds[0]["created_at"], json!("2026-06-01 10:00:00"));
+    assert_eq!(worlds[0]["updated_at"], json!("2026-06-02 11:00:00"));
+
+    // Idempotent: a second migration is a no-op (packages already present).
+    let again = store
+        .migrate_from_sqlite(db_path.to_string_lossy().as_ref())
+        .expect("migrate again");
+    assert_eq!(again, 0, "re-migration is a no-op");
+    assert_eq!(store.list_worlds().expect("list").len(), 1);
+}
+
+#[test]
+fn world_store_write_read_assets_roundtrip() {
+    let (store, dir) = temp_world_store();
+    let world = store
+        .create_world(json!({"title": "Мир с картинкой"}))
+        .expect("create world");
+    let world_id = world["id"].as_str().expect("world id").to_string();
+
+    assert!(!store.has_asset(&world_id, "world_image.png"));
+    assert!(store
+        .read_asset(&world_id, "world_image.png")
+        .expect("read missing asset")
+        .is_none());
+
+    let png = b"\x89PNG\r\n\x1a\n-fake-bytes";
+    store
+        .write_asset(&world_id, "world_image.png", png)
+        .expect("write asset");
+
+    // The asset lands inside the package's assets/ directory.
+    let on_disk = dir
+        .path()
+        .join("library")
+        .join("worlds")
+        .join(&world_id)
+        .join("assets")
+        .join("world_image.png");
+    assert!(on_disk.is_file(), "asset written under assets/");
+
+    assert!(store.has_asset(&world_id, "world_image.png"));
     assert_eq!(
         store
-            .active_chat_id(guest)
-            .expect("active after update world"),
-        None,
-        "updating a world must not create or activate a chat"
+            .read_asset(&world_id, "world_image.png")
+            .expect("read asset"),
+        Some(png.to_vec())
+    );
+    assert_eq!(
+        store.asset_path(&world_id, "world_image.png"),
+        on_disk,
+        "asset_path resolves to the on-disk location"
+    );
+
+    // Overwrite is atomic and replaces the bytes.
+    let png2 = b"\x89PNG\r\n\x1a\n-other";
+    store
+        .write_asset(&world_id, "world_image.png", png2)
+        .expect("overwrite asset");
+    assert_eq!(
+        store
+            .read_asset(&world_id, "world_image.png")
+            .expect("read asset 2"),
+        Some(png2.to_vec())
     );
 }
 

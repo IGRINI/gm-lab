@@ -29,6 +29,10 @@ export const api = {
 
   stories: () => getJSON("/stories"),
 
+  createStory: (body) => _post("/stories", body),
+
+  deleteStory: (storyId) => _post(`/stories/${encodeURIComponent(storyId)}/delete`),
+
   chats: () => getJSON("/chats"),
 
   worlds: () => getJSON("/worlds"),
@@ -46,6 +50,43 @@ export const api = {
   deleteWorld: (worldId) => _post(`/worlds/${encodeURIComponent(worldId)}/delete`),
 
   generateImage: (body) => _post("/images/generate", body),
+
+  // --- Phase 5: share UX (export / import / reveal library folder) ---
+  // Open the library root in the OS file manager. Returns {ok, path} or {ok:false,error}.
+  revealLibrary: () => getJSON("/library/reveal", { method: "POST" }),
+
+  // Download URLs for the export endpoints (used to trigger a browser download
+  // via an <a download> click; the response is a zip attachment).
+  exportWorldUrl: (worldId) => `/worlds/${encodeURIComponent(worldId)}/export`,
+  exportStoryUrl: (storyId, bake) =>
+    `/stories/${encodeURIComponent(storyId)}/export${bake ? "?bake=1" : ""}`,
+
+  // POST raw zip bytes from a picked .zip file. Returns {ok,kind,id} or
+  // {ok:false,error} (collision 409, malformed/unknown 400). Throws on network error.
+  // On an id collision the thrown Error carries `.status = 409` and
+  // `.collision = true` so the caller can offer an overwrite confirm.
+  async importPackage(file, overwrite) {
+    const url = `/library/import${overwrite ? "?overwrite=1" : ""}`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: file,
+    });
+    let data = {};
+    try {
+      data = await r.json();
+    } catch {
+      /* fall through to the generic error below */
+    }
+    if (!r.ok || !data.ok) {
+      const err = new Error(data.error || `импорт не выполнен (${r.status})`);
+      err.status = r.status;
+      // 409 is the backend's distinct id-collision-without-overwrite signal.
+      err.collision = r.status === 409;
+      throw err;
+    }
+    return data;
+  },
 
   setModel: (model) =>
     getJSON("/model", {
@@ -97,7 +138,52 @@ export const api = {
     a.click();
     URL.revokeObjectURL(a.href);
   },
+
+  // Fetch a package-export URL and trigger a robust blob download. On a non-OK
+  // response the body is parsed as JSON and surfaced as a thrown Error (so a
+  // failed export reports the backend message instead of navigating the SPA away).
+  // The download filename comes from Content-Disposition when present, else the
+  // supplied fallback. Throws on network/error so the caller can show it inline.
+  async downloadExport(url, fallbackName) {
+    const r = await fetch(url);
+    if (!r.ok) {
+      let data = {};
+      try {
+        data = await r.json();
+      } catch {
+        /* fall through to the generic error below */
+      }
+      throw new Error(data.error || `экспорт не выполнен (${r.status})`);
+    }
+    const blob = await r.blob();
+    const name = filenameFromContentDisposition(r.headers.get("Content-Disposition")) || fallbackName;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  },
 };
+
+// Parse a download filename out of a Content-Disposition header. Handles both
+// the RFC 5987 `filename*=UTF-8''…` form and a plain `filename="…"`. Returns ""
+// when no usable filename is present.
+function filenameFromContentDisposition(header) {
+  if (!header) return "";
+  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(header);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^"|"$/g, ""));
+    } catch {
+      /* malformed encoding — fall through to the plain form */
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain ? plain[1].trim() : "";
+}
 
 // Send a recorded audio blob to the backend for speech-to-text (Codex OAuth).
 // Resolves to the transcribed text; throws on failure so the caller can retry.
