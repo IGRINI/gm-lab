@@ -277,7 +277,8 @@ async fn build_app() -> Result<App, String> {
     // Filesystem world package store (source of truth for worlds). On first run
     // import any legacy SQLite `worlds` rows into packages (one-time, idempotent).
     let world_store = Arc::new(
-        WorldStore::new(WorldStore::default_root()).map_err(|e| format!("open world store: {e}"))?,
+        WorldStore::new(WorldStore::default_root())
+            .map_err(|e| format!("open world store: {e}"))?,
     );
     match world_store.migrate_from_sqlite(store.db_path()) {
         Ok(n) if n > 0 => tracing::info!("migrated {n} worlds from SQLite into packages"),
