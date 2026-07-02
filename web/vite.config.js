@@ -23,6 +23,7 @@ const API_PATHS = [
   "/chats",
   "/stories",
   "/world-architect",
+  "/story-architect",
   "/sidecar",
 ];
 

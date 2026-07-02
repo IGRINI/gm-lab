@@ -125,6 +125,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/settings", get(get_settings).post(post_settings))
         .route("/transcript", get(get_transcript))
         .route("/stories", get(get_stories).post(post_create_story))
+        .route("/stories/{id}/draft", get(get_story_draft))
         .route("/stories/{id}/delete", post(post_delete_story))
         .route("/story-architect/chat", post(post_story_architect_chat))
         .route("/chats", get(get_chats).post(post_create_chat))
@@ -730,6 +731,40 @@ async fn get_stories(State(state): State<AppState>) -> Response {
         "default_story_id": PROCEDURAL_STORY_ID,
         "stories": stories,
     }))
+}
+
+/// `GET /stories/{id}/draft` — the GM-scoped plot DRAFT row for the story
+/// architect (`§С1.3`). Unlike the PLAYER-facing `GET /stories` catalog (which
+/// carries NO `seed`/`architect_*` so the mystery solutions never leak), this
+/// returns `{ok, story:{id, version, title, description, kind, world_ref, seed,
+/// architect_messages, architect_model_history, architect_cache_session_id,
+/// architect_cache_thread_id}}` so the panel can restore the plot + conversation
+/// on reopen.
+///
+/// Guards MIRROR `resolve_story_architect_world`: an unknown id -> 404; a
+/// self-contained builtin (no `world_ref`) or a non-`authored` (procedural) story
+/// -> 400 (only world-bound authored stories are draftable).
+async fn get_story_draft(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let result = {
+        let store = state.story_store.lock().expect("story store lock poisoned");
+        store.draft_row(&id)
+    };
+    match result {
+        Ok(row) => ok_json(&json!({"ok": true, "story": Value::Object(row)})),
+        Err(StoryStoreError::StoryNotFound(_)) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": format!("story not found: {id}")}),
+        ),
+        Err(StoryStoreError::Invalid(msg)) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": msg}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
 }
 
 /// `POST /stories` — create a story package bound to a world
@@ -1786,18 +1821,20 @@ async fn persist_story_payload(
         }
         patch.insert("seed".to_string(), plot_seed);
         patch.insert("meta".to_string(), Value::Object(meta));
-        let story = match store.update_story(&id, Value::Object(patch)) {
-            Ok(story) => story,
-            Err(e) => {
-                // Best-effort rollback: drop the just-created story so the fold
-                // failure leaves the library untouched (the rollback error never
-                // masks the original).
-                if freshly_created {
-                    let _ = store.delete_story(&id);
-                }
-                return Err(e);
+        if let Err(e) = store.update_story(&id, Value::Object(patch)) {
+            // Best-effort rollback: drop the just-created story so the fold
+            // failure leaves the library untouched (the rollback error never
+            // masks the original).
+            if freshly_created {
+                let _ = store.delete_story(&id);
             }
-        };
+            return Err(e);
+        }
+        // The architect SSE is GM-scoped: `story` carries the FULL draft row
+        // (seed + flattened architect_* chat state — same builder as
+        // `GET /stories/{id}/draft`) so the panel restores the plot + conversation;
+        // `stories` (the list refresher) stays the MINIMAL player-facing catalog.
+        let story = store.draft_row(&id)?;
         let stories = store.list_stories();
         Ok::<(String, Value, Vec<Value>), StoryStoreError>((
             id,

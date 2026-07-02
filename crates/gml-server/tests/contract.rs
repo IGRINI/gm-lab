@@ -1302,15 +1302,34 @@ async fn story_architect_chat_creates_bound_story_and_persists_meta() {
     assert_eq!(got["story"]["kind"], "authored");
     assert_eq!(got["story"]["world_ref"]["id"], json!(world_id));
     assert_eq!(got["story"]["seed"]["hidden_truth"], "Староста скормил дороге собственного сына ради урожая.");
-    // Architect chat state lives in meta, NEVER in seed.
+    // The architect SSE is GM-scoped: `story` is the FULL draft row (same builder
+    // as GET /stories/{id}/draft) — the plot seed plus the architect chat state
+    // FLATTENED to the top level (NOT nested in `meta`, NOT in `seed`), which is
+    // the shape the panel's architectShared helpers restore from.
     assert_eq!(
-        got["story"]["meta"]["architect_cache_session_id"],
+        got["story"]["architect_cache_session_id"],
         "story-architect:test-session"
     );
     assert!(got["story"]["seed"].get("architect_messages").is_none());
-    assert!(got["story"]["meta"]["architect_messages"].is_array());
+    assert!(got["story"]["architect_messages"].is_array());
+    assert!(
+        got["story"].get("meta").is_none(),
+        "draft row is flattened — no nested meta"
+    );
     // The done payload mirrors the world one + {story_id, story, stories}.
     assert!(got["stories"].is_array());
+    // The list refresher stays the MINIMAL player-facing catalog: no plot seed
+    // (hidden_truth is GM-only) and no architect chat state leaks into it.
+    for row in got["stories"].as_array().expect("stories array") {
+        assert!(
+            row.get("seed").is_none(),
+            "catalog row must not leak the plot seed: {row}"
+        );
+        assert!(
+            row.get("architect_messages").is_none(),
+            "catalog row must not leak architect chat state: {row}"
+        );
+    }
     assert_eq!(got["calls"][0]["name"], "draft_story_plot");
 
     // Second turn WITH the story_id: version bumps further, plot is refined.

@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
-import { api, streamTurn, streamArchitect } from "./api.js";
+import { api, streamTurn, streamArchitect, streamStoryArchitect } from "./api.js";
 import { createTimeline } from "./timelineStore.js";
 import {
   ttsPrime,
@@ -16,6 +16,7 @@ import Composer from "./components/Composer.jsx";
 import DebugPanel from "./components/DebugPanel.jsx";
 import ChatHistorySidebar from "./components/ChatHistorySidebar.jsx";
 import WorldArchitectPanel from "./components/WorldArchitectPanel.jsx";
+import StoryArchitectPanel from "./components/StoryArchitectPanel.jsx";
 import CreateStoryModal from "./components/CreateStoryModal.jsx";
 import ImageLabPanel from "./components/ImageLabPanel.jsx";
 import WorldDetailModal from "./components/WorldDetailModal.jsx";
@@ -400,6 +401,10 @@ export default function App() {
   const [charactersLoading, setCharactersLoading] = useState(false);
   const [charactersError, setCharactersError] = useState("");
   const [createStoryWorldId, setCreateStoryWorldId] = useState("");
+  // Story-architect view (§С1.3): the world it plots over (required) and the
+  // existing story it edits (empty = a fresh authored story bound to the world).
+  const [storyArchitectWorldId, setStoryArchitectWorldId] = useState("");
+  const [selectedStoryArchitectId, setSelectedStoryArchitectId] = useState("");
   const [playerOptions, setPlayerOptions] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const [mainView, setMainView] = useState("chat");
@@ -910,6 +915,92 @@ export default function App() {
     [selectedWorldId]
   );
 
+  // Story-architect turn (§С1.3). The panel already injects story_id/world_id
+  // (it owns the create-then-edit id lifecycle); here we mirror the world handler
+  // by folding the persisted stories list into state and pinning the selection so
+  // a follow-up turn edits the same story. `stories` from the done payload are the
+  // MINIMAL player-facing catalog rows (kind/world_ref, no seed/architect_*); the
+  // panel restores the GM plot draft from data.story (the full draft row) and, on
+  // reopen, via GET /stories/{id}/draft — the catalog never leaks hidden_truth.
+  const onStoryArchitectStream = useCallback(
+    async (body, onEvent) => {
+      await streamStoryArchitect(body, (ev) => {
+        if (ev.kind === "architect_done") {
+          const data = ev.data || {};
+          if (Array.isArray(data.stories)) {
+            setStories(normalizeStories({ stories: data.stories }));
+          }
+          const newId = data.story_id == null ? "" : String(data.story_id).trim();
+          if (newId) {
+            setSelectedStoryArchitectId(newId);
+            setSelectedStoryId(newId);
+          }
+        }
+        onEvent(ev);
+      });
+    },
+    []
+  );
+
+  // Open the STORY architect: bound to `worldId` (required), editing `storyId`
+  // when given (an existing authored story) or starting a fresh authored story.
+  const openStoryArchitect = useCallback(
+    (worldId, storyId = "") => {
+      if (!worldId || busy || chatActionBusy) return;
+      setStoryArchitectWorldId(worldId);
+      setSelectedStoryArchitectId(storyId || "");
+      setCreateStoryWorldId("");
+      setPlayerOptions(null);
+      setStatus("");
+      setMainView("story");
+      closeChatsOnMobile();
+    },
+    [busy, chatActionBusy, closeChatsOnMobile]
+  );
+
+  // Launch a saved authored story into a playable chat (mirrors onPlayWorld but
+  // resolves the story package, not a bare world). Warnings (world_version_drift,
+  // story_pc_override) surface through the same error channel.
+  const onPlayStory = useCallback(
+    async (storyId) => {
+      if (!storyId || busy || chatActionBusy) return;
+      const characterId =
+        selectedCharacterId && characters.some((c) => sameChatId(c.id, selectedCharacterId))
+          ? selectedCharacterId
+          : "";
+      setChatActionBusy(true);
+      setStatus("Запускаю историю...");
+      try {
+        const requestBody = { activate: true, story_id: storyId };
+        if (characterId) requestBody.character_id = characterId;
+        const data = await api.createChat(requestBody);
+        if (!data.ok) throw new Error(data.error || "история не запущена");
+        restoreChatSession(data);
+        for (const w of data.warnings ?? []) {
+          store.dispatch({ kind: "error", agent: "история", data: w.message });
+        }
+        setMainView("chat");
+        await refreshChats();
+        closeChatsOnMobile();
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "история", data: e.message });
+      } finally {
+        setChatActionBusy(false);
+        setStatus("");
+      }
+    },
+    [
+      busy,
+      chatActionBusy,
+      selectedCharacterId,
+      characters,
+      restoreChatSession,
+      refreshChats,
+      closeChatsOnMobile,
+      store,
+    ]
+  );
+
   const onGenerateImage = useCallback((body) => api.generateImage(body), []);
 
   const onActivateChat = useCallback(
@@ -1185,6 +1276,21 @@ export default function App() {
     [worlds, createStoryWorldId]
   );
 
+  // The world the story architect plots over (for its read-only bound-world
+  // header) and the existing story it edits (null = a fresh authored draft). The
+  // story row carries the full seed+meta the panel restores from.
+  const storyArchitectWorld = useMemo(
+    () => (Array.isArray(worlds) ? worlds : []).find((world) => sameChatId(world.id, storyArchitectWorldId)) || null,
+    [worlds, storyArchitectWorldId]
+  );
+  const storyArchitectStory = useMemo(
+    () =>
+      selectedStoryArchitectId
+        ? (Array.isArray(stories) ? stories : []).find((s) => s.id === selectedStoryArchitectId) || null
+        : null,
+    [stories, selectedStoryArchitectId]
+  );
+
   const send = useCallback(
     (text) => {
       if (text.startsWith("/")) sendCommand(text);
@@ -1333,6 +1439,7 @@ export default function App() {
           onSelectWorld={onSelectWorld}
           onPlayWorld={onPlayWorld}
           onCreateStory={onCreateStory}
+          onEditStory={openStoryArchitect}
           onExportWorld={onExportWorld}
           onExportStory={onExportStory}
           onRevealLibrary={onRevealLibrary}
@@ -1353,6 +1460,21 @@ export default function App() {
               onGenerateImage={onGenerateImage}
               onPlayWorld={onPlayWorld}
               onCreateStory={onCreateStory}
+            />
+          </main>
+        ) : mainView === "story" ? (
+          <main className="world-creation-pane">
+            <StoryArchitectPanel
+              key={storyArchitectWorldId}
+              story={storyArchitectStory}
+              worldId={storyArchitectWorldId}
+              worldTitle={
+                textValue(storyArchitectWorld?.title) ||
+                textValue(storyArchitectWorld?.world_lore?.name)
+              }
+              locked={interactionBusy}
+              onArchitectStream={onStoryArchitectStream}
+              onPlayStory={onPlayStory}
             />
           </main>
         ) : mainView === "image" && imageLabEnabled ? (
@@ -1392,6 +1514,10 @@ export default function App() {
           busy={interactionBusy}
           onClose={closeCreateStory}
           onCreate={onSubmitCreateStory}
+          onOpenArchitect={(worldId) => {
+            closeCreateStory();
+            openStoryArchitect(worldId);
+          }}
         />
       )}
       {visibility.historyDebug && (

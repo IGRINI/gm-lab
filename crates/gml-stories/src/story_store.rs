@@ -203,11 +203,13 @@ impl StoryStore {
         DEFAULT_STORY_ID
     }
 
-    /// `story_metadata(story_id) -> {id, title, description, story_brief}`.
+    /// `story_metadata(story_id) -> {id, title, description, story_brief, kind,
+    /// world_ref?}` (see [`StoryEnvelope::metadata`]) — the PLAYER-facing catalog
+    /// row (NO `seed`, NO `architect_*`).
     ///
-    /// Returns [`UnknownStory`] for an id absent from the library. The map
-    /// preserves the public catalog key order: `id`, `title`, `description`,
-    /// `story_brief`.
+    /// Returns [`UnknownStory`] for an id absent from the library. The leading
+    /// keys keep the public catalog order (`id`, `title`, `description`,
+    /// `story_brief`); `kind`/`world_ref` are the only additive keys.
     pub fn story_metadata(&self, story_id: &str) -> Result<Map<String, Value>, UnknownStory> {
         let env = self
             .find(story_id)
@@ -215,10 +217,40 @@ impl StoryStore {
         Ok(env.metadata())
     }
 
-    /// `list_stories() -> list[{id, title, description, story_brief}]` —
-    /// discovery order. Each element has the same shape as [`Self::story_metadata`].
+    /// `list_stories() -> list[{id, title, description, story_brief, kind,
+    /// world_ref?}]` — discovery order. Each element has the same PLAYER-facing
+    /// shape as [`Self::story_metadata`] (NO `seed`, NO `architect_*`).
     pub fn list_stories(&self) -> Vec<Map<String, Value>> {
         self.stories.iter().map(|s| s.metadata()).collect()
+    }
+
+    /// `draft_row(story_id) -> {id, version, title, description, kind, world_ref?,
+    /// seed, architect_*?}` — the GM-scoped plot DRAFT row for the story architect
+    /// (`GET /stories/{id}/draft`, `§С1.3`). Unlike [`Self::story_metadata`] this
+    /// carries the full `seed` (the plot, incl. the GM's `hidden_truth`) plus the
+    /// flattened `architect_*` chat state (see [`StoryEnvelope::draft_row`]).
+    ///
+    /// Guards MIRROR `update_story` / `resolve_story_architect_world` so a caller
+    /// gets the SAME rejections the architect turn would (mapped to 400 by the
+    /// server): unknown id -> [`StoryStoreError::StoryNotFound`]; a self-contained
+    /// builtin (no `world_ref`) or a non-`authored` (procedural) story ->
+    /// [`StoryStoreError::Invalid`]. Only world-bound authored stories are draftable.
+    pub fn draft_row(&self, story_id: &str) -> Result<Map<String, Value>, StoryStoreError> {
+        let story_id = story_id.trim();
+        let env = self
+            .find(story_id)
+            .ok_or_else(|| StoryStoreError::StoryNotFound(story_id.to_string()))?;
+        if env.world_ref.is_none() {
+            return Err(StoryStoreError::Invalid(format!(
+                "story {story_id} is self-contained (no world_ref) and cannot be edited by the architect"
+            )));
+        }
+        if env.kind != "authored" {
+            return Err(StoryStoreError::Invalid(
+                "update_story: only world-bound authored stories are editable".to_string(),
+            ));
+        }
+        Ok(env.draft_row())
     }
 
     /// `story_seed(story_id) -> dict` — an OWNED deep clone of the story's seed
@@ -731,9 +763,18 @@ impl StoryEnvelope {
         })
     }
 
-    /// `{id, title, description, story_brief}` — story_brief is derived from the
-    /// seed (`story_brief` if non-empty, else `public_intro`), matching the
-    /// legacy free function exactly.
+    /// `{id, title, description, story_brief, kind, world_ref?}` — the PLAYER-facing
+    /// catalog row (`GET /stories`). The leading four keys keep the legacy public
+    /// catalog shape (`story_brief` is the seed's `story_brief`, else
+    /// `public_intro`); `kind` (always) and `world_ref` (when present) are the ONLY
+    /// additive keys — just enough for the front-end to gate the "✎ edit"
+    /// affordance (`§С1.3`).
+    ///
+    /// This row is DELIBERATELY minimal: it carries NO `seed` and NO `architect_*`
+    /// chat state, because the catalog is loaded at app start for every player and
+    /// the `seed` holds GM-only secrets (e.g. `hidden_truth`, the mystery
+    /// solutions). The GM-scoped plot draft + chat state come from
+    /// [`Self::draft_row`] via `GET /stories/{id}/draft` instead.
     fn metadata(&self) -> Map<String, Value> {
         let mut meta = Map::new();
         meta.insert("id".to_string(), Value::String(self.id.clone()));
@@ -749,7 +790,61 @@ impl StoryEnvelope {
             seed_str(&self.seed, "public_intro")
         };
         meta.insert("story_brief".to_string(), Value::String(story_brief));
+        meta.insert("kind".to_string(), Value::String(self.kind.clone()));
+        if let Some(world_ref) = &self.world_ref {
+            meta.insert(
+                "world_ref".to_string(),
+                json!({ "id": world_ref.id, "version": world_ref.version }),
+            );
+        }
         meta
+    }
+
+    /// `{id, version, title, description, kind, world_ref?, seed, architect_*?}` —
+    /// the GM-scoped DRAFT row (`GET /stories/{id}/draft`, `§С1.3`). Unlike
+    /// [`Self::metadata`] this DOES carry the full `seed` (the plot, incl. the GM's
+    /// `hidden_truth`) and the flattened `architect_*` chat state, so the story
+    /// architect panel can restore the plot draft + conversation on reopen. It is
+    /// NEVER emitted in the player-facing catalog.
+    ///
+    /// `seed` is the plot with `id`/`title` overwritten from the envelope (same
+    /// shape as [`Self::seed`] / `plot()`); the `architect_messages` /
+    /// `architect_model_history` / `architect_cache_*` keys are FLATTENED out of
+    /// `meta` to the top level (mirroring the world architect response) and emitted
+    /// only when present.
+    fn draft_row(&self) -> Map<String, Value> {
+        let mut row = Map::new();
+        row.insert("id".to_string(), Value::String(self.id.clone()));
+        row.insert("version".to_string(), Value::Number(self.version.into()));
+        row.insert("title".to_string(), Value::String(self.title.clone()));
+        row.insert(
+            "description".to_string(),
+            Value::String(self.description.clone()),
+        );
+        row.insert("kind".to_string(), Value::String(self.kind.clone()));
+        if let Some(world_ref) = &self.world_ref {
+            row.insert(
+                "world_ref".to_string(),
+                json!({ "id": world_ref.id, "version": world_ref.version }),
+            );
+        }
+        // The plot draft (for the architect form): the seed with id/title
+        // overwritten from the envelope, same shape as `seed()` / `plot()`.
+        row.insert("seed".to_string(), self.seed_value());
+        // Flatten the architect chat-state keys (architect_messages /
+        // architect_model_history / architect_cache_*) so the panel restores the
+        // conversation via the same top-level fields the world response exposes.
+        for key in [
+            "architect_messages",
+            "architect_model_history",
+            "architect_cache_session_id",
+            "architect_cache_thread_id",
+        ] {
+            if let Some(value) = self.meta.get(key) {
+                row.insert(key.to_string(), value.clone());
+            }
+        }
+        row
     }
 
     /// An OWNED deep clone of the seed with `id`/`title` overwritten from the
@@ -1303,6 +1398,145 @@ mod tests {
             StoryStoreError::Invalid(msg) => assert!(msg.contains("title")),
             other => panic!("expected Invalid, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn draft_row_carries_seed_and_architect_state_for_authored_bound_story() {
+        let (_dir, mut store) = temp_store();
+        let created = store
+            .create_bound_story(
+                "Черновая",
+                "исходное",
+                "authored",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 2,
+                },
+                json!({"story_brief": "старт", "hidden_truth": "тайна GM"}),
+            )
+            .expect("create");
+        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        // Fold in some architect chat state via a normal update (meta path).
+        store
+            .update_story(
+                &id,
+                json!({
+                    "seed": {"public_intro": "интро"},
+                    "meta": {
+                        "architect_messages": [{"role": "user", "content": "привет"}],
+                        "architect_model_history": [{"role": "user", "content": "привет"}],
+                        "architect_cache_session_id": "story-architect:sess",
+                        "architect_cache_thread_id": "story-architect:thread"
+                    }
+                }),
+            )
+            .expect("update");
+
+        let row = store.draft_row(&id).expect("draft row");
+        // GM-scoped: the full plot seed IS present (incl. the hidden_truth secret).
+        assert_eq!(row.get("id").and_then(Value::as_str), Some(id.as_str()));
+        assert_eq!(row.get("version").and_then(Value::as_u64), Some(2));
+        assert_eq!(row.get("kind").and_then(Value::as_str), Some("authored"));
+        assert_eq!(row["world_ref"]["id"], "w");
+        let seed = row.get("seed").and_then(Value::as_object).expect("seed");
+        assert_eq!(seed.get("story_brief").and_then(Value::as_str), Some("старт"));
+        assert_eq!(seed.get("public_intro").and_then(Value::as_str), Some("интро"));
+        assert_eq!(
+            seed.get("hidden_truth").and_then(Value::as_str),
+            Some("тайна GM")
+        );
+        // architect_* FLATTENED to the top level (not nested in meta).
+        assert_eq!(
+            row["architect_messages"][0]["content"].as_str(),
+            Some("привет")
+        );
+        assert_eq!(
+            row.get("architect_cache_session_id").and_then(Value::as_str),
+            Some("story-architect:sess")
+        );
+        assert_eq!(
+            row.get("architect_cache_thread_id").and_then(Value::as_str),
+            Some("story-architect:thread")
+        );
+    }
+
+    #[test]
+    fn draft_row_rejects_unknown_builtin_and_procedural() {
+        let (_dir, mut store) = temp_store();
+        // Unknown id -> StoryNotFound (server maps to 400/404).
+        assert_eq!(
+            store.draft_row("nope").unwrap_err(),
+            StoryStoreError::StoryNotFound("nope".to_string())
+        );
+        // A self-contained builtin (no world_ref) -> Invalid.
+        match store.draft_row(DEFAULT_STORY_ID).unwrap_err() {
+            StoryStoreError::Invalid(msg) => assert!(msg.contains("self-contained")),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+        // A world-bound PROCEDURAL story -> Invalid (only authored is draftable).
+        let created = store
+            .create_bound_story(
+                "Процедурная",
+                "",
+                "procedural",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 1,
+                },
+                json!({}),
+            )
+            .expect("create");
+        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        match store.draft_row(&id).unwrap_err() {
+            StoryStoreError::Invalid(msg) => assert!(msg.contains("authored")),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catalog_row_never_leaks_seed_or_architect_state() {
+        // The player-facing catalog (list_stories / story_metadata) MUST NOT carry
+        // the plot seed (hidden_truth is GM-only) or the architect chat state, for
+        // ANY story kind — builtin OR authored world-bound (§С1.3 GM-secret leak).
+        let (_dir, mut store) = temp_store();
+        let created = store
+            .create_bound_story(
+                "Связанная",
+                "",
+                "authored",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 1,
+                },
+                json!({"story_brief": "кратко", "hidden_truth": "секрет"}),
+            )
+            .expect("create");
+        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        store
+            .update_story(
+                &id,
+                json!({"meta": {"architect_messages": [{"role": "user", "content": "hi"}]}}),
+            )
+            .expect("update");
+
+        for row in store.list_stories() {
+            assert!(
+                !row.contains_key("seed"),
+                "catalog row leaks seed (hidden_truth is GM-only)"
+            );
+            assert!(
+                !row.contains_key("architect_messages"),
+                "catalog row leaks architect chat state"
+            );
+            assert!(
+                !row.contains_key("architect_model_history"),
+                "catalog row leaks architect model history"
+            );
+        }
+        // And the single-row accessor matches the list shape.
+        let meta = store.story_metadata(&id).expect("metadata");
+        assert!(!meta.contains_key("seed"));
+        assert!(!meta.contains_key("architect_messages"));
     }
 
     #[test]

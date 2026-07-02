@@ -54,6 +54,17 @@ function storyDescription(story) {
   return story?.story_brief?.trim?.() || story?.description?.trim?.() || "";
 }
 
+// A story is architect-editable only when it is world-bound AND authored (the
+// backend rejects builtins/procedural). `kind`/`world_ref` come from the widened
+// stories-list metadata (§С1.3). Returns the bound world id, or "" when not
+// editable (builtin, procedural, or the procedural pseudo-row).
+function architectEditableWorldId(story) {
+  if (!story || story.procedural) return "";
+  if (typeof story.kind === "string" && story.kind !== "authored") return "";
+  const worldId = story?.world_ref?.id;
+  return typeof worldId === "string" && worldId.trim() ? worldId.trim() : "";
+}
+
 function characterTitle(character) {
   return character?.title?.trim?.() || "Персонаж";
 }
@@ -102,6 +113,7 @@ export default function ChatHistorySidebar({
   onSelectWorld,
   onPlayWorld,
   onCreateStory,
+  onEditStory,
   onExportWorld,
   onExportStory,
   onRevealLibrary,
@@ -444,6 +456,18 @@ export default function ChatHistorySidebar({
               )}
               {selectedStory && (
                 <div className="story-export-actions">
+                  {architectEditableWorldId(selectedStory) && (
+                    <button
+                      type="button"
+                      className="btn story-export"
+                      onClick={() =>
+                        onEditStory?.(architectEditableWorldId(selectedStory), selectedStory.id)
+                      }
+                      disabled={locked}
+                    >
+                      ✎ В архитекторе
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="btn story-export"

@@ -1,14 +1,19 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Tooltip, { TipContent } from "./Tooltip.jsx";
-import Modal from "./Modal.jsx";
-import ToolCard from "./ToolCard.jsx";
-import Spoiler from "./Spoiler.jsx";
-import MarkdownText from "./MarkdownText.jsx";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ImageThumbnail from "./ImagePreview.jsx";
-import { fmtK } from "../util.js";
-import { VisibilityContext } from "../devSettings.js";
-
-const EMPTY_ARCHITECT_USAGE = { in: 0, out: 0, cached: 0, tokens: 0, calls: 0 };
+import {
+  EMPTY_ARCHITECT_USAGE,
+  textValue,
+  normalizeModelMessage,
+  architectCacheFromSaved,
+  visibleMessagesFromSaved,
+  modelMessagesFromSaved,
+  AutoTextarea,
+  useLiveSegments,
+  ArchitectChatPane,
+  ArchitectDebugModal,
+  accumulateUsage,
+  debugFromDone,
+} from "./architectShared.jsx";
 
 const WORLD_PRESETS = [
   {
@@ -144,29 +149,6 @@ const VISUAL_OUTPUT_FIELDS = VISUAL_PROMPT_FIELDS.map(([, , , outputField, outpu
   outputLabel,
 ]);
 
-function textValue(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function createArchitectCacheId() {
-  const cryptoApi = globalThis.crypto;
-  if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
-    return `world-architect:${cryptoApi.randomUUID()}`;
-  }
-  const time = Date.now().toString(36);
-  const random = Math.random().toString(36).slice(2, 12);
-  return `world-architect:${time}-${random}`;
-}
-
-function normalizeModelMessage(value) {
-  if (!value || typeof value !== "object") return null;
-  const role = textValue(value.role);
-  if (role !== "user" && role !== "assistant") return null;
-  const content = textValue(value.content);
-  if (!content) return null;
-  return { role, content };
-}
-
 function cleanWorldDraft(draft) {
   return {
     title: textValue(draft.title),
@@ -195,51 +177,16 @@ function worldDraftFromSaved(world) {
   };
 }
 
-function normalizeVisibleMessage(value) {
-  if (!value || typeof value !== "object") return null;
-  const role = textValue(value.role);
-  if (role === "tool") {
-    const name = textValue(value.name);
-    if (!name) return null;
-    return {
-      role: "tool",
-      name,
-      args: value.args && typeof value.args === "object" ? value.args : {},
-    };
-  }
-  // `think` = a reasoning segment, rendered as a collapsible spoiler (like the
-  // main chat's "ГМ думает").
-  if (role !== "user" && role !== "assistant" && role !== "think") return null;
-  const content = textValue(value.content);
-  if (!content) return null;
-  return { role, content };
-}
-
 function architectMessagesFromWorld(world) {
-  const messages = Array.isArray(world?.architect_messages)
-    ? world.architect_messages.map(normalizeVisibleMessage).filter(Boolean)
-    : [];
-  return messages.length > 0 ? messages : DEFAULT_ARCHITECT_MESSAGES;
+  return visibleMessagesFromSaved(world, DEFAULT_ARCHITECT_MESSAGES);
 }
 
 function modelMessagesFromWorld(world) {
-  return Array.isArray(world?.architect_model_history)
-    ? world.architect_model_history.map(normalizeModelMessage).filter(Boolean)
-    : [];
+  return modelMessagesFromSaved(world);
 }
 
 function architectCacheFromWorld(world) {
-  const sessionId = textValue(world?.architect_cache_session_id);
-  const threadId = textValue(world?.architect_cache_thread_id);
-  if (sessionId || threadId) {
-    const fallback = sessionId || threadId;
-    return {
-      sessionId: sessionId || fallback,
-      threadId: threadId || fallback,
-    };
-  }
-  const id = createArchitectCacheId();
-  return { sessionId: id, threadId: id };
+  return architectCacheFromSaved(world, "world-architect");
 }
 
 function mergeArchitectDraft(current, draft) {
@@ -350,35 +297,6 @@ function finalizeWorldLore(payload) {
   return lore;
 }
 
-// A textarea that grows to fit its content (no fixed rows, no inner scroll) so
-// the whole field is readable. Height is recomputed on every value change (incl.
-// the architect filling fields) and on viewport resize (wrapping changes).
-function AutoTextarea({ value, onChange, className = "", placeholder, disabled, minRows = 2 }) {
-  const ref = useRef(null);
-  const fit = () => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  };
-  useLayoutEffect(fit, [value]);
-  useEffect(() => {
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
-  }, []);
-  return (
-    <textarea
-      ref={ref}
-      className={className}
-      value={value}
-      onChange={onChange}
-      placeholder={placeholder}
-      disabled={disabled}
-      rows={minRows}
-    />
-  );
-}
-
 function visualPromptSnapshot(lore) {
   return VISUAL_PROMPT_FIELDS.map(([promptField, , , outputField]) => ({
     promptField,
@@ -423,15 +341,12 @@ export default function WorldArchitectPanel({
   const imageQueueRef = useRef([]);
   const imageQueueRunningRef = useRef(false);
   const imageScopeRef = useRef(0);
-  const inputRef = useRef(null);
-  const logRef = useRef(null);
   const [architectElapsed, setArchitectElapsed] = useState(0);
   // In-flight segments for the current turn (think / reply text / tool), folded
   // from the SSE stream in production order. Mirrors the main chat's live view.
-  const [liveSegments, setLiveSegments] = useState([]);
-  const liveSegmentsRef = useRef([]);
+  const { liveSegments, liveSegmentsRef, appendLiveDelta, pushLiveTool, clearLive } =
+    useLiveSegments();
   const loadedWorldIdRef = useRef(world?.id ?? null);
-  const vis = useContext(VisibilityContext);
   const worldPayload = useMemo(() => cleanWorldDraft(worldDraft), [worldDraft]);
   // "Filled" for the bible label / auto-open = real DETAIL (hidden premise or any
   // list field), not just a public premise mirrored from the top-level field —
@@ -466,8 +381,7 @@ export default function WorldArchitectPanel({
     setWorldDraft(nextDraft);
     setMessages(architectMessagesFromWorld(world));
     setModelMessages(modelMessagesFromWorld(world));
-    setLiveSegments([]);
-    liveSegmentsRef.current = [];
+    clearLive();
     setInput("");
     setArchitectError("");
     setArchitectUsage(EMPTY_ARCHITECT_USAGE);
@@ -487,22 +401,6 @@ export default function WorldArchitectPanel({
   useEffect(() => {
     if (loreFilled) setBibleOpen(true);
   }, [loreFilled]);
-
-  // Auto-grow the architect input with its content (CSS max-height caps it at
-  // ~15 lines and switches to an inner scroll). Resets to one line on send.
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [input]);
-
-  // Keep the architect log pinned to the newest message / the typing indicator so
-  // progress, replies and errors are always visible (never below the fold).
-  useEffect(() => {
-    const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, architectBusy, liveSegments]);
 
   // Tick an elapsed-seconds counter while the architect works, so a slow model
   // still shows visible progress instead of a frozen-looking screen.
@@ -670,41 +568,7 @@ export default function WorldArchitectPanel({
     });
   }, []);
 
-  // Fold a streaming delta into the in-flight segments: append to the latest
-  // segment with the same hop (sid) + role, or start a new one. Keeps the ref in
-  // sync so an aborted turn can still recover the partial output.
-  const appendLiveDelta = (sid, role, text) => {
-    if (!text) return;
-    setLiveSegments((segs) => {
-      const next = segs.slice();
-      for (let i = next.length - 1; i >= 0; i--) {
-        if (next[i].sid === sid && next[i].role === role) {
-          next[i] = { ...next[i], content: (next[i].content || "") + text };
-          liveSegmentsRef.current = next;
-          return next;
-        }
-      }
-      next.push({ role, sid, content: text });
-      liveSegmentsRef.current = next;
-      return next;
-    });
-  };
-
-  const pushLiveTool = (sid, name, args) => {
-    setLiveSegments((segs) => {
-      const next = [...segs, { role: "tool", sid, name, args }];
-      liveSegmentsRef.current = next;
-      return next;
-    });
-  };
-
-  const clearLive = () => {
-    liveSegmentsRef.current = [];
-    setLiveSegments([]);
-  };
-
-  const sendArchitectMessage = async (event) => {
-    event.preventDefault();
+  const sendArchitectMessage = async () => {
     const text = input.trim();
     if (!text || architectLocked) return;
     const history = modelMessages;
@@ -752,23 +616,8 @@ export default function WorldArchitectPanel({
             adopted = true;
             const data = ev.data || {};
             const usage = data.usage && typeof data.usage === "object" ? data.usage : null;
-            if (usage) {
-              setArchitectUsage((current) => ({
-                in: current.in + (Number(usage.in) || 0),
-                out: current.out + (Number(usage.out) || 0),
-                cached: current.cached + (Number(usage.cached) || 0),
-                tokens: current.tokens + (Number(usage.tokens) || 0),
-                calls: current.calls + 1,
-              }));
-            }
-            setArchitectDebug({
-              request: data.request_messages ?? null,
-              response: data.assistant_message ?? null,
-              thinking: textValue(data.thinking),
-              stats: data.stats ?? null,
-              calls: Array.isArray(data.calls) ? data.calls : [],
-              usage,
-            });
+            if (usage) setArchitectUsage((current) => accumulateUsage(current, usage));
+            setArchitectDebug(debugFromDone(data, usage));
             const nextSessionId = textValue(data.cache_session_id);
             const nextThreadId = textValue(data.cache_thread_id);
             if (nextSessionId || nextThreadId) {
@@ -825,47 +674,6 @@ export default function WorldArchitectPanel({
   // One renderer for both the committed log and the in-flight segments, so the
   // live view and the reloaded history look identical: reasoning → spoiler,
   // tool → detailed card, user/assistant → bubble (with a caret while streaming).
-  const renderSegment = (message, key, live = false) => {
-    if (message.role === "think") {
-      return (
-        <div key={key} className="world-architect-step">
-          <Spoiler label="🧠 Архитектор рассуждает">
-            <MarkdownText>{textValue(message.content) || "—"}</MarkdownText>
-          </Spoiler>
-        </div>
-      );
-    }
-    if (message.role === "tool") {
-      // Show the full detailed card to the player too. Dev mode ("full") adds the
-      // raw-JSON spoilers + raw tool name; the player view ("detail") is the same
-      // rich body without that developer noise.
-      return (
-        <ToolCard
-          key={key}
-          name={message.name}
-          args={message.args}
-          mode={vis.toolCalls ? "full" : "detail"}
-        />
-      );
-    }
-    const isLiveAssistant = live && message.role === "assistant";
-    return (
-      <div
-        key={key}
-        className={`world-architect-msg ${message.role}${isLiveAssistant ? " world-architect-live" : ""}`}
-      >
-        <MarkdownText>{message.content}</MarkdownText>
-        {isLiveAssistant && <span className="world-architect-caret" aria-hidden="true" />}
-      </div>
-    );
-  };
-
-  // The typing indicator shows whenever the architect is working but no reply
-  // text is currently streaming (initial think, tool execution, between hops).
-  const liveReplyStreaming = liveSegments.some(
-    (segment) => segment.role === "assistant" && textValue(segment.content)
-  );
-
   return (
     <form className={`world-studio${className ? ` ${className}` : ""}`} onSubmit={submitWorld}>
       <header className="world-studio-head">
@@ -885,98 +693,27 @@ export default function WorldArchitectPanel({
       </header>
 
       <div className="world-studio-body">
-        <section className="world-studio-pane world-architect" aria-label="Чат с архитектором мира">
-          <div className="world-architect-head">
-            <div className="world-architect-head-id">
-              <span>архитектор</span>
-              <b>Собрать лор мира</b>
-            </div>
-            <div className="world-architect-tools">
-              {vis.tokenCards && architectUsage.calls > 0 && (
-                <Tooltip
-                  tipClassName="ui-tip-wrap"
-                  content={
-                    <TipContent
-                      title="Токены архитектора"
-                      subtitle={`вызовов: ${architectUsage.calls}`}
-                      rows={[
-                        ["ввод", `${architectUsage.in}`],
-                        ["вывод", `${architectUsage.out}`],
-                        ["кэш", `${architectUsage.cached}`],
-                        ["всего", `${architectUsage.tokens}`],
-                      ]}
-                    />
-                  }
-                >
-                  <span className="world-architect-usage">
-                    {fmtK(architectUsage.tokens)} ток · кэш {fmtK(architectUsage.cached)}
-                  </span>
-                </Tooltip>
-              )}
-              {vis.historyDebug && (
-                <button
-                  type="button"
-                  className="world-architect-debug"
-                  onClick={() => setDebugOpen(true)}
-                  disabled={!architectDebug}
-                >
-                  debug
-                </button>
-              )}
-              <Tooltip
-                tipClassName="ui-tip-wrap"
-                focusable={false}
-                content={
-                  <TipContent
-                    title="Архитектор мира"
-                    subtitle="Отдельный AI-контур до старта игры."
-                    note="Он задаёт вопросы и собирает библию мира: законы, веру, историю, регионы, власти, секреты и правила генерации локаций."
-                  />
-                }
-              >
-                <span className="world-architect-help" aria-hidden="true">?</span>
-              </Tooltip>
-            </div>
-          </div>
-          <div ref={logRef} className="world-architect-log" aria-live="polite">
-            {messages.map((message, index) => renderSegment(message, `msg-${index}`))}
-            {liveSegments.map((segment, index) =>
-              renderSegment(segment, `live-${segment.sid}-${segment.role}-${index}`, true)
-            )}
-            {architectBusy && !liveReplyStreaming && (
-              <div className="world-architect-msg assistant world-architect-typing">
-                <span className="world-architect-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>Архитектор печатает…{architectElapsed > 0 ? ` ${architectElapsed} с` : ""}</span>
-              </div>
-            )}
-          </div>
-          <div className="world-architect-input-row">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                // Enter sends, Shift+Enter (and IME composition) makes a newline —
-                // same as the main chat composer.
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  sendArchitectMessage(event);
-                }
-              }}
-              placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги… (Enter — отправить)"
-              rows={2}
-              disabled={architectLocked}
-            />
-            <button type="button" className="btn" onClick={sendArchitectMessage} disabled={architectLocked || !input.trim()}>
-              Спросить
-            </button>
-          </div>
-          {architectError && <div className="chat-sidebar-error inline">{architectError}</div>}
-        </section>
+        <ArchitectChatPane
+          headKicker="архитектор"
+          headTitle="Собрать лор мира"
+          helpTitle="Архитектор мира"
+          helpSubtitle="Отдельный AI-контур до старта игры."
+          helpNote="Он задаёт вопросы и собирает библию мира: законы, веру, историю, регионы, власти, секреты и правила генерации локаций."
+          thinkLabel="🧠 Архитектор рассуждает"
+          placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги… (Enter — отправить)"
+          messages={messages}
+          liveSegments={liveSegments}
+          busy={architectBusy}
+          elapsed={architectElapsed}
+          error={architectError}
+          usage={architectUsage}
+          debug={architectDebug}
+          onOpenDebug={() => setDebugOpen(true)}
+          input={input}
+          onInputChange={setInput}
+          onSend={sendArchitectMessage}
+          locked={architectLocked}
+        />
 
         <section
           className={`world-studio-pane world-inspector${loreReady ? " is-live" : ""}`}
@@ -1211,50 +948,10 @@ export default function WorldArchitectPanel({
         </section>
       </div>
 
-      {debugOpen && architectDebug && (
-        <Modal
-          title="Debug · архитектор"
-          subtitle="последний вызов модели"
-          wide
-          onClose={() => setDebugOpen(false)}
-        >
-          <div className="arch-debug">
-            <section className="arch-debug-sec">
-              <h4>Токены</h4>
-              <div className="arch-debug-usage">
-                <span>ввод <b>{architectDebug.usage?.in ?? "—"}</b></span>
-                <span>вывод <b>{architectDebug.usage?.out ?? "—"}</b></span>
-                <span>кэш <b>{architectDebug.usage?.cached ?? "—"}</b></span>
-                <span>всего <b>{architectDebug.usage?.tokens ?? "—"}</b></span>
-              </div>
-            </section>
-            {architectDebug.thinking && (
-              <section className="arch-debug-sec">
-                <h4>Рассуждение</h4>
-                <pre>{architectDebug.thinking}</pre>
-              </section>
-            )}
-            <section className="arch-debug-sec">
-              <h4>Ответ модели</h4>
-              <pre>{JSON.stringify(architectDebug.response, null, 2)}</pre>
-            </section>
-            {architectDebug.calls.length > 0 && (
-              <section className="arch-debug-sec">
-                <h4>Tool calls</h4>
-                <pre>{JSON.stringify(architectDebug.calls, null, 2)}</pre>
-              </section>
-            )}
-            <section className="arch-debug-sec">
-              <h4>Запрос (messages)</h4>
-              <pre>{JSON.stringify(architectDebug.request, null, 2)}</pre>
-            </section>
-            <section className="arch-debug-sec">
-              <h4>Stats (raw _meta)</h4>
-              <pre>{JSON.stringify(architectDebug.stats, null, 2)}</pre>
-            </section>
-          </div>
-        </Modal>
-      )}
+      <ArchitectDebugModal
+        debug={debugOpen ? architectDebug : null}
+        onClose={() => setDebugOpen(false)}
+      />
     </form>
   );
 }

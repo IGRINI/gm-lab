@@ -583,16 +583,22 @@ header h1 b{color:var(--acc)}
 
 /* create-story-from-world modal form */
 .story-form{display:grid;gap:12px}
-.story-form-kind{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.story-kind-btn{display:grid;gap:3px;text-align:left;padding:10px 11px;border:1px solid var(--line);
-  border-radius:9px;background:rgba(255,255,255,.02);color:var(--tx);cursor:pointer;
-  transition:border-color .15s ease,background .15s ease}
-.story-kind-btn:hover:not(:disabled){border-color:rgba(156,207,216,.3)}
-.story-kind-btn.active{border-color:var(--acc);background:rgba(156,207,216,.08)}
-.story-kind-btn:disabled{opacity:.6;cursor:default}
-.story-kind-btn b{font-size:13px}
-.story-kind-btn span{color:var(--mut);font-size:11.5px;line-height:1.35}
 .story-form-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:2px}
+/* §С1.3: modal is procedural-only; the authored path is a CTA into the architect. */
+.story-architect-cta{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px;border:1px solid var(--acc);border-radius:10px;background:rgba(156,207,216,.06)}
+.story-architect-cta-text{display:grid;gap:3px;min-width:0}
+.story-architect-cta-text b{font-size:13px}
+.story-architect-cta-text span{color:var(--mut);font-size:11.5px;line-height:1.35}
+.story-architect-cta .btn{flex:none;white-space:nowrap}
+.story-form-divider{display:flex;align-items:center;gap:10px;color:var(--mut);font-size:11px;
+  text-transform:uppercase;letter-spacing:.04em}
+.story-form-divider::before,.story-form-divider::after{content:"";flex:1;height:1px;background:var(--line)}
+/* Story-plot read-only list summaries (npcs / public_facts / state_records). */
+.story-plot-list{margin:2px 0 6px;padding-left:18px;display:grid;gap:2px}
+.story-plot-list li{color:var(--tx);font-size:12px;line-height:1.35}
+.arch-debug-json{max-height:220px;overflow:auto;margin:0;padding:8px;border-radius:8px;
+  background:rgba(0,0,0,.25);font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
 
 /* delete-chat confirmation dialog */
 .confirm-backdrop{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.6);

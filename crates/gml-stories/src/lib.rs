@@ -115,7 +115,32 @@ mod tests {
         let (_dir, store) = temp_store();
         let meta = store.story_metadata("turnvale-murder").expect("metadata");
         let keys: Vec<&String> = meta.keys().collect();
-        assert_eq!(keys, vec!["id", "title", "description", "story_brief"]);
+        // The public catalog keys stay first, in order. `kind` is the only always-on
+        // additive key (`world_ref` when world-bound). The catalog is PLAYER-facing
+        // (loaded at app start), so it MUST NOT leak `seed` (the plot — incl. the
+        // GM's `hidden_truth`) or `architect_*` chat state (`§С1.3`).
+        assert_eq!(
+            &keys[..4],
+            &[
+                &"id".to_string(),
+                &"title".to_string(),
+                &"description".to_string(),
+                &"story_brief".to_string()
+            ]
+        );
+        assert_eq!(meta.get("kind").and_then(Value::as_str), Some("authored"));
+        assert!(
+            !meta.contains_key("seed"),
+            "catalog row must NOT leak the plot seed (hidden_truth is GM-only)"
+        );
+        assert!(
+            !meta.contains_key("world_ref"),
+            "builtin is self-contained (no world_ref)"
+        );
+        assert!(
+            !meta.contains_key("architect_messages"),
+            "catalog row carries no architect chat state"
+        );
         assert_eq!(
             meta.get("title").and_then(Value::as_str),
             Some("Убийство в Тёрнвейле")

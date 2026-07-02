@@ -29,7 +29,17 @@ export const api = {
 
   stories: () => getJSON("/stories"),
 
+  // GET /stories/{id}/draft — the GM-scoped plot draft row (seed + flattened
+  // architect_* chat state) for the story architect. The PLAYER-facing /stories
+  // catalog deliberately omits these (hidden_truth is GM-only), so the architect
+  // panel fetches the draft here on reopen. 404 unknown / 400 builtin|procedural.
+  storyDraft: (storyId) => getJSON(`/stories/${encodeURIComponent(storyId)}/draft`),
+
   createStory: (body) => _post("/stories", body),
+
+  // POST /stories/{id} — shallow-merge a patch (title/description/seed/meta) into
+  // an existing world-bound authored story. 400 for builtin/procedural/unknown.
+  updateStory: (storyId, body) => _post(`/stories/${encodeURIComponent(storyId)}`, body),
 
   deleteStory: (storyId) => _post(`/stories/${encodeURIComponent(storyId)}/delete`),
 
@@ -220,14 +230,15 @@ export async function transcribeAudio(blob) {
   return String(data.text || "");
 }
 
-// Stream a world-architect agent turn (SSE). `onEvent` fires for every event:
+// Stream an architect agent turn (SSE) from `endpoint`. `onEvent` fires for every
+// event:
 //   architect_delta {channel:"thinking"|"content", text, sid} — per-hop deltas
 //   architect_tool  {name, arguments, sid}                    — a tool call
 //   architect_done  {…}                                       — final payload
 //   architect_error {…}
 // Returns when the stream ends. Throws on network error.
-export async function streamArchitect(body, onEvent) {
-  const resp = await fetch("/world-architect/chat", {
+async function streamArchitectAt(endpoint, body, onEvent) {
+  const resp = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
@@ -250,6 +261,18 @@ export async function streamArchitect(body, onEvent) {
       }
     }
   }
+}
+
+// Stream a WORLD-architect turn. Endpoint defaults to the world path so existing
+// callers are unchanged; the story panel uses `streamStoryArchitect` below.
+export function streamArchitect(body, onEvent) {
+  return streamArchitectAt("/world-architect/chat", body, onEvent);
+}
+
+// Stream a STORY-architect turn (§С1.3). Same event vocabulary as the world one;
+// the done payload additionally carries {story_id, story, stories}.
+export function streamStoryArchitect(body, onEvent) {
+  return streamArchitectAt("/story-architect/chat", body, onEvent);
 }
 
 // Stream a player turn. `onEvent` is called for every SSE event object.
