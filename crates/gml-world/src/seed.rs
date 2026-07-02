@@ -393,6 +393,17 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
             "npc_presence": npc_presence,
         }),
     );
+    // Carry the launch player character through the rebuild path. The rebuild
+    // otherwise emits a fixed key set (dropping `player_character`), so a
+    // non-strict-shape seed would silently lose its PC and launch the default
+    // hero. Preserve the canonical `player_character` key, falling back to the
+    // `player` alias, mirroring how `load_seed` reads it back.
+    if let Some(pc) = seed_map
+        .get("player_character")
+        .or_else(|| seed_map.get("player"))
+    {
+        out.insert("player_character".to_string(), pc.clone());
+    }
     out
 }
 

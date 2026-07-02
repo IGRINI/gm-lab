@@ -6361,3 +6361,58 @@ mod compose_authored_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod from_seed_normalize_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A NON-strict-shape seed (missing the `scene`-object + `npcs`-list +
+    /// items/exits/title strict shape) must keep its custom `player_character`
+    /// through `normalize_seed`'s rebuild path. Before the fix the rebuild
+    /// emitted a fixed key set that dropped `player_character`, so the world
+    /// silently launched the default hero "Искатель".
+    #[test]
+    fn non_strict_seed_keeps_custom_player_character() {
+        let seed = json!({
+            "id": "loose_story",
+            "title": "Свободная история",
+            "player_character": {"name": "Тест", "class_role": "маг"},
+        });
+        // Sanity: this seed must NOT satisfy the strict-shape short-circuit,
+        // otherwise the test would pass trivially without exercising the fix.
+        assert!(
+            !crate::seed::normalize_seed(&seed).is_empty(),
+            "normalize_seed must produce output for this seed"
+        );
+
+        let world = World::from_seed(&seed);
+        assert_eq!(
+            world.player_character.name, "Тест",
+            "custom player_character name must survive normalization (not default hero)"
+        );
+        assert_ne!(
+            world.player_character.name,
+            PlayerCharacter::default().name,
+            "player character must not fall back to the default hero"
+        );
+        assert_eq!(world.player_character.class_role, "маг");
+    }
+
+    /// The `player` alias on a non-strict-shape seed must be honored the same
+    /// way (folded onto the canonical `player_character` field).
+    #[test]
+    fn non_strict_seed_honors_player_alias() {
+        let seed = json!({
+            "id": "loose_story_alias",
+            "title": "История с алиасом",
+            "player": {"name": "Алиас", "class_role": "воин"},
+        });
+        let world = World::from_seed(&seed);
+        assert_eq!(
+            world.player_character.name, "Алиас",
+            "`player` alias must seed the player character on a non-strict seed"
+        );
+        assert_eq!(world.player_character.class_role, "воин");
+    }
+}
