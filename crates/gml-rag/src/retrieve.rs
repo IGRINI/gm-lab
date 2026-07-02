@@ -1,6 +1,20 @@
-//! `retrieve_world_fact`, default-engine accessor, `purge_embeddings_for_texts`.
+//! Per-world engine registry, cache-path routing, `retrieve_world_fact*`,
+//! `delete_world_cache`, and the world-scoped `purge_embeddings_for_texts`.
+//!
+//! The engine was a process-global singleton pinned to ONE cache path (the
+//! first config's `rag_cache_path`). Phase A (RAG_PER_WORLD_TZ §2.2) replaces
+//! it with a process REGISTRY keyed by the resolved cache path: the global path
+//! is the sentinel for `world.world_ref == None` (built-in stories); every
+//! world with a `world_ref` routes to `<GM_RAG_WORLDS_DIR>/<id>.sqlite3`. The
+//! "first config wins" semantics of the old singleton are preserved, now
+//! per-key — one [`RagEngine`] (one `init_db`) per cache file per process, so
+//! nothing is rebuilt on the hot path. Two sessions of the same world share one
+//! file; WAL + `busy_timeout=10000` + content-addressed `INSERT OR REPLACE`
+//! (see [`crate::cache`]) make concurrent writers safe.
 
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use gml_config::Config;
 use serde_json::{json, Map, Value};
@@ -12,34 +26,139 @@ use crate::engine::{RagEngine, GOOD_STATUS};
 use crate::error::Result;
 use crate::vector::sha_text;
 
-/// Process-wide default engine, lazily built from [`Config`] (port of
-/// `_DEFAULT_ENGINE` + `default_engine()` / `set_default_engine`).
-static DEFAULT_ENGINE: OnceLock<Mutex<Option<RagEngine<LocalEmbeddingClient>>>> = OnceLock::new();
+/// Process registry of per-cache-path engines. Key = the resolved cache path
+/// (the global `rag_cache_path` is the sentinel for `world_ref == None`); value
+/// = the shared engine built from the FIRST config that touched that path.
+type EngineRegistry = HashMap<PathBuf, Arc<RagEngine<LocalEmbeddingClient>>>;
 
-fn default_slot() -> &'static Mutex<Option<RagEngine<LocalEmbeddingClient>>> {
-    DEFAULT_ENGINE.get_or_init(|| Mutex::new(None))
+static ENGINES: OnceLock<Mutex<EngineRegistry>> = OnceLock::new();
+
+fn registry() -> &'static Mutex<EngineRegistry> {
+    ENGINES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Ensure and run a closure with the default engine, building a
-/// [`LocalEmbeddingClient`] from `config` on first use. Mirrors `default_engine()`.
+/// Compute the per-world cache path `<rag_worlds_dir>/<sanitized>.sqlite3`.
+///
+/// The file stem is `world_id` sanitized to `[A-Za-z0-9_-]`. A non-empty id
+/// that CHANGES under sanitization (so distinct ids can't alias to the same
+/// stem) falls back to a deterministic `w-<sha256(world_id)[..32]>` stem —
+/// content-addressed, so it is stable across runs and collision-resistant (a
+/// 128-bit prefix of SHA-256 over the raw id makes an accidental clash
+/// negligible, though not provably impossible). This keeps arbitrary/unicode
+/// ids from escaping the directory while remaining reproducible.
+///
+/// Callers should route through [`resolve_cache_path`], which sends empty /
+/// whitespace ids to the global sentinel BEFORE reaching here (an empty id is
+/// not a distinct world). This fn still has a fallback for the empty stem so it
+/// is safe if called directly.
+pub fn world_cache_path(config: &Config, world_id: &str) -> PathBuf {
+    let stem = sanitize_world_id(world_id);
+    Path::new(&config.rag_worlds_dir).join(format!("{stem}.sqlite3"))
+}
+
+/// Map a world id to a filesystem-safe stem (see [`world_cache_path`]).
+fn sanitize_world_id(world_id: &str) -> String {
+    let safe = world_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if safe && !world_id.is_empty() {
+        return world_id.to_string();
+    }
+    // Deterministic fallback: `w-` + 32 hex chars (128 bits) of sha256(id).
+    let full = sha_text(world_id); // 64-hex sha256 (same hash as the cache key)
+    format!("w-{}", &full[..32])
+}
+
+/// Resolve the cache path for an optional world id: a non-empty `Some(id)` ->
+/// per-world file, `None` (or an empty/whitespace `Some`) -> the global
+/// `rag_cache_path`. Single source of truth for the routing decision so every
+/// entry point agrees. Folding the emptiness rule in here (rather than at each
+/// call site) guarantees writes and purge land on the SAME file for every id
+/// shape: a blank id is not a distinct world, it is the global sentinel — same
+/// as `None` (RAG_PER_WORLD_TZ §2.2).
+pub fn resolve_cache_path(config: &Config, world_id: Option<&str>) -> PathBuf {
+    match world_id {
+        Some(id) if !id.trim().is_empty() => world_cache_path(config, id),
+        _ => PathBuf::from(&config.rag_cache_path),
+    }
+}
+
+/// Ensure and run a closure with the engine bound to `cache_path`, building a
+/// [`LocalEmbeddingClient`] over that path on first use (first config wins for
+/// that key). This is the per-world generalization of the old
+/// `with_default_engine`.
+pub fn with_engine_at<T>(
+    config: &Config,
+    cache_path: impl AsRef<Path>,
+    f: impl FnOnce(&RagEngine<LocalEmbeddingClient>) -> Result<T>,
+) -> Result<T> {
+    let cache_path = cache_path.as_ref().to_path_buf();
+    // Fetch-or-build under the registry lock, then release it before running
+    // `f`: the closure does I/O (HTTP embed) and must not hold the global lock,
+    // and distinct engines are independent.
+    let engine = {
+        let mut guard = registry().lock().expect("engine registry mutex poisoned");
+        if let Some(existing) = guard.get(&cache_path) {
+            existing.clone()
+        } else {
+            let client = LocalEmbeddingClient::from_config_at(config, &cache_path)?;
+            let engine = Arc::new(RagEngine::new(client));
+            guard.insert(cache_path.clone(), engine.clone());
+            engine
+        }
+    };
+    f(&engine)
+}
+
+/// Ensure and run a closure with the GLOBAL-path engine (the `world_ref == None`
+/// sentinel). Retained name/signature for compat; now a thin
+/// [`with_engine_at`] against `config.rag_cache_path`.
 pub fn with_default_engine<T>(
     config: &Config,
     f: impl FnOnce(&RagEngine<LocalEmbeddingClient>) -> Result<T>,
 ) -> Result<T> {
-    let slot = default_slot();
-    let mut guard = slot.lock().expect("default engine mutex poisoned");
-    if guard.is_none() {
-        let client = LocalEmbeddingClient::from_config(config)?;
-        *guard = Some(RagEngine::new(client));
-    }
-    f(guard.as_ref().expect("engine present"))
+    with_engine_at(config, PathBuf::from(&config.rag_cache_path), f)
 }
 
-/// Port of `set_default_engine(engine)` — install or clear the default engine.
-pub fn set_default_engine(engine: Option<RagEngine<LocalEmbeddingClient>>) {
-    let slot = default_slot();
-    let mut guard = slot.lock().expect("default engine mutex poisoned");
-    *guard = engine;
+/// Port of `set_default_engine` — nothing in-repo calls it. Repurposed to a
+/// registry-clear: drop every cached engine so the next `with_*` call rebuilds
+/// from the current config (the closest sound behavior for a per-key registry).
+/// The argument is ignored; kept only so the historical public signature still
+/// compiles.
+pub fn set_default_engine(_engine: Option<RagEngine<LocalEmbeddingClient>>) {
+    let mut guard = registry().lock().expect("engine registry mutex poisoned");
+    guard.clear();
+}
+
+/// Best-effort GC of a world's per-world cache file plus its sqlite sidecars
+/// (`-wal`, `-shm`, `-journal`). NEVER errors — matches the existing purge-hook
+/// culture (GC failures must not fail a delete/import). Returns whether the
+/// MAIN `.sqlite3` file existed before removal (diagnostic only).
+///
+/// Also drops any registered engine for that path so a subsequent import under
+/// the SAME id never serves the previous world's in-process engine/cache.
+pub fn delete_world_cache(config: &Config, world_id: &str) -> bool {
+    let main = world_cache_path(config, world_id);
+    let existed = main.is_file();
+    // Evict the in-process engine for this path first (best-effort).
+    if let Ok(mut guard) = registry().lock() {
+        guard.remove(&main);
+    }
+    let _ = std::fs::remove_file(&main);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = sidecar_path(&main, suffix);
+        let _ = std::fs::remove_file(&sidecar);
+    }
+    existed
+}
+
+/// Append a sqlite sidecar suffix to a db path: `<path><suffix>` (e.g.
+/// `foo.sqlite3` + `-wal` -> `foo.sqlite3-wal`), matching how sqlite names WAL
+/// and shared-memory files.
+fn sidecar_path(main: &Path, suffix: &str) -> PathBuf {
+    let mut s = main.as_os_str().to_os_string();
+    s.push(suffix);
+    PathBuf::from(s)
 }
 
 /// Faithful port of `retrieve_world_fact(query, documents)`, generalized over
@@ -106,9 +225,11 @@ pub fn retrieve_world_fact_with<E: Embedder>(
     Ok(Some(Value::Object(out)))
 }
 
-/// Default-engine variant of [`retrieve_world_fact_with`] (port of the
-/// module-level `retrieve_world_fact`, which uses `default_engine()`).
-pub fn retrieve_world_fact(
+/// Registry-routed variant of [`retrieve_world_fact_with`]: runs against the
+/// engine bound to `cache_path` (per-world file, or the global path for
+/// `world_ref == None`). This is the fact-path routing seam.
+pub fn retrieve_world_fact_at(
+    cache_path: impl AsRef<Path>,
     query: &str,
     documents: &[RagDocument],
     config: &Config,
@@ -116,15 +237,31 @@ pub fn retrieve_world_fact(
     if !config.rag_enabled {
         return Ok(None);
     }
-    with_default_engine(config, |engine| {
+    with_engine_at(config, cache_path, |engine| {
         retrieve_world_fact_with(engine, query, documents, config)
     })
 }
 
-/// Port of `purge_embeddings_for_texts(texts)`. Best-effort; never raises
-/// (returns 0 on any error). Matches `EmbeddingCache.embed()` normalization
-/// (caches by `_sha(text.strip())`).
-pub fn purge_embeddings_for_texts(texts: &[String], config: &Config) -> i64 {
+/// Global-path variant of [`retrieve_world_fact_with`] (compat: the historical
+/// `retrieve_world_fact`, now routed through the registry's global-path slot).
+/// Callers that know the world should prefer [`retrieve_world_fact_at`].
+pub fn retrieve_world_fact(
+    query: &str,
+    documents: &[RagDocument],
+    config: &Config,
+) -> Result<Option<Value>> {
+    retrieve_world_fact_at(&config.rag_cache_path, query, documents, config)
+}
+
+/// Port of `purge_embeddings_for_texts(texts)`, now WORLD-SCOPED. Best-effort;
+/// never raises (returns 0 on any error). Matches `EmbeddingCache.embed()`
+/// normalization (caches by `_sha(text.strip())`).
+///
+/// `world_id`: `Some` -> purge only that world's per-world file; `None` ->
+/// purge the global cache. This keeps a chat-delete from sweeping every world's
+/// cache (RAG_PER_WORLD_TZ §2.4): a session's texts only ever live in its own
+/// world file (or the global file for built-in stories).
+pub fn purge_embeddings_for_texts(texts: &[String], config: &Config, world_id: Option<&str>) -> i64 {
     if !config.rag_enabled {
         return 0;
     }
@@ -137,7 +274,8 @@ pub fn purge_embeddings_for_texts(texts: &[String], config: &Config) -> i64 {
         return 0;
     }
     let hashes: Vec<String> = clean.iter().map(|t| sha_text(t)).collect();
-    match EmbeddingCache::new(&config.rag_cache_path) {
+    let path = resolve_cache_path(config, world_id);
+    match EmbeddingCache::new(&path) {
         Ok(cache) => cache.delete_by_text_hashes(&hashes).unwrap_or(0),
         Err(_) => 0,
     }

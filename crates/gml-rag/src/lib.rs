@@ -9,8 +9,15 @@
 //! - [`EmbeddingCache`] (rusqlite, Python-DB compatible).
 //! - the [`Embedder`] trait + [`LocalEmbeddingClient`] / [`HashEmbeddingClient`].
 //! - [`RagEngine`] with [`RagEngine::search`].
-//! - [`retrieve_world_fact`] / [`retrieve_world_fact_with`],
-//!   [`purge_embeddings_for_texts`], and the default-engine accessors.
+//! - the per-world cache surface (RAG_PER_WORLD_TZ §2.2): retrieval is routed by
+//!   resolved cache path through [`retrieve_world_fact_at`] +
+//!   [`retrieve_world_fact_with`] and the path-keyed engine registry
+//!   [`with_engine_at`]; [`world_cache_path`] / [`resolve_cache_path`] map a
+//!   world id to its file (global path is the `None`/blank sentinel);
+//!   [`purge_embeddings_for_texts`] is world-scoped and [`delete_world_cache`]
+//!   GCs a world's file + sqlite sidecars. [`retrieve_world_fact`] /
+//!   [`with_default_engine`] are retained singleton-era shims over the global
+//!   path.
 //!
 //! Secret isolation lives upstream in `gml-world`; this crate trusts its input.
 
@@ -29,8 +36,9 @@ pub use doc::{RagDocument, RagHit};
 pub use engine::{bm25_scores, query_instruction, rank_map, RagEngine, GOOD_STATUS};
 pub use error::{RagError, Result};
 pub use retrieve::{
-    purge_embeddings_for_texts, retrieve_world_fact, retrieve_world_fact_with, set_default_engine,
-    with_default_engine,
+    delete_world_cache, purge_embeddings_for_texts, resolve_cache_path, retrieve_world_fact,
+    retrieve_world_fact_at, retrieve_world_fact_with, set_default_engine, with_default_engine,
+    with_engine_at, world_cache_path,
 };
 pub use tokenize::{tokens, STOPWORDS};
 pub use vector::{

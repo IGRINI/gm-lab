@@ -1,24 +1,45 @@
 //! RAG retrieval adapter bridging `gml-world`'s `RagRetriever` trait to
-//! `gml-rag::retrieve_world_fact` (handling the cross-crate `RagDocument` seam).
+//! `gml-rag`'s per-world cache surface (handling the cross-crate `RagDocument`
+//! seam). Each entry point first resolves the world's cache path via
+//! [`gml_rag::resolve_cache_path`] and routes fact/memory retrieval through the
+//! path-scoped `gml_rag::retrieve_world_fact_at` / `with_engine_at` seam, so a
+//! world's texts never cross into another world's cache.
 //!
 //! RAG degrades gracefully: when disabled, when the embedding client cannot be
 //! built, or when retrieval errors, the retriever is absent / returns `None`
 //! and `world.fact` falls back to its keyword path.
+
+use std::path::PathBuf;
 
 use serde_json::{json, Value};
 
 use gml_config::Config;
 use gml_world::{MemoryAccess, MemoryUnit, RagRetriever, RetrievedFact, World};
 
-/// A retriever bound to a pre-computed document set + config.
+/// Resolve the RAG cache path for a world: a world launched from a package
+/// (`world_ref == Some`) routes to its per-world file
+/// (`<GM_RAG_WORLDS_DIR>/<id>.sqlite3`); a `None` world (built-in / procedural
+/// story) stays on the global cache. This is the orchestrator's single routing
+/// decision, applied at EVERY entry point so fact + memory caches never cross
+/// worlds (RAG_PER_WORLD_TZ §2.2).
+fn world_cache_path(world: &World, config: &Config) -> PathBuf {
+    let world_id = world.world_ref.as_ref().map(|r| r.id.as_str());
+    gml_rag::resolve_cache_path(config, world_id)
+}
+
+/// A retriever bound to a pre-computed document set + config + resolved cache
+/// path.
 ///
 /// `world.fact(query, actor, retriever)` borrows `world` immutably, but building
 /// the actor-scoped documents needs `&mut world` (`ensure_npc_whereabouts`).
 /// We therefore snapshot the documents up-front (here, while we still hold a
-/// `&mut World`) and hand the retriever the owned snapshot.
+/// `&mut World`) and hand the retriever the owned snapshot. The per-world cache
+/// path is snapshotted the same way, so the retriever writes only that world's
+/// cache file.
 pub struct DocRetriever {
     documents: Vec<gml_rag::RagDocument>,
     config: Config,
+    cache_path: PathBuf,
 }
 
 /// Memory retrieval output plus operational diagnostics.
@@ -48,7 +69,7 @@ impl DocRetriever {
 
 impl RagRetriever for DocRetriever {
     fn retrieve_world_fact(&self, query: &str, _actor_id: &str) -> Option<RetrievedFact> {
-        gml_rag::retrieve_world_fact(query, &self.documents, &self.config)
+        gml_rag::retrieve_world_fact_at(&self.cache_path, query, &self.documents, &self.config)
             .ok()
             .flatten()
             .map(retrieved_fact_from_payload)
@@ -65,9 +86,14 @@ pub fn build_retriever(world: &mut World, actor_id: &str, _query: &str) -> Optio
     if !config.rag_enabled {
         return None;
     }
+    let cache_path = world_cache_path(world, &config);
     let world_docs = world.retrieval_documents(actor_id);
     let documents: Vec<gml_rag::RagDocument> = world_docs.into_iter().map(convert_doc).collect();
-    Some(DocRetriever { documents, config })
+    Some(DocRetriever {
+        documents,
+        config,
+        cache_path,
+    })
 }
 
 /// Try RAG for `get_world_fact` and return a status object even when callers
@@ -89,6 +115,7 @@ pub fn retrieve_world_fact_report(
             }),
         };
     }
+    let cache_path = world_cache_path(world, &config);
     let documents: Vec<gml_rag::RagDocument> = world
         .retrieval_documents(actor_id)
         .into_iter()
@@ -106,7 +133,7 @@ pub fn retrieve_world_fact_report(
             }),
         };
     }
-    match gml_rag::retrieve_world_fact(query, &documents, &config) {
+    match gml_rag::retrieve_world_fact_at(&cache_path, query, &documents, &config) {
         Ok(Some(payload)) => WorldFactRetrievalReport {
             fact: Some(retrieved_fact_from_payload(payload)),
             status: json!({
@@ -177,12 +204,21 @@ pub fn retrieve_memory_rows_report(
             }),
         };
     }
+    let cache_path = world_cache_path(world, &config);
     let documents: Vec<gml_rag::RagDocument> = world
         .memory_documents_for_access(access, include_cold, include_details)
         .into_iter()
         .map(convert_doc)
         .collect();
-    retrieve_memory_rows_with_documents(world, query, limit, include_details, &config, &documents)
+    retrieve_memory_rows_with_documents(
+        world,
+        query,
+        limit,
+        include_details,
+        &config,
+        &cache_path,
+        &documents,
+    )
 }
 
 /// Convert a `gml_world::RagDocument` to a `gml_rag::RagDocument`
@@ -219,12 +255,14 @@ fn retrieved_fact_from_payload(payload: Value) -> RetrievedFact {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn retrieve_memory_rows_with_documents(
     world: &World,
     query: &str,
     limit: usize,
     include_details: bool,
     config: &Config,
+    cache_path: &std::path::Path,
     documents: &[gml_rag::RagDocument],
 ) -> MemoryRetrievalReport {
     if documents.is_empty() {
@@ -240,7 +278,9 @@ fn retrieve_memory_rows_with_documents(
             }),
         };
     }
-    let hits = match gml_rag::with_default_engine(config, |engine| {
+    // Memory texts are this world's session texts; route them to the world's
+    // per-world cache (closes the `with_default_engine` cross-world hole).
+    let hits = match gml_rag::with_engine_at(config, cache_path, |engine| {
         engine.search(query, documents, Some(limit), config)
     }) {
         Ok(hits) => hits,
@@ -346,7 +386,13 @@ fn query_requests_known_name(query: &str) -> bool {
 mod tests {
     use super::*;
     use gml_rag::{HashEmbeddingClient, RagEngine};
-    use gml_world::{MemoryAccess, MemoryUnit};
+    use gml_world::{MemoryAccess, MemoryUnit, PackageRef};
+    use std::sync::Mutex;
+
+    /// Serializes the env-mutating RAG tests in this binary: `Config::from_env`
+    /// reads process-global `GM_RAG_*`, so two tests setting them concurrently
+    /// would race.
+    static RAG_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Default story seed from a HERMETIC store over a tempdir. There is no
     /// global store; constructing a `StoryStore` over a tempdir materializes the
@@ -446,5 +492,71 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("DETAILS_ONLY_SENTINEL"), "{rendered}");
+    }
+
+    /// The memory path (`retrieve_memory_rows_report` -> `..._with_documents`)
+    /// used to route through the process-global engine (`with_default_engine`)
+    /// regardless of world. Phase A closes that hole: a world-bound world's
+    /// memory retrieval must hit its PER-WORLD cache file, not the global one.
+    ///
+    /// We drive the real path with a DEAD embeddings URL so `engine.search`
+    /// fails fast (degraded fallback) — but the engine's `EmbeddingCache` is
+    /// built (and its file created via `init_db`) BEFORE the failing HTTP call,
+    /// so the created file proves which path was routed to.
+    #[test]
+    fn memory_retrieval_routes_to_the_per_world_cache_file() {
+        let _guard = RAG_ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let worlds_dir = dir.path().join("rag_worlds");
+        let global = dir.path().join("global.sqlite3");
+        std::env::set_var("GM_RAG_ENABLED", "1");
+        std::env::set_var("GM_RAG_RERANK_ENABLED", "0");
+        std::env::set_var("GM_RAG_WORLDS_DIR", &worlds_dir);
+        std::env::set_var("GM_RAG_CACHE_PATH", &global);
+        // Dead port: embed fails immediately, degrading to the lexical fallback.
+        std::env::set_var("GM_RAG_EMBEDDINGS_URL", "http://127.0.0.1:9/v1/embeddings");
+        std::env::set_var("GM_RAG_TIMEOUT_SECONDS", "0.2");
+
+        let mut world = World::from_seed_with_dice_seed(&default_story_seed(), 20260622);
+        let world_id = "mem-world-alpha";
+        world.world_ref = Some(PackageRef {
+            id: world_id.to_string(),
+            version: 1,
+        });
+        world.add_memory_unit(MemoryUnit {
+            memory_id: "m1".to_string(),
+            owner_scope: "actor:borin".to_string(),
+            summary: "Борин помнит пароль северных ворот.".to_string(),
+            ..Default::default()
+        });
+
+        let access = MemoryAccess::scoped(["actor:borin".to_string()].into_iter().collect());
+        let report =
+            retrieve_memory_rows_report(&world, &access, "пароль ворот", 4, false, false);
+        // Degraded (dead embedder), but that is not what we assert — the routing
+        // side effect is the created cache file.
+        assert!(report.status.get("enabled").and_then(Value::as_bool) == Some(true));
+
+        let per_world = gml_rag::world_cache_path(&Config::from_env(), world_id);
+        assert!(
+            per_world.is_file(),
+            "memory retrieval must create the per-world cache file at {}",
+            per_world.display()
+        );
+        assert!(
+            !global.is_file(),
+            "the global cache must be untouched for a world-bound memory retrieval"
+        );
+
+        for k in [
+            "GM_RAG_ENABLED",
+            "GM_RAG_RERANK_ENABLED",
+            "GM_RAG_WORLDS_DIR",
+            "GM_RAG_CACHE_PATH",
+            "GM_RAG_EMBEDDINGS_URL",
+            "GM_RAG_TIMEOUT_SECONDS",
+        ] {
+            std::env::remove_var(k);
+        }
     }
 }

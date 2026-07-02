@@ -1162,18 +1162,26 @@ async fn persist_world_payload(
     };
 
     // Delete a just-created (empty) package so a failure leaves the library
-    // untouched. Best-effort: the rollback error never masks the original.
-    async fn rollback_created(store: &Arc<WorldStore>, id: &str) {
+    // untouched. Best-effort: the rollback error never masks the original. Also
+    // GC any per-world RAG cache for the id (normally none for a fresh create,
+    // but this keeps every world-delete site cache-clean — RAG_PER_WORLD_TZ §2.3).
+    async fn rollback_created(store: &Arc<WorldStore>, config: &Arc<Config>, id: &str) {
         let store = store.clone();
+        let config = config.clone();
         let id = id.to_string();
-        let _ = tokio::task::spawn_blocking(move || store.delete_world(&id)).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            let res = store.delete_world(&id);
+            gml_rag::delete_world_cache(&config, &id);
+            res
+        })
+        .await;
     }
 
     // Copy sidecar images into the package + rewrite fields to assets/<role>.png.
     // HARD RULE: a referenced-but-unfetchable image FAILS the save.
     if let Err(e) = ingest_world_images(state, &target_id, &mut payload).await {
         if freshly_created {
-            rollback_created(&store, &target_id).await;
+            rollback_created(&store, &state.config, &target_id).await;
         }
         return Err(json_response(
             StatusCode::BAD_GATEWAY,
@@ -1200,7 +1208,7 @@ async fn persist_world_payload(
         }
         Ok(Err(gml_persistence::StoreError::WorldNotFound(id))) => {
             if freshly_created {
-                rollback_created(&store, &target_id).await;
+                rollback_created(&store, &state.config, &target_id).await;
             }
             Err(json_response(
                 StatusCode::NOT_FOUND,
@@ -1209,7 +1217,7 @@ async fn persist_world_payload(
         }
         Ok(Err(e)) => {
             if freshly_created {
-                rollback_created(&store, &target_id).await;
+                rollback_created(&store, &state.config, &target_id).await;
             }
             Err(json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1218,7 +1226,7 @@ async fn persist_world_payload(
         }
         Err(e) => {
             if freshly_created {
-                rollback_created(&store, &target_id).await;
+                rollback_created(&store, &state.config, &target_id).await;
             }
             Err(json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2229,6 +2237,7 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
         .map(|c| c.into_owned())
         .unwrap_or(id);
     let store = state.world_store.clone();
+    let config = state.config.clone();
     let res = tokio::task::spawn_blocking(move || {
         let result = store.delete_world(&world_id)?;
         if result.get("deleted").and_then(Value::as_bool) != Some(true) {
@@ -2239,6 +2248,9 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
                 .to_string();
             return Ok(json!({"ok": false, "error": reason, "__status": 404}));
         }
+        // Best-effort GC of the deleted world's per-world RAG cache (file +
+        // sqlite sidecars). Never fatal — matches the purge-hook culture.
+        gml_rag::delete_world_cache(&config, &world_id);
         let worlds = store.list_worlds()?;
         Ok::<Value, gml_persistence::StoreError>(json!({
             "ok": true,
@@ -3293,13 +3305,14 @@ async fn post_library_import(
     };
 
     let bytes = body.to_vec();
+    let config = state.config.clone();
     let imported = tokio::task::spawn_blocking(
         move || -> Result<(share::PackageKind, String), share::ShareError> {
             let archive = share::Archive::from_zip_bytes(&bytes)?;
             let kind = archive.detect_kind()?;
             match kind {
                 share::PackageKind::World => {
-                    let id = import_world_into(&archive, &worlds_dir, overwrite)?;
+                    let id = import_world_into(&archive, &worlds_dir, overwrite, &config)?;
                     Ok((kind, id))
                 }
                 share::PackageKind::Story => {
@@ -3308,6 +3321,7 @@ async fn post_library_import(
                         &stories_dir,
                         &worlds_dir,
                         overwrite,
+                        &config,
                     )?;
                     Ok((kind, id))
                 }
@@ -3414,9 +3428,17 @@ fn import_world_into(
     archive: &share::Archive,
     worlds_dir: &std::path::Path,
     overwrite: bool,
+    config: &Config,
 ) -> Result<String, share::ShareError> {
     let id = resolve_import_id(archive, share::PackageKind::World, worlds_dir, overwrite)?;
     let dest = worlds_dir.join(&id);
+    // GC the previous world's per-world RAG cache IFF we are replacing an
+    // existing world id (only reachable with overwrite=1 — `resolve_import_id`
+    // errors on a collision otherwise). A reimport under a reused id must never
+    // serve the prior world's cached texts (RAG_PER_WORLD_TZ §2.3). Best-effort.
+    if dest.exists() {
+        gml_rag::delete_world_cache(config, &id);
+    }
     std::fs::create_dir_all(worlds_dir).map_err(|e| share::ShareError::Io(e.to_string()))?;
     let staging = worlds_dir.join(format!(".import-{id}.{}.tmp", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
@@ -3433,6 +3455,7 @@ fn import_story_into(
     stories_dir: &std::path::Path,
     worlds_dir: &std::path::Path,
     overwrite: bool,
+    config: &Config,
 ) -> Result<String, share::ShareError> {
     let id = resolve_import_id(archive, share::PackageKind::Story, stories_dir, overwrite)?;
     let dest = stories_dir.join(&id);
@@ -3474,6 +3497,14 @@ fn import_story_into(
     // failure can never leave a live story pointing at a missing world.
     if let (Some(ws), Some(wid)) = (&world_staging, &world_id) {
         let world_dest = worlds_dir.join(wid);
+        // GC the previous world's per-world RAG cache IFF we are replacing an
+        // existing world id (only reachable with overwrite=1 — `resolve_import_id`
+        // errors on a collision otherwise). A reimport under a reused id must
+        // never serve the prior world's cached texts (RAG_PER_WORLD_TZ §2.3),
+        // mirroring `import_world_into`. Best-effort.
+        if world_dest.exists() {
+            gml_rag::delete_world_cache(config, wid);
+        }
         swap_in(ws, &world_dest)?;
     }
     swap_in(&story_staging, &dest)?;
@@ -4252,5 +4283,142 @@ mod sidecar_image_path_tests {
         assert_eq!(sidecar_image_path("/image-files/run-1/a.png#frag"), None);
         // Unknown prefix.
         assert_eq!(sidecar_image_path("/missing/run-1/a.png"), None);
+    }
+}
+
+/// Contract tests for the Phase-A per-world RAG cache GC on the server's
+/// world-delete and world-import(overwrite) sites. Hermetic: `rag_worlds_dir`
+/// points at a tempdir and no HTTP is touched (the cache files are seeded
+/// directly via `gml_rag::world_cache_path`).
+#[cfg(test)]
+mod phase_a_gc_tests {
+    use super::*;
+
+    fn world_zip(id: &str) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = format!(r#"{{"format":"gmlab.world/1","id":"{id}","title":"t"}}"#);
+        std::fs::write(dir.path().join("world.json"), manifest.as_bytes()).unwrap();
+        share::zip_dir(dir.path(), "").unwrap()
+    }
+
+    /// A `.gmstory` zip carrying a baked `world/` subtree whose manifest id is
+    /// `world_id` (a safe segment, so it imports verbatim under that id).
+    fn baked_story_zip(story_id: &str, world_id: &str) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let story = format!(
+            r#"{{"format":"gmlab.story/1","id":"{story_id}","world_embedded":true,"world_ref":{{"id":"{world_id}","version":1}}}}"#
+        );
+        std::fs::write(dir.path().join("story.json"), story.as_bytes()).unwrap();
+        std::fs::create_dir_all(dir.path().join("world")).unwrap();
+        let world = format!(r#"{{"format":"gmlab.world/1","id":"{world_id}","title":"t"}}"#);
+        std::fs::write(dir.path().join("world").join("world.json"), world.as_bytes()).unwrap();
+        share::zip_dir(dir.path(), "").unwrap()
+    }
+
+    fn hermetic_config(worlds_dir: &std::path::Path) -> Config {
+        let mut c = Config::from_env();
+        c.rag_worlds_dir = worlds_dir.to_string_lossy().into_owned();
+        c
+    }
+
+    fn seed_cache(config: &Config, world_id: &str) -> std::path::PathBuf {
+        let path = gml_rag::world_cache_path(config, world_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"SEEDED").unwrap();
+        let mut wal = path.as_os_str().to_os_string();
+        wal.push("-wal");
+        std::fs::write(std::path::PathBuf::from(wal), b"W").unwrap();
+        path
+    }
+
+    #[test]
+    fn world_delete_gcs_the_per_world_cache_file() {
+        // Mirror `post_delete_world`'s blocking body: delete_world then GC.
+        let tmp = tempfile::tempdir().unwrap();
+        let worlds_dir = tmp.path().join("worlds");
+        let rag_dir = tmp.path().join("rag_worlds");
+        std::fs::create_dir_all(&worlds_dir).unwrap();
+        let store = std::sync::Arc::new(WorldStore::new(worlds_dir.clone()).unwrap());
+        let config = hermetic_config(&rag_dir);
+
+        // Create a world package on disk + seed its cache (create_world allocates
+        // its own id; we use the one it returns).
+        let created = store
+            .create_world(serde_json::json!({"title": "t"}))
+            .unwrap();
+        let world_id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let cache = seed_cache(&config, &world_id);
+        assert!(cache.is_file());
+
+        let result = store.delete_world(&world_id).unwrap();
+        assert_eq!(result.get("deleted").and_then(Value::as_bool), Some(true));
+        gml_rag::delete_world_cache(&config, &world_id);
+
+        assert!(!cache.is_file(), "per-world cache GC'd on world delete");
+        let mut wal = cache.as_os_str().to_os_string();
+        wal.push("-wal");
+        assert!(!std::path::PathBuf::from(wal).is_file(), "sidecar GC'd too");
+    }
+
+    #[test]
+    fn import_overwrite_gcs_the_reused_id_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worlds_dir = tmp.path().join("worlds");
+        let rag_dir = tmp.path().join("rag_worlds");
+        std::fs::create_dir_all(&worlds_dir).unwrap();
+        let config = hermetic_config(&rag_dir);
+        let world_id = "reuse-me";
+
+        // First import: creates the package (no existing dir -> no GC).
+        let arch = share::Archive::from_zip_bytes(&world_zip(world_id)).unwrap();
+        let imported_id = import_world_into(&arch, &worlds_dir, false, &config).unwrap();
+        assert_eq!(imported_id, world_id);
+        assert!(worlds_dir.join(world_id).join("world.json").is_file());
+
+        // A previous world left a per-world cache under the SAME id.
+        let cache = seed_cache(&config, world_id);
+        assert!(cache.is_file());
+
+        // Reimport under the same id with overwrite=1 -> the stale cache is GC'd
+        // (a reused id must never serve the prior world's cached texts).
+        let arch2 = share::Archive::from_zip_bytes(&world_zip(world_id)).unwrap();
+        let reimported = import_world_into(&arch2, &worlds_dir, true, &config).unwrap();
+        assert_eq!(reimported, world_id);
+        assert!(
+            !cache.is_file(),
+            "import-overwrite must GC the reused id's cache file"
+        );
+    }
+
+    #[test]
+    fn import_baked_story_overwrite_gcs_the_reused_world_id_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stories_dir = tmp.path().join("stories");
+        let worlds_dir = tmp.path().join("worlds");
+        let rag_dir = tmp.path().join("rag_worlds");
+        std::fs::create_dir_all(&stories_dir).unwrap();
+        std::fs::create_dir_all(&worlds_dir).unwrap();
+        let config = hermetic_config(&rag_dir);
+        let world_id = "baked-reuse";
+
+        // First import: creates the story + baked world (no existing world dir ->
+        // no GC).
+        let arch = share::Archive::from_zip_bytes(&baked_story_zip("s1", world_id)).unwrap();
+        import_story_into(&arch, &stories_dir, &worlds_dir, false, &config).unwrap();
+        assert!(worlds_dir.join(world_id).join("world.json").is_file());
+
+        // A previous world left a per-world cache under the SAME baked world id.
+        let cache = seed_cache(&config, world_id);
+        assert!(cache.is_file());
+
+        // Reimport a baked story reusing the world id with overwrite=1 -> the
+        // stale per-world cache is GC'd before the baked-world swap (a reused id
+        // must never serve the prior world's cached texts).
+        let arch2 = share::Archive::from_zip_bytes(&baked_story_zip("s2", world_id)).unwrap();
+        import_story_into(&arch2, &stories_dir, &worlds_dir, true, &config).unwrap();
+        assert!(
+            !cache.is_file(),
+            "baked-story import-overwrite must GC the reused world id's cache file"
+        );
     }
 }

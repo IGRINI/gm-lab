@@ -213,6 +213,9 @@ fn seed_path_env(dirs: &AppDirs) {
         "GM_RAG_CACHE_PATH",
         dirs.data_dir.join("gm_lab_embeddings.sqlite3"),
     );
+    // Per-world RAG caches (`<id>.sqlite3`). Under the app-data dir, sibling to
+    // the global cache — deliberately NOT under `library/` (export privacy).
+    set_if_unset("GM_RAG_WORLDS_DIR", dirs.data_dir.join("rag_worlds"));
     set_if_unset("GM_TTS_CACHE_DIR", dirs.cache_dir.join("tts_cache"));
     set_if_unset(
         "GM_CODEX_CREDENTIAL_PATH",

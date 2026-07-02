@@ -284,6 +284,12 @@ pub struct Config {
     pub rag_embeddings_model: String, // GM_RAG_EMBEDDINGS_MODEL
     pub rag_encoding_format: String,  // GM_RAG_ENCODING_FORMAT, base64
     pub rag_cache_path: String,       // GM_RAG_CACHE_PATH
+    // Directory holding per-world embedding caches (`<id>.sqlite3`), routed by
+    // `world.world_ref`. GM_RAG_WORLDS_DIR, default `<data_dir>/rag_worlds`.
+    // Resolved INDEPENDENTLY of `rag_cache_path` (NOT derived from its parent):
+    // tests point the global cache into %TEMP% and must not drag the per-world
+    // dir along; this dir also never lives under `library/` (export privacy).
+    pub rag_worlds_dir: String, // GM_RAG_WORLDS_DIR
     pub rag_batch_size: i64,          // GM_RAG_BATCH_SIZE, 16
     pub rag_timeout_seconds: f64,     // GM_RAG_TIMEOUT_SECONDS, 20
     pub rag_top_k: i64,               // GM_RAG_TOP_K, 4 (final facts to the prompt)
@@ -380,6 +386,12 @@ impl Config {
             Ok(v) => v,
             Err(_) => default_data_path("gm_lab_embeddings.sqlite3"),
         };
+        // Per-world cache dir: resolved off the data dir like `rag_cache_path`,
+        // NOT off that path's parent (see field doc / RAG_PER_WORLD_TZ §2.1, §5).
+        let rag_worlds_dir = match env::var("GM_RAG_WORLDS_DIR") {
+            Ok(v) if !v.trim().is_empty() => v,
+            _ => default_data_path("rag_worlds"),
+        };
 
         // Single source of truth for the unified sidecar location: the embeddings
         // and rerank URLs default off this base, so moving GM_INFER_URL moves both.
@@ -418,6 +430,7 @@ impl Config {
             rag_embeddings_model: env_str("GM_RAG_EMBEDDINGS_MODEL", "Qwen/Qwen3-Embedding-0.6B"),
             rag_encoding_format: env_str("GM_RAG_ENCODING_FORMAT", "base64"),
             rag_cache_path,
+            rag_worlds_dir,
             rag_batch_size: env_int_or("GM_RAG_BATCH_SIZE", 16),
             rag_timeout_seconds: env_float_or("GM_RAG_TIMEOUT_SECONDS", 20.0),
             rag_top_k: env_int_or("GM_RAG_TOP_K", 4),

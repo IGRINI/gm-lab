@@ -47,8 +47,19 @@ pub struct LocalEmbeddingClient {
 }
 
 impl LocalEmbeddingClient {
-    /// Build from a [`Config`], mirroring Python `LocalEmbeddingClient.__init__`.
+    /// Build from a [`Config`] against the GLOBAL cache path (`rag_cache_path`).
+    /// Mirrors Python `LocalEmbeddingClient.__init__`; kept for the
+    /// `world_ref == None` (built-in stories) path. Delegates to
+    /// [`LocalEmbeddingClient::from_config_at`].
     pub fn from_config(config: &Config) -> Result<Self> {
+        Self::from_config_at(config, &config.rag_cache_path)
+    }
+
+    /// Build from a [`Config`] but with an EXPLICIT cache path — the per-world
+    /// routing seam. All client knobs come from `config`; only the cache file
+    /// differs. `cache_path` is the per-world file (`world_cache_path`) or the
+    /// global path (`rag_cache_path`) for the `None` sentinel.
+    pub fn from_config_at(config: &Config, cache_path: impl AsRef<std::path::Path>) -> Result<Self> {
         let batch_size = std::cmp::max(1, config.rag_batch_size) as usize;
         Ok(LocalEmbeddingClient {
             url: config.rag_embeddings_url.clone(),
@@ -59,7 +70,7 @@ impl LocalEmbeddingClient {
             encoding_format: config.rag_encoding_format.clone(),
             batch_size,
             timeout: config.rag_timeout_seconds,
-            cache: EmbeddingCache::new(&config.rag_cache_path)?,
+            cache: EmbeddingCache::new(cache_path)?,
         })
     }
 }

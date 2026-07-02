@@ -358,6 +358,22 @@ fn add_dir_recursive<W: Write + std::io::Seek>(
     add_dir_recursive_filtered(zip, base, dir, prefix, options, &[])
 }
 
+/// Whether a bare file `name` (last path segment) must be excluded from an
+/// export archive: atomic-write temp files (`.<...>.tmp`) and sqlite sidecars
+/// (`*-wal`, `*-shm`, `*-journal`). The `rag.sqlite3` main DB is deliberately
+/// NOT matched — it is the Phase-B warm-start layer and must ship.
+///
+/// The `-wal`/`-shm`/`-journal` suffix match is INTENTIONALLY broad (any such
+/// name, not only `rag.sqlite3-*`): privacy trumps precision — we must never
+/// ship sqlite sidecar texts, and since package contents are controlled the
+/// odds of a legitimate asset ending in one of those suffixes are negligible.
+fn is_export_excluded_name(name: &str) -> bool {
+    (name.starts_with('.') && name.ends_with(".tmp"))
+        || name.ends_with("-wal")
+        || name.ends_with("-shm")
+        || name.ends_with("-journal")
+}
+
 /// Recursively add files; any path (relative to `base`, forward-slash) listed in
 /// `skip` at the TOP level is omitted.
 fn add_dir_recursive_filtered<W: Write + std::io::Seek>(
@@ -378,11 +394,15 @@ fn add_dir_recursive_filtered<W: Write + std::io::Seek>(
             .to_string_lossy()
             .replace('\\', "/");
         // Skip atomic-write temp files (`.world.json.<tok>.tmp`) so a concurrent
-        // save never leaks a partial file into the archive.
+        // save never leaks a partial file, AND sqlite sidecars (`*-wal`,
+        // `*-shm`, `*-journal`) anywhere in the tree so a live/crashed RAG
+        // cache never ships transient DB state (RAG_PER_WORLD_TZ §2.5). The
+        // `rag.sqlite3` main file itself is NOT skipped — it is the future
+        // Phase-B package warm-start layer and must ship.
         if rel
             .rsplit('/')
             .next()
-            .map(|name| name.starts_with('.') && name.ends_with(".tmp"))
+            .map(is_export_excluded_name)
             .unwrap_or(false)
         {
             continue;
@@ -406,6 +426,56 @@ fn add_dir_recursive_filtered<W: Write + std::io::Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_excludes_sqlite_sidecars_but_keeps_rag_db() {
+        // Unit: the name predicate.
+        assert!(is_export_excluded_name(".world.json.abc123.tmp"));
+        assert!(is_export_excluded_name("rag.sqlite3-wal"));
+        assert!(is_export_excluded_name("rag.sqlite3-shm"));
+        assert!(is_export_excluded_name("rag.sqlite3-journal"));
+        assert!(!is_export_excluded_name("rag.sqlite3")); // main DB must ship
+        assert!(!is_export_excluded_name("world.json"));
+        assert!(!is_export_excluded_name("cover-final.png")); // "-" mid-name is fine
+
+        // Integration: sidecars anywhere in the tree are dropped by the walk,
+        // while `rag.sqlite3` and normal files survive.
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(
+            src.path().join("world.json"),
+            br#"{"format":"gmlab.world/1","id":"w"}"#,
+        )
+        .unwrap();
+        std::fs::write(src.path().join("rag.sqlite3"), b"MAINDB").unwrap();
+        std::fs::write(src.path().join("rag.sqlite3-wal"), b"WAL").unwrap();
+        std::fs::write(src.path().join("rag.sqlite3-shm"), b"SHM").unwrap();
+        std::fs::write(src.path().join("rag.sqlite3-journal"), b"JRN").unwrap();
+        std::fs::write(src.path().join(".world.json.tok.tmp"), b"PARTIAL").unwrap();
+        // A sidecar in a subdirectory must also be skipped.
+        std::fs::create_dir_all(src.path().join("nested")).unwrap();
+        std::fs::write(src.path().join("nested").join("cache.sqlite3-wal"), b"WAL2").unwrap();
+        std::fs::write(src.path().join("nested").join("keep.json"), b"{}").unwrap();
+
+        let bytes = zip_dir(src.path(), "").unwrap();
+        let arch = Archive::from_zip_bytes(&bytes).unwrap();
+        let names: Vec<&str> = arch.entries.keys().map(|s| s.as_str()).collect();
+
+        assert!(names.contains(&"world.json"), "{names:?}");
+        assert!(names.contains(&"rag.sqlite3"), "rag.sqlite3 must ship: {names:?}");
+        assert!(names.contains(&"nested/keep.json"), "{names:?}");
+        for excluded in [
+            "rag.sqlite3-wal",
+            "rag.sqlite3-shm",
+            "rag.sqlite3-journal",
+            ".world.json.tok.tmp",
+            "nested/cache.sqlite3-wal",
+        ] {
+            assert!(
+                !names.contains(&excluded),
+                "excluded name leaked into archive: {excluded} in {names:?}"
+            );
+        }
+    }
 
     #[test]
     fn rejects_traversal_paths() {

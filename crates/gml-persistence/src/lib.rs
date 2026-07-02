@@ -540,8 +540,10 @@ impl DialogStore {
         if chat_id.is_empty() {
             return Ok(json!({"deleted": false, "reason": "chat_id is required"}));
         }
-        // Collect embedding texts BEFORE the row is gone (best-effort).
-        let embed_texts = self.chat_embedding_texts(guest_id, &chat_id);
+        // Collect embedding texts + world scope BEFORE the row is gone
+        // (best-effort). The scope routes the purge to this chat's cache file
+        // only (per-world, or global for `None`).
+        let (embed_texts, world_id) = self.chat_embedding_scope(guest_id, &chat_id);
 
         let con = self.connect()?;
         let tx = con.unchecked_transaction()?;
@@ -571,7 +573,7 @@ impl DialogStore {
         tx.commit()?;
 
         self.cache_remove(guest_id, &chat_id);
-        let purged = purge_embeddings(&embed_texts, &self.config);
+        let purged = purge_embeddings(&embed_texts, &self.config, world_id.as_deref());
 
         Ok(json!({
             "deleted": true,
@@ -662,17 +664,30 @@ impl DialogStore {
     // cache + helpers
     // ------------------------------------------------------------------
 
-    /// `_chat_embedding_texts(guest_id, chat_id)` — never raises.
-    fn chat_embedding_texts(&self, guest_id: &str, chat_id: &str) -> Vec<String> {
+    /// `_chat_embedding_texts(guest_id, chat_id)` plus the chat's world scope —
+    /// never raises. Returns `(embedding_texts, world_id)` where `world_id` is
+    /// the session's `world_ref.id` (`None` for built-in/procedural chats). The
+    /// scope tells [`delete_chat`] which cache file to purge — the SAME `World`
+    /// that produced the texts, so both come from a single load (no drift).
+    fn chat_embedding_scope(&self, guest_id: &str, chat_id: &str) -> (Vec<String>, Option<String>) {
         match self.load_chat(guest_id, chat_id) {
             Ok(mut rt) => {
+                let world_id = rt
+                    .session
+                    .world
+                    .world_ref
+                    .as_ref()
+                    .map(|r| r.id.clone())
+                    .filter(|id| !id.trim().is_empty());
                 let docs = rt.session.world.retrieval_documents("player");
-                docs.iter()
+                let texts = docs
+                    .iter()
                     .map(|d| d.contextual_text())
                     .filter(|t| !t.trim().is_empty())
-                    .collect()
+                    .collect();
+                (texts, world_id)
             }
-            Err(_) => Vec::new(),
+            Err(_) => (Vec::new(), None),
         }
     }
 
@@ -1090,12 +1105,13 @@ fn clean_metadata_text(value: &str, limit: usize) -> String {
 // misc
 // ======================================================================
 
-/// Best-effort embeddings purge (never raises).
-fn purge_embeddings(texts: &[String], config: &Config) -> i64 {
+/// Best-effort embeddings purge (never raises), scoped to `world_id`'s cache
+/// file (`None` -> global cache).
+fn purge_embeddings(texts: &[String], config: &Config, world_id: Option<&str>) -> i64 {
     if texts.is_empty() {
         return 0;
     }
-    gml_rag::purge_embeddings_for_texts(texts, config)
+    gml_rag::purge_embeddings_for_texts(texts, config, world_id)
 }
 
 /// `os.path.abspath(db_path)`.
