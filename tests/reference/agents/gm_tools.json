@@ -477,6 +477,47 @@
                 },
                 "description": "Full current features only when features changed."
               },
+              "spells": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "level": {
+                      "type": "integer",
+                      "description": "Spell level; 0 for a cantrip (заговор)."
+                    },
+                    "concentration": {
+                      "type": "boolean",
+                      "description": "True if the spell requires concentration."
+                    },
+                    "ritual": {
+                      "type": "boolean",
+                      "description": "True if the spell can be cast as a ritual (display only in v1)."
+                    },
+                    "effect": {
+                      "type": "string",
+                      "description": "Prose effect. Put school, casting time, range, duration, and upcast text HERE — the engine reads only name/level/concentration/ritual."
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "description": "Full known-spell list only when it changed; each entry is an object with name/level/concentration/ritual/effect. To CAST a known spell (spend a slot, set concentration) call cast_spell instead; use this only to learn, forget, or edit spells."
+              },
+              "spell_slots": {
+                "type": "object",
+                "description": "FLAT map «level → remaining slots», e.g. {\"1\": 3, \"2\": 1}. Send the full map when it changes (e.g. a long rest restores slots); the engine decrements it on cast_spell. An unlisted level means no slots at that level. Do NOT nest {current, max}."
+              },
+              "spell_slots_max": {
+                "type": "object",
+                "description": "FLAT map «level → max slots» the character has when fully rested. Author from the 5e slot table for the class/level (e.g. a level-1 full caster has {\"1\": 2}; level-3 has {\"1\": 4, \"2\": 2})."
+              },
+              "concentration": {
+                "type": "string",
+                "description": "Name of the spell the character is currently concentrating on; send \"\" to drop concentration without a new cast. Normally set by cast_spell."
+              },
               "inventory_add": {
                 "type": "array",
                 "items": {

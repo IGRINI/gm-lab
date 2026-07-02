@@ -179,8 +179,12 @@ fn npc_profile_fields() -> Vec<&'static str> {
     set.into_iter().collect()
 }
 
-/// `PLAYER_CHARACTER_FIELDS`.
-const PLAYER_CHARACTER_FIELDS: [&str; 26] = [
+/// `PLAYER_CHARACTER_FIELDS` — 30 fields: the original 26 plus the Фаза С spell
+/// quartet (`spells`/`spell_slots`/`spell_slots_max`/`concentration`,
+/// `docs/ITEMS_AND_SPELLS_TZ.md` §С1) appended at the end. This drives the
+/// full-rewrite loop in `apply_player_character_fields`, so a field absent here
+/// is silently un-editable via `update_player_character`.
+const PLAYER_CHARACTER_FIELDS: [&str; 30] = [
     "name",
     "pronouns",
     "class_role",
@@ -207,6 +211,10 @@ const PLAYER_CHARACTER_FIELDS: [&str; 26] = [
     "inventory",
     "equipment",
     "features",
+    "spells",
+    "spell_slots",
+    "spell_slots_max",
+    "concentration",
 ];
 
 // =========================================================================
@@ -4360,12 +4368,25 @@ impl World {
             "speed",
             "senses",
             "languages",
+            // Фаза С §С1: active concentration is a plain text field (name of the
+            // held spell; "" clears it). Documented in the tool schema.
+            "concentration",
         ]
         .into_iter()
         .collect();
-        let dict_fields: BTreeSet<&str> = ["abilities", "skills", "saving_throws", "hp"]
-            .into_iter()
-            .collect();
+        // Фаза С §С1: spell_slots/spell_slots_max are FLAT «level → count» maps,
+        // so they ride the same K2.1 numeric coercion as the stat dicts — a
+        // stringy "3" becomes 3 for the cast_spell decrement path.
+        let dict_fields: BTreeSet<&str> = [
+            "abilities",
+            "skills",
+            "saving_throws",
+            "hp",
+            "spell_slots",
+            "spell_slots_max",
+        ]
+        .into_iter()
+        .collect();
         let list_fields: BTreeSet<&str> =
             ["inventory", "equipment", "features"].into_iter().collect();
         let joined: BTreeSet<&str> = ["speed", "senses", "languages"].into_iter().collect();
@@ -4377,7 +4398,22 @@ impl World {
             }
             let raw = &fields[key];
             // Compute the new value as a Value and compare to current, then set.
-            let new_value: Value = if dict_fields.contains(key) {
+            let new_value: Value = if key == "spells" {
+                // Фаза С §С1: spells is a Vec of OBJECTS, NOT strings — it must
+                // NOT go through the `as_str` list path (that would mangle each
+                // record into a JSON string). Bespoke coercion: keep only object
+                // entries and deserialize each into a SpellEntry (serde defaults
+                // fill missing keys); non-object junk (strings/numbers/nested
+                // arrays) is skipped, and a record that fails to parse is dropped
+                // rather than poisoning the whole batch. Store the re-serialized
+                // canonical array so change-detection compares like-for-like.
+                let cleaned: Vec<SpellEntry> = as_list(raw)
+                    .into_iter()
+                    .filter(|v| v.is_object())
+                    .filter_map(|v| serde_json::from_value::<SpellEntry>(v).ok())
+                    .collect();
+                serde_json::to_value(&cleaned).unwrap_or(Value::Array(Vec::new()))
+            } else if dict_fields.contains(key) {
                 // K2.1: coerce numeric-stringy stat values before storing so the
                 // notation dice path reads real numbers; textual entries survive.
                 Value::Object(Self::normalize_stat_dict(raw))
@@ -4717,6 +4753,115 @@ impl World {
         }))
     }
 
+    /// §С2 `cast_spell` — spend a slot / set concentration for a known spell.
+    ///
+    /// Pure STATE bookkeeping (`docs/ITEMS_AND_SPELLS_TZ.md` §С2), NO dice/DC/
+    /// damage math — attack/save/damage stay on the existing `roll_dice`
+    /// notation contract. Steps EXACTLY per §С2:
+    /// 1. find the spell by `name.trim().to_lowercase()` in `pc.spells`; a miss →
+    ///    `Err(unknown_spell)` carrying the known-spell names as a hint.
+    /// 2. a level-0 spell (заговор) spends NO slot.
+    /// 3. otherwise the effective level is `max(spell.level, requested)` (an
+    ///    upcast never drops below the spell's own level); `spell_slots[lvl]` must
+    ///    coerce to an int `> 0` — decrement it (written back as a NUMBER) — else
+    ///    `Err(no_slots)` for that level.
+    /// 4. a concentration spell replaces `pc.concentration`; the PREVIOUS value
+    ///    (if any) is returned as `concentration_ended` so the GM can narrate the
+    ///    dropped effect. A non-concentration cast leaves `pc.concentration` as-is.
+    /// 5. `card_revision` bumps; the `Ok` payload mirrors take_item/drop_item so
+    ///    the orchestrator emits PLAYER_CHARACTER_UPDATE. `Err` carries a
+    ///    validator-style `{code,error,…}` the handler renders as a tool error.
+    pub fn cast_spell(&mut self, name: &str, slot_level: Option<i64>, reason: &str) -> Result<Value, Value> {
+        let needle = name.trim().to_lowercase();
+        if needle.is_empty() {
+            return Err(json!({
+                "code": "unknown_spell",
+                "error": "cast_spell requires a non-empty spell name",
+                "name": name.trim(),
+            }));
+        }
+        let idx = self
+            .player_character
+            .spells
+            .iter()
+            .position(|sp| sp.name.trim().to_lowercase() == needle);
+        let idx = match idx {
+            Some(i) => i,
+            None => {
+                let known: Vec<String> = self
+                    .player_character
+                    .spells
+                    .iter()
+                    .map(|sp| sp.name.clone())
+                    .filter(|n| !n.trim().is_empty())
+                    .collect();
+                return Err(json!({
+                    "code": "unknown_spell",
+                    "error": format!("персонаж не знает заклинания '{}'", name.trim()),
+                    "name": name.trim(),
+                    "known_spells": known,
+                }));
+            }
+        };
+        // Clone the fields we need before mutating the slot map (borrow split).
+        let spell = self.player_character.spells[idx].clone();
+        let base_level = spell.level as i64;
+
+        // §С2.2/3: level 0 spends no slot; else effective level = max(base,
+        // requested). A requested level below the spell's own is clamped up.
+        let slot_spent_level: Option<i64> = if base_level == 0 {
+            None
+        } else {
+            let lvl = slot_level.map(|r| r.max(base_level)).unwrap_or(base_level);
+            let key = lvl.to_string();
+            let remaining = slot_int(self.player_character.spell_slots.get(&key));
+            if remaining <= 0 {
+                return Err(json!({
+                    "code": "no_slots",
+                    "error": format!("нет свободных слотов уровня {lvl}"),
+                    "name": spell.name,
+                    "level": lvl,
+                }));
+            }
+            // Decrement, writing the remainder back as a NUMBER so the flat map
+            // stays numeric for the next cast (no stringy residue).
+            self.player_character
+                .spell_slots
+                .insert(key, json!(remaining - 1));
+            Some(lvl)
+        };
+
+        // §С2.4: concentration spells replace the held effect; the prior value
+        // (non-empty only) surfaces as concentration_ended.
+        let mut concentration_started: Option<String> = None;
+        let mut concentration_ended: Option<String> = None;
+        if spell.concentration {
+            let prev = self.player_character.concentration.trim().to_string();
+            if !prev.is_empty() && prev != spell.name.trim() {
+                concentration_ended = Some(prev);
+            }
+            self.player_character.concentration = spell.name.trim().to_string();
+            concentration_started = Some(spell.name.trim().to_string());
+        }
+
+        self.player_character.card_revision += 1;
+        let slots_remaining = Value::Object(self.player_character.spell_slots.clone());
+        Ok(json!({
+            "ok": true,
+            "status": "cast",
+            "spell": spell.name.trim(),
+            "level": base_level,
+            "slot_spent_level": slot_spent_level,
+            "slots_remaining": slots_remaining,
+            "concentration_started": concentration_started,
+            "concentration_ended": concentration_ended,
+            "reason": reason.trim(),
+            "updated": ["spell_slots", "concentration"],
+            "card_revision": self.player_character.card_revision,
+            "player_character": self.player_character_export(false),
+        }))
+    }
+
     pub fn player_character_export(&self, public: bool) -> Value {
         let pc = &self.player_character;
         let mut m = Map::new();
@@ -4754,6 +4899,21 @@ impl World {
         m.insert("inventory".to_string(), json!(pc.inventory));
         m.insert("equipment".to_string(), json!(pc.equipment));
         m.insert("features".to_string(), json!(pc.features));
+        // Фаза С §С1: spells/slots/concentration ride the same UI/tool export so
+        // the server /state payload and update_player_character results carry them.
+        m.insert(
+            "spells".to_string(),
+            serde_json::to_value(&pc.spells).unwrap_or(Value::Array(Vec::new())),
+        );
+        m.insert(
+            "spell_slots".to_string(),
+            Value::Object(pc.spell_slots.clone()),
+        );
+        m.insert(
+            "spell_slots_max".to_string(),
+            Value::Object(pc.spell_slots_max.clone()),
+        );
+        m.insert("concentration".to_string(), json!(pc.concentration));
         m.insert("card_revision".to_string(), json!(pc.card_revision));
         if !public {
             m.insert("gm_notes".to_string(), json!(pc.gm_notes));
@@ -4825,6 +4985,52 @@ impl World {
             if !values.is_empty() {
                 lines.push(format!("{label}: {}", values.join("; ")));
             }
+        }
+        // Фаза С §С1 spells block: one line per known spell (name, level or
+        // «заговор», concentration/ritual marks, effect prose), then a compact
+        // slots line «Слоты: 1-й: 3/4, 2-й: 1/2» computed from spell_slots vs
+        // spell_slots_max, then the active concentration line. All engine-facing
+        // context text so the GM sees exactly what the card holds.
+        let spells: Vec<String> = pc
+            .spells
+            .iter()
+            .filter(|sp| !sp.name.trim().is_empty())
+            .map(|sp| {
+                let level = if sp.level == 0 {
+                    "заговор".to_string()
+                } else {
+                    format!("ур. {}", sp.level)
+                };
+                let mut marks = Vec::new();
+                if sp.concentration {
+                    marks.push("конц.");
+                }
+                if sp.ritual {
+                    marks.push("ритуал");
+                }
+                let mut parts = vec![format!("{} ({level}", sp.name.trim())];
+                if !marks.is_empty() {
+                    parts.push(format!(", {}", marks.join(", ")));
+                }
+                let mut head = parts.join("");
+                head.push(')');
+                let effect = sp.effect.trim();
+                if effect.is_empty() {
+                    head
+                } else {
+                    format!("{head}: {effect}")
+                }
+            })
+            .collect();
+        if !spells.is_empty() {
+            lines.push(format!("Spells: {}", spells.join("; ")));
+        }
+        let slots = spell_slots_line(&pc.spell_slots, &pc.spell_slots_max);
+        if !slots.is_empty() {
+            lines.push(format!("Slots: {slots}"));
+        }
+        if !pc.concentration.trim().is_empty() {
+            lines.push(format!("Concentration: {}", pc.concentration.trim()));
         }
         if !pc.gm_notes.is_empty() {
             lines.push(format!("GM notes: {}", pc.gm_notes));
@@ -6341,6 +6547,54 @@ fn state_record_to_value(r: &StateRecord) -> Value {
     })
 }
 
+// --- Фаза С spell-slot helpers (`docs/ITEMS_AND_SPELLS_TZ.md` §С) ---------
+
+/// Coerce a flat-slot-map value to a non-negative slot count. The apply path
+/// already runs K2.1 numeric coercion over `spell_slots`, but the maps can also
+/// arrive raw (seed/back-compat), so accept an int, an integral float, or a
+/// numeric string; anything else (text, bool, null, missing) reads as 0. NO
+/// nested {current,max} lookup — the panel forbade that shape (§5).
+fn slot_int(v: Option<&Value>) -> i64 {
+    match v {
+        Some(Value::Number(n)) => n
+            .as_i64()
+            .or_else(|| n.as_f64().and_then(|f| if f.fract() == 0.0 { Some(f as i64) } else { None }))
+            .unwrap_or(0),
+        Some(Value::String(s)) => s.trim().parse::<i64>().ok().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Render the compact «1-й: 3/4, 2-й: 1/2» slots line for the GM context. The
+/// key set is the UNION of `spell_slots` and `spell_slots_max` keys that parse
+/// as a positive integer level, sorted ascending; each entry shows the remaining
+/// count over the authored max (missing max → «?»). Empty when no levels exist.
+fn spell_slots_line(slots: &Map<String, Value>, max: &Map<String, Value>) -> String {
+    let mut levels: BTreeSet<i64> = BTreeSet::new();
+    for m in [slots, max] {
+        for k in m.keys() {
+            if let Ok(lvl) = k.trim().parse::<i64>() {
+                if lvl > 0 {
+                    levels.insert(lvl);
+                }
+            }
+        }
+    }
+    let parts: Vec<String> = levels
+        .into_iter()
+        .map(|lvl| {
+            let key = lvl.to_string();
+            let cur = slot_int(slots.get(&key));
+            let cap = match max.get(&key) {
+                Some(v) if !v.is_null() => slot_int(Some(v)).to_string(),
+                _ => "?".to_string(),
+            };
+            format!("{lvl}-й: {cur}/{cap}")
+        })
+        .collect();
+    parts.join(", ")
+}
+
 // --- field get/set by name (player character / npc) ----------------------
 
 fn pc_field_value(pc: &PlayerCharacter, key: &str) -> Value {
@@ -6371,6 +6625,12 @@ fn pc_field_value(pc: &PlayerCharacter, key: &str) -> Value {
         "inventory" => json!(pc.inventory),
         "equipment" => json!(pc.equipment),
         "features" => json!(pc.features),
+        // Фаза С §С1: spells serialize to the canonical object array; the flat
+        // slot maps and concentration string round-trip verbatim.
+        "spells" => serde_json::to_value(&pc.spells).unwrap_or(Value::Array(Vec::new())),
+        "spell_slots" => Value::Object(pc.spell_slots.clone()),
+        "spell_slots_max" => Value::Object(pc.spell_slots_max.clone()),
+        "concentration" => json!(pc.concentration),
         _ => Value::Null,
     }
 }
@@ -6403,6 +6663,13 @@ fn set_pc_field(pc: &mut PlayerCharacter, key: &str, value: Value) {
         "inventory" => pc.inventory = value_as_str_vec(value),
         "equipment" => pc.equipment = value_as_str_vec(value),
         "features" => pc.features = value_as_str_vec(value),
+        // Фаза С §С1: the apply path hands `spells` an already-cleaned canonical
+        // object array (see apply_player_character_fields); deserialize it back
+        // into Vec<SpellEntry>, defaulting to empty on any shape surprise.
+        "spells" => pc.spells = serde_json::from_value(value).unwrap_or_default(),
+        "spell_slots" => pc.spell_slots = value_as_object(value),
+        "spell_slots_max" => pc.spell_slots_max = value_as_object(value),
+        "concentration" => pc.concentration = value_as_string(&value),
         _ => {}
     }
 }

@@ -110,6 +110,29 @@ fn alive() -> String {
     "alive".to_string()
 }
 
+/// Фаза С spell record (`docs/ITEMS_AND_SPELLS_TZ.md` §С1). A DELIBERATELY thin
+/// 5-field 5e subset: the engine reads only `name` (cast/slot matching),
+/// `level` (0 = заговор/cantrip, spends no slot; else the base slot level),
+/// `concentration` (a cast sets `pc.concentration`), and `ritual` (a display
+/// mark; ritual casting stays narrative in v1 — no engine branch). Everything
+/// else — school, casting time, range, duration, upcast text — lives as PROSE
+/// inside `effect`; the panel cut those 5 dead free-string fields because the
+/// engine never reads them (see §5: NO 10-field SpellEntry). All fields are
+/// `#[serde(default)]` so old saves and partial packages deserialize cleanly.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpellEntry {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub level: u8,
+    #[serde(default)]
+    pub concentration: bool,
+    #[serde(default)]
+    pub ritual: bool,
+    #[serde(default)]
+    pub effect: String,
+}
+
 /// `PlayerCharacter` dataclass.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlayerCharacter {
@@ -148,6 +171,21 @@ pub struct PlayerCharacter {
     pub equipment: Vec<String>,
     #[serde(default)]
     pub features: Vec<String>,
+    // Фаза С (`docs/ITEMS_AND_SPELLS_TZ.md` §С1) — all additive `serde(default)`:
+    // old saves/packages lacking these keys load with empty spells/slots.
+    /// Known spells, objects (NOT a `Vec<String>` — bespoke apply/parse path).
+    #[serde(default)]
+    pub spells: Vec<SpellEntry>,
+    /// FLAT «level → remaining slots» dict, e.g. `{"1": 3, "2": 1}`. Flat so it
+    /// rides the K2.1 stat-dict numeric coercion (no nested {current,max} — §5).
+    #[serde(default)]
+    pub spell_slots: Map<String, Value>,
+    /// FLAT «level → max slots» authored ceilings; an unwritten level = no slots.
+    #[serde(default)]
+    pub spell_slots_max: Map<String, Value>,
+    /// Name of the active concentration spell; "" = none (a plain text field).
+    #[serde(default)]
+    pub concentration: String,
     #[serde(default)]
     pub card_revision: i64,
 }
@@ -209,6 +247,10 @@ impl Default for PlayerCharacter {
             ],
             equipment: Vec::new(),
             features: Vec::new(),
+            spells: Vec::new(),
+            spell_slots: Map::new(),
+            spell_slots_max: Map::new(),
+            concentration: String::new(),
             card_revision: 0,
         }
     }

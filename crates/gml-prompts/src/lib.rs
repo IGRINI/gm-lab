@@ -248,10 +248,11 @@ mod tests {
         h.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    // GM_SYSTEM sha/len updated for Phase-И items (`docs/ITEMS_AND_SPELLS_TZ.md`
-    // §И1/§И3): the item name↔description ' — ' convention line plus the
-    // take_item/drop_item vs inventory_add/remove tool-choice rule.
-    const GM_SYSTEM_SHA: &str = "2fe246fa8be94b91c24d87f3c12410f8e1fbfdb5640a2a67dc223904c5d0dcc7";
+    // GM_SYSTEM sha/len updated for Phase-С spells (`docs/ITEMS_AND_SPELLS_TZ.md`
+    // §С2): the spellcasting rule — cast via cast_spell, engine-authoritative
+    // slots/concentration, damage/saves via roll_dice, concentration reset via
+    // the field — appended after the Phase-И item pickup/drop rule.
+    const GM_SYSTEM_SHA: &str = "cb1646fd49f564a54ca6caa5d364c54b763e997deb3888159ccc348ad6e38bf0";
     const NPC_SYSTEM_STATIC_SHA: &str =
         "b9cff19d13db6dabd8510ab7685bbc9c7b903e1b867bc22f9ec781366250e4c9";
     const NPC_CARD_TEMPLATE_SHA: &str =
@@ -275,8 +276,8 @@ mod tests {
     fn gm_system_byte_identical() {
         assert_bytes_eq!(gm_system(), "GM_SYSTEM.txt");
         assert_eq!(sha256_hex(GM_SYSTEM), GM_SYSTEM_SHA);
-        assert_eq!(GM_SYSTEM.chars().count(), 37029);
-        assert_eq!(GM_SYSTEM.len(), 37284);
+        assert_eq!(GM_SYSTEM.chars().count(), 37701);
+        assert_eq!(GM_SYSTEM.len(), 37958);
     }
 
     #[test]

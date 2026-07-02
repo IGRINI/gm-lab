@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 
 use gml_llm::Backend;
 use gml_world::{
-    FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem,
+    FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem, SpellEntry,
     SceneState, StateRecord, World, WorldEvent, WorldTime,
 };
 use gml_world::{MersenneTwister, RngState};
@@ -1010,6 +1010,13 @@ fn player_character_to_payload(pc: &PlayerCharacter) -> Value {
         "inventory": pc.inventory,
         "equipment": pc.equipment,
         "features": pc.features,
+        // Фаза С §С1: unconditional emit per the 26→30-field discipline (old
+        // real saves gain empty keys on next save-back — this is the established
+        // additive re-save behaviour, gated by the re-blessed roundtrip golden).
+        "spells": pc.spells,
+        "spell_slots": pc.spell_slots,
+        "spell_slots_max": pc.spell_slots_max,
+        "concentration": pc.concentration,
         "card_revision": pc.card_revision,
     })
 }
@@ -1046,8 +1053,30 @@ fn player_character_from_payload(v: Option<&Value>) -> PlayerCharacter {
         inventory: str_list(m.get("inventory")),
         equipment: str_list(m.get("equipment")),
         features: str_list(m.get("features")),
+        // Фаза С §С1: spells is an OBJECT array — parse via serde (NOT str_list),
+        // keeping only object entries and dropping any that fail to deserialize so
+        // old saves / malformed payloads load with a clean (possibly empty) list.
+        // Slots are flat dicts (json_dict, like hp); concentration is a string.
+        spells: spell_list(m.get("spells")),
+        spell_slots: json_dict(m.get("spell_slots")),
+        spell_slots_max: json_dict(m.get("spell_slots_max")),
+        concentration: s(&m, "concentration"),
         card_revision: card_revision(&m),
     }
+}
+
+/// Фаза С §С1: coerce a payload `spells` value into `Vec<SpellEntry>`. Non-array
+/// input yields an empty list; within an array only OBJECT entries are kept and
+/// each is deserialized with serde defaults (a record that fails to parse is
+/// dropped, never poisoning the rest). This mirrors the bespoke apply-path
+/// coercion in `World::apply_player_character_fields`.
+fn spell_list(v: Option<&Value>) -> Vec<SpellEntry> {
+    v.map(json_list)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|x| x.is_object())
+        .filter_map(|x| serde_json::from_value::<SpellEntry>(x).ok())
+        .collect()
 }
 
 /// THE canonical player-character serializer for the K1 character package
@@ -1540,5 +1569,82 @@ mod package_ref_tests {
 
         let restored = world_from_payload(Some(&payload)).expect("restore world");
         assert!(restored.place_items.is_empty());
+    }
+
+    // --- Фаза С §С1: player_character spell fields round-trip ----------------
+
+    /// A caster PC's spells / flat slots / concentration round-trip through the
+    /// canonical save payload exactly. Spells parse via serde (NOT str_list);
+    /// slots are flat dicts (like hp); concentration is a string.
+    #[test]
+    fn player_character_spell_fields_round_trip() {
+        use gml_world::SpellEntry;
+        let mut spell_slots = Map::new();
+        spell_slots.insert("1".to_string(), json!(3));
+        let mut spell_slots_max = Map::new();
+        spell_slots_max.insert("1".to_string(), json!(4));
+        let pc = PlayerCharacter {
+            spells: vec![
+                SpellEntry {
+                    name: "Луч холода".to_string(),
+                    level: 0,
+                    concentration: false,
+                    ritual: false,
+                    effect: "1d8 холодом".to_string(),
+                },
+                SpellEntry {
+                    name: "Огненная хватка".to_string(),
+                    level: 1,
+                    concentration: true,
+                    ritual: false,
+                    effect: "конц.; 2d6 огнём".to_string(),
+                },
+            ],
+            spell_slots,
+            spell_slots_max,
+            concentration: "Огненная хватка".to_string(),
+            ..Default::default()
+        };
+
+        let payload = player_character_to_payload(&pc);
+        // Emitted unconditionally (30-field discipline).
+        assert_eq!(payload["spells"][1]["name"], json!("Огненная хватка"));
+        assert_eq!(payload["spells"][1]["concentration"], json!(true));
+        assert_eq!(payload["spell_slots"]["1"], json!(3));
+        assert_eq!(payload["spell_slots_max"]["1"], json!(4));
+        assert_eq!(payload["concentration"], json!("Огненная хватка"));
+
+        let restored = player_character_from_payload(Some(&payload));
+        assert_eq!(restored.spells, pc.spells);
+        assert_eq!(restored.spell_slots, pc.spell_slots);
+        assert_eq!(restored.spell_slots_max, pc.spell_slots_max);
+        assert_eq!(restored.concentration, pc.concentration);
+    }
+
+    /// Old-save back-compat: a `player_character` payload WITHOUT the Фаза С keys
+    /// (a pre-Phase-С save) loads with empty spells / slots and no concentration
+    /// — the `serde(default)` + null-safe getters guarantee (§С1). Junk in the
+    /// spells array is dropped, never fatal.
+    #[test]
+    fn player_character_absent_spell_keys_default_and_junk_is_dropped() {
+        // A minimal legacy payload: the pre-Phase-С shape, no spell keys at all.
+        let legacy = json!({
+            "name": "Старый герой",
+            "inventory": ["кинжал"],
+        });
+        let restored = player_character_from_payload(Some(&legacy));
+        assert_eq!(restored.name, "Старый герой");
+        assert!(restored.spells.is_empty(), "absent spells default to empty");
+        assert!(restored.spell_slots.is_empty());
+        assert!(restored.spell_slots_max.is_empty());
+        assert!(restored.concentration.is_empty());
+
+        // A payload whose spells array carries junk keeps only the object entries.
+        let with_junk = json!({
+            "spells": ["не спелл", 7, {"name": "Свет", "level": 0}],
+        });
+        let restored = player_character_from_payload(Some(&with_junk));
+        assert_eq!(restored.spells.len(), 1, "only the object entry survives");
+        assert_eq!(restored.spells[0].name, "Свет");
     }
 }

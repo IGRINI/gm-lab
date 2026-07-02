@@ -899,7 +899,8 @@ fn canon_tools_are_available_in_the_canon_catalog() {
             "world_debug",
             "generate_location",
             "take_item",
-            "drop_item"
+            "drop_item",
+            "cast_spell"
         ]
     );
     assert_eq!(
@@ -909,7 +910,8 @@ fn canon_tools_are_available_in_the_canon_catalog() {
             "world_debug",
             "generate_location",
             "take_item",
-            "drop_item"
+            "drop_item",
+            "cast_spell"
         ]
     );
 }
@@ -1138,4 +1140,108 @@ fn take_then_move_does_not_leak_and_drop_lands_in_the_new_place() {
         &json!({"name": "Медная монета", "location": "на камне"}),
     ));
     assert!(session.world.scene.items.iter().any(|i| i.name == "Медная монета"));
+}
+
+// --- §С2 cast_spell dispatch -----------------------------------------------
+
+/// A caster session: one level-1 concentration spell, one free level-1 slot.
+fn caster_session() -> Session {
+    let seed = json!({
+        "id": "caster-scene",
+        "title": "Кабинет мага",
+        "public_intro": "Тесная башня.",
+        "hidden_truth": "Скрытый круг.",
+        "npcs": [],
+        "player": {
+            "name": "Аэлин",
+            "spells": [
+                {"name": "Огненная хватка", "level": 1, "concentration": true,
+                 "ritual": false, "effect": "конц.; 2d6 огнём"}
+            ],
+            "spell_slots": {"1": 1},
+            "spell_slots_max": {"1": 2},
+            "concentration": ""
+        },
+        "scene": {
+            "id": "tower_scene",
+            "location_id": "tower",
+            "title": "Башня",
+            "description": "Свитки и реторты.",
+            "present_npcs": [],
+            "items": [],
+            "exits": []
+        }
+    });
+    let world = World::from_seed_with_dice_seed(&seed, 20260622);
+    Session::with_world(client(), world, factory())
+}
+
+#[test]
+fn cast_spell_spends_slot_sets_concentration_and_emits_card_update_only() {
+    let mut session = caster_session();
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "cast_spell",
+        &json!({"name": "огненная хватка", "reason": "кастую"}),
+    ));
+    let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(payload["ok"], json!(true));
+    assert_eq!(payload["slot_spent_level"], json!(1));
+    assert_eq!(payload["concentration_started"], json!("Огненная хватка"));
+    // Engine state mutated: slot decremented, concentration held.
+    assert_eq!(session.world.player_character.spell_slots.get("1"), Some(&json!(0)));
+    assert_eq!(session.world.player_character.concentration, "Огненная хватка");
+    // A card update is emitted; NO scene update (the scene is untouched) and NO
+    // canon event (§0).
+    assert!(events.iter().any(|e| e.kind == "player_character_update"));
+    assert!(!events.iter().any(|e| e.kind == "scene_update"));
+    assert!(
+        !session
+            .world
+            .world_canon
+            .event_log
+            .events
+            .iter()
+            .any(|e| e.kind == "cast_spell"),
+        "§0: cast_spell must NOT write a canon event"
+    );
+}
+
+#[test]
+fn cast_spell_unknown_is_a_clean_tool_error_with_known_hint() {
+    let mut session = caster_session();
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "cast_spell",
+        &json!({"name": "метеор"}),
+    ));
+    assert!(
+        result.model.contains("code: unknown_spell"),
+        "an unknown spell must surface the validator-style code: {}",
+        result.model
+    );
+    assert!(events.iter().any(|e| e.kind == "error"));
+    assert!(!events.iter().any(|e| e.kind == "player_character_update"));
+}
+
+#[test]
+fn cast_spell_no_slots_is_rejected_as_fiction() {
+    let mut session = caster_session();
+    // Spend the only level-1 slot, then try again -> no_slots.
+    block_on(run_tool_collect(
+        &mut session,
+        "cast_spell",
+        &json!({"name": "огненная хватка"}),
+    ));
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "cast_spell",
+        &json!({"name": "огненная хватка"}),
+    ));
+    assert!(
+        result.model.contains("code: no_slots"),
+        "a slotless cast must be a clean rejection: {}",
+        result.model
+    );
+    assert!(events.iter().any(|e| e.kind == "error"));
 }

@@ -43,6 +43,7 @@ use gml_types::Role;
 use gml_world::World;
 
 // Re-exports mirroring the `agents.py` public surface.
+pub use architect_runner::{ArchitectOutput, ArchitectStream, NullArchitectStream};
 pub use coerce::{as_list, claims, norm_npc, norm_npc_with_reasoning, text};
 pub use gm::{
     gm_request_messages, gm_system, gm_turn_context, gm_user_message, gm_world_setup,
@@ -54,16 +55,15 @@ pub use npc::{
     npc_user_message, npc_user_message_with_contact, NPC_PERCEPTION_BRIEF_RULES,
 };
 pub use seed::{build_world_seed, extract_scene_delta, scene_delta_schema, world_seed_schema};
-pub use tools::{
-    build_canon_gm_tools, build_gm_tools, build_gm_tools_for_model,
-    build_gm_tools_for_native_tool_search, build_npc_tools, gm_tool_catalog, initial_gm_tool_names,
-    load_gm_tool_schema, search_gm_tools, CANON_GM_TOOL_NAMES,
-};
-pub use architect_runner::{ArchitectOutput, ArchitectStream, NullArchitectStream};
 pub use story_architect::{
     story_architect_messages, story_architect_tools, story_architect_turn,
     story_architect_user_message, story_architect_world_lore_block, StoryArchitectOutput,
     STORY_ARCHITECT_SYSTEM,
+};
+pub use tools::{
+    build_canon_gm_tools, build_gm_tools, build_gm_tools_for_model,
+    build_gm_tools_for_native_tool_search, build_npc_tools, gm_tool_catalog, initial_gm_tool_names,
+    load_gm_tool_schema, search_gm_tools, CANON_GM_TOOL_NAMES,
 };
 pub use world_architect::{
     world_architect_messages, world_architect_tools, world_architect_tools_with_options,

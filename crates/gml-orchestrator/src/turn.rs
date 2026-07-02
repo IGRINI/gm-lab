@@ -745,6 +745,7 @@ async fn run_executable_tool(
         "move_player" => run_move_player(session, args, sink).await,
         "take_item" => run_take_item(session, args, sink),
         "drop_item" => run_drop_item(session, args, sink),
+        "cast_spell" => run_cast_spell(session, args, sink),
         "world_debug" => run_world_debug(session, args, sink),
         "generate_location" => run_generate_location(session, args, sink).await,
         "ask_npc" => run_ask_npc_tool(session, args, metas, sink).await,
@@ -2023,6 +2024,55 @@ fn run_drop_item(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     match session.world.drop_item(name, location, reason) {
         Ok(payload) => item_move_success(session, "drop_item", payload, sink),
         Err(rejection) => item_move_rejection("drop_item", &rejection, sink),
+    }
+}
+
+/// §С2 `cast_spell` — spend a slot / set concentration for a known spell. Emits
+/// PLAYER_CHARACTER_UPDATE on success (like run_update_player_character); NO
+/// SCENE_UPDATE (the scene is untouched) and NO canon EventLog write (§0). A
+/// rejection (unknown_spell / no_slots) emits an error event and returns the
+/// structured tool error carrying the known-spells / level hints so the model
+/// can repair or narrate the fizzled cast.
+fn run_cast_spell(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    let name = arg_str(args, "name");
+    let slot_level = args.get("slot_level").and_then(Value::as_i64);
+    let reason = arg_str(args, "reason");
+    match session.world.cast_spell(name, slot_level, reason) {
+        Ok(payload) => {
+            sink.emit(ev(
+                event_kind::PLAYER_CHARACTER_UPDATE,
+                Some("ГМ"),
+                payload.clone(),
+                None,
+            ));
+            tool_result(
+                &json_compact(&payload),
+                Some(&model_player_character_update_text(&payload)),
+                Some(tool_reminder("cast_spell")),
+                false,
+            )
+        }
+        Err(rejection) => {
+            let code = rejection.get("code").and_then(Value::as_str).unwrap_or("");
+            let message = rejection
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("cast rejected");
+            let msg = format!("cast_spell rejected: {message} ({code})");
+            sink.emit(ev(
+                event_kind::ERROR,
+                Some("ГМ"),
+                Value::String(msg),
+                None,
+            ));
+            let mut extra: Vec<(&str, Value)> = Vec::new();
+            for key in ["name", "known_spells", "level"] {
+                if let Some(value) = rejection.get(key) {
+                    extra.push((key, value.clone()));
+                }
+            }
+            tool_error("cast_spell", message, None, code, &extra)
+        }
     }
 }
 

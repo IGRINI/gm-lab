@@ -126,7 +126,8 @@ fn story_architect_messages_with_user(
 pub fn story_architect_user_message(draft: &Value, user_text: &str) -> Value {
     // Show the model the canonical plot draft so it can reference exact
     // field/section names and existing entries when editing.
-    let draft_json = serde_json::to_string(&normalize_input_plot(draft)).unwrap_or_else(|_| "null".to_string());
+    let draft_json =
+        serde_json::to_string(&normalize_input_plot(draft)).unwrap_or_else(|_| "null".to_string());
     json!({
         "role": "user",
         "content": format!(
@@ -165,8 +166,8 @@ pub fn story_architect_world_lore_block(world_lore: &Value) -> String {
     for key in WORLD_LORE_IMAGE_FIELDS {
         lore.remove(key);
     }
-    let json = serde_json::to_string_pretty(&Value::Object(lore))
-        .unwrap_or_else(|_| "{}".to_string());
+    let json =
+        serde_json::to_string_pretty(&Value::Object(lore)).unwrap_or_else(|_| "{}".to_string());
     format!(
         "## BOUND WORLD BIBLE (read-only reference)\n\
         This is the canon of the world your story runs in. Do NOT edit it — write a plot that fits it. \
@@ -179,9 +180,7 @@ pub fn story_architect_world_lore_block(world_lore: &Value) -> String {
 /// runtime contract. `title`, `story_brief`, `public_intro` are required (the
 /// minimum a launchable story needs); everything else is optional.
 fn draft_story_plot_schema() -> Value {
-    let str_arr = |description: &str| {
-        json!({"type": "array", "items": {"type": "string"}, "description": description})
-    };
+    let str_arr = |description: &str| json!({"type": "array", "items": {"type": "string"}, "description": description});
     let scene_schema = json!({
         "type": "object",
         "additionalProperties": true,
@@ -255,7 +254,10 @@ fn draft_story_plot_schema() -> Value {
     properties.insert("npcs".into(), json!({"type": "array", "items": npc_schema, "description": "The opening cast (a couple to a handful of NPC cards)."}));
     properties.insert("public_facts".into(), json!({"type": "array", "items": fact_schema, "description": "Facts the world starts knowing (player-safe unless kind=truth)."}));
     properties.insert("state_records".into(), json!({"type": "array", "items": state_schema, "description": "Initial tracked state (situations, relationships, conditions)."}));
-    properties.insert("proper_nouns".into(), str_arr("Proper nouns this story introduces (names to keep spelled consistently)."));
+    properties.insert(
+        "proper_nouns".into(),
+        str_arr("Proper nouns this story introduces (names to keep spelled consistently)."),
+    );
     properties.insert("time".into(), json!({"type": "integer", "description": "Start time as absolute minutes since midnight (e.g. 480 = 08:00). Avoid 0 (midnight)."}));
 
     json!({
@@ -605,7 +607,10 @@ mod tests {
         assert_eq!(props["npcs"]["type"], "array");
         // No acts/objectives/endings leak into the schema.
         for forbidden in ["acts", "objectives", "endings", "chapters"] {
-            assert!(!props.contains_key(forbidden), "{forbidden} must not appear");
+            assert!(
+                !props.contains_key(forbidden),
+                "{forbidden} must not appear"
+            );
         }
     }
 
@@ -695,7 +700,10 @@ mod tests {
         assert_eq!(npcs.len(), 1);
         assert_eq!(npcs[0]["id"], "b");
         // replace swaps a whole section.
-        let replaced = edit(&base, json!({"replace": {"public_facts": [{"id": "f2", "text": "u"}]}}));
+        let replaced = edit(
+            &base,
+            json!({"replace": {"public_facts": [{"id": "f2", "text": "u"}]}}),
+        );
         assert_eq!(replaced["public_facts"][0]["id"], "f2");
     }
 
@@ -747,7 +755,10 @@ mod tests {
             "Собери сюжет.",
         );
         assert_eq!(msgs[0]["role"], "system");
-        assert!(msgs[0]["content"].as_str().unwrap().contains("story architect"));
+        assert!(msgs[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("story architect"));
         assert_eq!(msgs[1]["role"], "system");
         assert!(msgs[1]["content"]
             .as_str()

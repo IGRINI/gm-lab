@@ -55,6 +55,34 @@ function arr(v) {
 function objEntries(v) {
   return v && typeof v === "object" && !Array.isArray(v) ? Object.entries(v) : [];
 }
+// Фаза С (ITEMS_AND_SPELLS_TZ §С3): read-only spell rendering.
+function spellLevelLabel(level) {
+  const n = Number(level);
+  return Number.isFinite(n) && n > 0 ? `ур. ${n}` : "заговор";
+}
+function spellLine(sp) {
+  if (!sp || typeof sp !== "object") return "";
+  const marks = [sp.concentration ? "конц." : "", sp.ritual ? "ритуал" : ""].filter(Boolean);
+  const head = `${sp.name || "—"} (${[spellLevelLabel(sp.level), ...marks].join(", ")})`;
+  const effect = txt(sp.effect);
+  return effect ? `${head}: ${effect}` : head;
+}
+function slotsLine(slots, max) {
+  const levels = new Set();
+  for (const m of [slots, max]) {
+    for (const [k] of objEntries(m)) {
+      const n = parseInt(k, 10);
+      if (Number.isInteger(n) && n > 0) levels.add(n);
+    }
+  }
+  const slotNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  return [...levels].sort((a, b) => a - b).map((lvl) => {
+    const cur = slotNum((slots || {})[lvl]);
+    const capRaw = (max || {})[lvl];
+    const cap = capRaw == null ? "?" : slotNum(capRaw);
+    return `${lvl}-й: ${cur}/${cap}`;
+  }).join(", ");
+}
 function statEntries(v) {
   return objEntries(v).filter(([, x]) => x != null && String(x).trim() !== "");
 }
@@ -380,6 +408,20 @@ function CharacterDetail({ pc }) {
 
       <Section title="Особенности" when={arr(pc?.features).length > 0} tone="amber">
         <Lines items={pc?.features} cards />
+      </Section>
+
+      <Section
+        title="Заклинания"
+        when={arr(pc?.spells).length > 0 || !!slotsLine(pc?.spell_slots, pc?.spell_slots_max) || !!txt(pc?.concentration)}
+        tone="purple"
+      >
+        {arr(pc?.spells).length > 0 && <Lines items={arr(pc?.spells).map(spellLine)} />}
+        {!!slotsLine(pc?.spell_slots, pc?.spell_slots_max) && (
+          <p className="wd-desc"><span className="wd-inline-k">Слоты. </span>{slotsLine(pc?.spell_slots, pc?.spell_slots_max)}</p>
+        )}
+        {!!txt(pc?.concentration) && (
+          <p className="wd-desc"><span className="wd-inline-k">Концентрация. </span>{txt(pc?.concentration)}</p>
+        )}
       </Section>
     </div>
   );

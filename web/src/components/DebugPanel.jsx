@@ -556,6 +556,10 @@ function PlayerEditor({ player, onSave }) {
     inventory: listText(player.inventory),
     equipment: listText(player.equipment),
     features: listText(player.features),
+    spells: prettyJson(player.spells),
+    spell_slots: prettyJson(player.spell_slots),
+    spell_slots_max: prettyJson(player.spell_slots_max),
+    concentration: player.concentration || "",
   }));
   const [editError, setEditError] = useState("");
   const set = (patch) => setD((p) => ({ ...p, ...patch }));
@@ -589,6 +593,10 @@ function PlayerEditor({ player, onSave }) {
         inventory: parseListField(d.inventory),
         equipment: parseListField(d.equipment),
         features: parseListField(d.features),
+        spells: parseArrayField("Spells", d.spells),
+        spell_slots: parseObjectField("Spell slots", d.spell_slots),
+        spell_slots_max: parseObjectField("Spell slots max", d.spell_slots_max),
+        concentration: d.concentration,
       };
       setEditError("");
     } catch (e) {
@@ -634,6 +642,15 @@ function PlayerEditor({ player, onSave }) {
         <EditField label="Снаряжение"><textarea rows={4} value={d.equipment} onChange={(e) => set({ equipment: e.target.value })} /></EditField>
         <EditField label="Особенности"><textarea rows={4} value={d.features} onChange={(e) => set({ features: e.target.value })} /></EditField>
       </div>
+      <div className="dbg-block">
+        <div className="dbg-block-head"><b>Заклинания</b><span className="dbg-badge">spells</span></div>
+        <EditField label="Spells JSON"><textarea rows={5} value={d.spells} onChange={(e) => set({ spells: e.target.value })} placeholder='[{"name":"Огненный снаряд","level":1,"concentration":false,"ritual":false,"effect":"..."}]' /></EditField>
+        <div className="dbg-edit-grid">
+          <EditField label="Spell slots JSON"><textarea rows={3} value={d.spell_slots} onChange={(e) => set({ spell_slots: e.target.value })} placeholder='{"1": 3, "2": 1}' /></EditField>
+          <EditField label="Spell slots max JSON"><textarea rows={3} value={d.spell_slots_max} onChange={(e) => set({ spell_slots_max: e.target.value })} placeholder='{"1": 4, "2": 2}' /></EditField>
+          <EditField label="Концентрация"><input value={d.concentration} onChange={(e) => set({ concentration: e.target.value })} /></EditField>
+        </div>
+      </div>
       {editError && <div className="err">{editError}</div>}
       <div className="dbg-modal-actions">
         <button type="button" className="btn primary" onClick={save}>Сохранить</button>
@@ -648,6 +665,39 @@ function asList(items) {
 
 function listText(items) {
   return asList(items).join("\n");
+}
+
+// Фаза С (ITEMS_AND_SPELLS_TZ §С3): read-only spell rendering helpers, shared
+// by PlayerCard and WorldDetailModal.
+function spellLevelLabel(level) {
+  const n = Number(level);
+  return Number.isFinite(n) && n > 0 ? `ур. ${n}` : "заговор";
+}
+
+function spellLine(sp) {
+  if (!sp || typeof sp !== "object") return "";
+  const marks = [sp.concentration ? "конц." : "", sp.ritual ? "ритуал" : ""].filter(Boolean);
+  const head = `${sp.name || "—"} (${[spellLevelLabel(sp.level), ...marks].join(", ")})`;
+  const effect = String(sp.effect || "").trim();
+  return effect ? `${head}: ${effect}` : head;
+}
+
+// "1-й: 3/4, 2-й: 1/2" from the flat remaining/max slot maps; "" when no levels.
+function slotsLine(slots, max) {
+  const levels = new Set();
+  for (const m of [slots, max]) {
+    for (const k of Object.keys(m || {})) {
+      const n = parseInt(k, 10);
+      if (Number.isInteger(n) && n > 0) levels.add(n);
+    }
+  }
+  const slotNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  return [...levels].sort((a, b) => a - b).map((lvl) => {
+    const cur = slotNum((slots || {})[lvl]);
+    const capRaw = (max || {})[lvl];
+    const cap = capRaw == null ? "?" : slotNum(capRaw);
+    return `${lvl}-й: ${cur}/${cap}`;
+  }).join(", ");
 }
 
 function parseListField(value) {
@@ -920,6 +970,21 @@ function PlayerCard({ player, onEdit }) {
 
       <h4>Снаряжение и особенности</h4>
       <DebugList items={[...asList(player.equipment), ...asList(player.features)]} />
+
+      {(asList(player.spells).length > 0
+        || slotsLine(player.spell_slots, player.spell_slots_max)
+        || String(player.concentration || "").trim()) && (
+        <>
+          <h4>Заклинания</h4>
+          <DebugList items={asList(player.spells).map(spellLine).filter(Boolean)} />
+          {slotsLine(player.spell_slots, player.spell_slots_max) && (
+            <div className="debug-grid"><div><span>слоты</span><b>{slotsLine(player.spell_slots, player.spell_slots_max)}</b></div></div>
+          )}
+          {String(player.concentration || "").trim() && (
+            <div className="debug-grid"><div><span>концентрация</span><b>{player.concentration}</b></div></div>
+          )}
+        </>
+      )}
 
       <h4>Заметки ГМ</h4>
       <TextBlock secret>{player.gm_notes}</TextBlock>

@@ -29,7 +29,7 @@ pub use canon::{
 };
 pub use model::{
     FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem,
-    SceneState, StateRecord, WorldEvent, WorldFact, WorldTime,
+    SceneState, SpellEntry, StateRecord, WorldEvent, WorldFact, WorldTime,
 };
 pub use rng::{MersenneTwister, RngState};
 pub use state_record::{state_record_hash, RagDocument};

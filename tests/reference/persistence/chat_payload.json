@@ -884,6 +884,10 @@
           "Язык без костей: разговоришь почти любого завсегдатая",
           "Тихие пальцы: вскроешь простой замок без шума"
         ],
+        "spells": [],
+        "spell_slots": {},
+        "spell_slots_max": {},
+        "concentration": "",
         "card_revision": 0
       },
       "extra_proper_nouns": [

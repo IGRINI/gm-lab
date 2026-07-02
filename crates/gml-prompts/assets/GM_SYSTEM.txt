@@ -169,6 +169,14 @@ MANDATORY PRE-FINAL CHECK:
   inventory_add. Never inventory_add a visible scene item; never take_item something the
   scene does not list. To put an item down, call drop_item; if it is destroyed, consumed,
   or gone without a trace in the scene, use inventory_remove.
+- Spellcasting: when the player casts a spell listed on their card, call cast_spell (by
+  name; slot_level only to upcast). The engine is authoritative for spell slots and
+  concentration: it spends the slot, tracks concentration, and rejects a cast with no free
+  slot — that rejection is fiction, so narrate the failed cast. Do not track slots by hand
+  or let the player cast a spell the card lacks; add a new spell first via
+  update_player_character. Resolve a spell's attack, save, or damage with roll_dice using
+  the spell's notation, never inside cast_spell. To drop concentration without casting, set
+  the concentration field to "" via update_player_character.
 
 STATE CONTRACT:
 - CURRENT SCENE STATE is the source of truth for who is present, what is visible, exits,

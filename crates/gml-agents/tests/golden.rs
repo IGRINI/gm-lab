@@ -342,9 +342,9 @@ fn build_for_model_filters_loaded_set() {
     // The full catalog is the static tools PLUS living-world canon tools and
     // the stable loader/invoker tools appended at the end.
     let all = agents::build_gm_tools_for_model(None, false);
-    assert_eq!(all.len(), 20); // 21 catalog tools minus ask_player (+take_item/drop_item)
+    assert_eq!(all.len(), 21); // 22 catalog tools minus ask_player (+take_item/drop_item/cast_spell)
     let all_with = agents::build_gm_tools_for_model(None, true);
-    assert_eq!(all_with.len(), 21);
+    assert_eq!(all_with.len(), 22);
     // Hidden loaded names no longer mutate top-level tools; move_player is a
     // PRIMARY/initial tool, world_debug and move_npc are invoked through the
     // stable schema loader path.

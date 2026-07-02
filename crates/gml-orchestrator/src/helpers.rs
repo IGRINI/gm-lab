@@ -135,6 +135,12 @@ react, call ask_npc; do not invent personal speech/action in narration."
             "Use the changed character-sheet fields in future resolution. Do not reveal \
 GM-only player notes directly."
         }
+        "cast_spell" => {
+            "The spell slot and concentration are now committed in the engine; treat the \
+remaining slots and active concentration as authoritative. Resolve attack, save, or \
+damage with roll_dice using the spell's notation; describe the effect from its prose. \
+If a prior concentration ended, narrate that earlier effect lapsing."
+        }
         _ => "",
     }
 }

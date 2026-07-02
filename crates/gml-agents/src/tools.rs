@@ -100,7 +100,7 @@ pub(crate) const INVOKE_LOADED_TOOL_NAME: &str = "invoke_loaded_tool";
 
 /// `_TOOL_SEARCH_HINTS` — name -> hint keywords. Includes the living-world canon
 /// tools (`move_player`, `world_debug`).
-pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 18] = [
+pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 19] = [
     (
         "ask_npc",
         "npc нпс персонаж поговорить спросить допросить ответить реакция речь \
@@ -145,6 +145,11 @@ take pick up grab loot item scene inventory карман",
         "drop_item",
         "выложить бросить оставить положить предмет вещь из инвентаря в сцену \
 drop put down leave item inventory scene на стол на землю",
+    ),
+    (
+        "cast_spell",
+        "заклинание спелл каст сотворить прочитать колдовать магия слот концентрация \
+заговор апкаст cast spell slot cantrip concentration magic ритуал",
     ),
     (
         "get_npc_profile",
@@ -606,6 +611,20 @@ pub fn build_gm_tools() -> Vec<Value> {
                               "description": "Full current equipment only when equipment changed. Same ' — ' name/description convention as inventory; matching is by the head before ' — '."},
                 "features": {"type": "array", "items": {"type": "string"},
                              "description": "Full current features only when features changed."},
+                "spells": {"type": "array", "items": {"type": "object", "properties": {
+                    "name": {"type": "string"},
+                    "level": {"type": "integer", "description": "Spell level; 0 for a cantrip (заговор)."},
+                    "concentration": {"type": "boolean", "description": "True if the spell requires concentration."},
+                    "ritual": {"type": "boolean", "description": "True if the spell can be cast as a ritual (display only in v1)."},
+                    "effect": {"type": "string", "description": "Prose effect. Put school, casting time, range, duration, and upcast text HERE — the engine reads only name/level/concentration/ritual."},
+                }, "additionalProperties": false},
+                           "description": "Full known-spell list only when it changed; each entry is an object with name/level/concentration/ritual/effect. To CAST a known spell (spend a slot, set concentration) call cast_spell instead; use this only to learn, forget, or edit spells."},
+                "spell_slots": {"type": "object",
+                                "description": "FLAT map «level → remaining slots», e.g. {\"1\": 3, \"2\": 1}. Send the full map when it changes (e.g. a long rest restores slots); the engine decrements it on cast_spell. An unlisted level means no slots at that level. Do NOT nest {current, max}."},
+                "spell_slots_max": {"type": "object",
+                                    "description": "FLAT map «level → max slots» the character has when fully rested. Author from the 5e slot table for the class/level (e.g. a level-1 full caster has {\"1\": 2}; level-3 has {\"1\": 4, \"2\": 2})."},
+                "concentration": {"type": "string",
+                                  "description": "Name of the spell the character is currently concentrating on; send \"\" to drop concentration without a new cast. Normally set by cast_spell."},
                 "inventory_add": {"type": "array", "items": {"type": "string"},
                                   "description": "Inventory entries to append. Use INSTEAD of the full inventory array for small pickups. If you also send the full inventory it is applied first and these deltas run on top; do not mix them in the same call. Duplicates already present are skipped."},
                 "inventory_remove": {"type": "array", "items": {"type": "string"},
@@ -645,16 +664,18 @@ pub fn build_gm_tools() -> Vec<Value> {
 // so the stable cache prefix is preserved (new tools only ever go at the end).
 
 /// `_CANON_GM_TOOL_NAMES` — the additive living-world tools, in append order.
-/// `take_item`/`drop_item` are the Phase-И scene↔inventory item movers appended
-/// at the END (`docs/ITEMS_AND_SPELLS_TZ.md` §И3): they carry a scene item's
-/// BODY into/out of the player card and are NOT part of the byte-gated static
-/// catalog (no re-bless), matching the move_player precedent.
-pub const CANON_GM_TOOL_NAMES: [&str; 5] = [
+/// `take_item`/`drop_item` are the Phase-И scene↔inventory item movers, and
+/// `cast_spell` is the Phase-С spell-slot/concentration mover
+/// (`docs/ITEMS_AND_SPELLS_TZ.md` §И3/§С2), all appended at the END: they mutate
+/// the player card and are NOT part of the byte-gated static catalog (no
+/// re-bless), matching the move_player precedent.
+pub const CANON_GM_TOOL_NAMES: [&str; 6] = [
     "move_player",
     "world_debug",
     "generate_location",
     "take_item",
     "drop_item",
+    "cast_spell",
 ];
 
 /// The additive living-world GM tools that commit through the canon engine.
@@ -799,12 +820,43 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
                        "description": "Very short Russian reason for dropping the item."},
         }, "required": ["name"], "additionalProperties": false},
     }});
+    let cast_spell = json!({"type": "function", "function": {
+        "name": "cast_spell",
+        "description":
+            "Cast a spell the player character KNOWS, spending the spell slot and setting \
+    concentration in the engine. WHEN TO CALL: the player casts one of the spells listed \
+    on their card, once the fiction commits to the cast. Match by name (case-insensitive). \
+    The engine is authoritative for slots and concentration: a cantrip (level 0) spends no \
+    slot; a leveled spell spends one slot of its own level, or of slot_level when you cast \
+    it at a higher level (an upcast never drops below the spell's own level). If no slot of \
+    the needed level is free, the tool returns no_slots — that rejection is FICTION, not a \
+    retry: narrate the fizzled or aborted cast (the words falter, the gesture fails) and \
+    wait for the player, exactly like a rejected move. If the character does not know the \
+    spell, the tool returns unknown_spell with the known-spell list — do NOT invent a spell \
+    the card lacks; if it should be learnable, add it first via update_player_character. A \
+    concentration spell replaces any concentration already held; the tool reports the \
+    dropped one as concentration_ended so you can narrate the earlier effect lapsing. This \
+    tool does NO dice, attack, save, or damage math — resolve those with roll_dice using \
+    the spell's notation, and describe upcast/higher-level effects from the spell's effect \
+    prose. To drop concentration WITHOUT a new cast, clear the concentration field via \
+    update_player_character. The result is compact structured text with the spent slot \
+    level, remaining slots, and concentration changes, or a rejection reason to narrate.",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string",
+                     "description": "Name of a spell on the player's card, matched case-insensitively."},
+            "slot_level": {"type": "integer",
+                           "description": "Optional higher slot level to upcast into; ignored for cantrips and clamped up to the spell's own level. Omit to spend a slot of the spell's base level."},
+            "reason": {"type": "string",
+                       "description": "Very short Russian reason for casting the spell."},
+        }, "required": ["name"], "additionalProperties": false},
+    }});
     vec![
         move_player,
         world_debug,
         generate_location,
         take_item,
         drop_item,
+        cast_spell,
     ]
 }
 
@@ -1103,7 +1155,7 @@ struct ToolSearchMetadata {
     capabilities: &'static [&'static str],
 }
 
-const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 18] = [
+const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 19] = [
     ToolSearchMetadata {
         name: "ask_npc",
         title: "Ask NPC",
@@ -1247,6 +1299,14 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 18] = [
         keywords: &["drop", "put", "leave", "item", "inventory"],
         aliases: &["выложить", "бросить", "оставить"],
         capabilities: &["inventory_to_scene", "item_transfer"],
+    },
+    ToolSearchMetadata {
+        name: "cast_spell",
+        title: "Cast Spell",
+        description: "Spend a spell slot and set concentration for a known spell.",
+        keywords: &["spell", "cast", "slot", "concentration", "cantrip"],
+        aliases: &["заклинание", "каст", "колдовать"],
+        capabilities: &["spell_slot_spend", "concentration_tracking"],
     },
 ];
 
