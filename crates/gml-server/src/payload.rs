@@ -147,6 +147,17 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
     data.insert("public".to_string(), Value::String(public));
     data.insert("time".to_string(), time);
     data.insert("player_character".to_string(), player_character);
+    // K1 (§К1.5): surface the launched CHARACTER package provenance so the
+    // player-facing "save hero" control can offer "update the source" only when
+    // `char_ref` resolves. Emitted only when `Some` (mirrors the additive
+    // byte-identity discipline of `world_to_payload`); absent -> the UI treats
+    // it as null and offers "save as new" only.
+    if let Some(char_ref) = &w.char_ref {
+        data.insert(
+            "char_ref".to_string(),
+            json!({ "id": char_ref.id, "version": char_ref.version }),
+        );
+    }
     data.insert("scene".to_string(), scene);
     data.insert("entities".to_string(), entities);
     data.insert("status_labels".to_string(), status_labels());

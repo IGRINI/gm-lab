@@ -33,6 +33,21 @@ export const api = {
 
   deleteStory: (storyId) => _post(`/stories/${encodeURIComponent(storyId)}/delete`),
 
+  // --- K1: character packages (§К1.5) ---
+  // GET /characters -> {ok, characters:[{id,version,title,preview,created_at,updated_at,payload}]}
+  characters: () => getJSON("/characters"),
+  // POST /characters {title, payload?} -> {ok, character:{...}}
+  createCharacter: (body) => _post("/characters", body),
+  // POST /characters/{id} (metadata patch, e.g. {title}) -> {ok, character:{...}}
+  updateCharacter: (id, body) => _post(`/characters/${encodeURIComponent(id)}`, body),
+  // POST /characters/{id}/delete -> {ok, deleted:bool}
+  deleteCharacter: (id) => _post(`/characters/${encodeURIComponent(id)}/delete`),
+  // GET /characters/{id}/export -> {id}.gmchar.zip attachment (download URL)
+  exportCharacterUrl: (id) => `/characters/${encodeURIComponent(id)}/export`,
+  // POST /chats/{chatId}/save-character {character_id?} -> {ok, character:{id,version,title}}
+  saveCharacterFromChat: (chatId, body) =>
+    _post(`/chats/${encodeURIComponent(chatId)}/save-character`, body),
+
   chats: () => getJSON("/chats"),
 
   worlds: () => getJSON("/worlds"),

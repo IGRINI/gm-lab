@@ -54,6 +54,21 @@ function storyDescription(story) {
   return story?.story_brief?.trim?.() || story?.description?.trim?.() || "";
 }
 
+function characterTitle(character) {
+  return character?.title?.trim?.() || "Персонаж";
+}
+
+function characterPreview(character) {
+  const preview = character?.preview?.trim?.();
+  if (preview && preview !== characterTitle(character)) return preview;
+  return "";
+}
+
+function characterVersion(character) {
+  const v = Number(character?.version);
+  return Number.isFinite(v) && v > 0 ? `v${v}` : "v1";
+}
+
 export default function ChatHistorySidebar({
   chats,
   worlds,
@@ -70,6 +85,14 @@ export default function ChatHistorySidebar({
   storiesLoading,
   storiesError,
   onSelectStory,
+  characters,
+  selectedCharacterId,
+  charactersLoading,
+  charactersError,
+  onSelectCharacter,
+  onExportCharacter,
+  onRenameCharacter,
+  onDeleteCharacter,
   onClose,
   onCreate,
   onCreateWorld,
@@ -102,6 +125,7 @@ export default function ChatHistorySidebar({
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
   const sortedWorlds = useMemo(() => (Array.isArray(worlds) ? worlds : []), [worlds]);
   const storyOptions = useMemo(() => (Array.isArray(stories) ? stories : []), [stories]);
+  const characterOptions = useMemo(() => (Array.isArray(characters) ? characters : []), [characters]);
   const selectedStory = storyOptions.find((story) => sameChatId(story.id, selectedStoryId)) || null;
   const hasStories = storyOptions.length > 0;
   const locked = busy || loading;
@@ -110,17 +134,39 @@ export default function ChatHistorySidebar({
   const activeTab = imageLabEnabled ? tab : tab === "image" ? "chats" : tab;
   const isWorldTab = activeTab === "world";
   const isImageTab = activeTab === "image";
+  const isCharacterTab = activeTab === "character";
+  const characterLocked = busy || charactersLoading;
   const worldLocked = busy || worldsLoading;
   const visibleChats = sortedChats;
   const visibleWorlds = sortedWorlds;
+  const visibleCharacters = characterOptions;
   const confirmKind = confirmTarget?.kind || "";
   const confirmItem =
     confirmKind === "world"
       ? sortedWorlds.find((world) => sameChatId(world.id, confirmTarget?.id)) || null
-      : sortedChats.find((chat) => sameChatId(chat.id, confirmTarget?.id)) || null;
-  const confirmTitle = confirmKind === "world" ? worldTitle(confirmItem) : chatTitle(confirmItem);
-  const headKicker = isImageTab ? "Картинки" : isWorldTab ? "Миры" : "История";
-  const headTitle = isImageTab ? "Image Lab" : isWorldTab ? "Миры" : "Чаты";
+      : confirmKind === "character"
+        ? characterOptions.find((c) => sameChatId(c.id, confirmTarget?.id)) || null
+        : sortedChats.find((chat) => sameChatId(chat.id, confirmTarget?.id)) || null;
+  const confirmTitle =
+    confirmKind === "world"
+      ? worldTitle(confirmItem)
+      : confirmKind === "character"
+        ? characterTitle(confirmItem)
+        : chatTitle(confirmItem);
+  const headKicker = isImageTab
+    ? "Картинки"
+    : isWorldTab
+      ? "Миры"
+      : isCharacterTab
+        ? "Персонажи"
+        : "История";
+  const headTitle = isImageTab
+    ? "Image Lab"
+    : isWorldTab
+      ? "Миры"
+      : isCharacterTab
+        ? "Персонажи"
+        : "Чаты";
 
   const cancelDelete = () => {
     if (!deleting) setConfirmTarget(null);
@@ -130,6 +176,7 @@ export default function ChatHistorySidebar({
     setDeleting(true);
     try {
       if (confirmKind === "world") await onDeleteWorld?.(confirmItem.id);
+      else if (confirmKind === "character") await onDeleteCharacter?.(confirmItem.id);
       else await onDelete?.(confirmItem.id);
       setConfirmTarget(null);
     } finally {
@@ -146,7 +193,8 @@ export default function ChatHistorySidebar({
 
   const runImport = async (file, overwrite) => {
     const data = await onImportPackage?.(file, overwrite);
-    const kind = data?.kind === "story" ? "История" : "Мир";
+    const kind =
+      data?.kind === "story" ? "История" : data?.kind === "character" ? "Персонаж" : "Мир";
     setImportNotice(`${kind} импортирован: ${data?.id || ""}`.trim());
   };
 
@@ -198,7 +246,12 @@ export default function ChatHistorySidebar({
   }, [confirmTarget, deleting]);
 
   useEffect(() => {
-    setTab(imageLabEnabled ? sidebarMode : sidebarMode === "image" ? "chats" : sidebarMode);
+    const derived = imageLabEnabled ? sidebarMode : sidebarMode === "image" ? "chats" : sidebarMode;
+    // The characters tab lives INSIDE the chat view (there is no "character"
+    // sidebarMode): clicking it from the world/image view flips mainView to
+    // "chat", which re-runs this effect with sidebarMode="chats" — that must
+    // not clobber the just-selected character tab.
+    setTab((prev) => (prev === "character" && derived === "chats" ? prev : derived));
   }, [imageLabEnabled, sidebarMode]);
 
   useEffect(() => {
@@ -294,6 +347,20 @@ export default function ChatHistorySidebar({
           >
             Миры
           </button>
+          <button
+            type="button"
+            className={"chat-sidebar-tab" + (isCharacterTab ? " active" : "")}
+            onClick={() => {
+              // The characters tab lives inside the chat view (no dedicated main
+              // pane), so keep the chat pane open — just switch the sidebar list.
+              setTab("character");
+              onShowChats?.();
+            }}
+            role="tab"
+            aria-selected={isCharacterTab}
+          >
+            Персонажи
+          </button>
           {imageLabEnabled && (
             <button
               type="button"
@@ -314,6 +381,33 @@ export default function ChatHistorySidebar({
         {isImageTab ? (
           <div className="chat-sidebar-actions image-sidebar-actions">
             <span className="chat-sidebar-status">Ручная генерация открыта в рабочей области.</span>
+          </div>
+        ) : isCharacterTab ? (
+          <div className="chat-sidebar-actions character-sidebar-actions">
+            <span className="chat-sidebar-status">
+              Импортируйте персонажа или сохраните героя из активного чата (панель мира).
+            </span>
+            <div className="library-actions">
+              <button
+                type="button"
+                className="btn library-action"
+                onClick={onRevealLibrary}
+                disabled={locked}
+              >
+                📂 Открыть папку
+              </button>
+              <button
+                type="button"
+                className="btn library-action"
+                onClick={onPickImport}
+                disabled={importing || locked}
+              >
+                {importing ? "Импорт…" : "⬆ Импорт"}
+              </button>
+            </div>
+            {charactersLoading && <span className="chat-sidebar-status">Обновляю...</span>}
+            {importNotice && <span className="chat-sidebar-status">{importNotice}</span>}
+            {importError && <span className="chat-sidebar-error inline">{importError}</span>}
           </div>
         ) : !isWorldTab ? (
           <div className="chat-sidebar-actions">
@@ -373,6 +467,26 @@ export default function ChatHistorySidebar({
               {!storiesLoading && !storiesError && !hasStories && (
                 <span className="chat-sidebar-empty inline">Нет доступных историй.</span>
               )}
+            </div>
+            {/* §К1.5: optional CHARACTER picker — empty = story/default hero.
+                Does NOT gate createLocked. */}
+            <div className="story-picker">
+              <label htmlFor="new-chat-character">Персонаж</label>
+              <select
+                id="new-chat-character"
+                value={selectedCharacterId || ""}
+                onChange={(event) => onSelectCharacter?.(event.target.value)}
+                disabled={characterLocked}
+              >
+                <option value="">— без персонажа —</option>
+                {characterOptions.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {characterTitle(c)} · {characterVersion(c)}
+                  </option>
+                ))}
+              </select>
+              {charactersLoading && <span className="chat-sidebar-status">Загружаю персонажей...</span>}
+              {charactersError && <span className="chat-sidebar-error inline">{charactersError}</span>}
             </div>
             <button
               ref={createChatRef}
@@ -450,11 +564,29 @@ export default function ChatHistorySidebar({
           aria-hidden="true"
         />
 
-        {!isImageTab && (isWorldTab ? worldsError : error) && (
-          <div className="chat-sidebar-error">{isWorldTab ? worldsError : error}</div>
-        )}
+        {(() => {
+          const paneError = isImageTab
+            ? ""
+            : isWorldTab
+              ? worldsError
+              : isCharacterTab
+                ? charactersError
+                : error;
+          return paneError ? <div className="chat-sidebar-error">{paneError}</div> : null;
+        })()}
 
-        <nav className="chat-list" aria-label={isImageTab ? "Image Lab" : isWorldTab ? "Сохранённые миры" : "Предыдущие чаты"}>
+        <nav
+          className="chat-list"
+          aria-label={
+            isImageTab
+              ? "Image Lab"
+              : isWorldTab
+                ? "Сохранённые миры"
+                : isCharacterTab
+                  ? "Персонажи"
+                  : "Предыдущие чаты"
+          }
+        >
           {isImageTab ? (
             <div className="chat-sidebar-empty">
               Вкладка видна только при включённых режиме разработчика и генерации картинок.
@@ -465,12 +597,72 @@ export default function ChatHistorySidebar({
               Сохранённых миров пока нет.
             </div>
           ) : null}
-          {!isWorldTab && !isImageTab && visibleChats.length === 0 && !loading ? (
+          {isCharacterTab && visibleCharacters.length === 0 && !charactersLoading ? (
+            <div className="chat-sidebar-empty">
+              Сохранённых персонажей пока нет. Импортируйте .gmchar или сохраните героя из чата.
+            </div>
+          ) : null}
+          {!isWorldTab && !isImageTab && !isCharacterTab && visibleChats.length === 0 && !loading ? (
             <div className="chat-sidebar-empty">
               Сохранённых чатов пока нет.
             </div>
           ) : null}
-          {isImageTab ? null : isWorldTab
+          {isImageTab ? null : isCharacterTab ? (
+            visibleCharacters.map((character) => {
+              const preview = characterPreview(character);
+              return (
+                <div key={character.id} className="chat-history-item world-history-item">
+                  <div className="chat-history-row world-history-row">
+                    <span className="chat-row-head">
+                      <span className="chat-row-title">{characterTitle(character)}</span>
+                      <span className="chat-row-date">{characterVersion(character)}</span>
+                    </span>
+                    <span className="chat-row-preview">{preview || "Без описания"}</span>
+                  </div>
+                  <div className="world-row-actions">
+                    <button
+                      type="button"
+                      className="btn world-row-story"
+                      onClick={() => onRenameCharacter?.(character.id, characterTitle(character))}
+                      disabled={characterLocked}
+                    >
+                      ✎ Переименовать
+                    </button>
+                    <button
+                      type="button"
+                      className="btn world-row-export"
+                      onClick={() => onExportCharacter?.(character.id)}
+                      disabled={characterLocked}
+                    >
+                      ⬇ Экспорт
+                    </button>
+                  </div>
+                  <Tooltip
+                    className="tooltip-wrap"
+                    tipClassName="ui-tip-wrap"
+                    focusable={false}
+                    content={
+                      <TipContent
+                        title="Удалить персонажа"
+                        subtitle={characterTitle(character)}
+                        note="Перед удалением появится подтверждение. Сохранённые игры не изменятся."
+                      />
+                    }
+                  >
+                    <button
+                      type="button"
+                      className="chat-row-delete"
+                      aria-label={`Удалить персонажа: ${characterTitle(character)}`}
+                      onClick={() => setConfirmTarget({ kind: "character", id: character.id })}
+                      disabled={characterLocked}
+                    >
+                      <span aria-hidden="true">🗑</span>
+                    </button>
+                  </Tooltip>
+                </div>
+              );
+            })
+          ) : isWorldTab
             ? visibleWorlds.map((world) => {
               const active = sameChatId(world.id, selectedWorldId);
               return (
@@ -617,12 +809,20 @@ export default function ChatHistorySidebar({
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-icon" aria-hidden="true">🗑</div>
-            <h3 id="confirm-delete-title">{confirmKind === "world" ? "Удалить мир?" : "Удалить чат?"}</h3>
+            <h3 id="confirm-delete-title">
+              {confirmKind === "world"
+                ? "Удалить мир?"
+                : confirmKind === "character"
+                  ? "Удалить персонажа?"
+                  : "Удалить чат?"}
+            </h3>
             <p className="confirm-name">«{confirmTitle}»</p>
             <p id="confirm-delete-note" className="confirm-note">
               {confirmKind === "world"
                 ? "Мир удалится из списка сохранённых миров. Игровые чаты и текущая сессия не изменятся. Это действие нельзя отменить."
-                : "Чат и все его данные удалятся из базы безвозвратно — история, персонажи, мир и связанные эмбеддинги. Это действие нельзя отменить."}
+                : confirmKind === "character"
+                  ? "Персонаж удалится из библиотеки. Сохранённые игры не изменятся — их снапшот самодостаточен. Это действие нельзя отменить."
+                  : "Чат и все его данные удалятся из базы безвозвратно — история, персонажи, мир и связанные эмбеддинги. Это действие нельзя отменить."}
             </p>
             <div className="confirm-actions">
               <button type="button" className="btn" onClick={cancelDelete} disabled={deleting}>

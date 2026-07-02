@@ -50,6 +50,14 @@ a{color:var(--acc)}
   transition:color .12s ease,border-color .12s ease}
 .world-hud-link:hover,.world-hud-link:focus-visible{color:var(--acc);
   border-bottom-color:var(--acc);outline:none}
+/* §К1.5: "save hero to library" control in the player HUD block. The HUD itself
+   is pointer-events:none, so these buttons re-enable pointer events. */
+.world-hud-save{pointer-events:auto;display:flex;flex-direction:column;gap:6px;
+  margin-top:2px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)}
+.world-hud-save-choice{display:flex;flex-direction:column;gap:5px}
+.world-hud-save-btn,.world-hud-save-cancel{width:100%;padding:6px 8px;font-size:11px;
+  white-space:normal;line-height:1.2;text-align:center}
+.world-hud-save-cancel{opacity:.75}
 @media(max-width:1220px){.world-hud{display:none}}
 
 /* ---- world detail modal (location / character sheet) ---- */

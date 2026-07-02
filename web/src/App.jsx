@@ -31,6 +31,7 @@ const EMPTY_SRV = {
   scene: "",
   time: null,
   playerCharacter: null,
+  charRef: null,
   npcs: [],
   entities: { byKey: {} },
   statusLabels: {},
@@ -170,8 +171,20 @@ function requireChatSessionPayload(payload) {
   return { chatId: payload.chat.id, state: payload.state, transcript: payload.transcript };
 }
 
-function WorldHud({ time, scene, playerCharacter, npcs, statusLabels }) {
+function WorldHud({
+  time,
+  scene,
+  playerCharacter,
+  npcs,
+  statusLabels,
+  charRef = null,
+  characters = [],
+  canSaveCharacter = false,
+  onSaveCharacter,
+}) {
   const [detail, setDetail] = useState(null);
+  // Save-hero control state: null (idle), true (choice row open), "busy" (in flight).
+  const [saveState, setSaveState] = useState(null);
   const dateLabel = textValue(time?.current_date_label) || (time?.day_number ? `День ${time.day_number}` : "");
   const timeOfDay = textValue(time?.time_of_day);
   const calendar = textValue(time?.calendar_name);
@@ -181,6 +194,27 @@ function WorldHud({ time, scene, playerCharacter, npcs, statusLabels }) {
 
   const sceneClickable = !!scene && !!(sceneTitle || textValue(scene?.description));
   const pcClickable = !!playerCharacter && !!pcName;
+
+  // §К1.5: "update the source" is offered only when char_ref resolves to a
+  // character still present in the loaded library; otherwise only "save as new".
+  const sourceId = charRef && charRef.id != null ? String(charRef.id) : "";
+  const source =
+    sourceId && Array.isArray(characters)
+      ? characters.find((c) => c != null && String(c.id) === sourceId) || null
+      : null;
+  const sourceTitle = textValue(source?.title) || textValue(source?.preview) || pcName || "исходный";
+  const saveBusy = saveState === "busy";
+
+  const runSave = async (characterId) => {
+    if (saveBusy || !onSaveCharacter) return;
+    setSaveState("busy");
+    try {
+      await onSaveCharacter(characterId);
+    } finally {
+      // The transcript notice reports the result; collapse the control either way.
+      setSaveState(null);
+    }
+  };
 
   return (
     <>
@@ -250,6 +284,57 @@ function WorldHud({ time, scene, playerCharacter, npcs, statusLabels }) {
             )}
           </div>
         )}
+        {canSaveCharacter && (
+          <div className="world-hud-save">
+            {saveState === true ? (
+              <div className="world-hud-save-choice">
+                <button
+                  type="button"
+                  className="btn world-hud-save-btn"
+                  onClick={() => runSave(sourceId)}
+                  disabled={saveBusy}
+                  title={`Перезаписать пакет «${sourceTitle}» текущим состоянием`}
+                >
+                  Обновить «{sourceTitle}»
+                </button>
+                <button
+                  type="button"
+                  className="btn world-hud-save-btn"
+                  onClick={() => runSave("")}
+                  disabled={saveBusy}
+                >
+                  Сохранить как нового
+                </button>
+                <button
+                  type="button"
+                  className="btn world-hud-save-cancel"
+                  onClick={() => setSaveState(null)}
+                  disabled={saveBusy}
+                >
+                  Отмена
+                </button>
+              </div>
+            ) : source ? (
+              <button
+                type="button"
+                className="btn world-hud-save-btn"
+                onClick={() => setSaveState(true)}
+                disabled={saveBusy}
+              >
+                {saveBusy ? "Сохраняю…" : "Сохранить ГГ в библиотеку"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn world-hud-save-btn"
+                onClick={() => runSave("")}
+                disabled={saveBusy}
+              >
+                {saveBusy ? "Сохраняю…" : "Сохранить ГГ в библиотеку"}
+              </button>
+            )}
+          </div>
+        )}
       </aside>
       {detail && (
         <WorldDetailModal
@@ -310,6 +395,10 @@ export default function App() {
   const [selectedStoryId, setSelectedStoryId] = useState("");
   const [storiesLoading, setStoriesLoading] = useState(false);
   const [storiesError, setStoriesError] = useState("");
+  const [characters, setCharacters] = useState([]);
+  const [selectedCharacterId, setSelectedCharacterId] = useState("");
+  const [charactersLoading, setCharactersLoading] = useState(false);
+  const [charactersError, setCharactersError] = useState("");
   const [createStoryWorldId, setCreateStoryWorldId] = useState("");
   const [playerOptions, setPlayerOptions] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -343,6 +432,9 @@ export default function App() {
       scene: s.scene || s.public,
       time: s.time || null,
       playerCharacter: s.player_character || null,
+      // K1 (§К1.5): the launched CHARACTER package provenance, when present.
+      // Absent -> null (the "save hero" control offers "save as new" only).
+      charRef: s.char_ref || null,
       npcs: s.npcs || [],
       entities: normalizeEntities(s.entities),
       statusLabels: s.status_labels || {},
@@ -461,6 +553,31 @@ export default function App() {
     }
   }, []);
 
+  // K1 (§К1.5): load the CHARACTER packages (mirror of loadStories). The picker
+  // is optional (empty = story/default hero), so a stale/removed selection just
+  // falls back to "no character" rather than auto-selecting.
+  const loadCharacters = useCallback(async () => {
+    setCharactersLoading(true);
+    setCharactersError("");
+    try {
+      const data = await api.characters();
+      if (!data.ok) throw new Error(data.error || "персонажи не загружены");
+      const next = Array.isArray(data.characters) ? data.characters : [];
+      setCharacters(next);
+      setSelectedCharacterId((current) =>
+        current && next.some((c) => sameChatId(c.id, current)) ? current : ""
+      );
+      return next;
+    } catch (e) {
+      setCharacters([]);
+      setSelectedCharacterId("");
+      setCharactersError(e.message || "персонажи не загружены");
+      return [];
+    } finally {
+      setCharactersLoading(false);
+    }
+  }, []);
+
   const restoreChatSession = useCallback(
     (payload) => {
       const { chatId: nextChatId, state: nextState, transcript: nextTranscript } =
@@ -497,7 +614,7 @@ export default function App() {
   // initial load
   useEffect(() => {
     (async () => {
-      await Promise.all([refreshChats(), refreshWorlds(), loadStories()]);
+      await Promise.all([refreshChats(), refreshWorlds(), loadStories(), loadCharacters()]);
       try {
         const s = await api.state();
         setStateFromServer(s);
@@ -696,10 +813,18 @@ export default function App() {
       store.dispatch({ kind: "error", agent: "чаты", data: "Выберите историю для нового чата" });
       return;
     }
+    // §К1.5: an optional CHARACTER package overlays the hero at launch; empty
+    // selection = the story's/default hero. A stale id is filtered out here.
+    const characterId =
+      selectedCharacterId && characters.some((c) => sameChatId(c.id, selectedCharacterId))
+        ? selectedCharacterId
+        : "";
     setChatActionBusy(true);
     setStatus("Создаю чат...");
     try {
-      const data = await api.createChat({ activate: true, story_id: storyId });
+      const body = { activate: true, story_id: storyId };
+      if (characterId) body.character_id = characterId;
+      const data = await api.createChat(body);
       if (!data.ok) throw new Error(data.error || "чат не создан");
       restoreChatSession(data);
       // Surface any structured launch warnings (e.g. world_version_drift) in the
@@ -722,6 +847,8 @@ export default function App() {
     storiesError,
     selectedStoryId,
     stories,
+    selectedCharacterId,
+    characters,
     store,
     restoreChatSession,
     refreshChats,
@@ -854,14 +981,21 @@ export default function App() {
   const onPlayWorld = useCallback(
     async (worldId) => {
       if (!worldId || busy || chatActionBusy) return;
+      // §К1.5: carry the optional CHARACTER package selection into a direct play.
+      const characterId =
+        selectedCharacterId && characters.some((c) => sameChatId(c.id, selectedCharacterId))
+          ? selectedCharacterId
+          : "";
       setChatActionBusy(true);
       setStatus("Запускаю мир...");
       try {
-        const data = await api.createChat({
+        const body = {
           activate: true,
           story_id: "procedural",
           world_id: worldId,
-        });
+        };
+        if (characterId) body.character_id = characterId;
+        const data = await api.createChat(body);
         if (!data.ok) throw new Error(data.error || "мир не запущен");
         restoreChatSession(data);
         // Mirror the launch-warning surface from onCreateChat. Direct world plays
@@ -879,7 +1013,16 @@ export default function App() {
         setStatus("");
       }
     },
-    [busy, chatActionBusy, restoreChatSession, refreshChats, closeChatsOnMobile, store]
+    [
+      busy,
+      chatActionBusy,
+      selectedCharacterId,
+      characters,
+      restoreChatSession,
+      refreshChats,
+      closeChatsOnMobile,
+      store,
+    ]
   );
 
   const onCreateStory = useCallback(
@@ -917,6 +1060,84 @@ export default function App() {
     [store]
   );
 
+  // §К1.5: download a character package zip (mirror of onExportWorld/onExportStory).
+  const onExportCharacter = useCallback(
+    async (characterId) => {
+      if (!characterId) return;
+      try {
+        await api.downloadExport(api.exportCharacterUrl(characterId), `${characterId}.gmchar.zip`);
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "экспорт", data: e.message || "экспорт не выполнен" });
+      }
+    },
+    [store]
+  );
+
+  // §К1.5: rename a character via a metadata patch (v1 = native prompt; no inline
+  // editor exists yet). Refreshes the list on success so the new title appears.
+  const onRenameCharacter = useCallback(
+    async (characterId, currentTitle) => {
+      if (!characterId || typeof window === "undefined") return;
+      const next = window.prompt("Новое имя персонажа", currentTitle || "");
+      if (next == null) return; // cancelled
+      const title = next.trim();
+      if (!title || title === (currentTitle || "").trim()) return;
+      try {
+        const data = await api.updateCharacter(characterId, { title });
+        if (!data.ok) throw new Error(data.error || "не удалось переименовать персонажа");
+        await loadCharacters();
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "персонаж", data: e.message });
+      }
+    },
+    [store, loadCharacters]
+  );
+
+  // §К1.5: delete a character package. NEVER touches saves (a char_ref may dangle).
+  const onDeleteCharacter = useCallback(
+    async (characterId) => {
+      if (!characterId) return;
+      try {
+        const data = await api.deleteCharacter(characterId);
+        if (!data.ok) throw new Error(data.error || "не удалось удалить персонажа");
+        await loadCharacters();
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "персонаж", data: e.message });
+      }
+    },
+    [store, loadCharacters]
+  );
+
+  // §К1.5: export the active chat's current hero snapshot into the library.
+  // `characterId` -> snapshot the existing package (+version bump); omitted ->
+  // create a new package (title = hero name). On success: refresh the list and
+  // post a transcript notice through the established "персонаж" channel.
+  const onSaveCharacter = useCallback(
+    async (characterId) => {
+      if (!activeChatId) {
+        store.dispatch({ kind: "error", agent: "персонаж", data: "Нет активного чата" });
+        return;
+      }
+      try {
+        const body = characterId ? { character_id: characterId } : {};
+        const data = await api.saveCharacterFromChat(activeChatId, body);
+        if (!data.ok) throw new Error(data.error || "не удалось сохранить персонажа");
+        await loadCharacters();
+        const c = data.character || {};
+        const title = (typeof c.title === "string" && c.title.trim()) || "Персонаж";
+        const version = c.version == null ? "?" : c.version;
+        store.dispatch({
+          kind: "error",
+          agent: "персонаж",
+          data: `Персонаж «${title}» сохранён (v${version})`,
+        });
+      } catch (e) {
+        store.dispatch({ kind: "error", agent: "персонаж", data: e.message });
+      }
+    },
+    [activeChatId, store, loadCharacters]
+  );
+
   // Open the library root folder in the OS file manager. A failed open surfaces
   // as an error (never a silent success).
   const onRevealLibrary = useCallback(async () => {
@@ -934,10 +1155,11 @@ export default function App() {
   const onImportPackage = useCallback(
     async (file, overwrite) => {
       const data = await api.importPackage(file, overwrite);
-      await Promise.all([refreshWorlds(), loadStories()]);
+      // §К1.5: import is shared across kinds, so refresh characters too.
+      await Promise.all([refreshWorlds(), loadStories(), loadCharacters()]);
       return data;
     },
-    [refreshWorlds, loadStories]
+    [refreshWorlds, loadStories, loadCharacters]
   );
 
   const closeCreateStory = useCallback(() => setCreateStoryWorldId(""), []);
@@ -1072,6 +1294,10 @@ export default function App() {
             playerCharacter={srv.playerCharacter}
             npcs={srv.npcs}
             statusLabels={srv.statusLabels}
+            charRef={srv.charRef}
+            characters={characters}
+            canSaveCharacter={!!activeChatId && !!srv.playerCharacter}
+            onSaveCharacter={onSaveCharacter}
           />
         )}
         <ChatHistorySidebar
@@ -1090,6 +1316,14 @@ export default function App() {
           storiesLoading={storiesLoading}
           storiesError={storiesError}
           onSelectStory={setSelectedStoryId}
+          characters={characters}
+          selectedCharacterId={selectedCharacterId}
+          charactersLoading={charactersLoading}
+          charactersError={charactersError}
+          onSelectCharacter={setSelectedCharacterId}
+          onExportCharacter={onExportCharacter}
+          onRenameCharacter={onRenameCharacter}
+          onDeleteCharacter={onDeleteCharacter}
           onClose={closeChats}
           onCreate={onCreateChat}
           onCreateWorld={openNewWorldCreator}

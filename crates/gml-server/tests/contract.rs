@@ -3059,6 +3059,17 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
             assert_eq!(w.char_ref.as_ref().map(|r| r.id.as_str()), Some(char_id.as_str()));
         })
         .unwrap();
+    // §К1.5: the active chat's `/state` surfaces `char_ref {id, version}` so the
+    // player-facing "save hero" control can offer "update the source".
+    let (status, body) = get(&state, "/state").await;
+    assert_eq!(status, StatusCode::OK);
+    let st: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        st["char_ref"]["id"].as_str(),
+        Some(char_id.as_str()),
+        "/state must surface char_ref.id after a character launch: {st}"
+    );
+    assert!(st["char_ref"]["version"].is_u64(), "char_ref.version is a number");
 
     // ---- Case C: no character_id -> no warn, no char_ref ----
     let (status, body) = post(
@@ -3081,6 +3092,14 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
             assert!(rt.session.world.char_ref.is_none(), "no char_ref without character_id");
         })
         .unwrap();
+    // And `/state` omits the key entirely (additive, byte-identity discipline).
+    let (status, body) = get(&state, "/state").await;
+    assert_eq!(status, StatusCode::OK);
+    let st: Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        st.get("char_ref").is_none(),
+        "/state must omit char_ref when no character was launched: {st}"
+    );
 
     // A supplied-but-unknown character_id is a 400 (no-fallback).
     let (status, _b) = post(
