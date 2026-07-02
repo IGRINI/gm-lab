@@ -420,6 +420,42 @@ fn update_player_character_two_channel() {
     assert!(events.iter().any(|e| e.kind == "player_character_update"));
 }
 
+#[test]
+fn update_player_character_inventory_add_only_emits_event_and_bumps_revision() {
+    // K2.2: the delta-op path (only inventory_add, no full-array field) must fire
+    // the PLAYER_CHARACTER_UPDATE event and bump card_revision exactly like a
+    // full rewrite.
+    let mut s = session();
+    let before_rev = s.world.player_character.card_revision;
+    let before_len = s.world.player_character.inventory.len();
+
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "update_player_character",
+        &json!({
+            "fields": {"inventory_add": ["найденный ключ"]},
+            "reason": "подобрал ключ",
+        }),
+    ));
+    assert_structured_text(&model_plain(&result.model));
+
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(full["updated"], json!(["inventory"]));
+    assert_eq!(
+        s.world.player_character.inventory.len(),
+        before_len + 1,
+        "delta add must append exactly one entry"
+    );
+    assert!(s
+        .world
+        .player_character
+        .inventory
+        .iter()
+        .any(|item| item == "найденный ключ"));
+    assert_eq!(s.world.player_character.card_revision, before_rev + 1);
+    assert!(events.iter().any(|e| e.kind == "player_character_update"));
+}
+
 // =========================================================================
 // get_world_fact: known -> already_delivered de-dup (Python ≈ 1716-1757)
 // =========================================================================

@@ -4262,6 +4262,35 @@ impl World {
     // Player character
     // =====================================================================
 
+    /// K2.1 numeric normalization (`docs/CHARACTERS_AND_STORY_TZ.md` §К2.1):
+    /// coerce the values of a stat map (`abilities`/`skills`/`saving_throws`/`hp`)
+    /// so the notation-based dice path reads reliable numbers instead of stringy
+    /// junk the model sometimes emits (`"14"` → `14`, `"3.5"` → `3.5`). This runs
+    /// through the single choke point [`Self::apply_player_character_fields`], so
+    /// BOTH the tool-edit path and the launch-seed path (`seed_player_character`,
+    /// which delegates here) get the same coercion.
+    ///
+    /// Per-value rule (order matters — integers stay integers, exact-only):
+    /// - a finite number is kept verbatim (an `i64` stays an `i64`); a non-finite
+    ///   number (NaN/±inf, only reachable via an already-parsed float) is dropped;
+    /// - a string that parses WHOLLY (after trim) as an integer becomes that
+    ///   integer; else if it parses wholly as a finite float, it becomes that
+    ///   float; otherwise the string is kept VERBATIM — legitimate textual notes
+    ///   (e.g. an hp annotation) are never destroyed;
+    /// - any other value kind (bool/null/array/object) is kept verbatim.
+    ///
+    /// This is deliberately value-only: keys are never touched, so all stat
+    /// families (numeric-valued `abilities`/`saving_throws`/`skills` and the mixed
+    /// `hp` map) share one pass — a stray textual entry simply survives untouched.
+    fn normalize_stat_dict(raw: &Value) -> Map<String, Value> {
+        let src = as_dict(raw);
+        let mut out = Map::new();
+        for (k, v) in src {
+            out.insert(k, normalize_stat_value(v));
+        }
+        out
+    }
+
     fn apply_player_character_fields(
         pc: &mut PlayerCharacter,
         fields: &Map<String, Value>,
@@ -4301,7 +4330,9 @@ impl World {
             let raw = &fields[key];
             // Compute the new value as a Value and compare to current, then set.
             let new_value: Value = if dict_fields.contains(key) {
-                Value::Object(as_dict(raw))
+                // K2.1: coerce numeric-stringy stat values before storing so the
+                // notation dice path reads real numbers; textual entries survive.
+                Value::Object(Self::normalize_stat_dict(raw))
             } else if list_fields.contains(key) {
                 Value::Array(
                     as_list(raw)
@@ -4350,12 +4381,70 @@ impl World {
         self.player_character = seed_player_character(raw);
     }
 
+    /// K2.2 inventory/equipment delta ops (`docs/CHARACTERS_AND_STORY_TZ.md`
+    /// §К2.2): apply `<field>_remove` then `<field>_add` to a `Vec<String>`
+    /// list that the full-rewrite loop has ALREADY settled. `remove` deletes ALL
+    /// trim-exact-matching occurrences; `add` appends trimmed entries, skipping
+    /// any that already exist (trim-exact) so a repeated tool call is idempotent.
+    /// Empty/absent arrays are no-ops. Returns `true` iff the list actually
+    /// changed, so the caller can fold it into the `changed` set exactly like a
+    /// full rewrite would (revision/event fire identically). Precedence — the
+    /// full-array field wins first, deltas mutate the result — is enforced by
+    /// call order in [`Self::update_player_character`], not here.
+    fn apply_list_delta(list: &mut Vec<String>, adds: &Value, removes: &Value) -> bool {
+        let before = list.clone();
+        // Remove: every trim-exact occurrence of each requested entry.
+        for entry in as_list(removes) {
+            let target = as_str(&entry);
+            if target.is_empty() {
+                continue;
+            }
+            list.retain(|existing| existing.trim() != target);
+        }
+        // Add: append trimmed entries, skipping trim-exact duplicates already
+        // present (including ones added earlier in this same batch).
+        for entry in as_list(adds) {
+            let value = as_str(&entry);
+            if value.is_empty() {
+                continue;
+            }
+            if list.iter().any(|existing| existing.trim() == value) {
+                continue;
+            }
+            list.push(value);
+        }
+        *list != before
+    }
+
     pub fn update_player_character(&mut self, fields: &Value, reason: &str) -> Value {
         let map = match fields {
             Value::Object(m) => m.clone(),
             _ => Map::new(),
         };
-        let changed = Self::apply_player_character_fields(&mut self.player_character, &map);
+        let mut changed = Self::apply_player_character_fields(&mut self.player_character, &map);
+        // K2.2: fold inventory/equipment deltas onto the just-rewritten arrays.
+        // Order per spec: full rewrite (above) → remove → add. Each family's
+        // resulting vec is compared to its post-rewrite value, so the change
+        // detection feeding `card_revision`/the event fires exactly as a full
+        // rewrite would. `features` is intentionally NOT delta-editable (spec
+        // lists inventory + equipment only).
+        for (field, add_key, remove_key) in [
+            ("inventory", "inventory_add", "inventory_remove"),
+            ("equipment", "equipment_add", "equipment_remove"),
+        ] {
+            let adds = map.get(add_key).cloned().unwrap_or(Value::Null);
+            let removes = map.get(remove_key).cloned().unwrap_or(Value::Null);
+            if adds.is_null() && removes.is_null() {
+                continue;
+            }
+            let list = match field {
+                "inventory" => &mut self.player_character.inventory,
+                _ => &mut self.player_character.equipment,
+            };
+            if Self::apply_list_delta(list, &adds, &removes) {
+                changed.insert(field.to_string());
+            }
+        }
         if !changed.is_empty() {
             self.player_character.card_revision += 1;
         }
@@ -5225,6 +5314,47 @@ fn opt_int(v: Option<i64>) -> Value {
     match v {
         Some(i) => json!(i),
         None => Value::Null,
+    }
+}
+
+/// K2.1 per-value stat coercion — see [`World::normalize_stat_dict`] for the
+/// contract this implements. Kept as a free fn so unit tests can exercise every
+/// value shape directly without a `World`.
+fn normalize_stat_value(v: Value) -> Value {
+    match v {
+        Value::Number(n) => {
+            // Reject non-finite floats (NaN/±inf); serde only yields these via an
+            // f64 that failed the finite check on construction, but guard anyway.
+            match n.as_f64() {
+                Some(f) if f.is_finite() => Value::Number(n),
+                Some(_) => Value::Null,
+                // Big integers report `None` from as_f64 but are still finite and
+                // exact — keep them verbatim.
+                None => Value::Number(n),
+            }
+        }
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return Value::String(s);
+            }
+            // Integers first so exact whole values never round-trip through f64.
+            if let Ok(i) = t.parse::<i64>() {
+                return json!(i);
+            }
+            // Then a finite float; a NaN/inf literal string is left textual.
+            if let Ok(f) = t.parse::<f64>() {
+                if f.is_finite() {
+                    if let Some(num) = serde_json::Number::from_f64(f) {
+                        return Value::Number(num);
+                    }
+                }
+            }
+            // Genuine text (e.g. "13 (кожаный доспех)"-style notes) stays verbatim.
+            Value::String(s)
+        }
+        // Bool/null/array/object are not numeric stats — keep verbatim.
+        other => other,
     }
 }
 

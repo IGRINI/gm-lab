@@ -262,6 +262,162 @@ fn player_character_card_revision() {
     assert_eq!(w.player_character.card_revision, pc0 + 1);
 }
 
+// --- K2.1 numeric normalization of stat dicts -----------------------------
+
+#[test]
+fn stat_dicts_coerce_numeric_strings_and_drop_junk() {
+    let mut w = pinned_world();
+    w.update_player_character(
+        &json!({
+            "abilities": {"STR": "14", "DEX": 12, "CON": " 11 ", "WIS": "abc"},
+            "skills": {"Perception": "3.5", "Stealth": "not-a-number"},
+            "saving_throws": {"DEX": "5"},
+        }),
+        "coerce",
+    );
+    let ab = &w.player_character.abilities;
+    // "14" -> integer 14 (exact, not a float).
+    assert_eq!(ab["STR"], json!(14));
+    assert!(ab["STR"].is_i64(), "string int must land as i64");
+    // already-numeric stays put.
+    assert_eq!(ab["DEX"], json!(12));
+    // surrounding whitespace tolerated.
+    assert_eq!(ab["CON"], json!(11));
+    // genuinely textual value kept verbatim (never destroyed / nulled).
+    assert_eq!(ab["WIS"], json!("abc"));
+
+    let sk = &w.player_character.skills;
+    // "3.5" -> finite float 3.5.
+    assert_eq!(sk["Perception"], json!(3.5));
+    assert!(sk["Perception"].is_f64());
+    assert_eq!(sk["Stealth"], json!("not-a-number"));
+
+    assert_eq!(w.player_character.saving_throws["DEX"], json!(5));
+}
+
+#[test]
+fn hp_mixed_dict_coerces_numeric_keys_and_keeps_notes() {
+    let mut w = pinned_world();
+    w.update_player_character(
+        &json!({"hp": {"current": "5", "max": 9, "note": "истекает кровью"}}),
+        "hurt",
+    );
+    let hp = &w.player_character.hp;
+    assert_eq!(hp["current"], json!(5));
+    assert!(hp["current"].is_i64());
+    assert_eq!(hp["max"], json!(9));
+    // a non-numeric hp annotation survives verbatim.
+    assert_eq!(hp["note"], json!("истекает кровью"));
+}
+
+#[test]
+fn ac_is_left_untouched_by_stat_normalization() {
+    // `ac` is a bare Value, NOT a stat dict — a stringy annotated AC must survive
+    // verbatim (spec §К2.1: leave ac alone).
+    let mut w = pinned_world();
+    w.update_player_character(
+        &json!({"ac": "13 (кожаный доспех)"}),
+        "armor",
+    );
+    assert_eq!(w.player_character.ac, json!("13 (кожаный доспех)"));
+}
+
+#[test]
+fn seed_path_normalizes_stat_dicts() {
+    // §К2.1 "То же при сидинге": the launch-seed path shares the same choke point
+    // (`seed_player_character` -> `apply_player_character_fields`). Build on the
+    // strict-shape `sample_seed()` so `normalize_seed` preserves `player_character`
+    // verbatim (the rebuild branch drops non-strict keys — pre-existing behavior).
+    let mut seed = sample_seed();
+    seed.as_object_mut().unwrap().insert(
+        "player_character".to_string(),
+        json!({
+            "name": "Тестер",
+            "abilities": {"STR": "16", "DEX": "13"},
+            "skills": {"Perception": "4"},
+            "hp": {"current": "10", "max": "10", "note": "устал"},
+        }),
+    );
+    let w = World::from_seed_with_dice_seed(&seed, 424242);
+    assert_eq!(w.player_character.name, "Тестер");
+    assert_eq!(w.player_character.abilities["STR"], json!(16));
+    assert!(w.player_character.abilities["STR"].is_i64());
+    assert_eq!(w.player_character.abilities["DEX"], json!(13));
+    assert_eq!(w.player_character.skills["Perception"], json!(4));
+    assert_eq!(w.player_character.hp["current"], json!(10));
+    assert_eq!(w.player_character.hp["note"], json!("устал"));
+}
+
+// --- K2.2 inventory / equipment delta ops ---------------------------------
+
+#[test]
+fn inventory_delta_add_appends_and_skips_duplicates() {
+    let mut w = pinned_world();
+    w.update_player_character(&json!({"inventory": ["меч", "щит"]}), "base");
+    let rev = w.player_character.card_revision;
+
+    w.update_player_character(&json!({"inventory_add": ["факел", "меч"]}), "add");
+    // "факел" appended; "меч" already present -> skipped (idempotent add).
+    assert_eq!(w.player_character.inventory, vec!["меч", "щит", "факел"]);
+    assert_eq!(w.player_character.card_revision, rev + 1);
+}
+
+#[test]
+fn inventory_delta_remove_drops_all_occurrences() {
+    let mut w = pinned_world();
+    w.update_player_character(
+        &json!({"inventory": ["зелье", "зелье", "карта", " зелье "]}),
+        "base",
+    );
+    w.update_player_character(&json!({"inventory_remove": ["зелье"]}), "drink");
+    // trim-exact match removes ALL occurrences, including the padded " зелье ".
+    assert_eq!(w.player_character.inventory, vec!["карта"]);
+}
+
+#[test]
+fn delta_noop_when_add_already_present_does_not_bump_revision() {
+    let mut w = pinned_world();
+    w.update_player_character(&json!({"inventory": ["меч"]}), "base");
+    let rev = w.player_character.card_revision;
+    // Adding an entry that already exists changes nothing -> no revision bump.
+    w.update_player_character(&json!({"inventory_add": ["меч"]}), "noop");
+    assert_eq!(w.player_character.inventory, vec!["меч"]);
+    assert_eq!(w.player_character.card_revision, rev);
+}
+
+#[test]
+fn full_rewrite_then_delta_order_within_one_call() {
+    let mut w = pinned_world();
+    w.update_player_character(&json!({"inventory": ["старьё"]}), "base");
+    // Full array wins first (replaces to [лук, стрелы]), THEN remove (стрелы),
+    // THEN add (колчан) — all in one call.
+    w.update_player_character(
+        &json!({
+            "inventory": ["лук", "стрелы"],
+            "inventory_remove": ["стрелы"],
+            "inventory_add": ["колчан", "лук"],
+        }),
+        "reorg",
+    );
+    // "лук" survives rewrite, "стрелы" removed, "колчан" added, duplicate "лук" skipped.
+    assert_eq!(w.player_character.inventory, vec!["лук", "колчан"]);
+}
+
+#[test]
+fn equipment_delta_independent_and_fires_change_detection() {
+    let mut w = pinned_world();
+    let rev = w.player_character.card_revision;
+    w.update_player_character(&json!({"equipment_add": ["плащ"]}), "wear");
+    assert_eq!(w.player_character.equipment, vec!["плащ"]);
+    assert_eq!(w.player_character.card_revision, rev + 1);
+    // A delta call that is a pure no-op (empty arrays) must not bump.
+    w.update_player_character(
+        &json!({"equipment_add": [], "equipment_remove": []}),
+        "nothing",
+    );
+    assert_eq!(w.player_character.card_revision, rev + 1);
+}
+
 #[test]
 fn whereabouts_present_precedence() {
     let mut w = pinned_world();
