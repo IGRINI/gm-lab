@@ -27,9 +27,18 @@ use gml_orchestrator::session::default_client_factory;
 use gml_orchestrator::Session;
 use gml_types::NpcBeat;
 
+/// Default story seed from a HERMETIC store over a tempdir. There is no global
+/// store; constructing a `StoryStore` materializes the builtins into the
+/// throwaway directory, so these tests never touch the real user library.
+fn default_story_seed() -> serde_json::Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = gml_stories::StoryStore::new(dir.path()).expect("open store");
+    store.default_seed()
+}
+
 fn session() -> Session {
     let client: Arc<dyn Backend> = Arc::new(MockClient::new());
-    let world = gml_world::World::from_seed(&gml_stories::default_story_seed());
+    let world = gml_world::World::from_seed(&default_story_seed());
     Session::with_world(
         client,
         world,
@@ -687,7 +696,7 @@ fn ensure_npc_client_restores_persisted_identity() {
         *n += 1;
         Arc::new(IdentityClient::new(&format!("fresh-thread-{n}"))) as Arc<dyn Backend>
     });
-    let world = gml_world::World::from_seed(&gml_stories::default_story_seed());
+    let world = gml_world::World::from_seed(&default_story_seed());
     let mut s = Session::with_world(Arc::new(MockClient::new()), world, factory);
 
     // Pre-seed a persisted identity for borin (as if restored from a snapshot).
@@ -727,7 +736,7 @@ fn reset_npc_memory_drops_live_client_for_fresh_thread() {
         *n += 1;
         Arc::new(IdentityClient::new(&format!("fresh-thread-{n}"))) as Arc<dyn Backend>
     });
-    let world = gml_world::World::from_seed(&gml_stories::default_story_seed());
+    let world = gml_world::World::from_seed(&default_story_seed());
     let mut s = Session::with_world(Arc::new(MockClient::new()), world, factory);
 
     let first = s.ensure_npc_client("borin").expect("client").thread_id();

@@ -2390,8 +2390,8 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
                     };
                 }
                 let story_id = session.world.story_id.clone();
-                // Route reset through the INJECTED story store (single live
-                // store), not the global DEFAULT_STORE free functions.
+                // Route reset through the INJECTED story store (the single live
+                // store) — there is no global store to fall back to.
                 let store = app.story_store.lock().expect("story store lock poisoned");
                 if !store.story_ids().contains(&story_id) {
                     let label = if story_id.is_empty() {

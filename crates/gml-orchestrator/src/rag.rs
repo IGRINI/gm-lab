@@ -348,10 +348,19 @@ mod tests {
     use gml_rag::{HashEmbeddingClient, RagEngine};
     use gml_world::{MemoryAccess, MemoryUnit};
 
+    /// Default story seed from a HERMETIC store over a tempdir. There is no
+    /// global store; constructing a `StoryStore` over a tempdir materializes the
+    /// builtins into the throwaway directory, so these tests never touch the real
+    /// user library.
+    fn default_story_seed() -> serde_json::Value {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = gml_stories::StoryStore::new(dir.path()).expect("open store");
+        store.default_seed()
+    }
+
     #[test]
     fn memory_rag_ranks_only_access_allowed_documents() {
-        let mut world =
-            World::from_seed_with_dice_seed(&gml_stories::default_story_seed(), 20260622);
+        let mut world = World::from_seed_with_dice_seed(&default_story_seed(), 20260622);
         world.add_memory_unit(MemoryUnit {
             memory_id: "allowed".to_string(),
             owner_scope: "actor:borin".to_string(),
@@ -399,8 +408,7 @@ mod tests {
 
     #[test]
     fn memory_rag_documents_omit_details_until_explicit_drilldown() {
-        let mut world =
-            World::from_seed_with_dice_seed(&gml_stories::default_story_seed(), 20260622);
+        let mut world = World::from_seed_with_dice_seed(&default_story_seed(), 20260622);
         world.add_memory_unit(MemoryUnit {
             memory_id: "details_only".to_string(),
             owner_scope: "actor:borin".to_string(),

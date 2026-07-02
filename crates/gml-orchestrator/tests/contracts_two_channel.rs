@@ -20,10 +20,19 @@ use gml_llm::{Backend, MockClient};
 use gml_orchestrator::worldstate::{get_memory, note_memory, npc_memory_recall};
 use gml_orchestrator::{run_tool_collect, Session};
 
+/// Default story seed from a HERMETIC store over a tempdir. There is no global
+/// store; constructing a `StoryStore` materializes the builtins into the
+/// throwaway directory, so these tests never touch the real user library.
+fn default_story_seed() -> serde_json::Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = gml_stories::StoryStore::new(dir.path()).expect("open store");
+    store.default_seed()
+}
+
 fn session() -> Session {
     std::env::set_var("GM_RAG_ENABLED", "0");
     let client: Arc<dyn Backend> = Arc::new(MockClient::new());
-    let world = gml_world::World::from_seed(&gml_stories::default_story_seed());
+    let world = gml_world::World::from_seed(&default_story_seed());
     Session::with_world(
         client,
         world,

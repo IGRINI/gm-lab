@@ -80,12 +80,16 @@ fn runtime_from_payload_value(payload: &Value) -> DialogRuntime {
 #[test]
 #[ignore]
 fn regen_chat_payload_fixture() {
-    use gml_stories::default_story_seed;
+    use gml_stories::StoryStore;
     use gml_world::World;
 
     // Deterministic construction (fixed dice seed -> deterministic rng_state),
-    // matching the canon_payload tests so the golden is reproducible.
-    let world = World::from_seed_with_dice_seed(&default_story_seed(), 20260622);
+    // matching the canon_payload tests so the golden is reproducible. The seed
+    // comes from a HERMETIC tempdir store (no global store), so regenerating the
+    // fixture never writes the builtins into the real user library.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = StoryStore::new(dir.path()).expect("open store");
+    let world = World::from_seed_with_dice_seed(&store.default_seed(), 20260622);
     let session = Session::with_world(client(), world, factory());
 
     let payload = json!({

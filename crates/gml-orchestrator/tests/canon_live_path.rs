@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use gml_llm::{Backend, MockClient};
 use gml_orchestrator::{run_tool_collect, ClientFactory, Session};
-use gml_stories::default_story_seed;
+use gml_stories::StoryStore;
 use gml_world::{Place, Provenance, Transition, World};
 
 fn factory() -> ClientFactory {
@@ -22,6 +22,15 @@ fn factory() -> ClientFactory {
 
 fn client() -> Arc<dyn Backend> {
     Arc::new(MockClient::new())
+}
+
+/// Default story seed from a HERMETIC store over a tempdir. There is no global
+/// store; constructing a `StoryStore` materializes the builtins into the
+/// throwaway directory, so these tests never touch the real user library.
+fn default_story_seed() -> serde_json::Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = StoryStore::new(dir.path()).expect("open store");
+    store.default_seed()
 }
 
 fn seeded_session() -> Session {

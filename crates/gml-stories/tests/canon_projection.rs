@@ -8,13 +8,22 @@
 //!   - turns every seeded exit into a first-class transition (no collapse);
 //!   - projects a byte-identical scene back out of the canon.
 
-use gml_stories::{story_ids, story_seed};
+use gml_stories::StoryStore;
 use gml_world::World;
 
+/// Build every shipped story's `World` from a HERMETIC store over a tempdir.
+///
+/// HARD RULE: there is no global store — constructing a `StoryStore` over a
+/// tempdir materializes the three builtins INTO the throwaway directory, so this
+/// test can never write into the real user library. The tempdir is held only for
+/// the duration of the seed reads; the built `World`s own their data, so it may
+/// drop when `worlds()` returns.
 fn worlds() -> Vec<(String, World)> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = StoryStore::new(dir.path()).expect("open store");
     let mut out = Vec::new();
-    for id in story_ids() {
-        let seed = story_seed(&id).expect("seed");
+    for id in store.story_ids() {
+        let seed = store.seed(&id).expect("seed");
         let world = World::from_seed_with_dice_seed(&seed, 20260622);
         out.push((id, world));
     }

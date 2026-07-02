@@ -1,6 +1,7 @@
 //! Byte-for-byte golden tests against the captured Python reference fixtures in
 //! `tests/reference/agents/`. The world is the default story `turnvale-murder`
-//! seed built via `gml_stories::story_seed` -> `gml_world::World::from_seed`,
+//! seed built via a hermetic tempdir `StoryStore::default_seed` ->
+//! `gml_world::World::from_seed`,
 //! with the exact `capture_fixtures.py::capture_agents` inputs.
 
 use std::collections::BTreeSet;
@@ -41,9 +42,19 @@ fn dumps_compact(value: &Value) -> String {
     serde_json::to_string(value).expect("compact json")
 }
 
+/// Default story seed from a HERMETIC store over a tempdir. There is no global
+/// store; constructing a `StoryStore` over a tempdir materializes the builtins
+/// into the throwaway directory, so this byte-golden test never touches the real
+/// library. The tempdir-store seed is byte-identical to the built-in package (a
+/// materialize + scan of the embedded catalog), so the fixtures stay valid.
+fn default_seed() -> serde_json::Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = gml_stories::StoryStore::new(dir.path()).expect("open store");
+    store.default_seed()
+}
+
 fn build_world() -> World {
-    let seed = gml_stories::story_seed(gml_stories::DEFAULT_STORY_ID).expect("default seed");
-    World::from_seed_with_dice_seed(&seed, DICE_SEED)
+    World::from_seed_with_dice_seed(&default_seed(), DICE_SEED)
 }
 
 fn test_world_lore() -> WorldLore {

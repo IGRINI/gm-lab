@@ -15,10 +15,20 @@ use serde_json::{Map, Value};
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::{Backend, MockClient};
 use gml_orchestrator::{run_turn, Session};
-use gml_stories::default_story_seed;
+use gml_stories::StoryStore;
 use gml_world::World;
 
 const FIXED_DICE_SEED: u128 = 20260622;
+
+/// Default story seed from a HERMETIC store over a tempdir. There is no global
+/// store; constructing a `StoryStore` materializes the builtins into the
+/// throwaway directory, so this byte-golden turn test never touches the real
+/// user library. The seed is byte-identical to the built-in package.
+fn default_story_seed() -> serde_json::Value {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = StoryStore::new(dir.path()).expect("open store");
+    store.default_seed()
+}
 
 fn reference_dir() -> std::path::PathBuf {
     // crate dir is .../crates/gml-orchestrator; reference is .../tests/reference.

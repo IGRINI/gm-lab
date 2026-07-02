@@ -9,17 +9,25 @@
 //! dict's insertion order — the World seed loader (`gml-world`) consumes the
 //! resulting [`serde_json::Value`] shape directly.
 //!
-//! Public surface:
-//! - [`DEFAULT_STORY_ID`]
-//! - [`story_ids`]
-//! - [`story_metadata`]
-//! - [`list_stories`]
-//! - [`story_seed`]
-//! - [`default_story_seed`]
+//! ## HARD RULE: there is NO global store — every caller constructs a [`StoryStore`]
 //!
-//! Each call to [`story_seed`] / [`default_story_seed`] returns an OWNED, deep
-//! [`Value`] clone, so every session gets an independent world with no shared
-//! mutable state across sessions.
+//! There is deliberately NO process-global default-rooted store and NO free
+//! `story_seed` / `story_ids` / `story_metadata` / `list_stories` /
+//! `default_story_seed` function surface. Constructing a [`StoryStore`]
+//! MATERIALIZES the three built-in packages into its root on first run (see
+//! [`StoryStore::new`]); a global default-rooted one would silently write those
+//! builtins into the real user library (`GM_PACKAGES_DIR` unset ->
+//! [`StoryStore::default_root`] = the app-data `library`). Removing it makes
+//! that impossible: a bare `cargo test` can never touch the real library.
+//!
+//! Every consumer therefore threads an explicit [`StoryStore`]: the server
+//! injects one via `AppState`; `gml-app` builds its own; TESTS construct a store
+//! over a `tempfile::tempdir()` so materialization lands in a throwaway
+//! directory. The public API lives entirely on [`StoryStore`]
+//! ([`StoryStore::seed`], [`StoryStore::default_seed`], [`StoryStore::story_ids`],
+//! [`StoryStore::story_metadata`], [`StoryStore::list_stories`]) — each returns
+//! an OWNED, deep [`Value`] clone, so every session gets an independent world
+//! with no shared mutable state.
 //!
 //! ## Stories are filesystem packages (Phase 3 of `docs/MODS_PACKAGES_TZ.md`)
 //!
@@ -30,15 +38,7 @@
 //! packages materialized on first run.
 //!
 //! The embedded [`CATALOG_JSON`] exists ONLY as the SOURCE used to materialize
-//! those three defaults — it is never a live read path. Prefer constructing a
-//! [`StoryStore`] explicitly (the server threads one through `AppState`); the
-//! free functions below delegate to a process-global default-rooted store for
-//! callers that cannot receive an injected store (tests, library helpers).
-
-use std::collections::BTreeSet;
-
-use once_cell::sync::Lazy;
-use serde_json::{Map, Value};
+//! those three defaults — it is NEVER a live read path.
 
 mod story_store;
 pub use story_store::{StoryStore, StoryStoreError, StoryWorldRef, STORY_FORMAT};
@@ -66,56 +66,19 @@ impl std::fmt::Display for UnknownStory {
 
 impl std::error::Error for UnknownStory {}
 
-/// Process-global story store rooted at [`StoryStore::default_root`]. Backs the
-/// free functions for callers that cannot receive an explicitly-injected store.
-/// This is the SAME `StoryStore` type the server injects — there is only one live
-/// data source (the scanned packages on disk), never two.
-static DEFAULT_STORE: Lazy<StoryStore> = Lazy::new(|| {
-    StoryStore::new(StoryStore::default_root())
-        .expect("default story library must materialize and scan")
-});
-
-/// `story_ids() -> set[str]` — the set of story ids in the default library.
-pub fn story_ids() -> BTreeSet<String> {
-    DEFAULT_STORE.story_ids()
-}
-
-/// `story_metadata(story_id) -> {id, title, description, story_brief}`.
-///
-/// Returns [`UnknownStory`] for an unknown id. The returned map preserves the
-/// public catalog key order: `id`, `title`, `description`, `story_brief`.
-pub fn story_metadata(story_id: &str) -> Result<Map<String, Value>, UnknownStory> {
-    DEFAULT_STORE.story_metadata(story_id)
-}
-
-/// `list_stories() -> list[{id, title, description, story_brief}]` — discovery
-/// order.
-pub fn list_stories() -> Vec<Map<String, Value>> {
-    DEFAULT_STORE.list_stories()
-}
-
-/// `story_seed(story_id) -> dict` — an OWNED deep clone of the story's seed with
-/// `id`/`title` overwritten from the package envelope. Returns [`UnknownStory`]
-/// for an unknown id.
-pub fn story_seed(story_id: &str) -> Result<Value, UnknownStory> {
-    DEFAULT_STORE.seed(story_id)
-}
-
-/// `default_story_seed() -> dict` — `story_seed(DEFAULT_STORY_ID)`.
-pub fn default_story_seed() -> Value {
-    DEFAULT_STORE.default_seed()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
     use gml_world::World;
+    use serde_json::Value;
 
     /// Build a hermetic [`StoryStore`] over a fresh tempdir. These tests must
     /// NEVER touch the real user library, so they construct an explicit store
-    /// rather than going through the [`DEFAULT_STORE`]-backed free functions
-    /// (which materialize the builtins into the live library when
-    /// `GM_PACKAGES_DIR` is unset). Mirrors `story_store::tests::temp_store`.
+    /// (there is no global default-rooted store to reach for — the whole point
+    /// of removing it is that a bare `cargo test` can never materialize the
+    /// builtins into the live library). Mirrors `story_store::tests::temp_store`.
     fn temp_store() -> (tempfile::TempDir, StoryStore) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = StoryStore::new(dir.path()).expect("open store");

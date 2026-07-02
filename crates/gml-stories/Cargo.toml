@@ -9,7 +9,6 @@ gml-types = { path = "../gml-types" }
 gml-world = { path = "../gml-world" }
 gml-config = { path = "../gml-config" }
 serde_json = { workspace = true }
-once_cell = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
