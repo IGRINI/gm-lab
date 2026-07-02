@@ -10,7 +10,7 @@ use crate::canon::{
 use crate::dice;
 use crate::helpers::{
     actor_key, anchor_label, as_dict, as_int_or_none, as_joined_str, as_list, as_str, get_str,
-    match_words, safe_id,
+    item_entry_string, item_head, item_tail, match_words, safe_id,
 };
 use crate::model::*;
 use crate::rng::{MersenneTwister, RngState};
@@ -290,6 +290,22 @@ pub struct World {
     /// `player_character_to_payload` (that shape is shared with the character
     /// package and must not carry save-only provenance).
     pub char_ref: Option<PackageRef>,
+
+    /// Phase-И per-place scene-item store (`docs/ITEMS_AND_SPELLS_TZ.md` §И2):
+    /// the item bodies that belong to each canon place, keyed by `place_id`.
+    /// Fixes the `view.rs` leak where the previous scene's `items` were cloned
+    /// into every rebuild, so items "travelled" with the player. On a rebuild
+    /// that CHANGES the player's place, [`Self::refresh_scene_from_canon`]
+    /// STASHES the leaving place's live `scene.items` here and RESTORES the
+    /// entered place's stored items (empty when unvisited). Same-place refreshes
+    /// (the common case, incl. `set_scene` which stages the destination's items
+    /// and pins `scene.location_id` to the new place FIRST) leave the live items
+    /// untouched. Persisted additively — a trailing `place_items` key emitted
+    /// ONLY when non-empty (`BTreeMap` for deterministic bytes), parsed with a
+    /// default, so pre-Phase-И saves stay byte-identical. Items are NOT canon
+    /// entities in this phase (§0): this is a legacy-scene-side store, distinct
+    /// from the canon place graph.
+    pub place_items: BTreeMap<String, Vec<SceneItem>>,
 }
 
 /// A reference to a saved content package (a world or a story) by its stable id
@@ -368,6 +384,7 @@ impl World {
             story_ref: None,
             world_ref_authored_version: None,
             char_ref: None,
+            place_items: BTreeMap::new(),
         }
     }
 
@@ -3559,6 +3576,11 @@ impl World {
 
         // --- carry ephemeral view state, then rebuild scene from canon ----
         self.scene.scene_id = dest_id.clone();
+        // §И2: pin the live location to the destination BEFORE staging its items
+        // so refresh_scene_from_canon reads a same-place rebuild and keeps these
+        // staged items (rather than stashing them under the old id and loading an
+        // empty store). Mirrors run_set_scene in the orchestrator.
+        self.scene.location_id = dest_id.clone();
         self.scene.items = coerced_items;
         self.scene.constraints = as_list(constraints)
             .iter()
@@ -4012,6 +4034,17 @@ impl World {
     ///
     /// No-op when the canon has no player place (a pre-canon save): the legacy
     /// scene is left as-is so behaviour is never worse than before.
+    ///
+    /// Phase-И §И2 leak fix: when the rebuild anchor (the canon player place)
+    /// DIFFERS from the live `scene.location_id`, the player is LEAVING that
+    /// location — its live `scene.items` are STASHED into [`Self::place_items`]
+    /// under the old id, and the entered place's stored items (empty when
+    /// unvisited) become the new live items BEFORE the view is rebuilt (the view
+    /// clones `scene.items`). Same-place rebuilds keep the live items untouched.
+    /// Callers that stage a destination's items (`set_scene`) pin
+    /// `scene.location_id` to the new place FIRST so this reads as a same-place
+    /// refresh and their staged items are preserved (never clobbered/stashed
+    /// under the old id).
     pub fn refresh_scene_from_canon(&mut self) {
         if self.world_canon.player_place_id.is_empty()
             || self
@@ -4020,6 +4053,21 @@ impl World {
                 .is_none()
         {
             return;
+        }
+        let anchor_id = self.world_canon.player_place_id.clone();
+        let old_id = self.scene.location_id.clone();
+        if !old_id.is_empty() && old_id != anchor_id {
+            // Genuine place change: park the leaving place's items and restore
+            // the entered place's items (default empty). `mem::take` avoids a
+            // clone; the entered items are looked up (not removed) so a later
+            // return can restore them again.
+            let leaving = std::mem::take(&mut self.scene.items);
+            self.place_items.insert(old_id, leaving);
+            self.scene.items = self
+                .place_items
+                .get(&anchor_id)
+                .cloned()
+                .unwrap_or_default();
         }
         self.scene = self.build_current_view();
         self.constraints = self.scene.constraints.clone();
@@ -4385,30 +4433,43 @@ impl World {
     /// §К2.2): apply `<field>_remove` then `<field>_add` to a `Vec<String>`
     /// list that the full-rewrite loop has ALREADY settled. `remove` deletes ALL
     /// trim-exact-matching occurrences; `add` appends trimmed entries, skipping
-    /// any that already exist (trim-exact) so a repeated tool call is idempotent.
+    /// any that already exist so a repeated tool call is idempotent.
     /// Empty/absent arrays are no-ops. Returns `true` iff the list actually
     /// changed, so the caller can fold it into the `changed` set exactly like a
     /// full rewrite would (revision/event fire identically). Precedence — the
     /// full-array field wins first, deltas mutate the result — is enforced by
     /// call order in [`Self::update_player_character`], not here.
+    ///
+    /// Matching is by the entry HEAD (the part before the first `« — »`
+    /// description separator), trimmed + lowercased — the ONE matching rule the
+    /// item convention mandates (ITEMS_AND_SPELLS_TZ §И1), shared with
+    /// `take_item`/`drop_item`. `inventory_remove: ["кинжал"]` therefore removes
+    /// `"кинжал — 1d4, скрыт в сапоге"`, and adding a second entry with an
+    /// already-present head is skipped (one head = one item; distinct items need
+    /// distinct names).
     fn apply_list_delta(list: &mut Vec<String>, adds: &Value, removes: &Value) -> bool {
         let before = list.clone();
-        // Remove: every trim-exact occurrence of each requested entry.
+        // Remove: every occurrence whose head matches the requested entry's head.
         for entry in as_list(removes) {
             let target = as_str(&entry);
             if target.is_empty() {
                 continue;
             }
-            list.retain(|existing| existing.trim() != target);
+            let needle = item_head(&target).to_lowercase();
+            list.retain(|existing| item_head(existing).to_lowercase() != needle);
         }
-        // Add: append trimmed entries, skipping trim-exact duplicates already
+        // Add: append trimmed entries, skipping any whose head is already
         // present (including ones added earlier in this same batch).
         for entry in as_list(adds) {
             let value = as_str(&entry);
             if value.is_empty() {
                 continue;
             }
-            if list.iter().any(|existing| existing.trim() == value) {
+            let needle = item_head(&value).to_lowercase();
+            if list
+                .iter()
+                .any(|existing| item_head(existing).to_lowercase() == needle)
+            {
                 continue;
             }
             list.push(value);
@@ -4456,6 +4517,204 @@ impl World {
             "card_revision": self.player_character.card_revision,
             "player_character": self.player_character_export(false),
         })
+    }
+
+    /// §И3 `take_item` — move a scene item's BODY into the player's inventory.
+    ///
+    /// Matching (§И3.1-3): a non-empty `item_id` is an EXACT id match (the only
+    /// path that can pick up an INVISIBLE item — the GM-trusted route); otherwise
+    /// `name` matches VISIBLE scene items by `trim().to_lowercase()`. Zero matches
+    /// → `item_not_here` (with the visible-item names as a hint); more than one →
+    /// `ambiguous_item` (never silently take the first). A matched but
+    /// `portable == false` item → `not_portable`. On success the [`SceneItem`] is
+    /// removed from `scene.items` and `"{name} — {details}"` (just `name` when
+    /// details are empty — the §И1 convention) is appended to `pc.inventory`
+    /// through the same dedup-by-head machinery [`apply_list_delta`] uses, and
+    /// `card_revision` bumps. NO canon event is written (§0/§5: items are not
+    /// canon entities in this phase). Returns `Ok(payload)` mirroring
+    /// `update_player_character` (so the orchestrator can emit
+    /// PLAYER_CHARACTER_UPDATE) plus scene-item fields, or `Err(payload)` carrying
+    /// the structured rejection so the handler renders it as a tool error.
+    pub fn take_item(&mut self, item_id: &str, name: &str, reason: &str) -> Result<Value, Value> {
+        let item_id = item_id.trim();
+        let name = name.trim();
+        let idx = if !item_id.is_empty() {
+            match self.scene.items.iter().position(|it| it.item_id == item_id) {
+                Some(i) => i,
+                None => {
+                    return Err(json!({
+                        "code": "unknown_item",
+                        "error": format!("no scene item has item_id '{item_id}'"),
+                        "item_id": item_id,
+                    }));
+                }
+            }
+        } else if !name.is_empty() {
+            let needle = name.to_lowercase();
+            // Candidates: VISIBLE scene items whose name matches (trim+lowercase).
+            let candidates: Vec<usize> = self
+                .scene
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, it)| it.visible && it.name.trim().to_lowercase() == needle)
+                .map(|(i, _)| i)
+                .collect();
+            match candidates.as_slice() {
+                [] => {
+                    let visible: Vec<String> = self
+                        .scene
+                        .visible_items()
+                        .iter()
+                        .map(|it| it.name.clone())
+                        .collect();
+                    return Err(json!({
+                        "code": "item_not_here",
+                        "error": format!("no visible item named '{name}' is in the current scene"),
+                        "name": name,
+                        "visible_items": visible,
+                    }));
+                }
+                [only] => *only,
+                _ => {
+                    let cands: Vec<Value> = candidates
+                        .iter()
+                        .map(|&i| {
+                            let it = &self.scene.items[i];
+                            json!({"item_id": it.item_id, "name": it.name, "location": it.location})
+                        })
+                        .collect();
+                    return Err(json!({
+                        "code": "ambiguous_item",
+                        "error": format!("more than one visible item named '{name}'; pass item_id"),
+                        "name": name,
+                        "candidates": cands,
+                    }));
+                }
+            }
+        } else {
+            return Err(json!({
+                "code": "missing_item_ref",
+                "error": "take_item requires item_id or name",
+            }));
+        };
+
+        if !self.scene.items[idx].portable {
+            let it = &self.scene.items[idx];
+            return Err(json!({
+                "code": "not_portable",
+                "error": format!("'{}' cannot be picked up (not portable)", it.name),
+                "item_id": it.item_id,
+                "name": it.name,
+            }));
+        }
+
+        let item = self.scene.items.remove(idx);
+        let entry = item_entry_string(&item.name, &item.details);
+        // Dedup by head like apply_list_delta (trim + lowercase — the one §И1
+        // matching rule): skip when an inventory entry already has the same
+        // head; still a success (idempotent re-take).
+        let head = item_head(&entry).to_lowercase();
+        let already = self
+            .player_character
+            .inventory
+            .iter()
+            .any(|e| item_head(e).to_lowercase() == head);
+        if !already {
+            self.player_character.inventory.push(entry.clone());
+        }
+        self.player_character.card_revision += 1;
+        Ok(json!({
+            "ok": true,
+            "status": "taken",
+            "item_id": item.item_id,
+            "name": item.name,
+            "inventory_entry": entry,
+            "reason": reason.trim(),
+            "updated": ["inventory"],
+            "card_revision": self.player_character.card_revision,
+            "player_character": self.player_character_export(false),
+        }))
+    }
+
+    /// §И3 `drop_item` — move an inventory entry back into the CURRENT scene.
+    ///
+    /// Matches an inventory entry by its §И1 HEAD (`trim().to_lowercase()` of the
+    /// part before « — »); zero matches → `unknown_item`. The entry is removed and
+    /// a fresh [`SceneItem`] is inserted into `scene.items` with a generated id
+    /// (mirroring the `safe_id(name, "item_N")` scheme used elsewhere, uniquified
+    /// against the current scene), `name` = head, `details` = tail, `portable` +
+    /// `visible` = true, `location` = `location` arg or `"рядом"`. `card_revision`
+    /// bumps. NO canon event (§0). `Ok`/`Err` payload shape matches `take_item`.
+    pub fn drop_item(&mut self, name: &str, location: &str, reason: &str) -> Result<Value, Value> {
+        let needle = name.trim().to_lowercase();
+        if needle.is_empty() {
+            return Err(json!({
+                "code": "unknown_item",
+                "error": "drop_item requires a non-empty name",
+                "name": name.trim(),
+            }));
+        }
+        let inv_idx = self
+            .player_character
+            .inventory
+            .iter()
+            .position(|e| item_head(e).to_lowercase() == needle);
+        let inv_idx = match inv_idx {
+            Some(i) => i,
+            None => {
+                let inventory = self.player_character.inventory.clone();
+                return Err(json!({
+                    "code": "unknown_item",
+                    "error": format!("no inventory entry named '{}'", name.trim()),
+                    "name": name.trim(),
+                    "inventory": inventory,
+                }));
+            }
+        };
+        let entry = self.player_character.inventory.remove(inv_idx);
+        let head = item_head(&entry).to_string();
+        let details = item_tail(&entry).to_string();
+        let location = {
+            let loc = location.trim();
+            if loc.is_empty() {
+                "рядом".to_string()
+            } else {
+                loc.to_string()
+            }
+        };
+        // Generate a scene-unique item_id from the head (mirrors coerce items:
+        // `safe_id(name, "item_N")`), suffixing on collision with a live id.
+        let base = safe_id(&head, &format!("item_{}", self.scene.items.len() + 1));
+        let mut item_id = base.clone();
+        let mut n = 2;
+        while self.scene.items.iter().any(|it| it.item_id == item_id) {
+            item_id = format!("{base}_{n}");
+            n += 1;
+        }
+        let scene_item = SceneItem {
+            item_id: item_id.clone(),
+            name: head.clone(),
+            location: location.clone(),
+            visible: true,
+            portable: true,
+            owner: String::new(),
+            details: details.clone(),
+        };
+        self.scene.items.push(scene_item);
+        self.player_character.card_revision += 1;
+        Ok(json!({
+            "ok": true,
+            "status": "dropped",
+            "item_id": item_id,
+            "name": head,
+            "details": details,
+            "location": location,
+            "reason": reason.trim(),
+            "updated": ["inventory"],
+            "card_revision": self.player_character.card_revision,
+            "player_character": self.player_character_export(false),
+        }))
     }
 
     pub fn player_character_export(&self, public: bool) -> Value {

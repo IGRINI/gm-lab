@@ -617,6 +617,20 @@ fn world_to_payload(world: &World) -> Value {
         m.insert("char_ref".into(), package_ref_to_payload(char_ref));
     }
 
+    // Phase-И per-place scene-item store (`docs/ITEMS_AND_SPELLS_TZ.md` §И2):
+    // emitted as a trailing `place_items` key ONLY when non-empty, so pre-Phase-И
+    // saves stay byte-identical (the whole-payload roundtrip golden). The map is
+    // a `BTreeMap`, so the emitted object key order is deterministic; each value
+    // is a list of `SceneItem` payloads shaped exactly like `scene.items`.
+    if !world.place_items.is_empty() {
+        let mut store = Map::new();
+        for (place_id, items) in &world.place_items {
+            let items: Vec<Value> = items.iter().map(item_to_payload).collect();
+            store.insert(place_id.clone(), Value::Array(items));
+        }
+        m.insert("place_items".into(), Value::Object(store));
+    }
+
     Value::Object(m)
 }
 
@@ -767,6 +781,17 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
         .get("world_ref_authored_version")
         .and_then(Value::as_u64);
     world.char_ref = package_ref_from_payload(data.get("char_ref"));
+    // Phase-И per-place scene-item store (§И2): parsed with a DEFAULT when the
+    // `place_items` key is absent (pre-Phase-И save) and BEFORE the refresh below
+    // so a restored player standing at a stored place gets their items back.
+    if let Some(Value::Object(store)) = data.get("place_items") {
+        let mut place_items: BTreeMap<String, Vec<SceneItem>> = BTreeMap::new();
+        for (place_id, items) in store {
+            let items: Vec<SceneItem> = json_list(items).iter().map(item_from_payload).collect();
+            place_items.insert(place_id.clone(), items);
+        }
+        world.place_items = place_items;
+    }
     if !world.world_canon.is_empty() {
         world.migrate_legacy_state_records_to_memory();
     }
@@ -1442,5 +1467,78 @@ mod package_ref_tests {
 
         let restored = world_from_payload(Some(&payload)).expect("restore world");
         assert_eq!(restored.char_ref, None);
+    }
+
+    /// §И2: a non-empty `place_items` store serializes as a trailing object of
+    /// `place_id -> [SceneItem]` and round-trips to an EQUAL map. Keyed on a
+    /// place OTHER than the current one so the post-restore refresh (same-place)
+    /// does not touch the store.
+    #[test]
+    fn place_items_round_trip_when_non_empty() {
+        use gml_world::SceneItem;
+        let mut world = worldgen_world();
+        let parked = vec![
+            SceneItem {
+                item_id: "torch".to_string(),
+                name: "Факел".to_string(),
+                location: "у стены".to_string(),
+                visible: true,
+                portable: true,
+                owner: String::new(),
+                details: "горит 1 час".to_string(),
+            },
+            SceneItem {
+                item_id: "anvil".to_string(),
+                name: "Наковальня".to_string(),
+                location: "в углу".to_string(),
+                visible: true,
+                portable: false,
+                owner: String::new(),
+                details: String::new(),
+            },
+        ];
+        world
+            .place_items
+            .insert("some_other_place".to_string(), parked.clone());
+
+        let payload = world_to_payload(&world);
+        let obj = payload.as_object().expect("payload object");
+        assert!(
+            obj["place_items"]["some_other_place"].is_array(),
+            "place_items is a place_id -> [item] object"
+        );
+        assert_eq!(
+            obj["place_items"]["some_other_place"][0]["item_id"],
+            json!("torch")
+        );
+        assert_eq!(
+            obj["place_items"]["some_other_place"][1]["portable"],
+            json!(false)
+        );
+
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert_eq!(
+            restored.place_items.get("some_other_place"),
+            Some(&parked),
+            "the per-place store round-trips exactly"
+        );
+    }
+
+    /// §И2: an empty `place_items` store must emit NO `place_items` key at all,
+    /// so pre-Phase-И saves stay byte-identical; a restore yields an empty map.
+    #[test]
+    fn absent_place_items_emits_no_key() {
+        let world = worldgen_world();
+        assert!(world.place_items.is_empty(), "fresh world has no parked items");
+
+        let payload = world_to_payload(&world);
+        let obj = payload.as_object().expect("payload object");
+        assert!(
+            !obj.contains_key("place_items"),
+            "an empty place_items store must not appear in the payload"
+        );
+
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert!(restored.place_items.is_empty());
     }
 }

@@ -248,9 +248,10 @@ mod tests {
         h.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    // GM_SYSTEM sha/len updated for the living-world rework: travel is now
-    // canon-authoritative (move_player primary, set_scene authors a new place).
-    const GM_SYSTEM_SHA: &str = "754c1744413d4be689394d148f402bae2c04bafdc99e0d87db73666f58c2a78d";
+    // GM_SYSTEM sha/len updated for Phase-И items (`docs/ITEMS_AND_SPELLS_TZ.md`
+    // §И1/§И3): the item name↔description ' — ' convention line plus the
+    // take_item/drop_item vs inventory_add/remove tool-choice rule.
+    const GM_SYSTEM_SHA: &str = "2fe246fa8be94b91c24d87f3c12410f8e1fbfdb5640a2a67dc223904c5d0dcc7";
     const NPC_SYSTEM_STATIC_SHA: &str =
         "b9cff19d13db6dabd8510ab7685bbc9c7b903e1b867bc22f9ec781366250e4c9";
     const NPC_CARD_TEMPLATE_SHA: &str =
@@ -274,8 +275,8 @@ mod tests {
     fn gm_system_byte_identical() {
         assert_bytes_eq!(gm_system(), "GM_SYSTEM.txt");
         assert_eq!(sha256_hex(GM_SYSTEM), GM_SYSTEM_SHA);
-        assert_eq!(GM_SYSTEM.chars().count(), 36287);
-        assert_eq!(GM_SYSTEM.len(), 36518);
+        assert_eq!(GM_SYSTEM.chars().count(), 37029);
+        assert_eq!(GM_SYSTEM.len(), 37284);
     }
 
     #[test]

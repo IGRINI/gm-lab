@@ -461,14 +461,14 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Full current inventory only when inventory changed."
+                "description": "Full current inventory only when inventory changed. Each entry is a string; an optional description may follow the item name after ' — ' (e.g. 'кинжал — 1d4, скрыт в сапоге'). The name before ' — ' is the head used for all matching. For picking up an item already in the scene use take_item (it carries the same object with its details); for dropping one into the scene use drop_item."
               },
               "equipment": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
-                "description": "Full current equipment only when equipment changed."
+                "description": "Full current equipment only when equipment changed. Same ' — ' name/description convention as inventory; matching is by the head before ' — '."
               },
               "features": {
                 "type": "array",

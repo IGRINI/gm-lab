@@ -894,10 +894,248 @@ fn canon_tools_are_available_in_the_canon_catalog() {
         .collect();
     assert_eq!(
         canon_names,
-        vec!["move_player", "world_debug", "generate_location"]
+        vec![
+            "move_player",
+            "world_debug",
+            "generate_location",
+            "take_item",
+            "drop_item"
+        ]
     );
     assert_eq!(
         gml_agents::CANON_GM_TOOL_NAMES.to_vec(),
-        vec!["move_player", "world_debug", "generate_location"]
+        vec![
+            "move_player",
+            "world_debug",
+            "generate_location",
+            "take_item",
+            "drop_item"
+        ]
     );
+}
+
+// --- §И3 take_item / drop_item dispatch ------------------------------------
+
+/// An item-rich seed: a VISIBLE portable coin, a VISIBLE non-portable statue,
+/// and an INVISIBLE portable key (only takeable by item_id).
+fn item_scene_seed() -> serde_json::Value {
+    json!({
+        "id": "item-scene",
+        "title": "Комната с предметами",
+        "public_intro": "Пыльная комната.",
+        "hidden_truth": "За гобеленом дверь.",
+        "npcs": [{"id": "warden", "name": "Смотритель", "persona": "страж", "role": "warden"}],
+        "scene": {
+            "id": "vault_scene",
+            "location_id": "vault",
+            "title": "Хранилище",
+            "description": "Каменное хранилище с сундуками.",
+            "present_npcs": ["warden"],
+            "items": [
+                {"id": "coin", "name": "Медная монета", "location": "на полу",
+                 "portable": true, "details": "потёртая"},
+                {"id": "statue", "name": "Статуя", "location": "в нише"},
+                {"id": "vault_key", "name": "Ключ", "location": "в замке",
+                 "portable": true, "visible": false}
+            ],
+            "exits": [
+                {"id": "door", "name": "Дверь", "destination": "corridor"}
+            ]
+        }
+    })
+}
+
+fn item_session() -> Session {
+    let world = World::from_seed_with_dice_seed(&item_scene_seed(), 20260622);
+    Session::with_world(client(), world, factory())
+}
+
+#[test]
+fn take_item_moves_scene_item_into_card_and_emits_updates() {
+    let mut session = item_session();
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "take_item",
+        &json!({"item_id": "coin", "reason": "беру монету"}),
+    ));
+    let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(payload["ok"], json!(true));
+    assert_eq!(payload["status"], json!("taken"));
+    assert_eq!(payload["inventory_entry"], json!("Медная монета — потёртая"));
+    // The scene item is gone; the card carries the entry.
+    assert!(!session.world.scene.items.iter().any(|i| i.item_id == "coin"));
+    assert!(session
+        .world
+        .player_character
+        .inventory
+        .iter()
+        .any(|e| e == "Медная монета — потёртая"));
+    // Both a card update AND a scene update are emitted; NO canon event written.
+    assert!(events.iter().any(|e| e.kind == "player_character_update"));
+    assert!(events.iter().any(|e| e.kind == "scene_update"));
+    assert!(
+        !session
+            .world
+            .world_canon
+            .event_log
+            .events
+            .iter()
+            .any(|e| e.kind == "take_item"),
+        "§0: take_item must NOT write a canon event"
+    );
+}
+
+#[test]
+fn take_item_ambiguous_is_a_clean_tool_error_that_takes_nothing() {
+    let mut session = item_session();
+    // Add a second visible coin so a name match is ambiguous.
+    session.world.scene.items.push(gml_world::SceneItem {
+        item_id: "coin2".to_string(),
+        name: "Медная монета".to_string(),
+        location: "на столе".to_string(),
+        visible: true,
+        portable: true,
+        owner: String::new(),
+        details: String::new(),
+    });
+    let before = session.world.scene.items.len();
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "take_item",
+        &json!({"name": "Медная монета"}),
+    ));
+    assert!(
+        result.model.contains("code: ambiguous_item"),
+        "ambiguity must surface the validator-style code: {}",
+        result.model
+    );
+    assert!(events.iter().any(|e| e.kind == "error"));
+    assert!(!events.iter().any(|e| e.kind == "scene_update"));
+    assert_eq!(session.world.scene.items.len(), before, "nothing removed");
+}
+
+#[test]
+fn take_item_non_portable_is_rejected_as_fiction() {
+    let mut session = item_session();
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "take_item",
+        &json!({"item_id": "statue"}),
+    ));
+    assert!(
+        result.model.contains("code: not_portable"),
+        "non-portable take must be a clean rejection: {}",
+        result.model
+    );
+    assert!(events.iter().any(|e| e.kind == "error"));
+    assert!(session.world.scene.items.iter().any(|i| i.item_id == "statue"));
+}
+
+#[test]
+fn take_item_invisible_only_by_id() {
+    let mut session = item_session();
+    // By name: invisible key is not a candidate.
+    let (_events, by_name) = block_on(run_tool_collect(
+        &mut session,
+        "take_item",
+        &json!({"name": "Ключ"}),
+    ));
+    assert!(by_name.model.contains("code: item_not_here"), "{}", by_name.model);
+    // By id: GM-trusted path succeeds.
+    let (_events, by_id) = block_on(run_tool_collect(
+        &mut session,
+        "take_item",
+        &json!({"item_id": "vault_key"}),
+    ));
+    let payload: Value = serde_json::from_str(&by_id.full).unwrap();
+    assert_eq!(payload["ok"], json!(true));
+    assert!(!session.world.scene.items.iter().any(|i| i.item_id == "vault_key"));
+}
+
+#[test]
+fn drop_item_puts_inventory_entry_back_into_the_scene() {
+    let mut session = item_session();
+    session
+        .world
+        .player_character
+        .inventory
+        .push("Верёвка — 15 метров".to_string());
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "drop_item",
+        &json!({"name": "Верёвка", "location": "у двери", "reason": "оставляю"}),
+    ));
+    let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(payload["ok"], json!(true));
+    assert_eq!(payload["status"], json!("dropped"));
+    // Removed from card, inserted into the scene as a visible portable item.
+    assert!(!session
+        .world
+        .player_character
+        .inventory
+        .iter()
+        .any(|e| e.starts_with("Верёвка")));
+    let dropped = session
+        .world
+        .scene
+        .items
+        .iter()
+        .find(|i| i.name == "Верёвка")
+        .expect("dropped item is in the scene");
+    assert_eq!(dropped.details, "15 метров");
+    assert!(dropped.visible && dropped.portable);
+    assert_eq!(dropped.location, "у двери");
+    assert!(events.iter().any(|e| e.kind == "player_character_update"));
+    assert!(events.iter().any(|e| e.kind == "scene_update"));
+}
+
+#[test]
+fn drop_item_unknown_is_a_clean_tool_error() {
+    let mut session = item_session();
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "drop_item",
+        &json!({"name": "чего-нет"}),
+    ));
+    assert!(
+        result.model.contains("code: unknown_item"),
+        "dropping an item the player does not carry must be a clean error: {}",
+        result.model
+    );
+    assert!(events.iter().any(|e| e.kind == "error"));
+    assert!(!events.iter().any(|e| e.kind == "scene_update"));
+}
+
+#[test]
+fn take_then_move_does_not_leak_and_drop_lands_in_the_new_place() {
+    // End-to-end §И2 leak fix at the dispatch level: take a coin, move to a new
+    // place — the coin does not travel — then drop it there; it stays there
+    // across a round-trip out and back.
+    let mut session = item_session();
+    block_on(run_tool_collect(
+        &mut session,
+        "take_item",
+        &json!({"item_id": "coin"}),
+    ));
+    let start = session.world.world_canon.player_place_id.clone();
+    let out = a_valid_transition(&session);
+    block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": out}),
+    ));
+    let arrived = session.world.world_canon.player_place_id.clone();
+    assert_ne!(arrived, start);
+    // The start place's non-taken items did not travel here.
+    assert!(
+        !session.world.scene.items.iter().any(|i| i.item_id == "statue"),
+        "scene items must not leak across a move"
+    );
+    // Drop the coin in the new place.
+    block_on(run_tool_collect(
+        &mut session,
+        "drop_item",
+        &json!({"name": "Медная монета", "location": "на камне"}),
+    ));
+    assert!(session.world.scene.items.iter().any(|i| i.name == "Медная монета"));
 }

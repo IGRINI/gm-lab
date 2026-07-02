@@ -375,6 +375,29 @@ fn inventory_delta_remove_drops_all_occurrences() {
 }
 
 #[test]
+fn inventory_delta_matches_by_head_case_insensitively() {
+    // §И1: delta ops match by the entry HEAD (before « — »), trim + lowercase —
+    // the same rule take_item/drop_item use. A remove by bare name must drop a
+    // described entry; an add with an already-present head must be skipped.
+    let mut w = pinned_world();
+    w.update_player_character(
+        &json!({"inventory": ["Кинжал — 1d4, скрыт в сапоге", "карта"]}),
+        "base",
+    );
+    // Add with the same head (different case, no description) -> skipped.
+    let rev = w.player_character.card_revision;
+    w.update_player_character(&json!({"inventory_add": ["кинжал"]}), "dup");
+    assert_eq!(
+        w.player_character.inventory,
+        vec!["Кинжал — 1d4, скрыт в сапоге", "карта"]
+    );
+    assert_eq!(w.player_character.card_revision, rev);
+    // Remove by bare lowercase head drops the described, capitalized entry.
+    w.update_player_character(&json!({"inventory_remove": ["кинжал"]}), "spend");
+    assert_eq!(w.player_character.inventory, vec!["карта"]);
+}
+
+#[test]
 fn delta_noop_when_add_already_present_does_not_bump_revision() {
     let mut w = pinned_world();
     w.update_player_character(&json!({"inventory": ["меч"]}), "base");

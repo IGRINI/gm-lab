@@ -163,6 +163,12 @@ MANDATORY PRE-FINAL CHECK:
   resolved turn changes HP, wounds/condition, life status, inventory/equipment, features,
   known sheet/backstory details, or GM-only notes. Do not leave a wound, spent item, or
   declared character detail only in narration.
+- Item pickup/drop tool choice: if the item is in the CURRENT SCENE STATE, call take_item
+  (it moves that same object, keeping its details). If the item is NOT in the scene (a
+  gift, craft, purchase, or something found in narration without staging), use
+  inventory_add. Never inventory_add a visible scene item; never take_item something the
+  scene does not list. To put an item down, call drop_item; if it is destroyed, consumed,
+  or gone without a trace in the scene, use inventory_remove.
 
 STATE CONTRACT:
 - CURRENT SCENE STATE is the source of truth for who is present, what is visible, exits,
@@ -178,6 +184,9 @@ STATE CONTRACT:
   weapon, armor, animal, servant, master craft, or expert training unless the card or
   current fiction already supports it. Harmless flavor possessions may be allowed only
   when they create no mechanical, social, or investigative advantage.
+- Inventory/equipment entries stay plain strings. An item name may carry an optional
+  description after ' — ' (space, em dash, space), e.g. 'кинжал — 1d4, скрыт в сапоге';
+  the head before ' — ' is the item name and is what all matching uses.
 - GM-only notes in PLAYER CHARACTER CARD are for your decisions only. Do not expose them
   to the player unless the fiction reveals them.
 - Player character details belong in PLAYER CHARACTER CARD, not in NPC identity memory.

@@ -743,6 +743,8 @@ async fn run_executable_tool(
         "move_npc" | "set_npc_presence" => run_move_npc(session, args, sink),
         "set_scene" => run_set_scene(session, args, sink),
         "move_player" => run_move_player(session, args, sink).await,
+        "take_item" => run_take_item(session, args, sink),
+        "drop_item" => run_drop_item(session, args, sink),
         "world_debug" => run_world_debug(session, args, sink),
         "generate_location" => run_generate_location(session, args, sink).await,
         "ask_npc" => run_ask_npc_tool(session, args, metas, sink).await,
@@ -1664,6 +1666,12 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     }
 
     session.world.scene.scene_id = dest_id.clone();
+    // §И2: pin the live location to the destination BEFORE staging its items so
+    // refresh_scene_from_canon reads this as a same-place rebuild — the staged
+    // `coerced_items` are kept as this place's items (not stashed under the old
+    // location and replaced by an empty store). This overwrites whatever the
+    // destination previously held in place_items on the NEXT stash cycle.
+    session.world.scene.location_id = dest_id.clone();
     session.world.scene.items = coerced_items;
     session.world.scene.constraints = constraints;
     session.world.scene.tension = tension;
@@ -1989,6 +1997,87 @@ from the player's current place.";
             )
         }
     }
+}
+
+/// §И3 `take_item` — carry a present scene item's body into the player card.
+/// Emits PLAYER_CHARACTER_UPDATE + SCENE_UPDATE on success (mirroring
+/// run_update_player_character + run_move_player); NO canon EventLog write (§0).
+/// A rejection (unknown/not-here/ambiguous/not-portable) emits an error event and
+/// returns the structured tool error carrying the validator-style code.
+fn run_take_item(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    let item_id = arg_str(args, "item_id");
+    let name = arg_str(args, "name");
+    let reason = arg_str(args, "reason");
+    match session.world.take_item(item_id, name, reason) {
+        Ok(payload) => item_move_success(session, "take_item", payload, sink),
+        Err(rejection) => item_move_rejection("take_item", &rejection, sink),
+    }
+}
+
+/// §И3 `drop_item` — put an inventory entry back into the current scene as a
+/// visible, portable scene item. Same emission/rejection contract as take_item.
+fn run_drop_item(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    let name = arg_str(args, "name");
+    let location = arg_str(args, "location");
+    let reason = arg_str(args, "reason");
+    match session.world.drop_item(name, location, reason) {
+        Ok(payload) => item_move_success(session, "drop_item", payload, sink),
+        Err(rejection) => item_move_rejection("drop_item", &rejection, sink),
+    }
+}
+
+/// Shared success path for take_item/drop_item: emit the card update and the
+/// refreshed scene, then return the compact structured result. The World method
+/// already mutated `scene.items` + `pc.inventory` + `card_revision`.
+fn item_move_success(
+    session: &mut Session,
+    tool: &str,
+    payload: Value,
+    sink: &Sink,
+) -> ToolExecutionResult {
+    sink.emit(ev(
+        event_kind::PLAYER_CHARACTER_UPDATE,
+        Some("ГМ"),
+        payload.clone(),
+        None,
+    ));
+    sink.emit(ev(
+        event_kind::SCENE_UPDATE,
+        Some("ГМ"),
+        session.world.scene_export(),
+        None,
+    ));
+    tool_result(
+        &json_compact(&payload),
+        Some(&model_player_character_update_text(&payload)),
+        Some(tool_reminder(tool)),
+        false,
+    )
+}
+
+/// Shared rejection path: emit an error event and return the structured tool
+/// error, forwarding any hint fields (visible_items / candidates / inventory)
+/// from the World rejection payload so the model can repair or narrate.
+fn item_move_rejection(tool: &str, rejection: &Value, sink: &Sink) -> ToolExecutionResult {
+    let code = rejection.get("code").and_then(Value::as_str).unwrap_or("");
+    let message = rejection
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("item action rejected");
+    let msg = format!("{tool} rejected: {message} ({code})");
+    sink.emit(ev(
+        event_kind::ERROR,
+        Some("ГМ"),
+        Value::String(msg.clone()),
+        None,
+    ));
+    let mut extra: Vec<(&str, Value)> = Vec::new();
+    for key in ["item_id", "name", "visible_items", "candidates", "inventory"] {
+        if let Some(value) = rejection.get(key) {
+            extra.push((key, value.clone()));
+        }
+    }
+    tool_error(tool, message, None, code, &extra)
 }
 
 /// `world_debug(causal_log_only)` — read-only canon debug/replay dump (TZ §12).

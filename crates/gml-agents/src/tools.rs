@@ -100,7 +100,7 @@ pub(crate) const INVOKE_LOADED_TOOL_NAME: &str = "invoke_loaded_tool";
 
 /// `_TOOL_SEARCH_HINTS` — name -> hint keywords. Includes the living-world canon
 /// tools (`move_player`, `world_debug`).
-pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 16] = [
+pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 18] = [
     (
         "ask_npc",
         "npc нпс персонаж поговорить спросить допросить ответить реакция речь \
@@ -135,6 +135,16 @@ world debug causal log canon dump snapshot",
         "generate_location",
         "генератор локация сцена помещение комната город деревня данж дорожная ситуация \
 location scene room city village dungeon travel situation encounter anti-repeat",
+    ),
+    (
+        "take_item",
+        "взять поднять забрать подобрать предмет вещь из сцены в инвентарь \
+take pick up grab loot item scene inventory карман",
+    ),
+    (
+        "drop_item",
+        "выложить бросить оставить положить предмет вещь из инвентаря в сцену \
+drop put down leave item inventory scene на стол на землю",
     ),
     (
         "get_npc_profile",
@@ -591,9 +601,9 @@ pub fn build_gm_tools() -> Vec<Value> {
                 "senses": {"type": "string"},
                 "languages": {"type": "string"},
                 "inventory": {"type": "array", "items": {"type": "string"},
-                              "description": "Full current inventory only when inventory changed."},
+                              "description": "Full current inventory only when inventory changed. Each entry is a string; an optional description may follow the item name after ' — ' (e.g. 'кинжал — 1d4, скрыт в сапоге'). The name before ' — ' is the head used for all matching. For picking up an item already in the scene use take_item (it carries the same object with its details); for dropping one into the scene use drop_item."},
                 "equipment": {"type": "array", "items": {"type": "string"},
-                              "description": "Full current equipment only when equipment changed."},
+                              "description": "Full current equipment only when equipment changed. Same ' — ' name/description convention as inventory; matching is by the head before ' — '."},
                 "features": {"type": "array", "items": {"type": "string"},
                              "description": "Full current features only when features changed."},
                 "inventory_add": {"type": "array", "items": {"type": "string"},
@@ -635,7 +645,17 @@ pub fn build_gm_tools() -> Vec<Value> {
 // so the stable cache prefix is preserved (new tools only ever go at the end).
 
 /// `_CANON_GM_TOOL_NAMES` — the additive living-world tools, in append order.
-pub const CANON_GM_TOOL_NAMES: [&str; 3] = ["move_player", "world_debug", "generate_location"];
+/// `take_item`/`drop_item` are the Phase-И scene↔inventory item movers appended
+/// at the END (`docs/ITEMS_AND_SPELLS_TZ.md` §И3): they carry a scene item's
+/// BODY into/out of the player card and are NOT part of the byte-gated static
+/// catalog (no re-bless), matching the move_player precedent.
+pub const CANON_GM_TOOL_NAMES: [&str; 5] = [
+    "move_player",
+    "world_debug",
+    "generate_location",
+    "take_item",
+    "drop_item",
+];
 
 /// The additive living-world GM tools that commit through the canon engine.
 pub fn build_canon_gm_tools() -> Vec<Value> {
@@ -728,7 +748,64 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
                        "description": "Road-situation rarity if already rolled."},
         }, "required": ["purpose", "request"], "additionalProperties": false},
     }});
-    vec![move_player, world_debug, generate_location]
+    let take_item = json!({"type": "function", "function": {
+        "name": "take_item",
+        "description":
+            "Pick up an item that is PRESENT in the CURRENT SCENE STATE and move that SAME \
+    object — with its details — into the player's inventory. WHEN TO CALL: the player takes, \
+    grabs, pockets, loots, or picks up an item the scene already lists. Identify it by \
+    item_id when you have it (the ONLY way to take an item that is not visible — a \
+    GM-trusted path), otherwise by name, matched case-insensitively against the VISIBLE \
+    scene items. If no visible item matches, the tool returns item_not_here with the list \
+    of visible items — do NOT retry with inventory_add; instead narrate that the thing is \
+    not here. If more than one visible item shares the name, the tool returns \
+    ambiguous_item with candidates — pick one by item_id, never silently grab the first. \
+    If the matched item is not portable (bolted down, too heavy, fixed scenery), the tool \
+    returns not_portable: that rejection is FICTION, not a retry — narrate why it cannot be \
+    taken and wait for the player, exactly like a rejected move. On success the scene item \
+    is removed and appended to inventory as \"name — details\". DO NOT CALL for an item the \
+    scene does not list (a gift, purchase, crafted or narratively-found object) — use \
+    update_player_character with inventory_add for those. The result is compact structured \
+    text with the taken item and the updated card, or a rejection reason to narrate.",
+        "parameters": {"type": "object", "properties": {
+            "item_id": {"type": "string",
+                        "description": "Exact id of a current scene item; required to take an item that is not visible."},
+            "name": {"type": "string",
+                     "description": "Item name to match against VISIBLE scene items when no item_id is given."},
+            "reason": {"type": "string",
+                       "description": "Very short Russian reason for taking the item."},
+        }, "required": [], "additionalProperties": false},
+    }});
+    let drop_item = json!({"type": "function", "function": {
+        "name": "drop_item",
+        "description":
+            "Put an item DOWN from the player's inventory into the CURRENT scene, so the same \
+    object with its details becomes a scene item others can see and pick up. WHEN TO CALL: \
+    the player drops, sets down, leaves, plants, or hands off an item onto the current \
+    place. Match the inventory entry by its NAME (the part before \" — \"), matched \
+    case-insensitively; the details after \" — \" travel with it. If no inventory entry \
+    matches, the tool returns unknown_item with the current inventory — do not invent an \
+    item the player does not carry. On success the entry is removed from the card and a \
+    visible, portable scene item is inserted at the given location (or \"рядом\" by \
+    default). DO NOT CALL when an item is destroyed, consumed, or used up without leaving \
+    anything in the scene — use update_player_character with inventory_remove for those. \
+    The result is compact structured text with the dropped item and the updated card.",
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string",
+                     "description": "Name (head before \" — \") of the inventory entry to drop."},
+            "location": {"type": "string",
+                         "description": "Where in the scene the item ends up, e.g. 'на столе'. Defaults to 'рядом'."},
+            "reason": {"type": "string",
+                       "description": "Very short Russian reason for dropping the item."},
+        }, "required": ["name"], "additionalProperties": false},
+    }});
+    vec![
+        move_player,
+        world_debug,
+        generate_location,
+        take_item,
+        drop_item,
+    ]
 }
 
 /// Scoped GM living-memory tools. `get_memory` and `note_memory` are direct
@@ -1026,7 +1103,7 @@ struct ToolSearchMetadata {
     capabilities: &'static [&'static str],
 }
 
-const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 16] = [
+const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 18] = [
     ToolSearchMetadata {
         name: "ask_npc",
         title: "Ask NPC",
@@ -1154,6 +1231,22 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 16] = [
         keywords: &["location", "scene", "room", "travel", "encounter", "anti-repeat"],
         aliases: &["генератор", "ситуация", "локация"],
         capabilities: &["location_generation", "road_situation_generation", "anti_repeat_context"],
+    },
+    ToolSearchMetadata {
+        name: "take_item",
+        title: "Take Item",
+        description: "Move a present scene item's body into the player's inventory.",
+        keywords: &["take", "pick", "grab", "loot", "item"],
+        aliases: &["взять", "подобрать", "предмет"],
+        capabilities: &["scene_to_inventory", "item_transfer"],
+    },
+    ToolSearchMetadata {
+        name: "drop_item",
+        title: "Drop Item",
+        description: "Put an inventory item down into the current scene.",
+        keywords: &["drop", "put", "leave", "item", "inventory"],
+        aliases: &["выложить", "бросить", "оставить"],
+        capabilities: &["inventory_to_scene", "item_transfer"],
     },
 ];
 

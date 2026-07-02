@@ -141,3 +141,45 @@ pub fn anchor_label(name: &str, identifier: &str) -> String {
 pub fn get_str(obj: &serde_json::Map<String, Value>, key: &str) -> String {
     obj.get(key).map(as_str).unwrap_or_default()
 }
+
+// --- Phase-И item description convention (`docs/ITEMS_AND_SPELLS_TZ.md` §И1) --
+//
+// Inventory/equipment entries stay plain `String`s. An OPTIONAL description is
+// appended after a « — » separator (space, U+2014 EM DASH, space):
+// `"кинжал — 1d4, скрыт в сапоге"`. The HEAD (before the first « — ») is the
+// item name used for ALL matching (delta ops, take/drop); the TAIL is prose the
+// engine never parses. Splitting on this exact separator keeps a bare hyphen or
+// a Cyrillic name intact.
+
+/// The §И1 item name↔description separator: space, EM DASH (U+2014), space.
+pub const ITEM_DESC_SEP: &str = " — ";
+
+/// The §И1 HEAD of an entry: everything before the first « — », trimmed. The
+/// whole (trimmed) entry when there is no separator.
+pub fn item_head(entry: &str) -> &str {
+    match entry.split_once(ITEM_DESC_SEP) {
+        Some((head, _)) => head.trim(),
+        None => entry.trim(),
+    }
+}
+
+/// The §И1 TAIL of an entry: everything after the first « — », trimmed. Empty
+/// when there is no separator.
+pub fn item_tail(entry: &str) -> &str {
+    match entry.split_once(ITEM_DESC_SEP) {
+        Some((_, tail)) => tail.trim(),
+        None => "",
+    }
+}
+
+/// Compose the §И1 inventory-entry string from a name and details: `"{name} —
+/// {details}"`, or just `"{name}"` when details are empty (both trimmed).
+pub fn item_entry_string(name: &str, details: &str) -> String {
+    let name = name.trim();
+    let details = details.trim();
+    if details.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}{ITEM_DESC_SEP}{details}")
+    }
+}
