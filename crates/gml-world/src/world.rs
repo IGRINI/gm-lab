@@ -268,6 +268,16 @@ pub struct World {
     /// launched from (`{id, version}`). `None` for procedural-world and catalog
     /// launches. Persisted additively (trailing `story_ref` key when `Some`).
     pub story_ref: Option<PackageRef>,
+    /// The world-package `version` the launching STORY was authored against,
+    /// recorded at launch time (the story's `StoryWorldRef.version`). `None` when
+    /// launched WITHOUT a pinned story ref — a direct saved-world play, a
+    /// procedural/brief-seeded chat, or a story whose `world_ref.version` is `0`
+    /// (unpinned). When set alongside a `world_ref` whose `version` differs, the
+    /// session was launched against a world that has since moved on (version
+    /// drift); the launch surfaces a warning but is allowed. Persisted additively
+    /// (trailing `world_ref_authored_version` key emitted only when `Some`, so
+    /// pre-existing saves stay byte-identical).
+    pub world_ref_authored_version: Option<u64>,
 }
 
 /// A reference to a saved content package (a world or a story) by its stable id
@@ -344,6 +354,7 @@ impl World {
             prefix_dirty: false,
             world_ref: None,
             story_ref: None,
+            world_ref_authored_version: None,
         }
     }
 

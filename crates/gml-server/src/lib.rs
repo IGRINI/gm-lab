@@ -1779,18 +1779,29 @@ fn resolve_story_launch(store: &StoryStore, story_id: &str) -> Result<StoryLaunc
 /// Build the playable [`World`] for a [`StoryLaunch`], recording `world_ref` /
 /// `story_ref` provenance. HARD RULE: a story whose `world_ref` does not resolve
 /// to an existing world package FAILS — never a default world.
-fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<World, String> {
+///
+/// Returns the built world alongside any structured launch warnings (currently
+/// only `world_version_drift`). "Warn but allow": when the story pins a world
+/// version (`world_ref.version >= 1`) that differs from the world's LIVE version,
+/// the launch records the authored pin on the world and emits one warning; the
+/// launch still succeeds. An unpinned story ref (`version == 0`) records no pin
+/// and never warns. Self-contained stories (no `world_ref`) never warn.
+fn build_story_world(
+    state: &AppState,
+    launch: StoryLaunch,
+) -> Result<(World, Vec<Value>), String> {
     let story_ref = Some(PackageRef {
         id: launch.story_id.clone(),
         version: launch.story_version,
     });
+    let mut warnings: Vec<Value> = Vec::new();
 
     let mut world = match &launch.world_ref {
         // Self-contained story (the built-ins): the seed carries the whole world.
         None => {
             let world = World::from_seed(&launch.plot);
-            // No world_ref: provenance is the story only.
-            return Ok(attach_story_ref(world, story_ref));
+            // No world_ref: provenance is the story only, no version to compare.
+            return Ok((attach_story_ref(world, story_ref), warnings));
         }
         Some(world_ref) => {
             // Resolve the bound world's lore (no-fallback existence check) and a
@@ -1821,11 +1832,32 @@ fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<World, Str
             };
             let mut world = world;
             world.world_ref = Some(world_provenance);
+            // Version-drift check (warn but allow). The authored pin is the
+            // story's `world_ref.version`; `0` means unpinned ("any") -> no pin,
+            // no warning. `>= 1` records the pin; a mismatch with the LIVE world
+            // version surfaces a `world_version_drift` warning.
+            let v_authored = world_ref.version;
+            if v_authored >= 1 {
+                world.world_ref_authored_version = Some(v_authored);
+                if v_authored != world_version {
+                    warnings.push(json!({
+                        "code": "world_version_drift",
+                        "world_id": world_ref.id,
+                        "authored_version": v_authored,
+                        "live_version": world_version,
+                        "message": format!(
+                            "История создавалась под версию мира v{v_authored}; \
+                             мир с тех пор обновлён до v{world_version} — сюжет \
+                             может расходиться с текущим каноном."
+                        ),
+                    }));
+                }
+            }
             world
         }
     };
     world.story_ref = story_ref;
-    Ok(world)
+    Ok((world, warnings))
 }
 
 /// Attach a `story_ref` to a world and return it (helper for the self-contained
@@ -1920,6 +1952,10 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         _ => String::new(),
     };
 
+    // Structured launch warnings (currently only `world_version_drift`, produced
+    // by `build_story_world`). Non-empty only on a story-launch with drift; every
+    // other branch leaves this empty and no `warnings` key is emitted.
+    let mut launch_warnings: Vec<Value> = Vec::new();
     let session = if !brief.is_empty() {
         let client = (make_client)();
         if !model_hint.is_empty() {
@@ -2019,7 +2055,10 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         };
         let client = (make_client)();
         let world = match build_story_world(&state, launch) {
-            Ok(w) => w,
+            Ok((w, warnings)) => {
+                launch_warnings = warnings;
+                w
+            }
             Err(e) => {
                 return json_response(
                     StatusCode::BAD_REQUEST,
@@ -2055,6 +2094,11 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         let mut response = Map::new();
         response.insert("ok".to_string(), Value::Bool(true));
         response.insert("active_chat_id".to_string(), Value::String(active.clone()));
+        // Structured launch warnings, top-level and additive: emitted ONLY when
+        // non-empty (a story-launch that drifted from its authored world version).
+        if !launch_warnings.is_empty() {
+            response.insert("warnings".to_string(), Value::Array(launch_warnings));
+        }
         store.with_runtime(&scope, &chat_id, |rt| {
             response.insert("chat".to_string(), payload::chat_response(rt, is_active));
             if is_active {

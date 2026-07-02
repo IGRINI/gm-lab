@@ -702,6 +702,11 @@ export default function App() {
       const data = await api.createChat({ activate: true, story_id: storyId });
       if (!data.ok) throw new Error(data.error || "чат не создан");
       restoreChatSession(data);
+      // Surface any structured launch warnings (e.g. world_version_drift) in the
+      // transcript via the existing error channel.
+      for (const w of data.warnings ?? []) {
+        store.dispatch({ kind: "error", agent: "мир", data: w.message });
+      }
       await refreshChats();
       closeChatsOnMobile();
     } catch (e) {
@@ -859,6 +864,11 @@ export default function App() {
         });
         if (!data.ok) throw new Error(data.error || "мир не запущен");
         restoreChatSession(data);
+        // Mirror the launch-warning surface from onCreateChat. Direct world plays
+        // carry no authored pin today, so this is a harmless no-op — future-proof.
+        for (const w of data.warnings ?? []) {
+          store.dispatch({ kind: "error", agent: "мир", data: w.message });
+        }
         setMainView("chat");
         await refreshChats();
         closeChatsOnMobile();

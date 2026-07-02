@@ -2574,3 +2574,211 @@ async fn import_baked_story_rewrites_world_ref_to_imported_world() {
         "imported world must exist: {worlds:?}"
     );
 }
+
+/// Launch drift (warn but allow): a story pins the world's current version; the
+/// world is then updated (bumping its version); launching the story yields ONE
+/// `world_version_drift` warning with the right authored/live numbers, and the
+/// persisted session records the authored pin plus the LIVE world_ref version.
+///
+/// (`POST /worlds` funnels create+update, so a freshly saved world is at v2; the
+/// subsequent update bumps it to v3. The story pins v2 at bind time.)
+#[tokio::test]
+async fn launch_story_warns_on_world_version_drift() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    // create_saved_world (create+update) -> world version 2.
+    let world_id = create_saved_world(&state, "Порог Второго Неба").await;
+
+    // Bind a procedural story to the world; it pins the CURRENT version (v2).
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "procedural",
+            "world_id": world_id,
+            "title": "Заводская смена",
+            "plot": {"story_brief": "Ты выходишь на смену."}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create story: {}", String::from_utf8_lossy(&body));
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    // Update the world (POST /worlds/{id}) -> bumps version to v3.
+    let (status, ubody) = post(
+        &state,
+        &format!("/worlds/{world_id}"),
+        json!({
+            "title": "Порог Второго Неба",
+            "genre": "fantasy isekai",
+            "tone": "tense hopeful",
+            "world_size": "Континент",
+            "population": "Миллионы",
+            "public_premise": "Клятвы и долги имеют силу закона и магии.",
+            "world_lore": {
+                "name": "Порог Второго Неба",
+                "public_premise": "Клятвы и долги имеют силу закона и магии.",
+                "world_laws": ["магия требует имени, цены или признанного права"],
+                "location_rules": ["каждая локация связана с долгом, властью, дорогой или духом"]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update world: {}", String::from_utf8_lossy(&ubody));
+    let updated: Value = serde_json::from_slice(&ubody).unwrap();
+    assert_eq!(updated["ok"], true, "world updated: {updated}");
+    // (The world-row response does not surface `version`; the live version is
+    // asserted below via the drift warning's `live_version`.)
+
+    // Launch the story -> drift: authored v2, live v3.
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch story: {}", String::from_utf8_lossy(&body));
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(launched["ok"], true);
+
+    let warnings = launched["warnings"]
+        .as_array()
+        .expect("warnings array present on drift");
+    assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+    let w = &warnings[0];
+    assert_eq!(w["code"], json!("world_version_drift"));
+    assert_eq!(w["world_id"], json!(world_id));
+    assert_eq!(w["authored_version"], json!(2));
+    assert_eq!(w["live_version"], json!(3));
+    assert!(
+        w["message"].as_str().unwrap_or_default().contains("v2")
+            && w["message"].as_str().unwrap_or_default().contains("v3"),
+        "message names both versions: {w:?}"
+    );
+
+    // Persisted session: authored pin (v2) AND the live world_ref version (v3).
+    state
+        .store
+        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
+            let w = &rt.session.world;
+            assert_eq!(w.world_ref_authored_version, Some(2), "authored pin recorded");
+            assert_eq!(
+                w.world_ref.as_ref().map(|r| r.version),
+                Some(3),
+                "world_ref stamps the LIVE version"
+            );
+            assert_eq!(w.world_ref.as_ref().map(|r| r.id.as_str()), Some(world_id.as_str()));
+        })
+        .unwrap();
+}
+
+/// No drift (authored == live): the launch response carries NO `warnings` key.
+#[tokio::test]
+async fn launch_story_without_drift_emits_no_warnings_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Город Железных Снов").await;
+
+    // Bind a story (pins the world's current v2) and launch immediately — the
+    // world has not moved, so authored == live and there is no drift.
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "procedural",
+            "world_id": world_id,
+            "title": "Заводская смена",
+            "plot": {"story_brief": "Ты выходишь на смену."}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create story: {}", String::from_utf8_lossy(&body));
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch story: {}", String::from_utf8_lossy(&body));
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(launched["ok"], true);
+    assert!(
+        launched.get("warnings").is_none(),
+        "no drift -> no `warnings` key, got {launched}"
+    );
+
+    // The authored pin (the world's v2 at bind time) is still recorded even
+    // without drift.
+    state
+        .store
+        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
+            assert_eq!(rt.session.world.world_ref_authored_version, Some(2));
+        })
+        .unwrap();
+}
+
+/// A story whose `world_ref` omits `version` parses as unpinned (`0`): no
+/// warning, and `world_ref_authored_version` stays `None`.
+#[tokio::test]
+async fn launch_unpinned_story_ref_records_no_pin_and_no_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Порог Второго Неба").await;
+
+    // Hand-write a story.json with a `world_ref` that has an id but NO version
+    // (parses as version 0 = unpinned). Written out-of-band under the temp
+    // library, then a reload makes the story store see it.
+    let story_id = "unpinned-story";
+    let story_dir = tmp.path().join("library").join("stories").join(story_id);
+    std::fs::create_dir_all(&story_dir).unwrap();
+    let manifest = json!({
+        "format": "gmlab.story/1",
+        "id": story_id,
+        "version": 1,
+        "kind": "procedural",
+        "world_ref": { "id": world_id },
+        "world_embedded": false,
+        "title": "Несвязанная версией история",
+        "description": "Мир указан без версии.",
+        "seed": { "story_brief": "Пролог без привязки к версии." }
+    });
+    std::fs::write(
+        story_dir.join("story.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    state
+        .story_store
+        .lock()
+        .expect("story store lock")
+        .reload()
+        .expect("reload story store");
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch unpinned story: {}", String::from_utf8_lossy(&body));
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(launched["ok"], true);
+    assert!(
+        launched.get("warnings").is_none(),
+        "unpinned world_ref -> no warning, got {launched}"
+    );
+
+    // No pin recorded; but the world_ref still stamps the live version.
+    state
+        .store
+        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
+            let w = &rt.session.world;
+            assert_eq!(w.world_ref_authored_version, None, "unpinned -> no pin");
+            assert_eq!(w.world_ref.as_ref().map(|r| r.id.as_str()), Some(world_id.as_str()));
+        })
+        .unwrap();
+}

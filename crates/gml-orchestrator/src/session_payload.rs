@@ -599,6 +599,15 @@ fn world_to_payload(world: &World) -> Value {
     if let Some(story_ref) = &world.story_ref {
         m.insert("story_ref".into(), package_ref_to_payload(story_ref));
     }
+    // The authored world-version pin recorded at launch (see
+    // `World::world_ref_authored_version`). Trailing + emitted only when `Some`,
+    // so worlds launched without a pinned story ref stay byte-identical.
+    if let Some(authored) = world.world_ref_authored_version {
+        m.insert(
+            "world_ref_authored_version".into(),
+            Value::Number(authored.into()),
+        );
+    }
 
     Value::Object(m)
 }
@@ -746,6 +755,9 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
     world.forced_die_all = int_or_none(data.get("forced_die_all"));
     world.world_ref = package_ref_from_payload(data.get("world_ref"));
     world.story_ref = package_ref_from_payload(data.get("story_ref"));
+    world.world_ref_authored_version = data
+        .get("world_ref_authored_version")
+        .and_then(Value::as_u64);
     if !world.world_canon.is_empty() {
         world.migrate_legacy_state_records_to_memory();
     }
@@ -1295,6 +1307,9 @@ mod package_ref_tests {
             id: "story-xyz".to_string(),
             version: 0,
         });
+        // The story was authored against v3 of the world, which has since moved
+        // to v7 (the `world_ref` above) — recorded drift.
+        world.world_ref_authored_version = Some(3);
 
         let payload = world_to_payload(&world);
         let obj = payload.as_object().expect("payload object");
@@ -1304,6 +1319,7 @@ mod package_ref_tests {
         assert_eq!(obj["world_ref"]["version"], json!(7));
         assert_eq!(obj["story_ref"]["id"], json!("story-xyz"));
         assert_eq!(obj["story_ref"]["version"], json!(0));
+        assert_eq!(obj["world_ref_authored_version"], json!(3));
 
         // Restore the whole world; the refs come back equal.
         let restored = world_from_payload(Some(&payload)).expect("restore world");
@@ -1321,6 +1337,7 @@ mod package_ref_tests {
                 version: 0,
             })
         );
+        assert_eq!(restored.world_ref_authored_version, Some(3));
     }
 
     /// `None` refs => the payload has NO `world_ref` / `story_ref` keys at all.
@@ -1331,6 +1348,7 @@ mod package_ref_tests {
         let mut world = worldgen_world();
         world.world_ref = None;
         world.story_ref = None;
+        world.world_ref_authored_version = None;
 
         let payload = world_to_payload(&world);
         let obj = payload.as_object().expect("payload object");
@@ -1343,10 +1361,15 @@ mod package_ref_tests {
             !obj.contains_key("story_ref"),
             "an unset story_ref must not appear in the payload"
         );
+        assert!(
+            !obj.contains_key("world_ref_authored_version"),
+            "an unset world_ref_authored_version must not appear in the payload"
+        );
 
         // And a restore yields None (no fabricated ref).
         let restored = world_from_payload(Some(&payload)).expect("restore world");
         assert_eq!(restored.world_ref, None);
         assert_eq!(restored.story_ref, None);
+        assert_eq!(restored.world_ref_authored_version, None);
     }
 }
