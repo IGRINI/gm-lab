@@ -7,14 +7,13 @@
 
 use serde_json::{json, Map, Value};
 
-use gml_llm::{Backend, BackendError, DeltaSink};
-use gml_types::Role;
+use gml_llm::{Backend, BackendError};
 
-/// Safety cap on the architect agent loop (think → draft → reply, possibly
-/// refined across several `draft_world_bible` calls). Mirrors the GM turn's
-/// `max_tool_hops`: a real model normally ends in 2-3 hops, but a degenerate
-/// model that keeps calling the tool must still terminate.
-const MAX_ARCHITECT_HOPS: usize = 6;
+use crate::architect_runner::{
+    architect_messages_with_user, architect_turn, ArchitectConfig, ArchitectOutput,
+};
+// Re-exported through this module's public surface (unchanged for callers).
+pub use crate::architect_runner::{ArchitectStream, NullArchitectStream};
 
 const WORLD_ARCHITECT_SYSTEM: &str = r#"You are the GM-Lab world architect. You help the user build a reusable world
 bible — the world-level canon (reality laws, peoples, powers, faiths, history,
@@ -59,65 +58,73 @@ A section filled to the expected depth looks like this:
   "дальняя дорога меняет слухи и баланс сил между домами"
 ]"#;
 
-/// Streaming sink for the architect agent loop. The server implements this to
-/// forward segments to the SSE client; tests can use a no-op. Each segment is
-/// tagged with a `sid` (one per agent hop) so the UI groups deltas into separate
-/// reasoning spoilers and reply bubbles, exactly like the main GM turn.
-pub trait ArchitectStream {
-    /// A content/thinking delta for the current hop. `channel` is
-    /// [`gml_llm::channel::THINKING`] or [`gml_llm::channel::CONTENT`].
-    fn delta(&mut self, channel: &str, text: &str, sid: &str);
-    /// A tool call the model just made, surfaced inline as it happens.
-    fn tool(&mut self, call: &Value, sid: &str);
-}
-
-/// A no-op [`ArchitectStream`] for callers that don't need streaming.
-pub struct NullArchitectStream;
-impl ArchitectStream for NullArchitectStream {
-    fn delta(&mut self, _channel: &str, _text: &str, _sid: &str) {}
-    fn tool(&mut self, _call: &Value, _sid: &str) {}
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldArchitectOptions {
     pub image_prompts: bool,
 }
 
-/// Per-hop adapter so `chat_stream` (which wants a [`DeltaSink`]) forwards its
-/// deltas to the architect stream tagged with this hop's `sid`.
-struct HopSink<'a> {
-    sid: String,
-    inner: &'a mut (dyn ArchitectStream + Send),
+/// The world architect's turn output. The generic [`ArchitectOutput`] IS the
+/// world output — this alias keeps the historical public type name so callers
+/// (`gml-server`) compile unchanged.
+pub type WorldArchitectOutput = ArchitectOutput;
+
+/// The world-architect [`ArchitectConfig`]: prompt + tools + world-shaped
+/// draft-folding. This is the whole domain surface the generic loop needs.
+struct WorldArchitectConfig {
+    options: WorldArchitectOptions,
 }
 
-impl DeltaSink for HopSink<'_> {
-    fn emit(&mut self, ch: &str, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        self.inner.delta(ch, text, &self.sid);
+impl ArchitectConfig for WorldArchitectConfig {
+    fn system_prompt(&self) -> &str {
+        WORLD_ARCHITECT_SYSTEM
     }
-}
 
-pub struct WorldArchitectOutput {
-    /// The model's final chat reply (the last text segment of the turn).
-    pub reply: String,
-    pub draft: Option<Value>,
-    pub user_msg: Value,
-    pub assistant_history_msg: Value,
-    pub assistant_msg: Value,
-    pub calls: Vec<Value>,
-    /// Ordered visible segments produced THIS turn — `think`, `assistant` and
-    /// `tool` entries in production order — to append to the persisted chat and
-    /// restore the interleaved view on reload.
-    pub visible_segments: Vec<Value>,
-    /// All reasoning text from the turn, joined (for the debug view).
-    pub thinking: String,
-    /// Summed `_meta` stats across every hop (cached_tokens, prompt_eval_count,
-    /// eval_count) — drives the architect token-usage readout.
-    pub stats: Map<String, Value>,
-    /// The first-hop request messages array sent to the model (for the debug view).
-    pub request_messages: Value,
+    fn tools(&self) -> Vec<Value> {
+        world_architect_tools_with_options(self.options)
+    }
+
+    fn normalize_draft(&self, draft: &Value) -> Value {
+        normalize_input_draft(draft)
+    }
+
+    fn user_message(&self, draft: &Value, user_text: &str) -> Value {
+        world_architect_user_message(draft, user_text)
+    }
+
+    fn apply_tool(
+        &self,
+        name: &str,
+        args: &Map<String, Value>,
+        working_draft: &mut Value,
+    ) -> (Value, bool) {
+        // draft_world_bible builds/rebuilds (FLAT args → nested world_lore);
+        // edit_world_bible patches the existing draft in place. The card/event
+        // shows what the model actually sent (nested for a build, raw for an edit).
+        match name {
+            "draft_world_bible" => {
+                let nested = nest_draft_args(args);
+                if let Value::Object(map) = &nested {
+                    *working_draft = merge_draft(Some(working_draft.clone()), map);
+                    (nested, true)
+                } else {
+                    (nested, false)
+                }
+            }
+            "edit_world_bible" => {
+                *working_draft = apply_world_bible_edit(working_draft, args);
+                (Value::Object(args.clone()), true)
+            }
+            _ => (Value::Object(args.clone()), false),
+        }
+    }
+
+    fn finalize_draft(&self, draft: Value) -> Value {
+        finalize_draft(draft)
+    }
+
+    fn tool_result(&self, name: &str) -> String {
+        architect_tool_result(name)
+    }
 }
 
 pub fn world_architect_messages(history: &[Value], draft: &Value, user_text: &str) -> Vec<Value> {
@@ -140,10 +147,7 @@ pub fn world_architect_user_message(draft: &Value, user_text: &str) -> Value {
 }
 
 fn world_architect_messages_with_user(history: &[Value], user_msg: Value) -> Vec<Value> {
-    let mut messages = vec![json!({"role": "system", "content": WORLD_ARCHITECT_SYSTEM})];
-    messages.extend(history.iter().filter_map(history_message));
-    messages.push(user_msg);
-    messages
+    architect_messages_with_user(WORLD_ARCHITECT_SYSTEM, history, user_msg)
 }
 
 /// The list (string-array) sections of the world bible. Flat tool fields; folded
@@ -590,133 +594,11 @@ pub async fn world_architect_turn_with_options(
     options: WorldArchitectOptions,
     stream: &mut (dyn ArchitectStream + Send),
 ) -> Result<WorldArchitectOutput, BackendError> {
-    let user_msg = world_architect_user_message(draft, user_text);
-    // The running model conversation: system + history + user, then assistant
-    // turns and tool results appended as the loop drives the agent.
-    let mut messages = world_architect_messages_with_user(history, user_msg.clone());
-    let request_messages = Value::Array(messages.clone());
-    let tools = Value::Array(world_architect_tools_with_options(options));
-
-    let mut visible_segments: Vec<Value> = Vec::new();
-    let mut all_calls: Vec<Value> = Vec::new();
-    let mut thinking_parts: Vec<String> = Vec::new();
-    // The full draft state the agent mutates this turn — seeded from the current
-    // draft so edit_world_bible patches apply to the real bible, not a blank one.
-    let mut working_draft = normalize_input_draft(draft);
-    let mut draft_changed = false;
-    let mut reply = String::new();
-    let mut stats = Map::new();
-
-    let mut hop = 0usize;
-    loop {
-        hop += 1;
-        let sid = format!("arch-{hop}");
-
-        // Stream this hop. Thinking/content deltas are tagged with `sid` so the
-        // UI renders a separate reasoning spoiler and reply bubble per hop.
-        let output = {
-            let mut seg = HopSink {
-                sid: sid.clone(),
-                inner: &mut *stream,
-            };
-            client
-                .chat_stream(
-                    &Value::Array(messages.clone()),
-                    Some(&tools),
-                    Some(true),
-                    Role::Gm.as_str(),
-                    &mut seg,
-                )
-                .await?
-        };
-
-        accumulate_stats(&mut stats, &output.stats);
-
-        let thinking = output.thinking.trim().to_string();
-        if !thinking.is_empty() {
-            visible_segments.push(json!({"role": "think", "content": thinking, "sid": sid}));
-            thinking_parts.push(thinking);
-        }
-
-        let content = output.content.trim().to_string();
-
-        // No tool calls → this hop's text is the final reply; end the turn.
-        if output.calls.is_empty() {
-            if !content.is_empty() {
-                visible_segments
-                    .push(json!({"role": "assistant", "content": content.clone(), "sid": sid}));
-                reply = content;
-            }
-            messages.push(output.assistant_msg);
-            break;
-        }
-
-        // Intermediate text alongside a tool call (a "response between tools").
-        if !content.is_empty() {
-            visible_segments
-                .push(json!({"role": "assistant", "content": content.clone(), "sid": sid}));
-        }
-
-        let normalized = normalize_architect_calls(&output.calls, &sid);
-        messages.push(assistant_with_tool_calls(output.assistant_msg, &normalized));
-
-        for (name, args, id) in &normalized {
-            // draft_world_bible builds/rebuilds (FLAT args → nested world_lore);
-            // edit_world_bible patches the existing draft in place. The card/event
-            // shows what the model actually sent.
-            let tool_args = match name.as_str() {
-                "draft_world_bible" => {
-                    let nested = nest_draft_args(args);
-                    if let Value::Object(map) = &nested {
-                        working_draft = merge_draft(Some(working_draft), map);
-                        draft_changed = true;
-                    }
-                    nested
-                }
-                "edit_world_bible" => {
-                    working_draft = apply_world_bible_edit(&working_draft, args);
-                    draft_changed = true;
-                    Value::Object(args.clone())
-                }
-                _ => Value::Object(args.clone()),
-            };
-            let call_json = json!({"name": name, "arguments": tool_args, "id": id});
-            all_calls.push(call_json.clone());
-            visible_segments
-                .push(json!({"role": "tool", "name": name, "args": tool_args, "sid": sid}));
-            stream.tool(&call_json, &sid);
-            // Feed the result back so the model can keep refining or finish with a
-            // chat reply (this is what makes it an agent loop, not a one-shot).
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": id,
-                "content": architect_tool_result(name),
-            }));
-        }
-
-        if hop >= MAX_ARCHITECT_HOPS {
-            break;
-        }
-    }
-
-    let assistant_history_msg = json!({"role": "assistant", "content": reply});
-    Ok(WorldArchitectOutput {
-        reply,
-        // The full draft after this turn's build/edits (None if nothing changed).
-        draft: if draft_changed {
-            Some(finalize_draft(working_draft))
-        } else {
-            None
-        },
-        user_msg,
-        assistant_history_msg: assistant_history_msg.clone(),
-        assistant_msg: assistant_history_msg,
-        calls: all_calls,
-        visible_segments,
-        thinking: thinking_parts.join("\n\n"),
-        stats,
-        request_messages,
-    })
+    // Thin config over the generic runner: prompt + tools + world-shaped
+    // draft-folding. The loop body lives in `architect_runner` and is shared with
+    // the story architect; this path stays byte-identical to the former inline loop.
+    let config = WorldArchitectConfig { options };
+    architect_turn(&config, client, history, draft, user_text, stream).await
 }
 
 /// The model-facing result of a `draft_world_bible` call. The architect tool has
@@ -738,56 +620,6 @@ fn architect_tool_result(name: &str) -> String {
         .to_string(),
         _ => json!({"ok": false, "error": format!("unknown architect tool: {name}")}).to_string(),
     }
-}
-
-/// Assign a stable id to each call and return `(name, args, id)` tuples.
-fn normalize_architect_calls(
-    calls: &[gml_types::ParsedCall],
-    sid: &str,
-) -> Vec<(String, Map<String, Value>, String)> {
-    calls
-        .iter()
-        .enumerate()
-        .map(|(idx, call)| {
-            let id = if call.id.trim().is_empty() {
-                format!("{sid}_{}", idx + 1)
-            } else {
-                call.id.clone()
-            };
-            (call.name.clone(), call.arguments.clone(), id)
-        })
-        .collect()
-}
-
-/// Attach `tool_calls` to the assistant message so the next request is a valid
-/// tool-call/tool-result pair (mirrors the orchestrator helper).
-fn assistant_with_tool_calls(
-    assistant_msg: Value,
-    calls: &[(String, Map<String, Value>, String)],
-) -> Value {
-    let mut msg = match assistant_msg {
-        Value::Object(m) => m,
-        other => return other,
-    };
-    let raw_calls: Vec<Value> = calls
-        .iter()
-        .filter(|(name, _, _)| !name.trim().is_empty())
-        .map(|(name, args, id)| {
-            json!({
-                "id": id,
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": serde_json::to_string(&Value::Object(args.clone()))
-                        .unwrap_or_else(|_| "{}".to_string()),
-                },
-            })
-        })
-        .collect();
-    if !raw_calls.is_empty() {
-        msg.insert("tool_calls".to_string(), Value::Array(raw_calls));
-    }
-    Value::Object(msg)
 }
 
 /// Merge a `draft_world_bible` call's arguments into the accumulating draft:
@@ -817,33 +649,6 @@ fn merge_draft(prev: Option<Value>, args: &Map<String, Value>) -> Value {
         }
     }
     Value::Object(base)
-}
-
-/// Sum integer `_meta` counters across hops (token counts add up like the main
-/// chat's per-turn total); non-integer/last-wins for everything else.
-fn accumulate_stats(acc: &mut Map<String, Value>, next: &Map<String, Value>) {
-    for (key, value) in next {
-        let summed = match (acc.get(key), value) {
-            (Some(a), b) if a.is_i64() && b.is_i64() => Some(Value::from(
-                a.as_i64().unwrap_or(0) + b.as_i64().unwrap_or(0),
-            )),
-            _ => None,
-        };
-        acc.insert(key.clone(), summed.unwrap_or_else(|| value.clone()));
-    }
-}
-
-fn history_message(message: &Value) -> Option<Value> {
-    let object = message.as_object()?;
-    let role = object.get("role").and_then(Value::as_str)?;
-    if !matches!(role, "user" | "assistant") {
-        return None;
-    }
-    let content = object.get("content").and_then(Value::as_str)?.trim();
-    if content.is_empty() {
-        return None;
-    }
-    Some(json!({"role": role, "content": content}))
 }
 
 #[cfg(test)]

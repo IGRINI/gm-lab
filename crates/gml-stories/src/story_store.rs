@@ -20,12 +20,27 @@
 //!   "id": "<story_id>",
 //!   "version": 1,
 //!   "kind": "authored",
+//!   "world_ref": { "id": "...", "version": 0 },   // only when world-bound
 //!   "world_embedded": true,
 //!   "title": "...",
 //!   "description": "...",
-//!   "seed": { ...the EXACT legacy catalog seed Value... }
+//!   "created_at": "...",  // only when set (blank string is not emitted)
+//!   "updated_at": "...",  // only when set (blank string is not emitted)
+//!   "seed": { ...the EXACT legacy catalog seed Value... },
+//!   "meta": { ... }       // only when a NON-EMPTY object (see below)
 //! }
 //! ```
+//!
+//! `meta` is an opaque round-trip object (`§С1.1` of
+//! `docs/CHARACTERS_AND_STORY_TZ.md`): it carries the story-architect chat state
+//! (`architect_messages` / `architect_model_history` / `architect_cache_*`) that
+//! MUST NOT live in `seed` (it would leak into worldgen and the python-byte gate)
+//! nor at the top level (the fixed key whitelist in [`StoryEnvelope::from_value`]
+//! drops unknown top keys). It is EMITTED ONLY when it is a non-empty object, and
+//! `created_at`/`updated_at` are emitted ONLY when non-blank — so the three
+//! built-in default packages keep their EXACT byte shape (nothing new is written
+//! for them). `meta` is written LAST so an added key never shifts the position of
+//! any existing key.
 //!
 //! The `seed` object is byte-shape-identical (key order preserved via serde_json
 //! `preserve_order`) to the legacy `catalog.json` seed, so the game and the
@@ -68,12 +83,22 @@ pub enum StoryStoreError {
     /// human-readable reason. A malformed/unreadable package surfaces this — it
     /// is never silently replaced by a default.
     Io(String),
+    /// [`StoryStore::update_story`] was asked to patch an id absent from the
+    /// library. Distinct from [`StoryStoreError::Io`] so the server can map it to
+    /// a 400 (`§С1.1`), mirroring `StoreError::CharacterNotFound`.
+    StoryNotFound(String),
+    /// A patch violated an `update_story` invariant (e.g. a blank title, a
+    /// non-object seed/meta patch, or editing a story the architect may not
+    /// touch — a self-contained builtin without a `world_ref`, `§С1.1`).
+    Invalid(String),
 }
 
 impl std::fmt::Display for StoryStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StoryStoreError::Io(msg) => write!(f, "{msg}"),
+            StoryStoreError::StoryNotFound(id) => write!(f, "story not found: {id}"),
+            StoryStoreError::Invalid(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -307,6 +332,9 @@ impl StoryStore {
 
         let _guard = self.write_lock.lock().expect("story write lock poisoned");
         let id = self.allocate_story_id()?;
+        // A created (world-bound) story stamps both timestamps; the architect
+        // (`update_story`) refreshes `updated_at` per turn. `meta` starts empty.
+        let now = now_timestamp();
         let env = StoryEnvelope {
             id: id.clone(),
             version: 1,
@@ -316,11 +344,156 @@ impl StoryStore {
             title: title.to_string(),
             description: description.trim().to_string(),
             seed: plot,
+            meta: Map::new(),
+            created_at: now.clone(),
+            updated_at: now,
         };
         self.write_envelope(&env)?;
         let meta = env.metadata();
         self.stories.push(env);
         Ok(meta)
+    }
+
+    /// `§С1.1`: shallow-merge a `patch` into an existing WORLD-BOUND story and
+    /// re-persist it (draft-first story-architect edit path). Returns the full
+    /// updated envelope object (the on-disk `story.json` shape) so the caller can
+    /// echo it back to the UI.
+    ///
+    /// Patchable keys (anything else is IGNORED — `kind`/`world_ref`/
+    /// `world_embedded` are NEVER patchable, they are pinned at creation):
+    /// * `title` — non-blank string (a blank/whitespace title is rejected).
+    /// * `description` — string (blank allowed; it is metadata).
+    /// * `seed` — object, shallow-merged INTO the existing plot seed with
+    ///   null-drop (a `null` value DELETES that key; mirrors `merge_world_payload`).
+    /// * `meta` — object, shallow-merged INTO the existing meta with null-drop
+    ///   (this is where the architect chat state lives).
+    ///
+    /// Bumps `version` (`saturating_add(1)`), refreshes `updated_at`, writes
+    /// atomically, and updates the in-memory cache. `created_at` is left as-is
+    /// (NOT back-filled: an architect-created story already has one, and a
+    /// hand-dropped package intentionally without one keeps its blank shape —
+    /// re-stamping it would be a surprising side effect of an edit).
+    ///
+    /// HARD RULE (`§С1.1`): the story architect edits ONLY world-bound authored
+    /// stories. A self-contained builtin (no `world_ref`) is rejected with
+    /// [`StoryStoreError::Invalid`] — it must not be rewritten by this path.
+    /// Unknown id -> [`StoryStoreError::StoryNotFound`].
+    pub fn update_story(
+        &mut self,
+        story_id: &str,
+        patch: Value,
+    ) -> Result<Map<String, Value>, StoryStoreError> {
+        let story_id = story_id.trim();
+        let patch = match patch {
+            Value::Object(m) => m,
+            Value::Null => Map::new(),
+            _ => {
+                return Err(StoryStoreError::Invalid(
+                    "update_story: patch must be an object".to_string(),
+                ))
+            }
+        };
+
+        let _guard = self.write_lock.lock().expect("story write lock poisoned");
+        let idx = self
+            .stories
+            .iter()
+            .position(|s| s.id == story_id)
+            .ok_or_else(|| StoryStoreError::StoryNotFound(story_id.to_string()))?;
+
+        // Architect edits are world-bound only; a self-contained builtin is not
+        // architect-editable (it embeds its own world).
+        if self.stories[idx].world_ref.is_none() {
+            return Err(StoryStoreError::Invalid(format!(
+                "story {story_id} is self-contained (no world_ref) and cannot be edited by the architect"
+            )));
+        }
+        // The architect only authors AUTHORED plots. A world-bound PROCEDURAL
+        // story clears the builtin guard above, but its launch path ignores the
+        // authored seed — folding a plot in here would be silent data loss.
+        if self.stories[idx].kind != "authored" {
+            return Err(StoryStoreError::Invalid(
+                "update_story: only world-bound authored stories are editable".to_string(),
+            ));
+        }
+
+        // Work on a clone so a validation failure leaves the cache untouched.
+        let mut env = StoryEnvelope {
+            id: self.stories[idx].id.clone(),
+            version: self.stories[idx].version,
+            kind: self.stories[idx].kind.clone(),
+            world_embedded: self.stories[idx].world_embedded,
+            world_ref: self.stories[idx].world_ref.clone(),
+            title: self.stories[idx].title.clone(),
+            description: self.stories[idx].description.clone(),
+            seed: self.stories[idx].seed.clone(),
+            meta: self.stories[idx].meta.clone(),
+            created_at: self.stories[idx].created_at.clone(),
+            updated_at: self.stories[idx].updated_at.clone(),
+        };
+
+        // title: non-blank string, null-drop (a null/absent title keeps the old).
+        if let Some(v) = patch.get("title") {
+            if !v.is_null() {
+                let t = v.as_str().unwrap_or_default().trim();
+                if t.is_empty() {
+                    return Err(StoryStoreError::Invalid(
+                        "update_story: title must be non-empty".to_string(),
+                    ));
+                }
+                env.title = t.to_string();
+            }
+        }
+        // description: string, null-drop; blank is allowed (it is optional metadata).
+        if let Some(v) = patch.get("description") {
+            if !v.is_null() {
+                env.description = v.as_str().unwrap_or_default().trim().to_string();
+            }
+        }
+        // seed: shallow-merge the plot with null-drop.
+        if let Some(v) = patch.get("seed") {
+            match v {
+                Value::Object(seed_patch) => {
+                    let mut base = match &env.seed {
+                        Value::Object(m) => m.clone(),
+                        _ => Map::new(),
+                    };
+                    shallow_merge_null_drop(&mut base, seed_patch);
+                    env.seed = Value::Object(base);
+                }
+                Value::Null => {}
+                _ => {
+                    return Err(StoryStoreError::Invalid(
+                        "update_story: seed patch must be an object".to_string(),
+                    ))
+                }
+            }
+        }
+        // meta: shallow-merge with null-drop (architect chat state).
+        if let Some(v) = patch.get("meta") {
+            match v {
+                Value::Object(meta_patch) => {
+                    shallow_merge_null_drop(&mut env.meta, meta_patch);
+                }
+                Value::Null => {}
+                _ => {
+                    return Err(StoryStoreError::Invalid(
+                        "update_story: meta patch must be an object".to_string(),
+                    ))
+                }
+            }
+        }
+
+        env.version = env.version.saturating_add(1);
+        env.updated_at = now_timestamp();
+        self.write_envelope(&env)?;
+        let response = env
+            .to_file_value()
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        self.stories[idx] = env;
+        Ok(response)
     }
 
     /// Delete a story package directory. Returns `true` when a package was
@@ -465,6 +638,16 @@ struct StoryEnvelope {
     /// authored PLOT overlay (`player_character`, `hidden_truth`, `scene`, …) —
     /// the world bible is resolved from `world_ref` at launch.
     seed: Value,
+    /// `§С1.1`: opaque round-trip object carrying the story-architect chat state.
+    /// Always an object in memory (empty when the story has no architect state);
+    /// EMITTED to disk only when NON-EMPTY, so the built-in packages' bytes never
+    /// change. Never merged into `seed`.
+    meta: Map<String, Value>,
+    /// `§С1.1`: package creation / last-update timestamps (SQLite-`datetime('now')`
+    /// shape). Parsed with a blank default and EMITTED only when non-blank, so
+    /// the built-ins (which carry neither) keep their exact byte shape.
+    created_at: String,
+    updated_at: String,
 }
 
 impl StoryEnvelope {
@@ -515,6 +698,24 @@ impl StoryEnvelope {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        // `meta` is opaque and optional; a non-object (or absent) value reads as
+        // the empty map so the in-memory shape is always an object.
+        let meta = match obj.get("meta") {
+            Some(Value::Object(m)) => m.clone(),
+            _ => Map::new(),
+        };
+        // Timestamps parse-with-default: a missing/blank value stays "" and is not
+        // re-emitted (keeps the built-in bytes identical).
+        let created_at = obj
+            .get("created_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let updated_at = obj
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         Ok(StoryEnvelope {
             id: id.to_string(),
             version,
@@ -524,6 +725,9 @@ impl StoryEnvelope {
             title,
             description,
             seed,
+            meta,
+            created_at,
+            updated_at,
         })
     }
 
@@ -560,9 +764,11 @@ impl StoryEnvelope {
         seed
     }
 
-    /// The on-disk `story.json` value (envelope + seed). A `world_ref` is
-    /// emitted only when the story is bound to a world package, so the
-    /// self-contained built-ins keep their exact byte shape.
+    /// The on-disk `story.json` value (envelope + seed). Trailing/optional keys
+    /// (`world_ref`, `created_at`, `updated_at`, `meta`) are emitted ONLY when
+    /// they carry content, so the self-contained built-ins keep their EXACT byte
+    /// shape (`§С1.1` invariant, mirrored on the `package_ref_tests` pattern).
+    /// `meta` is written LAST so an added key never shifts an existing one.
     fn to_file_value(&self) -> Value {
         let mut m = Map::new();
         m.insert("format".into(), json!(STORY_FORMAT));
@@ -578,7 +784,17 @@ impl StoryEnvelope {
         m.insert("world_embedded".into(), json!(self.world_embedded));
         m.insert("title".into(), json!(self.title));
         m.insert("description".into(), json!(self.description));
+        if !self.created_at.is_empty() {
+            m.insert("created_at".into(), json!(self.created_at));
+        }
+        if !self.updated_at.is_empty() {
+            m.insert("updated_at".into(), json!(self.updated_at));
+        }
         m.insert("seed".into(), self.seed.clone());
+        // meta LAST + only when non-empty — additive, byte-safe for builtins.
+        if !self.meta.is_empty() {
+            m.insert("meta".into(), Value::Object(self.meta.clone()));
+        }
         Value::Object(m)
     }
 }
@@ -598,6 +814,20 @@ fn parse_world_ref(v: Option<&Value>) -> Option<StoryWorldRef> {
         id: id.trim().to_string(),
         version,
     })
+}
+
+/// Shallow-merge `patch` into `base` with NULL-DROP semantics (mirrors
+/// `merge_world_payload`): a `null` patch value DELETES that key from `base`;
+/// any other value overwrites (or inserts). Only the top level is merged — a
+/// nested object value fully replaces the base's value for that key.
+fn shallow_merge_null_drop(base: &mut Map<String, Value>, patch: &Map<String, Value>) {
+    for (key, value) in patch {
+        if value.is_null() {
+            base.remove(key);
+        } else {
+            base.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 /// Read a string field from `seed[key]`, defaulting to `""`.
@@ -662,9 +892,40 @@ fn embedded_default_envelopes() -> Result<Vec<StoryEnvelope>, StoryStoreError> {
             title,
             description,
             seed,
+            // Built-ins carry NO meta and NO timestamps — to_file_value emits
+            // neither, so materialized builtin bytes are byte-for-byte unchanged.
+            meta: Map::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
         });
     }
     Ok(out)
+}
+
+/// A UTC timestamp in SQLite `datetime('now')` shape (`"YYYY-MM-DD HH:MM:SS"`),
+/// matching the world/character stores' timestamps. Computed from the wall clock
+/// via a plain civil-date conversion (no extra dependency): gml-stories has no
+/// rusqlite/chrono, and the value is a package annotation, not a byte-gated field.
+fn now_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let tod = (secs % 86_400) as i64;
+    let (hour, minute, second) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    // Civil date from a day count since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
 }
 
 /// A unique suffix for atomic temp files (process id + a monotonic counter).
@@ -837,6 +1098,211 @@ mod tests {
         assert!(reopened.story_exists(builtin));
         // The full builtin set is back.
         assert_eq!(reopened.story_ids().len(), 3);
+    }
+
+    /// The materialized bytes of every built-in `story.json` must be UNCHANGED
+    /// by the meta/timestamp additions: builtins carry no meta and no timestamps,
+    /// so `to_file_value` emits neither. This locks the `§С1.1` byte invariant at
+    /// the envelope level (the seed-length gate in `lib.rs` locks the seed body).
+    #[test]
+    fn builtin_story_json_bytes_have_no_meta_or_timestamps() {
+        let (_dir, store) = temp_store();
+        for id in store.story_ids() {
+            let raw = std::fs::read_to_string(store.story_file(&id)).expect("read builtin");
+            let value: Value = serde_json::from_str(&raw).expect("parse builtin");
+            let obj = value.as_object().expect("object");
+            assert!(!obj.contains_key("meta"), "{id}: builtin must emit no meta");
+            assert!(
+                !obj.contains_key("created_at"),
+                "{id}: builtin must emit no created_at"
+            );
+            assert!(
+                !obj.contains_key("updated_at"),
+                "{id}: builtin must emit no updated_at"
+            );
+            assert!(
+                !obj.contains_key("world_ref"),
+                "{id}: builtin must emit no world_ref"
+            );
+        }
+    }
+
+    #[test]
+    fn meta_and_timestamps_round_trip_through_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let id = {
+            let mut store = StoryStore::new(dir.path()).expect("open store");
+            let meta = store
+                .create_bound_story(
+                    "История",
+                    "",
+                    "authored",
+                    StoryWorldRef {
+                        id: "w".to_string(),
+                        version: 1,
+                    },
+                    json!({}),
+                )
+                .expect("create");
+            let id = meta.get("id").and_then(Value::as_str).unwrap().to_string();
+            store
+                .update_story(
+                    &id,
+                    json!({"meta": {"architect_cache_session_id": "story:sess"}}),
+                )
+                .expect("update meta");
+            id
+        };
+        // Reopen over the same root: the meta + timestamps survive the disk round
+        // trip (they are emitted because they now carry content).
+        let reopened = StoryStore::new(dir.path()).expect("reopen");
+        let raw =
+            std::fs::read_to_string(reopened.story_file(&id)).expect("read created story.json");
+        let obj: Value = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(
+            obj["meta"]["architect_cache_session_id"], "story:sess",
+            "meta persisted"
+        );
+        assert!(
+            obj.get("created_at").and_then(Value::as_str).is_some(),
+            "created_at persisted"
+        );
+        assert!(
+            obj.get("updated_at").and_then(Value::as_str).is_some(),
+            "updated_at persisted"
+        );
+        // meta is written LAST (after seed) so it never shifts an existing key.
+        let keys: Vec<&String> = obj.as_object().unwrap().keys().collect();
+        assert_eq!(keys.last().map(|s| s.as_str()), Some("meta"));
+        assert!(keys.iter().position(|k| *k == "seed").unwrap() < keys.len() - 1);
+    }
+
+    #[test]
+    fn update_story_merges_seed_and_meta_with_null_drop_and_bumps_version() {
+        let (_dir, mut store) = temp_store();
+        let created = store
+            .create_bound_story(
+                "Черновая",
+                "исходное",
+                "authored",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 2,
+                },
+                json!({"story_brief": "старт", "hidden_truth": "тайна"}),
+            )
+            .expect("create");
+        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        assert_eq!(store.version(&id).unwrap(), 1);
+
+        // Patch: overwrite title, merge into seed (add public_intro, DROP
+        // hidden_truth via null), and set a meta key.
+        let updated = store
+            .update_story(
+                &id,
+                json!({
+                    "title": "Готовая",
+                    "seed": {"public_intro": "интро", "hidden_truth": null},
+                    "meta": {"architect_messages": [{"role": "user", "content": "привет"}]}
+                }),
+            )
+            .expect("update");
+
+        // Version bumped; title patched; the response is the full envelope shape.
+        assert_eq!(updated["version"], 2);
+        assert_eq!(store.version(&id).unwrap(), 2);
+        assert_eq!(updated["title"], "Готовая");
+        assert_eq!(updated["kind"], "authored");
+        assert_eq!(updated["world_ref"]["id"], "w");
+        assert_eq!(updated["world_ref"]["version"], 2);
+        // seed shallow-merged: story_brief kept, public_intro added, hidden_truth
+        // dropped by the explicit null.
+        let seed = store.plot(&id).unwrap();
+        assert_eq!(seed["story_brief"], "старт");
+        assert_eq!(seed["public_intro"], "интро");
+        assert!(seed.get("hidden_truth").is_none(), "null-drop removed key");
+        // meta carried the architect state.
+        assert_eq!(
+            updated["meta"]["architect_messages"][0]["content"],
+            "привет"
+        );
+
+        // Cache updated in place (no reload needed): a fresh read sees the patch.
+        let meta = store.story_metadata(&id).unwrap();
+        assert_eq!(meta.get("title").and_then(Value::as_str), Some("Готовая"));
+    }
+
+    #[test]
+    fn update_story_unknown_id_errors() {
+        let (_dir, mut store) = temp_store();
+        let err = store.update_story("nope", json!({"title": "x"})).unwrap_err();
+        assert_eq!(err, StoryStoreError::StoryNotFound("nope".to_string()));
+    }
+
+    #[test]
+    fn update_story_rejects_self_contained_builtin() {
+        let (_dir, mut store) = temp_store();
+        // The three built-ins are self-contained (no world_ref) — the architect
+        // may not edit them.
+        let err = store
+            .update_story(DEFAULT_STORY_ID, json!({"title": "x"}))
+            .unwrap_err();
+        match err {
+            StoryStoreError::Invalid(msg) => assert!(msg.contains("self-contained")),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+        // The builtin is untouched (version still 1, title unchanged).
+        assert_eq!(store.version(DEFAULT_STORY_ID).unwrap(), 1);
+    }
+
+    #[test]
+    fn update_story_rejects_world_bound_procedural() {
+        let (_dir, mut store) = temp_store();
+        // A PROCEDURAL story clears the builtin (world_ref) guard, but its launch
+        // path ignores an authored seed — the architect must not fold a plot in.
+        let created = store
+            .create_bound_story(
+                "Процедурная",
+                "",
+                "procedural",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 1,
+                },
+                json!({}),
+            )
+            .expect("create");
+        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let err = store.update_story(&id, json!({"title": "x"})).unwrap_err();
+        match err {
+            StoryStoreError::Invalid(msg) => assert!(msg.contains("authored")),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+        // The procedural story is untouched (version still 1).
+        assert_eq!(store.version(&id).unwrap(), 1);
+    }
+
+    #[test]
+    fn update_story_rejects_blank_title() {
+        let (_dir, mut store) = temp_store();
+        let created = store
+            .create_bound_story(
+                "Имя",
+                "",
+                "authored",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 1,
+                },
+                json!({}),
+            )
+            .expect("create");
+        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let err = store.update_story(&id, json!({"title": "   "})).unwrap_err();
+        match err {
+            StoryStoreError::Invalid(msg) => assert!(msg.contains("title")),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
     }
 
     #[test]

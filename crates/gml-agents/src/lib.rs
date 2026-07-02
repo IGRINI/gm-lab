@@ -25,11 +25,13 @@
 // that exceed the default macro recursion limit during expansion.
 #![recursion_limit = "1024"]
 
+pub mod architect_runner;
 pub mod coerce;
 pub mod gm;
 pub mod location;
 pub mod npc;
 pub mod seed;
+pub mod story_architect;
 mod tool_guidance;
 pub mod tools;
 pub mod world_architect;
@@ -57,10 +59,16 @@ pub use tools::{
     build_gm_tools_for_native_tool_search, build_npc_tools, gm_tool_catalog, initial_gm_tool_names,
     load_gm_tool_schema, search_gm_tools, CANON_GM_TOOL_NAMES,
 };
+pub use architect_runner::{ArchitectOutput, ArchitectStream, NullArchitectStream};
+pub use story_architect::{
+    story_architect_messages, story_architect_tools, story_architect_turn,
+    story_architect_user_message, story_architect_world_lore_block, StoryArchitectOutput,
+    STORY_ARCHITECT_SYSTEM,
+};
 pub use world_architect::{
     world_architect_messages, world_architect_tools, world_architect_tools_with_options,
     world_architect_turn, world_architect_turn_with_options, world_architect_user_message,
-    ArchitectStream, NullArchitectStream, WorldArchitectOptions, WorldArchitectOutput,
+    WorldArchitectOptions, WorldArchitectOutput,
 };
 
 /// `world._public_gender(value)` — RU grammatical-gender label, faithful port

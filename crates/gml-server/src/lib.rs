@@ -38,7 +38,7 @@ use gml_config::{Config, RuntimeSettings};
 use gml_llm::Backend;
 use gml_orchestrator::{run_turn_into, CompactionThresholds, Session};
 use gml_persistence::{CharacterStore, DialogRuntime, DialogStore, WorldStore};
-use gml_stories::{StoryStore, StoryWorldRef};
+use gml_stories::{StoryStore, StoryStoreError, StoryWorldRef};
 use gml_world::{PackageRef, World, WorldLore, WorldSpec};
 
 /// Reserved `story_id` that routes campaign creation through the living-world
@@ -126,6 +126,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/transcript", get(get_transcript))
         .route("/stories", get(get_stories).post(post_create_story))
         .route("/stories/{id}/delete", post(post_delete_story))
+        .route("/story-architect/chat", post(post_story_architect_chat))
         .route("/chats", get(get_chats).post(post_create_chat))
         .route("/characters", get(get_characters).post(post_create_character))
         .route("/worlds", get(get_worlds).post(post_create_world))
@@ -158,6 +159,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/chats/{id}/activate", post(post_activate_chat))
         .route("/chats/{id}/delete", post(post_delete_chat))
         .route("/chats/{id}/save-character", post(post_save_character))
+        .route("/stories/{id}", post(post_update_story))
         .route("/characters/{id}", post(post_update_character))
         .route("/characters/{id}/delete", post(post_delete_character))
         .route("/worlds/{id}", post(post_update_world))
@@ -835,6 +837,44 @@ async fn post_delete_story(
     }
 }
 
+/// `POST /stories/{id}` — shallow-merge a patch into an existing world-bound
+/// authored story (`§С1.1`, the plain update route + `persist_story_payload`
+/// draft-first seam). Body `{title?, description?, seed?, meta?}`; `seed` and
+/// `meta` shallow-merge (null-drop). Bumps version. Returns `{ok, story:{...}}`.
+///
+/// Errors map like the character update route: unknown id / self-contained
+/// builtin / bad patch -> 400 (no-fallback).
+async fn post_update_story(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    body: Bytes,
+) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let patch = match serde_json::from_slice::<Value>(&body) {
+        Ok(v @ Value::Object(_)) => v,
+        _ => Value::Object(Map::new()),
+    };
+    let result = {
+        let mut store = state.story_store.lock().expect("story store lock poisoned");
+        store.update_story(&id, patch)
+    };
+    match result {
+        Ok(story) => ok_json(&json!({"ok": true, "story": Value::Object(story)})),
+        Err(StoryStoreError::StoryNotFound(_)) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": format!("story not found: {id}")}),
+        ),
+        Err(StoryStoreError::Invalid(msg)) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": msg}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
+}
+
 // =========================================================================
 // K1 characters (docs/CHARACTERS_AND_STORY_TZ.md §К1.1–К1.4)
 // =========================================================================
@@ -1316,6 +1356,468 @@ fn visible_architect_messages_for_request(map: &Map<String, Value>, message: &st
         visible.push(json!({"role": "user", "content": message.trim()}));
     }
     visible
+}
+
+// =========================================================================
+// С1.3 story-architect SSE (docs/CHARACTERS_AND_STORY_TZ.md §С1.2 + §С1.3)
+// =========================================================================
+
+/// `POST /story-architect/chat` — Server-Sent Events, the STORY-level mirror of
+/// `POST /world-architect/chat`. Streams the architect's reply (`architect_delta`),
+/// surfaces each tool call (`architect_tool`), then sends the full result
+/// (`architect_done`) carrying the plot draft, usage, debug info and the persisted
+/// story. Terminates with `done`. Same event vocabulary as the world one so the
+/// frontend `streamArchitect` is reused.
+///
+/// Body `{message, history, draft(plot), story_id?, world_id (REQUIRED when
+/// story_id absent), kind (fixed "authored"), cache ids, visible_messages}`.
+/// DRAFT-FIRST: the story is persisted BEFORE the model call (create-on-first-turn
+/// bound to `world_id` with the live world version pinned, then update per turn);
+/// architect chat state (messages / model_history / cache ids) lives in the
+/// story's `meta` — NEVER in `seed` (`§С1.1`).
+async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -> Response {
+    let data = parse_body(&body);
+    let message = body_str(&data, "message");
+    if message.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "message is required"}),
+        );
+    }
+    let history = data
+        .get("history")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let draft = data.get("draft").cloned().unwrap_or(Value::Null);
+    let fallback_cache_id = body_cache_id(&data, "cache_id");
+    let cache_session_id = body_cache_id(&data, "cache_session_id")
+        .or_else(|| body_cache_id(&data, "architect_session_id"))
+        .or_else(|| fallback_cache_id.clone());
+    let cache_thread_id = body_cache_id(&data, "cache_thread_id")
+        .or_else(|| body_cache_id(&data, "architect_thread_id"))
+        .or(fallback_cache_id);
+    let story_id = {
+        let s = body_str(&data, "story_id");
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+    let world_id = {
+        let w = body_str(&data, "world_id");
+        if w.is_empty() {
+            None
+        } else {
+            Some(w)
+        }
+    };
+    let visible_messages = visible_architect_messages_for_request(&data, &message);
+
+    // Resolve the bound world eagerly (before spawning): it must exist so we can
+    // (a) build the read-only lore block for the model and (b) pin the live world
+    // version into world_ref for a create. A create with no/unknown world_id is a
+    // hard error — no-fallback (`§С1.2`).
+    let resolved = match resolve_story_architect_world(&state, story_id.as_deref(), world_id.as_deref()) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let app = state.clone();
+    tokio::spawn(async move {
+        // Draft-first persist BEFORE the model call: create-on-first-turn (or
+        // update) so the story exists with the current plot + architect state.
+        let initial_meta = architect_story_meta(
+            visible_messages.clone(),
+            history.clone(),
+            cache_session_id.as_deref(),
+            cache_thread_id.as_deref(),
+        );
+        let (persisted_story_id, mut story, mut stories) = match persist_story_payload(
+            &app,
+            story_id.clone(),
+            &resolved,
+            &message,
+            &draft,
+            initial_meta,
+        )
+        .await
+        {
+            Ok(saved) => saved,
+            Err(_resp) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": "не удалось сохранить черновик истории",
+                }));
+                return;
+            }
+        };
+
+        let client = (app.make_client)();
+        client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
+        let mut sink = ArchitectStreamSink { tx: tx.clone() };
+        match gml_agents::story_architect_turn(
+            client.as_ref(),
+            &history,
+            &resolved.lore_block,
+            &draft,
+            &message,
+            &mut sink,
+        )
+        .await
+        {
+            Ok(output) => {
+                let mut visible_after = visible_messages;
+                visible_after.extend(output.visible_segments.clone());
+                let mut model_history_after = history;
+                model_history_after.push(output.user_msg.clone());
+                model_history_after.push(output.assistant_history_msg.clone());
+                let final_meta = architect_story_meta(
+                    visible_after,
+                    model_history_after,
+                    Some(client.session_id().as_str()),
+                    Some(client.thread_id().as_str()),
+                );
+                // Persist the (possibly updated) plot draft + refreshed architect
+                // state under the SAME story id captured above.
+                match persist_story_payload(
+                    &app,
+                    Some(persisted_story_id.clone()),
+                    &resolved,
+                    &message,
+                    output.draft.as_ref().unwrap_or(&draft),
+                    final_meta,
+                )
+                .await
+                {
+                    Ok((_id, saved_story, saved_stories)) => {
+                        story = saved_story;
+                        stories = saved_stories;
+                    }
+                    Err(_resp) => {
+                        let _ = tx.send(json!({
+                            "kind": "architect_error",
+                            "data": "не удалось сохранить историю",
+                            "story": story,
+                            "stories": stories,
+                            "story_id": persisted_story_id,
+                        }));
+                        return;
+                    }
+                }
+                let _ = tx.send(json!({
+                    "kind": "architect_done",
+                    "data": {
+                        "ok": true,
+                        "reply": output.reply,
+                        "draft": output.draft,
+                        "user_message": output.user_msg,
+                        "assistant_history_message": output.assistant_history_msg,
+                        "assistant_message": output.assistant_msg,
+                        "calls": output.calls,
+                        "cache_session_id": client.session_id(),
+                        "cache_thread_id": client.thread_id(),
+                        "usage": architect_usage(&output.stats),
+                        "stats": output.stats,
+                        "thinking": output.thinking,
+                        "request_messages": output.request_messages,
+                        "story_id": persisted_story_id,
+                        "story": story,
+                        "stories": stories,
+                    }
+                }));
+            }
+            Err(e) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": e.to_string(),
+                    "story": story,
+                    "stories": stories,
+                    "story_id": persisted_story_id,
+                }));
+            }
+        }
+    });
+
+    let stream = async_stream::stream! {
+        let mut rx = rx;
+        while let Some(ev) = rx.recv().await {
+            let line = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
+        }
+        yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    let body = Body::from_stream(stream);
+    (headers, body).into_response()
+}
+
+/// The bound world resolved for a story-architect turn: the live version to pin
+/// (for a create) and the read-only, image-stripped lore block for the model.
+struct ResolvedStoryWorld {
+    world_id: String,
+    world_version: u64,
+    lore_block: String,
+}
+
+/// Resolve the world a story-architect turn plots over. For an EXISTING story we
+/// read its `world_ref` (the story must be world-bound authored — a builtin is
+/// rejected). For a NEW story the caller MUST pass `world_id`. Either way the
+/// world package MUST exist (no-fallback): its `world_lore` becomes the model's
+/// read-only bible block and its live `version` is pinned into a create.
+#[allow(clippy::result_large_err)]
+fn resolve_story_architect_world(
+    state: &AppState,
+    story_id: Option<&str>,
+    world_id: Option<&str>,
+) -> Result<ResolvedStoryWorld, Response> {
+    // Determine the bound world id: an existing story dictates it via world_ref;
+    // a new story takes the request's world_id.
+    let world_id = if let Some(story_id) = story_id {
+        let store = state.story_store.lock().expect("story store lock poisoned");
+        // Surface the same guards `update_story` enforces as clean 400s (so the
+        // architect turn fails fast before any model call): unknown id, a
+        // self-contained builtin (no world_ref), and a world-bound PROCEDURAL
+        // story (editable only if AUTHORED — its launch path ignores an authored
+        // seed, so folding a plot in would be silent data loss).
+        let world_id = match store.world_ref(story_id) {
+            Ok(Some(world_ref)) => world_ref.id,
+            Ok(None) => {
+                return Err(json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": format!("story {story_id} is not world-bound and cannot be edited by the architect")}),
+                ))
+            }
+            Err(_) => {
+                return Err(json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": format!("story not found: {story_id}")}),
+                ))
+            }
+        };
+        match store.kind(story_id) {
+            Ok(kind) if kind == "authored" => world_id,
+            Ok(_) => {
+                return Err(json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": "update_story: only world-bound authored stories are editable"}),
+                ))
+            }
+            Err(_) => {
+                return Err(json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": format!("story not found: {story_id}")}),
+                ))
+            }
+        }
+    } else {
+        match world_id {
+            Some(w) => w.to_string(),
+            None => {
+                return Err(json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": "world_id is required to start a new story"}),
+                ))
+            }
+        }
+    };
+
+    // The world package must exist: read its lore (for the model block) and its
+    // live version (to pin into world_ref on a create).
+    let world = state
+        .world_store
+        .get_world(&world_id)
+        .map_err(|_| json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": format!("world not found: {world_id}")}),
+        ))?;
+    let world_version = state.world_store.world_version(&world_id).map_err(|_| {
+        json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": format!("world not found: {world_id}")}),
+        )
+    })?;
+    let lore = world.get("world_lore").cloned().unwrap_or(Value::Null);
+    let lore_block = gml_agents::story_architect_world_lore_block(&lore);
+    Ok(ResolvedStoryWorld {
+        world_id,
+        world_version,
+        lore_block,
+    })
+}
+
+/// Build the story `meta` object carrying the architect chat state (`§С1.1`):
+/// `architect_messages` / `architect_model_history` / `architect_cache_*`. Reuses
+/// the SAME cleaner helpers as the world path so the persisted shape matches.
+fn architect_story_meta(
+    visible_messages: Vec<Value>,
+    model_history: Vec<Value>,
+    cache_session_id: Option<&str>,
+    cache_thread_id: Option<&str>,
+) -> Map<String, Value> {
+    let mut meta = Map::new();
+    meta.insert(
+        "architect_messages".to_string(),
+        Value::Array(
+            clean_architect_visible_messages(Some(&Value::Array(visible_messages)))
+                .unwrap_or_default(),
+        ),
+    );
+    meta.insert(
+        "architect_model_history".to_string(),
+        Value::Array(
+            clean_architect_model_history(Some(&Value::Array(model_history))).unwrap_or_default(),
+        ),
+    );
+    if let Some(id) = cache_session_id.and_then(normalize_cache_id) {
+        meta.insert("architect_cache_session_id".to_string(), Value::String(id));
+    }
+    if let Some(id) = cache_thread_id.and_then(normalize_cache_id) {
+        meta.insert("architect_cache_thread_id".to_string(), Value::String(id));
+    }
+    meta
+}
+
+/// The plot title for a create: the draft's title, else the first user message,
+/// else the locked fallback "Новая история" (`§С1.3`).
+fn story_title_from_draft(draft: &Value, message: &str) -> String {
+    let from_draft = draft
+        .as_object()
+        .and_then(|m| m.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if !from_draft.is_empty() {
+        return from_draft.to_string();
+    }
+    let msg = message.trim();
+    if !msg.is_empty() {
+        // Clip the message to a sensible title length (chars, not bytes).
+        let clipped: String = msg.chars().take(80).collect();
+        return clipped;
+    }
+    "Новая история".to_string()
+}
+
+/// The plot seed to persist: the draft plot as an object (empty when absent), so
+/// `update_story` shallow-merges only real content into the stored plot.
+fn story_plot_seed(draft: &Value) -> Value {
+    match draft {
+        Value::Object(_) => draft.clone(),
+        _ => Value::Object(Map::new()),
+    }
+}
+
+/// Persist a story-architect turn (draft-first). Returns `(story_id, story,
+/// stories)`. For an ABSENT `story_id` this CREATES a world-bound authored story
+/// (title from the draft/message fallback, live world version pinned) then folds
+/// the plot + architect meta in; for a PRESENT id it `update_story`s in place.
+/// Both paths shallow-merge the plot into `seed` and the architect state into
+/// `meta` — mirroring how `persist_world_payload` funnels create+update through
+/// `update_world`.
+async fn persist_story_payload(
+    state: &AppState,
+    story_id: Option<String>,
+    resolved: &ResolvedStoryWorld,
+    message: &str,
+    draft: &Value,
+    meta: Map<String, Value>,
+) -> Result<(String, Value, Vec<Value>), Response> {
+    let store = state.story_store.clone();
+    let plot_seed = story_plot_seed(draft);
+    // A create needs a title now (fallback: message → "Новая история"); an update
+    // only carries `title` when the draft actually supplies a non-blank one, so a
+    // fallback never clobbers a title the model already authored on a prior turn.
+    let create_title = story_title_from_draft(draft, message);
+    let draft_title = draft
+        .as_object()
+        .and_then(|m| m.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let world_ref = StoryWorldRef {
+        id: resolved.world_id.clone(),
+        version: resolved.world_version,
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut store = store.lock().expect("story store lock poisoned");
+        // Allocate the story id up front (create when absent). `freshly_created`
+        // tracks a create so a failing fold can roll the empty story back (no
+        // orphan blank story left behind — mirrors persist_world_payload).
+        let (id, freshly_created) = match story_id {
+            Some(id) => (id, false),
+            None => {
+                let created = store.create_bound_story(
+                    &create_title,
+                    "",
+                    "authored",
+                    world_ref,
+                    Value::Object(Map::new()),
+                )?;
+                let id = created
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                (id, true)
+            }
+        };
+        // Fold the plot into `seed` and the architect state into `meta`. The title
+        // is applied only when the draft supplies a non-blank one: a create's
+        // fallback yields to a model-authored title as the draft grows, and an
+        // update never overwrites an existing title with a fallback (update_story's
+        // null-drop/absent-key semantics keep the stored title when omitted).
+        let mut patch = Map::new();
+        if !draft_title.is_empty() {
+            patch.insert("title".to_string(), Value::String(draft_title.clone()));
+        }
+        patch.insert("seed".to_string(), plot_seed);
+        patch.insert("meta".to_string(), Value::Object(meta));
+        let story = match store.update_story(&id, Value::Object(patch)) {
+            Ok(story) => story,
+            Err(e) => {
+                // Best-effort rollback: drop the just-created story so the fold
+                // failure leaves the library untouched (the rollback error never
+                // masks the original).
+                if freshly_created {
+                    let _ = store.delete_story(&id);
+                }
+                return Err(e);
+            }
+        };
+        let stories = store.list_stories();
+        Ok::<(String, Value, Vec<Value>), StoryStoreError>((
+            id,
+            Value::Object(story),
+            stories.into_iter().map(Value::Object).collect(),
+        ))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((id, story, stories))) => Ok((id, story, stories)),
+        Ok(Err(e)) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        )),
+        Err(e) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        )),
+    }
 }
 
 fn architect_world_payload(

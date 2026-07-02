@@ -80,6 +80,15 @@ impl MockClient {
             }
             return world_architect_reply_output();
         }
+        if system_text.contains("GM-Lab story architect") {
+            // Same agent loop for the STORY architect: first hop drafts the plot
+            // (tool call), then finishes with a chat reply once the tool result
+            // is fed back.
+            if count_tool_messages(messages) == 0 {
+                return story_architect_chat_output();
+            }
+            return story_architect_reply_output();
+        }
         let n_tool = count_tool_messages(messages);
 
         if n_tool == 0 {
@@ -361,6 +370,114 @@ fn world_architect_reply_output() -> ChatOutput {
     ChatOutput {
         thinking: "Черновик собран — проверяю, чего ещё не хватает, и отвечаю пользователю."
             .to_string(),
+        content: reply.clone(),
+        assistant_msg: assistant_plain(&reply),
+        calls: Vec::new(),
+    }
+}
+
+/// First hop of the mock STORY architect: draft a playable plot via
+/// `draft_story_plot`. Nested plot args (scene / player_character / npcs) — the
+/// story schema is nested, unlike the flat world bible.
+fn story_architect_chat_output() -> ChatOutput {
+    let arr =
+        |items: &[&str]| Value::Array(items.iter().map(|s| Value::String(s.to_string())).collect());
+    let calls = vec![ParsedCall::new(
+        "draft_story_plot",
+        obj([
+            (
+                "title",
+                Value::String("Деревня у живой дороги".to_string()),
+            ),
+            (
+                "description",
+                Value::String("Короткий пролог у пробуждающейся дороги.".to_string()),
+            ),
+            (
+                "story_brief",
+                Value::String(
+                    "Ты пришёл в деревню, где дорога просыпается по ночам и требует свою плату."
+                        .to_string(),
+                ),
+            ),
+            (
+                "public_intro",
+                Value::String("Деревня живёт по правилам дороги.".to_string()),
+            ),
+            (
+                "hidden_truth",
+                Value::String(
+                    "Староста скормил дороге собственного сына ради урожая.".to_string(),
+                ),
+            ),
+            (
+                "player_character",
+                Value::Object(obj([
+                    ("name", Value::String("Мира".to_string())),
+                    (
+                        "class_role",
+                        Value::String("странствующий писец".to_string()),
+                    ),
+                ])),
+            ),
+            (
+                "scene",
+                Value::Object(obj([
+                    ("title", Value::String("Ворота деревни".to_string())),
+                    ("location_id", Value::String("village_gate".to_string())),
+                    (
+                        "description",
+                        Value::String("Покосившиеся ворота у кромки живой дороги.".to_string()),
+                    ),
+                    ("present_npcs", arr(&["starosta"])),
+                    ("tension", Value::String("Дорога вот-вот проснётся.".to_string())),
+                ])),
+            ),
+            (
+                "npcs",
+                Value::Array(vec![Value::Object(obj([
+                    ("id", Value::String("starosta".to_string())),
+                    ("name", Value::String("Старый Гедд".to_string())),
+                    ("role", Value::String("староста".to_string())),
+                    (
+                        "persona",
+                        Value::String("Усталый человек, скрывающий вину.".to_string()),
+                    ),
+                ]))]),
+            ),
+            (
+                "public_facts",
+                Value::Array(vec![Value::Object(obj([
+                    ("id", Value::String("road_wakes".to_string())),
+                    (
+                        "text",
+                        Value::String("Дорога шевелится в полнолуние.".to_string()),
+                    ),
+                    ("kind", Value::String("public".to_string())),
+                ]))]),
+            ),
+            ("proper_nouns", arr(&["Живая Дорога"])),
+            ("time", Value::from(1080)),
+        ]),
+        "mock_story_architect0",
+    )];
+    ChatOutput {
+        thinking: "Собираю играбельный старт сюжета в рамках мира.".to_string(),
+        content: String::new(),
+        assistant_msg: toolmsg(&calls),
+        calls,
+    }
+}
+
+/// Second hop of the mock STORY architect: finish with a short chat reply so the
+/// loop terminates.
+fn story_architect_reply_output() -> ChatOutput {
+    let reply = "Собрал черновик сюжета «Деревня у живой дороги»: пробуждающаяся дорога, \
+                 виноватый староста и стартовая сцена у ворот. Что усилить — улики, \
+                 второстепенных персонажей или ставку героя?"
+        .to_string();
+    ChatOutput {
+        thinking: "Черновик сюжета собран — отвечаю пользователю.".to_string(),
         content: reply.clone(),
         assistant_msg: assistant_plain(&reply),
         calls: Vec::new(),

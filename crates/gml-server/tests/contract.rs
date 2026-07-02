@@ -1262,6 +1262,211 @@ async fn world_architect_chat_tools_follow_image_generation_flag() {
     assert!(!props.contains_key("world_map_prompt_en"));
 }
 
+// =========================================================================
+// С1 story architect (docs/CHARACTERS_AND_STORY_TZ.md §С1.1–С1.3)
+// =========================================================================
+
+#[tokio::test]
+async fn story_architect_chat_creates_bound_story_and_persists_meta() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Порог Второго Неба").await;
+
+    // First turn with NO story_id: the handler creates a world-bound authored
+    // story BEFORE the model call, then folds the drafted plot + architect state.
+    let (status, body) = post(
+        &state,
+        "/story-architect/chat",
+        json!({
+            "message": "Сделай пролог в деревне у живой дороги.",
+            "history": [],
+            "draft": {},
+            "world_id": world_id,
+            "visible_messages": [{"role": "user", "content": "Сделай пролог в деревне у живой дороги."}],
+            "cache_session_id": "story-architect:test-session",
+            "cache_thread_id": "story-architect:test-thread"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got = architect_result(&body);
+    assert_eq!(got["ok"], true, "architect_done: {got}");
+    let story_id = got["story_id"].as_str().expect("story_id").to_string();
+    assert_eq!(got["story"]["id"], json!(story_id));
+    // The mock story architect drafts a plot: title + plot fields land in seed.
+    assert!(got["reply"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Деревня у живой дороги"));
+    assert_eq!(got["draft"]["title"], "Деревня у живой дороги");
+    assert_eq!(got["story"]["kind"], "authored");
+    assert_eq!(got["story"]["world_ref"]["id"], json!(world_id));
+    assert_eq!(got["story"]["seed"]["hidden_truth"], "Староста скормил дороге собственного сына ради урожая.");
+    // Architect chat state lives in meta, NEVER in seed.
+    assert_eq!(
+        got["story"]["meta"]["architect_cache_session_id"],
+        "story-architect:test-session"
+    );
+    assert!(got["story"]["seed"].get("architect_messages").is_none());
+    assert!(got["story"]["meta"]["architect_messages"].is_array());
+    // The done payload mirrors the world one + {story_id, story, stories}.
+    assert!(got["stories"].is_array());
+    assert_eq!(got["calls"][0]["name"], "draft_story_plot");
+
+    // Second turn WITH the story_id: version bumps further, plot is refined.
+    let v1 = got["story"]["version"].as_u64().unwrap();
+    let (status, body) = post(
+        &state,
+        "/story-architect/chat",
+        json!({
+            "message": "Усиль улики.",
+            "history": [],
+            "draft": got["draft"].clone(),
+            "story_id": story_id,
+            "world_id": world_id
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got2 = architect_result(&body);
+    assert_eq!(got2["ok"], true);
+    assert_eq!(got2["story_id"], json!(story_id));
+    assert!(
+        got2["story"]["version"].as_u64().unwrap() > v1,
+        "version must bump per turn"
+    );
+}
+
+#[tokio::test]
+async fn story_architect_chat_requires_world_for_new_story() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    // No story_id and no world_id -> hard 400, nothing created.
+    let (status, body) = post(
+        &state,
+        "/story-architect/chat",
+        json!({"message": "Сделай историю."}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"].as_str().unwrap_or("").contains("world_id"));
+}
+
+#[tokio::test]
+async fn story_architect_chat_rejects_unknown_world() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(
+        &state,
+        "/story-architect/chat",
+        json!({"message": "Сделай историю.", "world_id": "nope-world"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"].as_str().unwrap_or("").contains("nope-world"));
+}
+
+#[tokio::test]
+async fn update_story_route_merges_and_bumps_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Мир историй").await;
+
+    // Create an authored story to edit.
+    let (_s, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "authored",
+            "world_id": world_id,
+            "title": "Черновая",
+            "plot": {"story_brief": "старт", "hidden_truth": "тайна"}
+        }),
+    )
+    .await;
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    // Plain update route: merge seed (add public_intro, drop hidden_truth) + set
+    // meta; version bumps.
+    let (status, body) = post(
+        &state,
+        &format!("/stories/{story_id}"),
+        json!({
+            "title": "Готовая",
+            "seed": {"public_intro": "интро", "hidden_truth": null},
+            "meta": {"architect_cache_session_id": "s:1"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update: {}", String::from_utf8_lossy(&body));
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["story"]["title"], "Готовая");
+    assert_eq!(got["story"]["version"], 2);
+    assert_eq!(got["story"]["seed"]["story_brief"], "старт");
+    assert_eq!(got["story"]["seed"]["public_intro"], "интро");
+    assert!(got["story"]["seed"].get("hidden_truth").is_none());
+    assert_eq!(got["story"]["meta"]["architect_cache_session_id"], "s:1");
+}
+
+#[tokio::test]
+async fn update_story_route_rejects_builtin_and_unknown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    // A self-contained builtin cannot be architect-edited.
+    let (status, body) = post(
+        &state,
+        "/stories/turnvale-murder",
+        json!({"title": "x"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"].as_str().unwrap_or("").contains("self-contained"));
+
+    // Unknown id -> 400.
+    let (status, body) = post(&state, "/stories/nope", json!({"title": "x"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert!(got["error"].as_str().unwrap_or("").contains("not found"));
+
+    // A world-bound PROCEDURAL story clears the builtin guard but is architect-
+    // uneditable: its launch path ignores an authored seed, so folding a plot in
+    // would be silent data loss. Both the plain update route and the architect
+    // turn must reject it up front (before any model call).
+    let world_id = create_saved_world(&state, "Мир для процедурной").await;
+    let (_s, body) = post(
+        &state,
+        "/stories",
+        json!({"kind": "procedural", "world_id": world_id, "title": "Процедурная"}),
+    )
+    .await;
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    let (status, body) = post(&state, &format!("/stories/{story_id}"), json!({"title": "x"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "update route: {}", String::from_utf8_lossy(&body));
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert!(got["error"].as_str().unwrap_or("").contains("authored"));
+
+    let (status, body) = post(
+        &state,
+        "/story-architect/chat",
+        json!({"story_id": story_id, "message": "Допиши сюжет."}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "architect route: {}", String::from_utf8_lossy(&body));
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert!(got["error"].as_str().unwrap_or("").contains("authored"));
+}
+
 #[tokio::test]
 async fn create_procedural_chat_accepts_world_lore_from_architect() {
     let tmp = tempfile::tempdir().unwrap();
