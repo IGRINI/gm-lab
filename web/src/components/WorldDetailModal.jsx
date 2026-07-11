@@ -353,7 +353,7 @@ function CharacterDetail({ pc }) {
       {hasVitals && (
         <div className="wd-vitals">
           <Vital label="Класс доспеха" value={ac} tone="blue" />
-          <Vital label="Хиты" value={hpText} tone={hpTone(hp)} />
+          <Vital label="ХП" value={hpText} tone={hpTone(hp)} />
           <Vital label="Пасс. внимательность" value={pp} tone="purple" />
           <Vital label="Скорость" value={speed} tone="teal" />
         </div>

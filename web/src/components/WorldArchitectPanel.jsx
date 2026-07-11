@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api.js";
 import ImageThumbnail from "./ImagePreview.jsx";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
-  normalizeModelMessage,
-  architectCacheFromSaved,
-  visibleMessagesFromSaved,
-  modelMessagesFromSaved,
+  normalizeVisibleMessage,
   AutoTextarea,
   useLiveSegments,
   ArchitectChatPane,
@@ -177,16 +175,13 @@ function worldDraftFromSaved(world) {
   };
 }
 
-function architectMessagesFromWorld(world) {
-  return visibleMessagesFromSaved(world, DEFAULT_ARCHITECT_MESSAGES);
-}
-
-function modelMessagesFromWorld(world) {
-  return modelMessagesFromSaved(world);
-}
-
-function architectCacheFromWorld(world) {
-  return architectCacheFromSaved(world, "world-architect");
+// Restore the visible conversation from the server's architect block
+// (`GET /worlds/{id}/architect` → `{architect: {messages}}`). The chat lives in
+// the package's architect.json now — never inside the world row.
+function architectMessagesFromChat(architect) {
+  const raw = Array.isArray(architect?.messages) ? architect.messages : [];
+  const messages = raw.map(normalizeVisibleMessage).filter(Boolean);
+  return messages.length > 0 ? messages : DEFAULT_ARCHITECT_MESSAGES;
 }
 
 function mergeArchitectDraft(current, draft) {
@@ -324,13 +319,15 @@ export default function WorldArchitectPanel({
   onCreateStory,
   className = "",
 }) {
-  const [architectCache, setArchitectCache] = useState(() => architectCacheFromWorld(world));
+  // The model history and prompt-cache ids are SERVER-side (the package's
+  // architect.json); the panel holds only the visible conversation.
   const [worldDraft, setWorldDraft] = useState(() => worldDraftFromSaved(world));
-  const [messages, setMessages] = useState(() => architectMessagesFromWorld(world));
-  const [modelMessages, setModelMessages] = useState(() => modelMessagesFromWorld(world));
+  const [messages, setMessages] = useState(() => architectMessagesFromChat(null));
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
+  // The last message whose turn FAILED — powers the «Повторить» button.
+  const [retryText, setRetryText] = useState("");
   const [bibleOpen, setBibleOpen] = useState(false);
   const [architectUsage, setArchitectUsage] = useState(EMPTY_ARCHITECT_USAGE);
   const [architectDebug, setArchitectDebug] = useState(null);
@@ -346,7 +343,9 @@ export default function WorldArchitectPanel({
   // from the SSE stream in production order. Mirrors the main chat's live view.
   const { liveSegments, liveSegmentsRef, appendLiveDelta, pushLiveTool, clearLive } =
     useLiveSegments();
-  const loadedWorldIdRef = useRef(world?.id ?? null);
+  // Start as `null` (not the mount id) so the load effect ALWAYS runs on mount —
+  // for an existing world that means fetching its architect conversation on open.
+  const loadedWorldIdRef = useRef(null);
   const worldPayload = useMemo(() => cleanWorldDraft(worldDraft), [worldDraft]);
   // "Filled" for the bible label / auto-open = real DETAIL (hidden premise or any
   // list field), not just a public premise mirrored from the top-level field —
@@ -377,13 +376,12 @@ export default function WorldArchitectPanel({
     if (id === loadedWorldIdRef.current) return undefined;
     loadedWorldIdRef.current = id;
     const nextDraft = worldDraftFromSaved(world);
-    setArchitectCache(architectCacheFromWorld(world));
     setWorldDraft(nextDraft);
-    setMessages(architectMessagesFromWorld(world));
-    setModelMessages(modelMessagesFromWorld(world));
+    setMessages(architectMessagesFromChat(null));
     clearLive();
     setInput("");
     setArchitectError("");
+    setRetryText("");
     setArchitectUsage(EMPTY_ARCHITECT_USAGE);
     setArchitectDebug(null);
     setDebugOpen(false);
@@ -393,7 +391,29 @@ export default function WorldArchitectPanel({
     imagePromptLatestRef.current = {};
     imageQueueRef.current = [];
     setBibleOpen(loreHasContent(nextDraft.worldLore));
-    return undefined;
+    if (!id) return undefined;
+    // Restore the conversation from the server. A failed fetch is a VISIBLE
+    // error (a silently-default intro would look like the chat never existed).
+    // `cancelled` guards a stale response when the user switches worlds
+    // mid-flight.
+    let cancelled = false;
+    api
+      .worldArchitect(id)
+      .then((data) => {
+        if (cancelled || loadedWorldIdRef.current !== id) return;
+        if (!data?.ok) {
+          throw new Error(data?.error || "не удалось загрузить переписку архитектора");
+        }
+        setMessages(architectMessagesFromChat(data.architect));
+      })
+      .catch((error) => {
+        if (cancelled || loadedWorldIdRef.current !== id) return;
+        setArchitectError(error?.message || "не удалось загрузить переписку архитектора");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [world?.id]);
 
   // Reveal the bible editor the first time real lore appears (architect draft or
@@ -568,13 +588,13 @@ export default function WorldArchitectPanel({
     });
   }, []);
 
-  const sendArchitectMessage = async () => {
-    const text = input.trim();
-    if (!text || architectLocked) return;
-    const history = modelMessages;
-    const userMessage = { role: "user", content: text };
-    const visibleMessages = [...messages, userMessage];
-    setInput("");
+  // One architect turn. `appendUser=false` is the RETRY path: the visible chat
+  // already carries the user message (and the failure note) from the failed
+  // attempt, so only the request is repeated.
+  const runArchitectTurn = async (text, appendUser) => {
+    const visibleMessages = appendUser
+      ? [...messages, { role: "user", content: text }]
+      : [...messages];
     setArchitectError("");
     setArchitectBusy(true);
     clearLive();
@@ -582,14 +602,15 @@ export default function WorldArchitectPanel({
     let adopted = false;
     let failure = "";
     try {
+      // The server owns the conversation (model history + cache ids live in the
+      // package's architect.json). The body carries only the message and the
+      // form's CONTENT draft — the server applies it as a normal world update
+      // before the turn, so hand-edited fields are never lost. App injects the
+      // selected world_id.
       await onArchitectStream?.(
         {
           message: text,
-          history,
           draft: worldPayload,
-          visible_messages: visibleMessages,
-          cache_session_id: architectCache.sessionId,
-          cache_thread_id: architectCache.threadId,
         },
         (ev) => {
           if (ev.kind === "architect_delta") {
@@ -618,14 +639,6 @@ export default function WorldArchitectPanel({
             const usage = data.usage && typeof data.usage === "object" ? data.usage : null;
             if (usage) setArchitectUsage((current) => accumulateUsage(current, usage));
             setArchitectDebug(debugFromDone(data, usage));
-            const nextSessionId = textValue(data.cache_session_id);
-            const nextThreadId = textValue(data.cache_thread_id);
-            if (nextSessionId || nextThreadId) {
-              setArchitectCache((current) => ({
-                sessionId: nextSessionId || current.sessionId,
-                threadId: nextThreadId || current.threadId,
-              }));
-            }
             if (data.draft && typeof data.draft === "object") {
               setWorldDraft((current) => mergeArchitectDraft(current, data.draft));
             }
@@ -634,29 +647,22 @@ export default function WorldArchitectPanel({
             // URLs the server rewrote to. Adopt those last so the preview is
             // stable across sidecar restarts and image-gen toggles.
             adoptPersistedImageUrls(data.world);
-            const modelUserMessage = normalizeModelMessage(data.user_message);
-            const modelAssistantMessage = normalizeModelMessage(data.assistant_history_message);
-            if (modelUserMessage) {
-              setModelMessages((current) =>
-                modelAssistantMessage
-                  ? [...current, modelUserMessage, modelAssistantMessage]
-                  : [...current, modelUserMessage]
-              );
-            }
             // The world we just created/updated is ours — keep the `world` prop
             // sync (App.setSelectedWorldId) from wiping this live conversation.
             if (data.world?.id) loadedWorldIdRef.current = data.world.id;
-            // Adopt the server's persisted, interleaved log (reasoning → tool →
-            // reply) as the new committed view, and drop the live segments.
-            setMessages(architectMessagesFromWorld(data.world));
+            // Fold this turn's live segments into the visible chat — the same
+            // shape the server just persisted to architect.json.
+            setMessages([...visibleMessages, ...liveSegmentsRef.current]);
             clearLive();
           }
         }
       );
       if (failure) throw new Error(failure);
+      setRetryText("");
     } catch (error) {
       const message = error?.message || "Не удалось вызвать архитектора";
       setArchitectError(message);
+      setRetryText(text);
       if (!adopted) {
         // Keep whatever streamed before the failure, then append the error note.
         setMessages((current) => [
@@ -669,6 +675,18 @@ export default function WorldArchitectPanel({
     } finally {
       setArchitectBusy(false);
     }
+  };
+
+  const sendArchitectMessage = async () => {
+    const text = input.trim();
+    if (!text || architectLocked) return;
+    setInput("");
+    await runArchitectTurn(text, true);
+  };
+
+  const retryArchitectTurn = async () => {
+    if (!retryText || architectLocked) return;
+    await runArchitectTurn(retryText, false);
   };
 
   // One renderer for both the committed log and the in-flight segments, so the
@@ -712,6 +730,7 @@ export default function WorldArchitectPanel({
           input={input}
           onInputChange={setInput}
           onSend={sendArchitectMessage}
+          onRetry={retryText ? retryArchitectTurn : undefined}
           locked={architectLocked}
         />
 

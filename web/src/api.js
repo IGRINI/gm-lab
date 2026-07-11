@@ -29,11 +29,15 @@ export const api = {
 
   stories: () => getJSON("/stories"),
 
-  // GET /stories/{id}/draft — the GM-scoped plot draft row (seed + flattened
-  // architect_* chat state) for the story architect. The PLAYER-facing /stories
-  // catalog deliberately omits these (hidden_truth is GM-only), so the architect
-  // panel fetches the draft here on reopen. 404 unknown / 400 builtin|procedural.
+  // GET /stories/{id}/draft — the GM-scoped plot draft `{story}` plus the
+  // architect conversation `{architect: {messages}}` (the chat lives in the
+  // package's architect.json now). The PLAYER-facing /stories catalog omits
+  // both (hidden_truth is GM-only). 404 unknown / 400 builtin|procedural.
   storyDraft: (storyId) => getJSON(`/stories/${encodeURIComponent(storyId)}/draft`),
+
+  // GET /worlds/{id}/architect — the world-architect conversation
+  // `{architect: {messages}}` for the panel's reopen restore.
+  worldArchitect: (worldId) => getJSON(`/worlds/${encodeURIComponent(worldId)}/architect`),
 
   createStory: (body) => _post("/stories", body),
 
@@ -50,6 +54,14 @@ export const api = {
   createCharacter: (body) => _post("/characters", body),
   // POST /characters/{id} (metadata patch, e.g. {title}) -> {ok, character:{...}}
   updateCharacter: (id, body) => _post(`/characters/${encodeURIComponent(id)}`, body),
+  // POST /characters/{id}/draft {player_character:{...}} -> {ok, character:{...}}
+  // Direct manual save of the edited sheet: snapshots it (full replace + version
+  // bump), follows the title to the hero name, no architect chat. 400 non-object
+  // player_character, 404 unknown id.
+  saveCharacterDraft: (id, playerCharacter) =>
+    _post(`/characters/${encodeURIComponent(id)}/draft`, {
+      player_character: playerCharacter,
+    }),
   // POST /characters/{id}/delete -> {ok, deleted:bool}
   deleteCharacter: (id) => _post(`/characters/${encodeURIComponent(id)}/delete`),
   // GET /characters/{id}/export -> {id}.gmchar.zip attachment (download URL)
@@ -57,6 +69,13 @@ export const api = {
   // POST /chats/{chatId}/save-character {character_id?} -> {ok, character:{id,version,title}}
   saveCharacterFromChat: (chatId, body) =>
     _post(`/chats/${encodeURIComponent(chatId)}/save-character`, body),
+  // GET /characters/{id}/architect -> {architect:{messages}} for the panel reopen.
+  characterArchitect: (id) =>
+    getJSON(`/characters/${encodeURIComponent(id)}/architect`),
+  // POST /stories/{id}/save-protagonist -> {ok, character} — a .gmchar from the
+  // story draft's seed.player_character. 404/400 like the other story routes.
+  saveProtagonist: (storyId) =>
+    _post(`/stories/${encodeURIComponent(storyId)}/save-protagonist`),
 
   chats: () => getJSON("/chats"),
 
@@ -273,6 +292,13 @@ export function streamArchitect(body, onEvent) {
 // the done payload additionally carries {story_id, story, stories}.
 export function streamStoryArchitect(body, onEvent) {
   return streamArchitectAt("/story-architect/chat", body, onEvent);
+}
+
+// Stream a CHARACTER-architect turn. Same event vocabulary as the other two; the
+// done payload additionally carries {character_id, character, characters}. Body:
+// {message, character_id?, draft?} (create-on-first-turn when character_id absent).
+export function streamCharacterArchitect(body, onEvent) {
+  return streamArchitectAt("/character-architect/chat", body, onEvent);
 }
 
 // Stream a player turn. `onEvent` is called for every SSE event object.

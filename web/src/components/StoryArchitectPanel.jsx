@@ -4,10 +4,7 @@ import Spoiler from "./Spoiler.jsx";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
-  normalizeModelMessage,
-  architectCacheFromSaved,
-  visibleMessagesFromSaved,
-  modelMessagesFromSaved,
+  normalizeVisibleMessage,
   AutoTextarea,
   useLiveSegments,
   ArchitectChatPane,
@@ -56,11 +53,15 @@ const OBJECT_LIST_SECTIONS = [
   ["state_records", "Начальные состояния", (e) => textValue(e?.text) || textValue(e?.id)],
 ];
 
-// Scene sub-lists rendered as newline-editable text.
+// Scene sub-lists rendered as newline-editable text. `items` and `exits` are
+// OBJECT lists (the runtime/seed contract); each line renders/parses a
+// convention — items: «имя — детали», exits: «имя -> куда». Other object
+// fields (portable, visible, owner, id...) are preserved by name on parse; a
+// NEW line defaults to a takeable visible item / visible exit.
 const SCENE_LIST_FIELDS = [
   ["present_npcs", "NPC в сцене (id, по строке)"],
-  ["exits", "Выходы (по строке)"],
-  ["items", "Предметы (по строке)"],
+  ["exits", "Выходы (имя -> куда, по строке)"],
+  ["items", "Предметы (имя — детали, по строке)"],
   ["constraints", "Ограничения (по строке)"],
 ];
 
@@ -93,8 +94,12 @@ function storyDraftFromSaved(story) {
   };
 }
 
-function architectMessagesFromStory(story) {
-  return visibleMessagesFromSaved(story, DEFAULT_ARCHITECT_MESSAGES);
+// Restore the visible conversation from the server's architect block
+// (`GET /stories/{id}/draft` → `{architect: {messages}}`). The chat lives in the
+// package's architect.json now — never inside the story row.
+function architectMessagesFromChat(architect) {
+  const messages = asArray(architect?.messages).map(normalizeVisibleMessage).filter(Boolean);
+  return messages.length > 0 ? messages : DEFAULT_ARCHITECT_MESSAGES;
 }
 
 // The plot object POSTed as `draft` to the story architect (snake_case, matching
@@ -157,6 +162,69 @@ function listText(arr) {
   return asArray(arr).map(textValue).filter(Boolean).join("\n");
 }
 
+// §И1 item name↔details separator (space, em dash, space) — the same convention
+// the runtime uses for inventory entries.
+const ITEM_DESC_SEP = " — ";
+
+// One editable line for a scene items/exits entry: objects render through the
+// line conventions, legacy string entries render as-is.
+function sceneEntryLine(field, entry) {
+  if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+    const name = textValue(entry.name) || textValue(entry.id);
+    if (!name) return "";
+    if (field === "items") {
+      const details = textValue(entry.details);
+      return details ? `${name}${ITEM_DESC_SEP}${details}` : name;
+    }
+    if (field === "exits") {
+      const destination = textValue(entry.destination);
+      return destination ? `${name} -> ${destination}` : name;
+    }
+    return name;
+  }
+  return textValue(entry);
+}
+
+function sceneListText(field, arr) {
+  return asArray(arr)
+    .map((entry) => sceneEntryLine(field, entry))
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Parse one edited line back into an object entry, preserving the fields the
+// line convention does not carry (portable/visible/owner/id...) by matching the
+// prior entry with the same name. A brand-new item line defaults to a takeable
+// visible object; a new exit line to a visible exit.
+function sceneEntryFromLine(field, line, priorByName) {
+  if (field === "items") {
+    const sep = line.indexOf(ITEM_DESC_SEP);
+    const name = (sep >= 0 ? line.slice(0, sep) : line).trim();
+    const details = sep >= 0 ? line.slice(sep + ITEM_DESC_SEP.length).trim() : "";
+    const prior = asObject(priorByName.get(name)) || {};
+    const entry = {
+      ...prior,
+      name,
+      portable: typeof prior.portable === "boolean" ? prior.portable : true,
+      visible: prior.visible !== false,
+    };
+    if (details) entry.details = details;
+    else delete entry.details;
+    return entry;
+  }
+  if (field === "exits") {
+    const idx = line.lastIndexOf("->");
+    const name = (idx >= 0 ? line.slice(0, idx) : line).trim() || line.trim();
+    const destination = idx >= 0 ? line.slice(idx + 2).trim() : "";
+    const prior = asObject(priorByName.get(name)) || {};
+    const entry = { ...prior, name };
+    if (destination) entry.destination = destination;
+    else if (!textValue(prior.destination)) entry.destination = "";
+    return entry;
+  }
+  return line;
+}
+
 export default function StoryArchitectPanel({
   story,
   worldId,
@@ -164,20 +232,21 @@ export default function StoryArchitectPanel({
   locked,
   onArchitectStream,
   onPlayStory,
+  onSaveProtagonist,
   className = "",
 }) {
   // Seed the form from the catalog row's scalars only (title/description); the
-  // GM-only seed + architect chat state come from the draft fetch below (the
-  // `story` prop is the minimal catalog row, §С1.3).
-  const [architectCache, setArchitectCache] = useState(() =>
-    architectCacheFromSaved(null, "story-architect")
-  );
+  // GM-only seed comes from the draft fetch below (the `story` prop is the
+  // minimal catalog row, §С1.3). The model history and prompt-cache ids are
+  // SERVER-side now (the package's architect.json) — the panel holds only the
+  // visible conversation.
   const [storyDraft, setStoryDraft] = useState(() => storyDraftFromSaved(story));
-  const [messages, setMessages] = useState(() => architectMessagesFromStory(null));
-  const [modelMessages, setModelMessages] = useState(() => modelMessagesFromSaved(null));
+  const [messages, setMessages] = useState(() => architectMessagesFromChat(null));
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
+  // The last message whose turn FAILED — powers the «Повторить» button.
+  const [retryText, setRetryText] = useState("");
   const [architectUsage, setArchitectUsage] = useState(EMPTY_ARCHITECT_USAGE);
   const [architectDebug, setArchitectDebug] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -201,25 +270,23 @@ export default function StoryArchitectPanel({
   // created/updated is already ours — reloading would wipe the live chat.
   //
   // The `story` prop is the MINIMAL player-facing catalog row (id/title/
-  // description/kind/world_ref) — it deliberately carries NO seed/architect_*
-  // (hidden_truth is GM-only, §С1.3). So for an EXISTING story we fetch the
-  // GM-scoped draft row (seed + flattened architect chat state) via
-  // `api.storyDraft(id)` and restore the form + conversation from it; a fresh
-  // draft (no id) resets to the empty defaults.
+  // description/kind/world_ref) — it deliberately carries NO seed (hidden_truth
+  // is GM-only, §С1.3). For an EXISTING story we fetch the GM-scoped draft via
+  // `api.storyDraft(id)`: `{story}` restores the form, `{architect.messages}`
+  // the conversation; a fresh draft (no id) resets to the empty defaults.
   useEffect(() => {
     const id = textValue(story?.id) || null;
     if (id === loadedStoryIdRef.current) return undefined;
     loadedStoryIdRef.current = id;
     // Reset synchronously to the catalog row's scalars (title/description) so the
     // form never flashes a stale story while the draft fetch is in flight.
-    setArchitectCache(architectCacheFromSaved(null, "story-architect"));
     setStoryDraft(storyDraftFromSaved(story));
-    setMessages(architectMessagesFromStory(null));
-    setModelMessages(modelMessagesFromSaved(null));
+    setMessages(architectMessagesFromChat(null));
     setCurrentStoryId(id || "");
     clearLive();
     setInput("");
     setArchitectError("");
+    setRetryText("");
     setArchitectUsage(EMPTY_ARCHITECT_USAGE);
     setArchitectDebug(null);
     setDebugOpen(false);
@@ -234,11 +301,8 @@ export default function StoryArchitectPanel({
         if (!data?.ok || !data.story) {
           throw new Error(data?.error || "не удалось загрузить черновик истории");
         }
-        const draftRow = data.story;
-        setArchitectCache(architectCacheFromSaved(draftRow, "story-architect"));
-        setStoryDraft(storyDraftFromSaved(draftRow));
-        setMessages(architectMessagesFromStory(draftRow));
-        setModelMessages(modelMessagesFromSaved(draftRow));
+        setStoryDraft(storyDraftFromSaved(data.story));
+        setMessages(architectMessagesFromChat(data.architect));
       })
       .catch((error) => {
         if (cancelled || loadedStoryIdRef.current !== id) return;
@@ -280,8 +344,25 @@ export default function StoryArchitectPanel({
       return { ...current, scene };
     });
   };
-  const updateSceneList = (field, text) =>
-    updateScene(field, text.split("\n").map((s) => s.trim()).filter(Boolean));
+  const updateSceneList = (field, text) => {
+    const lines = text.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (field !== "items" && field !== "exits") {
+      updateScene(field, lines);
+      return;
+    }
+    // Object list sections: parse each line through the convention, keeping
+    // unrendered fields of the entry with the same name.
+    setStoryDraft((current) => {
+      const scene = asObject(current.scene) ? { ...current.scene } : {};
+      const priorByName = new Map();
+      for (const entry of asArray(scene[field])) {
+        const key = textValue(entry?.name) || textValue(entry);
+        if (key && !priorByName.has(key)) priorByName.set(key, entry);
+      }
+      scene[field] = lines.map((line) => sceneEntryFromLine(field, line, priorByName));
+      return { ...current, scene };
+    });
+  };
   const updateProperNouns = (text) =>
     updateDraft("proper_nouns", text.split("\n").map((s) => s.trim()).filter(Boolean));
   const updateTime = (text) => {
@@ -289,13 +370,13 @@ export default function StoryArchitectPanel({
     updateDraft("time", Number.isFinite(n) ? n : null);
   };
 
-  const sendArchitectMessage = async () => {
-    const text = input.trim();
-    if (!text || architectLocked) return;
-    const history = modelMessages;
-    const userMessage = { role: "user", content: text };
-    const visibleMessages = [...messages, userMessage];
-    setInput("");
+  // One architect turn. `appendUser=false` is the RETRY path: the visible chat
+  // already carries the user message (and the failure note) from the failed
+  // attempt, so only the request is repeated.
+  const runArchitectTurn = async (text, appendUser) => {
+    const visibleMessages = appendUser
+      ? [...messages, { role: "user", content: text }]
+      : [...messages];
     setArchitectError("");
     setArchitectBusy(true);
     clearLive();
@@ -303,14 +384,14 @@ export default function StoryArchitectPanel({
     let adopted = false;
     let failure = "";
     try {
+      // The server owns the conversation (model history + cache ids live in the
+      // package's architect.json). The body carries only the message, the target
+      // ids, and the form's CONTENT draft — the server applies it as a normal
+      // story update before the turn, so hand-edited fields are never lost.
       await onArchitectStream?.(
         {
           message: text,
-          history,
           draft: draftPayload,
-          visible_messages: visibleMessages,
-          cache_session_id: architectCache.sessionId,
-          cache_thread_id: architectCache.threadId,
           // A create relies on world_id; an edit carries the resolved story_id.
           ...(currentStoryId ? { story_id: currentStoryId } : {}),
           ...(worldId ? { world_id: worldId } : {}),
@@ -343,33 +424,18 @@ export default function StoryArchitectPanel({
             const usage = asObject(data.usage);
             if (usage) setArchitectUsage((current) => accumulateUsage(current, usage));
             setArchitectDebug(debugFromDone(data, usage));
-            const nextSessionId = textValue(data.cache_session_id);
-            const nextThreadId = textValue(data.cache_thread_id);
-            if (nextSessionId || nextThreadId) {
-              setArchitectCache((current) => ({
-                sessionId: nextSessionId || current.sessionId,
-                threadId: nextThreadId || current.threadId,
-              }));
-            }
             // Adopt the persisted story as the source of truth: the server folded
             // the plot into `seed` (draft_story_plot merge OR edit_story_plot
             // set/add/remove), so restore the form from it rather than replay ops.
             const savedStory = asObject(data.story);
             if (savedStory) {
               setStoryDraft(storyDraftFromSaved(savedStory));
-              setMessages(architectMessagesFromStory(savedStory));
             } else if (asObject(data.draft)) {
               setStoryDraft((current) => mergeStoryDraft(current, data.draft));
             }
-            const modelUserMessage = normalizeModelMessage(data.user_message);
-            const modelAssistantMessage = normalizeModelMessage(data.assistant_history_message);
-            if (modelUserMessage) {
-              setModelMessages((current) =>
-                modelAssistantMessage
-                  ? [...current, modelUserMessage, modelAssistantMessage]
-                  : [...current, modelUserMessage]
-              );
-            }
+            // The conversation: fold this turn's live segments into the visible
+            // chat — the same shape the server just persisted to architect.json.
+            setMessages([...visibleMessages, ...liveSegmentsRef.current]);
             // The story we just created/updated is ours — pin its id so a parent
             // stories-list refresh (which may re-key the `story` prop) does not
             // wipe this live conversation, and route the next turn as an edit.
@@ -383,9 +449,11 @@ export default function StoryArchitectPanel({
         }
       );
       if (failure) throw new Error(failure);
+      setRetryText("");
     } catch (error) {
       const message = error?.message || "Не удалось вызвать архитектора";
       setArchitectError(message);
+      setRetryText(text);
       if (!adopted) {
         setMessages((current) => [
           ...current,
@@ -397,6 +465,18 @@ export default function StoryArchitectPanel({
     } finally {
       setArchitectBusy(false);
     }
+  };
+
+  const sendArchitectMessage = async () => {
+    const text = input.trim();
+    if (!text || architectLocked) return;
+    setInput("");
+    await runArchitectTurn(text, true);
+  };
+
+  const retryArchitectTurn = async () => {
+    if (!retryText || architectLocked) return;
+    await runArchitectTurn(retryText, false);
   };
 
   const pc = asObject(storyDraft.player_character) || {};
@@ -442,6 +522,7 @@ export default function StoryArchitectPanel({
           input={input}
           onInputChange={setInput}
           onSend={sendArchitectMessage}
+          onRetry={retryText ? retryArchitectTurn : undefined}
           locked={architectLocked}
         />
 
@@ -607,7 +688,7 @@ export default function StoryArchitectPanel({
                   <label key={field} className="world-field">
                     <span>{label}</span>
                     <AutoTextarea
-                      value={listText(scene[field])}
+                      value={sceneListText(field, scene[field])}
                       onChange={(event) => updateSceneList(field, event.target.value)}
                       placeholder="по пункту на строку"
                       disabled={locked}
@@ -650,6 +731,17 @@ export default function StoryArchitectPanel({
           <div className="world-inspector-foot">
             {currentStoryId && (
               <div className="world-inspector-launch">
+                {onSaveProtagonist && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => onSaveProtagonist(currentStoryId)}
+                    disabled={locked || !ready}
+                    title="Сохранить протагониста истории как переносимый пакет .gmchar"
+                  >
+                    Сохранить протагониста как пакет
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn primary"

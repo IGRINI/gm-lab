@@ -25,27 +25,6 @@ export function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-// A cache id namespaced by domain (`world-architect:` / `story-architect:`) so a
-// fresh conversation gets a stable session/thread prefix for the model cache.
-export function createArchitectCacheId(prefix = "architect") {
-  const cryptoApi = globalThis.crypto;
-  if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
-    return `${prefix}:${cryptoApi.randomUUID()}`;
-  }
-  const time = Date.now().toString(36);
-  const random = Math.random().toString(36).slice(2, 12);
-  return `${prefix}:${time}-${random}`;
-}
-
-export function normalizeModelMessage(value) {
-  if (!value || typeof value !== "object") return null;
-  const role = textValue(value.role);
-  if (role !== "user" && role !== "assistant") return null;
-  const content = textValue(value.content);
-  if (!content) return null;
-  return { role, content };
-}
-
 export function normalizeVisibleMessage(value) {
   if (!value || typeof value !== "object") return null;
   const role = textValue(value.role);
@@ -64,33 +43,6 @@ export function normalizeVisibleMessage(value) {
   const content = textValue(value.content);
   if (!content) return null;
   return { role, content };
-}
-
-// Restore the architect cache ids from a saved package's flattened
-// `architect_cache_*` fields (world or story); mint a fresh namespaced pair when
-// the package has none yet.
-export function architectCacheFromSaved(saved, prefix) {
-  const sessionId = textValue(saved?.architect_cache_session_id);
-  const threadId = textValue(saved?.architect_cache_thread_id);
-  if (sessionId || threadId) {
-    const fallback = sessionId || threadId;
-    return { sessionId: sessionId || fallback, threadId: threadId || fallback };
-  }
-  const id = createArchitectCacheId(prefix);
-  return { sessionId: id, threadId: id };
-}
-
-export function visibleMessagesFromSaved(saved, fallback) {
-  const messages = Array.isArray(saved?.architect_messages)
-    ? saved.architect_messages.map(normalizeVisibleMessage).filter(Boolean)
-    : [];
-  return messages.length > 0 ? messages : fallback;
-}
-
-export function modelMessagesFromSaved(saved) {
-  return Array.isArray(saved?.architect_model_history)
-    ? saved.architect_model_history.map(normalizeModelMessage).filter(Boolean)
-    : [];
 }
 
 // A textarea that grows to fit its content (no fixed rows, no inner scroll) so
@@ -212,6 +164,7 @@ export function ArchitectChatPane({
   input,
   onInputChange,
   onSend,
+  onRetry,
   locked,
 }) {
   const vis = useContext(VisibilityContext);
@@ -326,7 +279,21 @@ export function ArchitectChatPane({
           Спросить
         </button>
       </div>
-      {error && <div className="chat-sidebar-error inline">{error}</div>}
+      {error && (
+        <div className="chat-sidebar-error inline world-architect-error">
+          <span>{error}</span>
+          {onRetry && (
+            <button
+              type="button"
+              className="btn world-architect-retry"
+              onClick={onRetry}
+              disabled={locked}
+            >
+              ↻ Повторить
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }

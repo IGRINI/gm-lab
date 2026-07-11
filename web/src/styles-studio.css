@@ -1,0 +1,183 @@
+/* ============================================================================
+   styles-studio.css — new-file styles for the UI redesign (UI_REDESIGN_TZ).
+   Imported by the new components (CharacterArchitectPanel / GameContextBar /
+   ScenePanel) so it loads without touching main.jsx or styles.css. Reuses the
+   existing palette vars (--bg/--line/--acc/--tone-* …) and shell classes
+   (.world-studio*, .world-field*, .btn, .confirm-*, .wd-*, .dot) — only the
+   genuinely new elements are defined here.
+   ============================================================================ */
+
+/* ---- Character studio: read-only sheet blocks inside the inspector body ---- */
+.character-abilities{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.character-ability{display:flex;flex-direction:column;align-items:center;gap:1px;
+  padding:6px 4px;border:1px solid var(--line);border-radius:8px;background:var(--bg3)}
+.character-ability-k{color:var(--acc);font-size:9.5px;font-weight:800;letter-spacing:.6px;
+  text-transform:uppercase}
+.character-ability-v{color:var(--tx);font-size:16px;line-height:1.1;font-weight:700}
+.character-ability-mod{color:var(--mut);font-size:10.5px}
+
+.character-vitals{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:6px}
+.character-vital{display:flex;flex-direction:column;align-items:center;gap:1px;
+  padding:7px 6px;border:1px solid var(--line);border-radius:8px;background:var(--bg3)}
+.character-vital b{color:var(--tx);font-size:15px;line-height:1.15;font-weight:700}
+.character-vital span{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.55px}
+
+.character-chips{display:flex;flex-wrap:wrap;gap:5px}
+.character-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;
+  border:1px solid var(--line);border-radius:999px;background:var(--bg3);font-size:11.5px}
+.character-chip-k{color:var(--mut)}
+.character-chip b{color:var(--tx);font-weight:700}
+
+/* ---- Character studio: FULL manual sheet editor (in-place inputs/maps/lists) ---- */
+/* Ability tiles become number inputs; the mod recomputes live below each score. */
+.character-ability-edit{gap:3px}
+.character-ability-input{width:100%;min-width:0;text-align:center;background:var(--bg);
+  color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:4px 2px;font:inherit;
+  font-size:15px;font-weight:700;outline:none;-moz-appearance:textfield}
+.character-ability-input:focus{border-color:var(--acc)}
+.character-ability-input:disabled{opacity:.58;cursor:default}
+.character-ability-input::-webkit-outer-spin-button,
+.character-ability-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+
+/* Shared row scaffold for the map / list / spell / slot editors. */
+.sheet-rows{display:grid;gap:6px;min-width:0}
+.sheet-map-row{display:grid;grid-template-columns:minmax(0,1fr) 68px auto;gap:6px;align-items:center;min-width:0}
+.sheet-list-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;min-width:0}
+/* §И1 two-field rows: [название][описание][✕]; the stored value is still one
+   «имя — описание» string, split/joined by the editor. */
+.sheet-named-row{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr) auto;gap:6px;align-items:center;min-width:0}
+@media (max-width:1400px){
+  .sheet-named-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name del" "desc del"}
+  .sheet-named-row .sheet-named-name{grid-area:name}
+  .sheet-named-row .sheet-named-desc{grid-area:desc}
+  .sheet-named-row .sheet-row-del{grid-area:del}
+}
+.sheet-map-key,.sheet-map-val,.sheet-list-input{width:100%;min-width:0;background:var(--bg);
+  color:var(--tx);border:1px solid var(--line);border-radius:7px;padding:6px 8px;font:inherit;
+  font-size:12.5px;outline:none}
+.sheet-map-val{text-align:center;-moz-appearance:textfield}
+.sheet-map-val::-webkit-outer-spin-button,.sheet-map-val::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.sheet-map-key:focus,.sheet-map-val:focus,.sheet-list-input:focus{border-color:var(--acc)}
+.sheet-map-key:disabled,.sheet-map-val:disabled,.sheet-list-input:disabled{opacity:.58;cursor:default}
+
+/* Small square «✕» row-remove control. */
+.sheet-row-del{flex:none;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
+  border:1px solid var(--line);border-radius:7px;background:var(--bg3);color:var(--mut);
+  font-size:12px;line-height:1;cursor:pointer;padding:0}
+.sheet-row-del:hover:not(:disabled){border-color:rgba(224,134,152,.5);color:var(--redo)}
+.sheet-row-del:disabled{opacity:.5;cursor:default}
+
+/* «+ добавить» ghost button. */
+.sheet-add-btn{justify-self:start;display:inline-flex;align-items:center;gap:5px;
+  padding:5px 10px;border:1px dashed var(--line);border-radius:7px;background:transparent;
+  color:var(--acc);font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.sheet-add-btn:hover:not(:disabled){border-color:var(--acc);background:rgba(156,207,216,.06)}
+.sheet-add-btn:disabled{opacity:.5;cursor:default}
+
+/* Spell cards — collapsed header «{name} · {level} круг», expandable 5-field body. */
+.spell-edit{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02);overflow:hidden}
+.spell-edit.open{border-color:rgba(156,207,216,.3)}
+.spell-edit-head{display:flex;align-items:center;gap:6px;padding:4px 6px}
+.spell-edit-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:6px;
+  background:transparent;border:0;padding:3px;color:var(--tx);font:inherit;text-align:left;cursor:pointer}
+.spell-edit-toggle .mark{flex:none;color:var(--mut);font-size:11px}
+.spell-edit-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:12.5px;font-weight:600}
+.spell-edit-body{display:grid;gap:9px;padding:2px 8px 9px}
+.spell-edit-flags{display:flex;flex-wrap:wrap;gap:14px}
+.sheet-check{display:inline-flex;align-items:center;gap:6px;color:var(--tx);font-size:12px;cursor:pointer}
+.sheet-check input{width:15px;height:15px;accent-color:var(--acc);cursor:pointer}
+.sheet-check input:disabled{cursor:default}
+
+/* Spell-slot rows — level label + текущие/макс number pair + remove. */
+.slot-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto;gap:6px;
+  align-items:center;min-width:0}
+.slot-level{flex:none;color:var(--acc);font-size:11px;font-weight:700;white-space:nowrap}
+.slot-num{width:100%;min-width:0;text-align:center;background:var(--bg);color:var(--tx);
+  border:1px solid var(--line);border-radius:7px;padding:6px 4px;font:inherit;font-size:12.5px;
+  outline:none;-moz-appearance:textfield}
+.slot-num::-webkit-outer-spin-button,.slot-num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.slot-num:focus{border-color:var(--acc)}
+.slot-num:disabled{opacity:.58;cursor:default}
+.slot-sep{color:var(--mut);font-size:12px}
+.slot-add{display:flex;flex-wrap:wrap;gap:6px}
+
+/* Sticky save footer row. */
+.sheet-save-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sheet-save-btn{flex:none}
+.sheet-save-status{font-size:11.5px;line-height:1.3;color:var(--mut)}
+.sheet-save-status.is-ok{color:var(--acc)}
+.sheet-save-status.is-error{color:var(--redo)}
+
+/* ============================================================================
+   Game context bar — fixed read-only badges + «⋯» menu at the top of the chat.
+   ============================================================================ */
+.game-context-bar{flex:none;display:flex;align-items:center;gap:10px;
+  padding:8px 12px;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(156,207,216,.05),var(--bg2))}
+.game-badges{display:flex;align-items:stretch;gap:8px;min-width:0;flex-wrap:wrap;flex:1}
+.game-badge{display:flex;flex-direction:column;gap:1px;min-width:0;max-width:260px;
+  padding:5px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg3);
+  text-align:left}
+.game-badge-btn{cursor:pointer;font:inherit;color:inherit}
+.game-badge-btn:hover,.game-badge-btn:focus-visible{border-color:var(--acc);outline:none}
+.game-badge-k{color:var(--acc);font-size:9px;font-weight:800;letter-spacing:.7px;text-transform:uppercase}
+.game-badge-v{color:var(--tx);font-size:13px;line-height:1.2;font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.game-context-menu{position:relative;flex:none}
+.game-context-more{width:34px;height:34px;justify-content:center;font-size:18px;line-height:1}
+.game-context-dropdown{position:absolute;top:calc(100% + 6px);right:0;z-index:20;
+  min-width:172px;display:flex;flex-direction:column;padding:5px;gap:2px;
+  border:1px solid var(--line);border-radius:10px;background:var(--bg2);
+  box-shadow:0 12px 30px rgba(0,0,0,.42)}
+.game-context-item{display:block;width:100%;text-align:left;padding:8px 10px;
+  border:0;border-radius:7px;background:transparent;color:var(--tx);
+  font:inherit;font-size:13px;cursor:pointer}
+.game-context-item:hover{background:var(--bg3)}
+.game-context-item.danger{color:var(--redo)}
+.game-context-item.danger:hover{background:rgba(224,134,152,.12)}
+.game-context-item:disabled{opacity:.5;cursor:default;background:transparent}
+
+/* ============================================================================
+   Scene panel — the right-side game HUD, regrouped into СЦЕНА / РЯДОМ / ГЕРОЙ.
+   Docked as an absolute card over the chat pane (mirrors the old .world-hud so
+   it drops into the same slot); hidden on narrow screens like the old card.
+   ============================================================================ */
+.scene-panel{position:absolute;top:14px;right:18px;z-index:3;width:244px;
+  max-height:calc(100% - 28px);overflow-y:auto;overflow-x:hidden;pointer-events:auto;
+  display:flex;flex-direction:column;gap:12px;padding:12px 13px;
+  border:1px solid var(--line);border-radius:12px;
+  background:linear-gradient(180deg,rgba(25,25,38,.96),rgba(18,18,28,.96));
+  box-shadow:0 10px 30px rgba(0,0,0,.34);
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.scene-group{display:flex;flex-direction:column;gap:6px}
+.scene-group + .scene-group{padding-top:11px;border-top:1px solid var(--line)}
+.scene-group-kicker{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.9px;text-transform:uppercase}
+.scene-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.scene-row span{flex:none;color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.65px}
+.scene-row b{min-width:0;color:var(--tx);font-size:12px;line-height:1.25;text-align:right;word-break:break-word}
+.scene-link{min-width:0;pointer-events:auto;cursor:pointer;background:none;border:0;margin:0;padding:0;
+  color:var(--tx);font:inherit;font-size:12px;line-height:1.25;font-weight:600;text-align:right;
+  word-break:break-word;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:2px}
+.scene-link:hover,.scene-link:focus-visible{color:var(--acc);text-decoration-color:var(--acc);outline:none}
+.scene-npcs{display:flex;flex-direction:column;gap:5px}
+.scene-npc{display:flex;align-items:center;gap:7px;min-width:0}
+.scene-npc b{min-width:0;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scene-empty{margin:0;color:var(--mut);font-size:11.5px;line-height:1.35}
+.scene-hero-actions{display:flex;flex-direction:column;gap:5px;margin-top:2px}
+.scene-hero-btn{width:100%;justify-content:center}
+.scene-save-choice{display:flex;flex-direction:column;gap:5px}
+.scene-save-cancel{width:100%;justify-content:center;opacity:.75}
+/* Narrow width (mirrors the old .world-hud breakpoint): the floating card would
+   overlap the transcript, so rather than hide it we reflow the HUD into a static
+   compact strip between the game header and the chat. This keeps the scene state
+   — and the ГЕРОЙ «Сохранить в библиотеку» action, the sole entry point for it —
+   reachable at ~900–1000px instead of vanishing. */
+@media(max-width:1220px){
+  .scene-panel{position:static;width:auto;max-height:none;overflow:visible;
+    flex-direction:row;flex-wrap:wrap;align-items:flex-start;gap:8px 18px;
+    border-width:0 0 1px 0;border-radius:0;box-shadow:none}
+  .scene-group{flex:1 1 190px;min-width:150px}
+  .scene-group + .scene-group{padding-top:0;border-top:0}
+}

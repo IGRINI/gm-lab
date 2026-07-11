@@ -1,0 +1,82 @@
+/* ===== Мастер «Новая игра» — 3-step modal (Мир → История → Персонаж) =====
+   NEW stylesheet, imported by the shell alongside styles.css. Reuses the shared
+   Modal frame (.dbg-modal / .dbg-modal-body / .dbg-modal-foot), the .btn family,
+   and the Rosé-Pine variables (--bg/--bg2/--bg3/--line, --tx/--mut/--sub/--acc,
+   --md-strong/--redo). Nothing here redefines them — only the new .wiz-* surfaces
+   live in this file. */
+
+.dbg-modal.wiz-modal{width:min(880px,100%)}
+.wiz-modal .dbg-modal-body{padding:0}
+.wiz-modal .dbg-modal-foot{padding:12px 16px}
+.wiz{display:flex;flex-direction:column;min-height:344px}
+
+/* ---- stepper / breadcrumb (summarises the picked cards) ---- */
+.wiz-steps{display:flex;gap:8px;margin:0;padding:12px 16px;list-style:none;
+  border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+.wiz-step{flex:1;min-width:0}
+.wiz-step-btn{width:100%;display:flex;align-items:center;gap:9px;padding:7px 10px;
+  background:var(--bg3);border:1px solid var(--line);border-radius:9px;cursor:pointer;
+  text-align:left;color:var(--mut);font:inherit;
+  transition:border-color .12s ease,color .12s ease,background .12s ease}
+.wiz-step-btn:hover:not(:disabled){border-color:rgba(156,207,216,.45);color:var(--tx)}
+.wiz-step-btn:disabled{cursor:default;opacity:.6}
+.wiz-step.is-active .wiz-step-btn{border-color:var(--acc);color:var(--tx);
+  background:linear-gradient(180deg,rgba(156,207,216,.10),rgba(156,207,216,.03))}
+.wiz-step-n{flex:none;width:20px;height:20px;display:grid;place-items:center;border-radius:50%;
+  background:var(--line);color:var(--tx);font-size:11px;font-weight:700}
+.wiz-step.is-done .wiz-step-n,.wiz-step.is-active .wiz-step-n{background:var(--acc);color:#11111b}
+.wiz-step-text{min-width:0;display:flex;flex-direction:column;line-height:1.2}
+.wiz-step-name{font-size:10px;text-transform:uppercase;letter-spacing:.7px}
+.wiz-step-value{font-size:12px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ---- step body ---- */
+.wiz-panel{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+.wiz-lead{margin:0;color:var(--sub);font-size:13px}
+.wiz-empty{margin:0;color:var(--mut);font-size:12px}
+.wiz-hint{margin:0;color:var(--mut);font-size:12px;line-height:1.45;padding:8px 10px;
+  border:1px solid rgba(224,134,152,.32);border-radius:8px;background:rgba(224,134,152,.06)}
+
+/* ---- card grid ---- */
+.wiz-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));
+  align-items:stretch}
+.wiz-card{position:relative;display:flex;flex-direction:column;gap:5px;min-height:94px;
+  padding:11px 12px;text-align:left;cursor:pointer;color:var(--tx);font:inherit;
+  background:var(--bg3);border:1px solid var(--line);border-radius:10px;
+  transition:border-color .12s ease,background .12s ease,transform .12s ease}
+.wiz-card:hover:not(:disabled){border-color:rgba(156,207,216,.4);transform:translateY(-1px)}
+.wiz-card:disabled{cursor:default;opacity:.55}
+.wiz-card.is-selected{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset;
+  background:linear-gradient(180deg,rgba(156,207,216,.12),rgba(156,207,216,.03))}
+.wiz-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.wiz-card-kicker{color:var(--acc);font-size:9px;font-weight:800;letter-spacing:.8px;text-transform:uppercase}
+.wiz-badge{flex:none;color:var(--md-strong);font-size:9px;font-weight:700;letter-spacing:.4px;
+  text-transform:uppercase;padding:2px 7px;border-radius:999px;
+  border:1px solid rgba(230,192,138,.4);background:rgba(230,192,138,.08)}
+.wiz-card-title{font-size:14px;font-weight:650;line-height:1.25;word-break:break-word;
+  padding-right:16px}
+.wiz-card-meta{color:var(--acc);font-size:11px;font-weight:600}
+.wiz-card-desc{color:var(--mut);font-size:12px;line-height:1.4;
+  display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.wiz-card-check{position:absolute;top:8px;right:10px;color:var(--acc);font-size:13px;font-weight:800}
+
+/* add / create card */
+.wiz-card-add{align-items:center;justify-content:center;text-align:center;gap:7px;
+  border-style:dashed;color:var(--mut);background:transparent}
+.wiz-card-add:hover:not(:disabled){color:var(--acc);border-color:var(--acc);transform:none}
+.wiz-card-add-icon{font-size:22px;line-height:1}
+.wiz-card-add-label{font-size:12.5px;font-weight:600}
+
+/* ---- footer: back · название · начать ---- */
+.wiz-foot{flex:1;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.wiz-foot-right{display:flex;align-items:center;gap:10px;min-width:0}
+.wiz-name{display:flex;align-items:center;gap:8px;min-width:0}
+.wiz-name span{flex:none;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+.wiz-name input{min-width:0;width:230px;max-width:44vw;background:var(--bg3);color:var(--tx);
+  border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:13px}
+.wiz-name input:focus{outline:none;border-color:var(--acc)}
+
+@media(max-width:640px){
+  .wiz-steps{flex-direction:column}
+  .wiz-grid{grid-template-columns:1fr}
+  .wiz-name input{width:150px}
+}

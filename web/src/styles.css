@@ -255,6 +255,9 @@ header h1 b{color:var(--acc)}
 .chat-sidebar-error{margin:10px 12px 0;padding:8px 10px;border:1px solid rgba(224,134,152,.32);
   background:rgba(224,134,152,.08);border-radius:8px;color:var(--redo);font-size:12px;line-height:1.35}
 .chat-sidebar-error.inline{display:block;margin:0;padding:6px 8px}
+.world-architect-error{display:flex;align-items:center;gap:10px}
+.world-architect-error span{flex:1;min-width:0}
+.world-architect-retry{flex:none;padding:4px 10px;font-size:12px;white-space:nowrap}
 .world-sidebar-actions{border-bottom:1px solid rgba(255,255,255,.055)}
 .image-sidebar-actions{border-bottom:1px solid rgba(255,255,255,.055)}
 .story-picker{display:flex;flex-direction:column;gap:6px;min-width:0}

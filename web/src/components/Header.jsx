@@ -613,6 +613,12 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
 export default function Header({
   onToggleChats,
   chatsOpen = false,
+  showChatToggle = true,
+  mainView = "chat",
+  onNavGame,
+  onNavLibrary,
+  onNavImage,
+  imageLabEnabled = false,
   srv,
   sidecarStatus,
   models,
@@ -622,8 +628,6 @@ export default function Header({
   onSettingsChange,
   onCodex,
   onLogout,
-  onExport,
-  onReset,
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tokenCounterOpen, setTokenCounterOpen] = useState(false);
@@ -646,9 +650,14 @@ export default function Header({
   const conn = codexStatus(srv);
   const sidecar = sidecarUiStatus(sidecarStatus);
 
+  // Nav highlight: the studios (world/story/character) live inside Библиотека.
+  const isGame = mainView === "chat";
+  const isImage = mainView === "image";
+  const isLibrary = !isGame && !isImage;
+
   return (
     <header>
-      {onToggleChats && (
+      {showChatToggle && onToggleChats && (
         <Tooltip
           className="tooltip-wrap"
           tipClassName="ui-tip-wrap"
@@ -676,6 +685,34 @@ export default function Header({
       <h1>
         GM-<b>Lab</b>
       </h1>
+      <nav className="header-nav" aria-label="Разделы">
+        <button
+          type="button"
+          className={"header-nav-btn" + (isGame ? " active" : "")}
+          onClick={onNavGame}
+          aria-current={isGame ? "page" : undefined}
+        >
+          Игра
+        </button>
+        <button
+          type="button"
+          className={"header-nav-btn" + (isLibrary ? " active" : "")}
+          onClick={onNavLibrary}
+          aria-current={isLibrary ? "page" : undefined}
+        >
+          Библиотека
+        </button>
+        {imageLabEnabled && (
+          <button
+            type="button"
+            className={"header-nav-btn" + (isImage ? " active" : "")}
+            onClick={onNavImage}
+            aria-current={isImage ? "page" : undefined}
+          >
+            Image Lab
+          </button>
+        )}
+      </nav>
       {conn ? (
         <Tooltip
           content={<ConnTooltip status={conn} />}
@@ -728,40 +765,6 @@ export default function Header({
         <button className="btn" onClick={() => setSettingsOpen(true)}>
           Настройки
         </button>
-        <Tooltip
-          className="tooltip-wrap"
-          tipClassName="ui-tip-wrap"
-          focusable={false}
-          content={
-            <TipContent
-              title="Скачать JSON"
-              subtitle="Экспорт текущей сессии."
-              note="Сохраняет состояние, историю и служебные данные для отладки или переноса."
-            />
-          }
-        >
-          <button className="btn btn-icon" onClick={onExport} aria-label="Скачать JSON">
-            <span className="bi" aria-hidden="true">⬇</span>
-            <span className="btn-label">JSON</span>
-          </button>
-        </Tooltip>
-        <Tooltip
-          className="tooltip-wrap"
-          tipClassName="ui-tip-wrap"
-          focusable={false}
-          content={
-            <TipContent
-              title="Сброс партии"
-              subtitle="Начать сцену заново."
-              note="Текущая сессия будет очищена, поэтому действие лучше делать только перед новым прогоном."
-            />
-          }
-        >
-          <button className="btn btn-icon" onClick={onReset} aria-label="Сброс партии">
-            <span className="bi" aria-hidden="true">⟲</span>
-            <span className="btn-label">Сброс</span>
-          </button>
-        </Tooltip>
       </div>
       {settingsOpen && (
         <SettingsModal

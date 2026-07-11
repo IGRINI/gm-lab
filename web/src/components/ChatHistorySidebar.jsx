@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 
+// Games-only sidebar for the redesigned shell (§Игра in the TZ). The old omnibus
+// (Чаты/Миры/Персонажи tabs + story/character pickers + import/export) is gone:
+// worlds/stories/characters now live in the Библиотека screen, and a game is
+// created only through the New-Game wizard («+ Новая игра»). This panel just
+// lists the saved games and lets the player open or delete one.
+
 const DATE_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
   day: "2-digit",
   month: "short",
@@ -9,19 +15,11 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
 });
 
 function chatTitle(chat) {
-  return chat?.title?.trim() || "Новый чат";
-}
-
-function worldTitle(world) {
-  return world?.title?.trim() || "Новый мир";
+  return chat?.title?.trim() || "Новая игра";
 }
 
 function chatPreview(chat) {
-  return chat?.preview?.trim() || "Пустой чат";
-}
-
-function worldPreview(world) {
-  return world?.preview?.trim() || world?.public_premise?.trim?.() || "Пустой мир";
+  return chat?.preview?.trim() || "Пустая игра";
 }
 
 function chatDate(chat) {
@@ -32,153 +30,45 @@ function chatDate(chat) {
   return DATE_FORMATTER.format(date).replace(".", "");
 }
 
-function turnCount(chat) {
-  const count = Number(chat?.turn_count || 0);
-  return `${count} ходов`;
+// Russian plural: 1 ход, 2–4 хода, 0/5–20 ходов (11–14 always "many").
+function pluralRu(n, one, few, many) {
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 14) return many;
+  if (mod10 === 1) return one;
+  if (mod10 >= 2 && mod10 <= 4) return few;
+  return many;
 }
 
-function worldMeta(world) {
-  // Genre + tone only — short labels. world_size is now a 1-3 sentence
-  // description, so it belongs in the panel, not this one-line meta.
-  const parts = [world?.genre, world?.tone]
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .filter(Boolean);
-  return parts.length > 0 ? parts.join(" · ") : "мир";
+function turnCount(chat) {
+  const count = Number(chat?.turn_count || 0);
+  return `${count} ${pluralRu(count, "ход", "хода", "ходов")}`;
 }
 
 function sameChatId(a, b) {
   return a != null && b != null && String(a) === String(b);
 }
 
-function storyDescription(story) {
-  return story?.story_brief?.trim?.() || story?.description?.trim?.() || "";
-}
-
-// A story is architect-editable only when it is world-bound AND authored (the
-// backend rejects builtins/procedural). `kind`/`world_ref` come from the widened
-// stories-list metadata (§С1.3). Returns the bound world id, or "" when not
-// editable (builtin, procedural, or the procedural pseudo-row).
-function architectEditableWorldId(story) {
-  if (!story || story.procedural) return "";
-  if (typeof story.kind === "string" && story.kind !== "authored") return "";
-  const worldId = story?.world_ref?.id;
-  return typeof worldId === "string" && worldId.trim() ? worldId.trim() : "";
-}
-
-function characterTitle(character) {
-  return character?.title?.trim?.() || "Персонаж";
-}
-
-function characterPreview(character) {
-  const preview = character?.preview?.trim?.();
-  if (preview && preview !== characterTitle(character)) return preview;
-  return "";
-}
-
-function characterVersion(character) {
-  const v = Number(character?.version);
-  return Number.isFinite(v) && v > 0 ? `v${v}` : "v1";
-}
-
 export default function ChatHistorySidebar({
   chats,
-  worlds,
   activeChatId,
-  selectedWorldId,
   open,
   busy,
   loading,
   error,
-  worldsLoading,
-  worldsError,
-  stories,
-  selectedStoryId,
-  storiesLoading,
-  storiesError,
-  onSelectStory,
-  characters,
-  selectedCharacterId,
-  charactersLoading,
-  charactersError,
-  onSelectCharacter,
-  onExportCharacter,
-  onRenameCharacter,
-  onDeleteCharacter,
   onClose,
-  onCreate,
-  onCreateWorld,
-  onShowWorldCreator,
-  onShowChats,
-  onShowImageLab,
-  onSelectWorld,
-  onPlayWorld,
-  onCreateStory,
-  onEditStory,
-  onExportWorld,
-  onExportStory,
-  onRevealLibrary,
-  onImportPackage,
+  onNewGame,
   onActivate,
   onDelete,
-  onDeleteWorld,
-  sidebarMode = "chats",
-  imageLabEnabled = false,
 }) {
   const closeRef = useRef(null);
-  const createChatRef = useRef(null);
-  const createWorldRef = useRef(null);
-  const importInputRef = useRef(null);
+  const newGameRef = useRef(null);
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [importError, setImportError] = useState("");
-  const [importNotice, setImportNotice] = useState("");
-  const [tab, setTab] = useState(sidebarMode);
+
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
-  const sortedWorlds = useMemo(() => (Array.isArray(worlds) ? worlds : []), [worlds]);
-  const storyOptions = useMemo(() => (Array.isArray(stories) ? stories : []), [stories]);
-  const characterOptions = useMemo(() => (Array.isArray(characters) ? characters : []), [characters]);
-  const selectedStory = storyOptions.find((story) => sameChatId(story.id, selectedStoryId)) || null;
-  const hasStories = storyOptions.length > 0;
   const locked = busy || loading;
-  const storyLocked = locked || storiesLoading || Boolean(storiesError) || !hasStories;
-  const createLocked = locked || storyLocked || !selectedStoryId;
-  const activeTab = imageLabEnabled ? tab : tab === "image" ? "chats" : tab;
-  const isWorldTab = activeTab === "world";
-  const isImageTab = activeTab === "image";
-  const isCharacterTab = activeTab === "character";
-  const characterLocked = busy || charactersLoading;
-  const worldLocked = busy || worldsLoading;
-  const visibleChats = sortedChats;
-  const visibleWorlds = sortedWorlds;
-  const visibleCharacters = characterOptions;
-  const confirmKind = confirmTarget?.kind || "";
-  const confirmItem =
-    confirmKind === "world"
-      ? sortedWorlds.find((world) => sameChatId(world.id, confirmTarget?.id)) || null
-      : confirmKind === "character"
-        ? characterOptions.find((c) => sameChatId(c.id, confirmTarget?.id)) || null
-        : sortedChats.find((chat) => sameChatId(chat.id, confirmTarget?.id)) || null;
-  const confirmTitle =
-    confirmKind === "world"
-      ? worldTitle(confirmItem)
-      : confirmKind === "character"
-        ? characterTitle(confirmItem)
-        : chatTitle(confirmItem);
-  const headKicker = isImageTab
-    ? "Картинки"
-    : isWorldTab
-      ? "Миры"
-      : isCharacterTab
-        ? "Персонажи"
-        : "История";
-  const headTitle = isImageTab
-    ? "Image Lab"
-    : isWorldTab
-      ? "Миры"
-      : isCharacterTab
-        ? "Персонажи"
-        : "Чаты";
+  const confirmItem = sortedChats.find((chat) => sameChatId(chat.id, confirmTarget?.id)) || null;
 
   const cancelDelete = () => {
     if (!deleting) setConfirmTarget(null);
@@ -187,64 +77,14 @@ export default function ChatHistorySidebar({
     if (!confirmItem || deleting) return;
     setDeleting(true);
     try {
-      if (confirmKind === "world") await onDeleteWorld?.(confirmItem.id);
-      else if (confirmKind === "character") await onDeleteCharacter?.(confirmItem.id);
-      else await onDelete?.(confirmItem.id);
+      await onDelete?.(confirmItem.id);
       setConfirmTarget(null);
     } finally {
       setDeleting(false);
     }
   };
 
-  const onPickImport = () => {
-    if (importing || locked) return;
-    setImportError("");
-    setImportNotice("");
-    importInputRef.current?.click();
-  };
-
-  const runImport = async (file, overwrite) => {
-    const data = await onImportPackage?.(file, overwrite);
-    const kind =
-      data?.kind === "story" ? "История" : data?.kind === "character" ? "Персонаж" : "Мир";
-    setImportNotice(`${kind} импортирован: ${data?.id || ""}`.trim());
-  };
-
-  // True when an import failure is an id collision (the backend returns 409 with a
-  // dedicated message). importPackage tags the Error with .status/.collision; the
-  // text check is a fallback if a future error path loses the status.
-  const isCollision = (e) =>
-    e?.collision === true || e?.status === 409 || /already exists|уже существует/i.test(e?.message || "");
-
-  const onImportFile = async (event) => {
-    const file = event.target.files?.[0];
-    // Reset the input so re-picking the same file fires change again.
-    event.target.value = "";
-    if (!file) return;
-    setImporting(true);
-    setImportError("");
-    setImportNotice("");
-    try {
-      await runImport(file, false);
-    } catch (e) {
-      // On an id collision, keep the picked File and offer to replace the existing
-      // package; on confirm re-import with overwrite=1.
-      if (isCollision(e) && typeof window !== "undefined" &&
-          window.confirm("Пакет с таким id уже существует. Заменить?")) {
-        try {
-          await runImport(file, true);
-        } catch (e2) {
-          setImportError(e2.message || "импорт не выполнен");
-        }
-      } else {
-        setImportError(e.message || "импорт не выполнен");
-      }
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  // Confirm dialog owns Escape while open (capture phase, so it beats the sidebar handler).
+  // Confirm dialog owns Escape while open (capture phase, so it beats the sidebar).
   useEffect(() => {
     if (!confirmTarget || typeof document === "undefined") return undefined;
     const onKey = (event) => {
@@ -257,38 +97,24 @@ export default function ChatHistorySidebar({
     return () => document.removeEventListener("keydown", onKey, true);
   }, [confirmTarget, deleting]);
 
-  useEffect(() => {
-    const derived = imageLabEnabled ? sidebarMode : sidebarMode === "image" ? "chats" : sidebarMode;
-    // The characters tab lives INSIDE the chat view (there is no "character"
-    // sidebarMode): clicking it from the world/image view flips mainView to
-    // "chat", which re-runs this effect with sidebarMode="chats" — that must
-    // not clobber the just-selected character tab.
-    setTab((prev) => (prev === "character" && derived === "chats" ? prev : derived));
-  }, [imageLabEnabled, sidebarMode]);
-
+  // Only the mobile drawer needs focus-trapping + Esc-to-close. On desktop the
+  // sidebar is a docked, collapsible column.
   useEffect(() => {
     if (!open || typeof document === "undefined") return undefined;
-    // Only the mobile drawer needs focus-trapping + Esc-to-close. On desktop the
-    // sidebar is a docked, collapsible column: stealing focus on load or collapsing
-    // it on Escape would be surprising.
     if (typeof window !== "undefined" && !window.matchMedia("(max-width: 700px)").matches) {
       return undefined;
     }
-
     const previousFocus = document.activeElement;
     const onKeyDown = (event) => {
       if (event.key !== "Escape") return;
-      if (confirmTarget) return; // the confirm dialog handles Escape first
+      if (confirmTarget) return;
       event.preventDefault();
       onClose();
     };
-
     document.addEventListener("keydown", onKeyDown);
     const raf = window.requestAnimationFrame(() => {
-      const target = closeRef.current || (isWorldTab ? createWorldRef.current : createChatRef.current);
-      target?.focus({ preventScroll: true });
+      (closeRef.current || newGameRef.current)?.focus({ preventScroll: true });
     });
-
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       window.cancelAnimationFrame(raf);
@@ -296,7 +122,7 @@ export default function ChatHistorySidebar({
         previousFocus.focus({ preventScroll: true });
       }
     };
-  }, [open, onClose, isWorldTab, confirmTarget]);
+  }, [open, onClose, confirmTarget]);
 
   return (
     <>
@@ -312,12 +138,12 @@ export default function ChatHistorySidebar({
       <aside
         id="chat-history-sidebar"
         className={"chat-sidebar" + (open ? " is-open" : "")}
-        aria-label="Чаты и миры"
+        aria-label="Игры"
       >
         <div className="chat-sidebar-head">
           <div>
-            <span>{headKicker}</span>
-            <h2>{headTitle}</h2>
+            <span>Игры</span>
+            <h2>Мои игры</h2>
           </div>
           <button
             ref={closeRef}
@@ -330,500 +156,78 @@ export default function ChatHistorySidebar({
           </button>
         </div>
 
-        <div className="chat-sidebar-tabs" role="tablist" aria-label="Режим боковой панели">
+        <div className="chat-sidebar-actions">
           <button
+            ref={newGameRef}
             type="button"
-            className={"chat-sidebar-tab" + (activeTab === "chats" ? " active" : "")}
-            onClick={() => {
-              setTab("chats");
-              onShowChats?.();
-            }}
-            role="tab"
-            aria-selected={activeTab === "chats"}
+            className="btn primary chat-new"
+            onClick={onNewGame}
+            disabled={busy}
           >
-            Чаты
+            + Новая игра
           </button>
-          <button
-            type="button"
-            className={"chat-sidebar-tab" + (isWorldTab ? " active" : "")}
-            onClick={() => {
-              // Only flip the tab when the main view will actually switch — otherwise the
-              // sidebar would say "Миры" while the chat pane stays open (openWorldCreator
-              // is a no-op while a turn/chat action is in flight).
-              if (locked) return;
-              setTab("world");
-              onShowWorldCreator?.();
-            }}
-            role="tab"
-            aria-selected={isWorldTab}
-          >
-            Миры
-          </button>
-          <button
-            type="button"
-            className={"chat-sidebar-tab" + (isCharacterTab ? " active" : "")}
-            onClick={() => {
-              // The characters tab lives inside the chat view (no dedicated main
-              // pane), so keep the chat pane open — just switch the sidebar list.
-              setTab("character");
-              onShowChats?.();
-            }}
-            role="tab"
-            aria-selected={isCharacterTab}
-          >
-            Персонажи
-          </button>
-          {imageLabEnabled && (
-            <button
-              type="button"
-              className={"chat-sidebar-tab" + (isImageTab ? " active" : "")}
-              onClick={() => {
-                if (locked) return;
-                setTab("image");
-                onShowImageLab?.();
-              }}
-              role="tab"
-              aria-selected={isImageTab}
-            >
-              Картинки
-            </button>
-          )}
+          {loading && <span className="chat-sidebar-status">Обновляю...</span>}
         </div>
 
-        {isImageTab ? (
-          <div className="chat-sidebar-actions image-sidebar-actions">
-            <span className="chat-sidebar-status">Ручная генерация открыта в рабочей области.</span>
-          </div>
-        ) : isCharacterTab ? (
-          <div className="chat-sidebar-actions character-sidebar-actions">
-            <span className="chat-sidebar-status">
-              Импортируйте персонажа или сохраните героя из активного чата (панель мира).
-            </span>
-            <div className="library-actions">
-              <button
-                type="button"
-                className="btn library-action"
-                onClick={onRevealLibrary}
-                disabled={locked}
-              >
-                📂 Открыть папку
-              </button>
-              <button
-                type="button"
-                className="btn library-action"
-                onClick={onPickImport}
-                disabled={importing || locked}
-              >
-                {importing ? "Импорт…" : "⬆ Импорт"}
-              </button>
+        {error && <div className="chat-sidebar-error">{error}</div>}
+
+        <nav className="chat-list" aria-label="Сохранённые игры">
+          {sortedChats.length === 0 && !loading ? (
+            <div className="chat-sidebar-empty">
+              Сохранённых игр пока нет. Нажмите «+ Новая игра», чтобы начать.
             </div>
-            {charactersLoading && <span className="chat-sidebar-status">Обновляю...</span>}
-            {importNotice && <span className="chat-sidebar-status">{importNotice}</span>}
-            {importError && <span className="chat-sidebar-error inline">{importError}</span>}
-          </div>
-        ) : !isWorldTab ? (
-          <div className="chat-sidebar-actions">
-            <div className="story-picker">
-              <label htmlFor="new-chat-story">История</label>
-              {hasStories && (
-                <select
-                  id="new-chat-story"
-                  value={selectedStoryId || ""}
-                  onChange={(event) => onSelectStory(event.target.value)}
-                  disabled={storyLocked}
+          ) : null}
+          {sortedChats.map((chat) => {
+            const active = chat.active || sameChatId(chat.id, activeChatId);
+            return (
+              <div key={chat.id} className={"chat-history-item" + (active ? " active" : "")}>
+                <button
+                  type="button"
+                  className={"chat-history-row" + (active ? " active" : "")}
+                  onClick={() => onActivate(chat.id)}
+                  disabled={locked}
+                  aria-current={active ? "page" : undefined}
                 >
-                  {storyOptions.map((story) => (
-                    <option key={story.id} value={story.id}>
-                      {story.title}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {selectedStory && storyDescription(selectedStory) && (
+                  <span className="chat-row-head">
+                    <span className="chat-row-title">{chatTitle(chat)}</span>
+                    <span className="chat-row-date">{chatDate(chat)}</span>
+                  </span>
+                  <span className="chat-row-preview">{chatPreview(chat)}</span>
+                  <span className="chat-row-meta">
+                    <span>{turnCount(chat)}</span>
+                    {active && <span>активная</span>}
+                  </span>
+                </button>
                 <Tooltip
-                  as="p"
+                  className="tooltip-wrap"
                   tipClassName="ui-tip-wrap"
+                  focusable={false}
                   content={
                     <TipContent
-                      title={selectedStory.title || "История"}
-                      subtitle="Короткое описание стартовой истории."
-                      note={storyDescription(selectedStory)}
+                      title="Удалить игру"
+                      subtitle={chatTitle(chat)}
+                      note="Перед удалением появится подтверждение."
                     />
                   }
                 >
-                  {storyDescription(selectedStory)}
+                  <button
+                    type="button"
+                    className="chat-row-delete"
+                    aria-label={`Удалить игру: ${chatTitle(chat)}`}
+                    onClick={() => setConfirmTarget({ kind: "chat", id: chat.id })}
+                    disabled={locked}
+                  >
+                    <span aria-hidden="true">🗑</span>
+                  </button>
                 </Tooltip>
-              )}
-              {selectedStory && (
-                <div className="story-export-actions">
-                  {architectEditableWorldId(selectedStory) && (
-                    <button
-                      type="button"
-                      className="btn story-export"
-                      onClick={() =>
-                        onEditStory?.(architectEditableWorldId(selectedStory), selectedStory.id)
-                      }
-                      disabled={locked}
-                    >
-                      ✎ В архитекторе
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="btn story-export"
-                    onClick={() => onExportStory?.(selectedStory.id, false)}
-                    disabled={locked}
-                  >
-                    ⬇ Экспорт истории
-                  </button>
-                  <button
-                    type="button"
-                    className="btn story-export"
-                    onClick={() => onExportStory?.(selectedStory.id, true)}
-                    disabled={locked}
-                  >
-                    ⬇ С миром
-                  </button>
-                </div>
-              )}
-              {storiesLoading && <span className="chat-sidebar-status">Загружаю истории...</span>}
-              {storiesError && <span className="chat-sidebar-error inline">{storiesError}</span>}
-              {!storiesLoading && !storiesError && !hasStories && (
-                <span className="chat-sidebar-empty inline">Нет доступных историй.</span>
-              )}
-            </div>
-            {/* §К1.5: optional CHARACTER picker — empty = story/default hero.
-                Does NOT gate createLocked. */}
-            <div className="story-picker">
-              <label htmlFor="new-chat-character">Персонаж</label>
-              <select
-                id="new-chat-character"
-                value={selectedCharacterId || ""}
-                onChange={(event) => onSelectCharacter?.(event.target.value)}
-                disabled={characterLocked}
-              >
-                <option value="">— без персонажа —</option>
-                {characterOptions.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {characterTitle(c)} · {characterVersion(c)}
-                  </option>
-                ))}
-              </select>
-              {charactersLoading && <span className="chat-sidebar-status">Загружаю персонажей...</span>}
-              {charactersError && <span className="chat-sidebar-error inline">{charactersError}</span>}
-            </div>
-            <button
-              ref={createChatRef}
-              type="button"
-              className="btn primary chat-new"
-              onClick={onCreate}
-              disabled={createLocked}
-            >
-              + Новый чат
-            </button>
-            <div className="library-actions">
-              <button
-                type="button"
-                className="btn library-action"
-                onClick={onRevealLibrary}
-                disabled={locked}
-              >
-                📂 Открыть папку
-              </button>
-              <button
-                type="button"
-                className="btn library-action"
-                onClick={onPickImport}
-                disabled={importing || locked}
-              >
-                {importing ? "Импорт…" : "⬆ Импорт"}
-              </button>
-            </div>
-            {loading && <span className="chat-sidebar-status">Обновляю...</span>}
-            {importNotice && <span className="chat-sidebar-status">{importNotice}</span>}
-            {importError && <span className="chat-sidebar-error inline">{importError}</span>}
-          </div>
-        ) : (
-          <div className="chat-sidebar-actions world-sidebar-actions">
-            <button
-              ref={createWorldRef}
-              type="button"
-              className="btn primary chat-new"
-              onClick={onCreateWorld}
-              disabled={worldLocked}
-            >
-              + Создать мир
-            </button>
-            <div className="library-actions">
-              <button
-                type="button"
-                className="btn library-action"
-                onClick={onRevealLibrary}
-                disabled={locked}
-              >
-                📂 Открыть папку
-              </button>
-              <button
-                type="button"
-                className="btn library-action"
-                onClick={onPickImport}
-                disabled={importing || locked}
-              >
-                {importing ? "Импорт…" : "⬆ Импорт"}
-              </button>
-            </div>
-            {worldsLoading && <span className="chat-sidebar-status">Обновляю...</span>}
-            {importNotice && <span className="chat-sidebar-status">{importNotice}</span>}
-            {importError && <span className="chat-sidebar-error inline">{importError}</span>}
-          </div>
-        )}
-
-        <input
-          ref={importInputRef}
-          type="file"
-          accept=".zip,application/zip"
-          className="visually-hidden-input"
-          onChange={onImportFile}
-          tabIndex={-1}
-          aria-hidden="true"
-        />
-
-        {(() => {
-          const paneError = isImageTab
-            ? ""
-            : isWorldTab
-              ? worldsError
-              : isCharacterTab
-                ? charactersError
-                : error;
-          return paneError ? <div className="chat-sidebar-error">{paneError}</div> : null;
-        })()}
-
-        <nav
-          className="chat-list"
-          aria-label={
-            isImageTab
-              ? "Image Lab"
-              : isWorldTab
-                ? "Сохранённые миры"
-                : isCharacterTab
-                  ? "Персонажи"
-                  : "Предыдущие чаты"
-          }
-        >
-          {isImageTab ? (
-            <div className="chat-sidebar-empty">
-              Вкладка видна только при включённых режиме разработчика и генерации картинок.
-            </div>
-          ) : null}
-          {isWorldTab && visibleWorlds.length === 0 && !worldsLoading ? (
-            <div className="chat-sidebar-empty">
-              Сохранённых миров пока нет.
-            </div>
-          ) : null}
-          {isCharacterTab && visibleCharacters.length === 0 && !charactersLoading ? (
-            <div className="chat-sidebar-empty">
-              Сохранённых персонажей пока нет. Импортируйте .gmchar или сохраните героя из чата.
-            </div>
-          ) : null}
-          {!isWorldTab && !isImageTab && !isCharacterTab && visibleChats.length === 0 && !loading ? (
-            <div className="chat-sidebar-empty">
-              Сохранённых чатов пока нет.
-            </div>
-          ) : null}
-          {isImageTab ? null : isCharacterTab ? (
-            visibleCharacters.map((character) => {
-              const preview = characterPreview(character);
-              return (
-                <div key={character.id} className="chat-history-item world-history-item">
-                  <div className="chat-history-row world-history-row">
-                    <span className="chat-row-head">
-                      <span className="chat-row-title">{characterTitle(character)}</span>
-                      <span className="chat-row-date">{characterVersion(character)}</span>
-                    </span>
-                    <span className="chat-row-preview">{preview || "Без описания"}</span>
-                  </div>
-                  <div className="world-row-actions">
-                    <button
-                      type="button"
-                      className="btn world-row-story"
-                      onClick={() => onRenameCharacter?.(character.id, characterTitle(character))}
-                      disabled={characterLocked}
-                    >
-                      ✎ Переименовать
-                    </button>
-                    <button
-                      type="button"
-                      className="btn world-row-export"
-                      onClick={() => onExportCharacter?.(character.id)}
-                      disabled={characterLocked}
-                    >
-                      ⬇ Экспорт
-                    </button>
-                  </div>
-                  <Tooltip
-                    className="tooltip-wrap"
-                    tipClassName="ui-tip-wrap"
-                    focusable={false}
-                    content={
-                      <TipContent
-                        title="Удалить персонажа"
-                        subtitle={characterTitle(character)}
-                        note="Перед удалением появится подтверждение. Сохранённые игры не изменятся."
-                      />
-                    }
-                  >
-                    <button
-                      type="button"
-                      className="chat-row-delete"
-                      aria-label={`Удалить персонажа: ${characterTitle(character)}`}
-                      onClick={() => setConfirmTarget({ kind: "character", id: character.id })}
-                      disabled={characterLocked}
-                    >
-                      <span aria-hidden="true">🗑</span>
-                    </button>
-                  </Tooltip>
-                </div>
-              );
-            })
-          ) : isWorldTab
-            ? visibleWorlds.map((world) => {
-              const active = sameChatId(world.id, selectedWorldId);
-              return (
-                <div
-                  key={world.id}
-                  className={"chat-history-item world-history-item" + (active ? " active" : "")}
-                >
-                  <button
-                    type="button"
-                    className={"chat-history-row world-history-row" + (active ? " active" : "")}
-                    onClick={() => onSelectWorld?.(world.id)}
-                    disabled={worldLocked}
-                    aria-current={active ? "page" : undefined}
-                  >
-                    <span className="chat-row-head">
-                      <span className="chat-row-title">{worldTitle(world)}</span>
-                      <span className="chat-row-date">{chatDate(world)}</span>
-                    </span>
-                    <span className="chat-row-preview">{worldPreview(world)}</span>
-                    <span className="chat-row-meta">
-                      <span>{worldMeta(world)}</span>
-                      {active && <span>открыт</span>}
-                    </span>
-                  </button>
-                  <div className="world-row-actions">
-                    <button
-                      type="button"
-                      className="btn world-row-play"
-                      onClick={() => onPlayWorld?.(world.id)}
-                      disabled={worldLocked}
-                    >
-                      ▶ Играть
-                    </button>
-                    <button
-                      type="button"
-                      className="btn world-row-story"
-                      onClick={() => onCreateStory?.(world.id)}
-                      disabled={worldLocked}
-                    >
-                      + История
-                    </button>
-                    <button
-                      type="button"
-                      className="btn world-row-export"
-                      onClick={() => onExportWorld?.(world.id)}
-                      disabled={worldLocked}
-                    >
-                      ⬇ Экспорт
-                    </button>
-                  </div>
-                  <Tooltip
-                    className="tooltip-wrap"
-                    tipClassName="ui-tip-wrap"
-                    focusable={false}
-                    content={
-                      <TipContent
-                        title="Удалить мир"
-                        subtitle={worldTitle(world)}
-                        note="Перед удалением появится подтверждение. Игровые чаты не изменятся."
-                      />
-                    }
-                  >
-                    <button
-                      type="button"
-                      className="chat-row-delete"
-                      aria-label={`Удалить мир: ${worldTitle(world)}`}
-                      onClick={() => setConfirmTarget({ kind: "world", id: world.id })}
-                      disabled={worldLocked}
-                    >
-                      <span aria-hidden="true">🗑</span>
-                    </button>
-                  </Tooltip>
-                </div>
-              );
-            })
-            : (
-            visibleChats.map((chat) => {
-              const active = chat.active || sameChatId(chat.id, activeChatId);
-              return (
-                <div
-                  key={chat.id}
-                  className={"chat-history-item" + (active ? " active" : "")}
-                >
-                  <button
-                    type="button"
-                    className={"chat-history-row" + (active ? " active" : "")}
-                    onClick={() => {
-                      onActivate(chat.id);
-                    }}
-                    disabled={locked}
-                    aria-current={active ? "page" : undefined}
-                  >
-                    <span className="chat-row-head">
-                      <span className="chat-row-title">{chatTitle(chat)}</span>
-                      <span className="chat-row-date">{chatDate(chat)}</span>
-                    </span>
-                    <span className="chat-row-preview">{chatPreview(chat)}</span>
-                    <span className="chat-row-meta">
-                      <span>{turnCount(chat)}</span>
-                      {active && <span>активный</span>}
-                    </span>
-                  </button>
-                  <Tooltip
-                    className="tooltip-wrap"
-                    tipClassName="ui-tip-wrap"
-                    focusable={false}
-                    content={
-                      <TipContent
-                        title="Удалить чат"
-                        subtitle={chatTitle(chat)}
-                        note="Перед удалением появится подтверждение."
-                      />
-                    }
-                  >
-                    <button
-                      type="button"
-                      className="chat-row-delete"
-                      aria-label={`Удалить чат: ${chatTitle(chat)}`}
-                      onClick={() => setConfirmTarget({ kind: "chat", id: chat.id })}
-                      disabled={locked}
-                    >
-                      <span aria-hidden="true">🗑</span>
-                    </button>
-                  </Tooltip>
-                </div>
-              );
-            })
-          )}
+              </div>
+            );
+          })}
         </nav>
       </aside>
 
       {confirmItem && (
-        <div
-          className="confirm-backdrop"
-          role="presentation"
-          onMouseDown={cancelDelete}
-        >
+        <div className="confirm-backdrop" role="presentation" onMouseDown={cancelDelete}>
           <div
             className="confirm-card"
             role="alertdialog"
@@ -833,23 +237,14 @@ export default function ChatHistorySidebar({
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-icon" aria-hidden="true">🗑</div>
-            <h3 id="confirm-delete-title">
-              {confirmKind === "world"
-                ? "Удалить мир?"
-                : confirmKind === "character"
-                  ? "Удалить персонажа?"
-                  : "Удалить чат?"}
-            </h3>
-            <p className="confirm-name">«{confirmTitle}»</p>
+            <h3 id="confirm-delete-title">Удалить игру?</h3>
+            <p className="confirm-name">«{chatTitle(confirmItem)}»</p>
             <p id="confirm-delete-note" className="confirm-note">
-              {confirmKind === "world"
-                ? "Мир удалится из списка сохранённых миров. Игровые чаты и текущая сессия не изменятся. Это действие нельзя отменить."
-                : confirmKind === "character"
-                  ? "Персонаж удалится из библиотеки. Сохранённые игры не изменятся — их снапшот самодостаточен. Это действие нельзя отменить."
-                  : "Чат и все его данные удалятся из базы безвозвратно — история, персонажи, мир и связанные эмбеддинги. Это действие нельзя отменить."}
+              Игра и все её данные удалятся из базы безвозвратно — история, персонажи, мир и
+              связанные эмбеддинги. Это действие нельзя отменить.
             </p>
             <div className="confirm-actions">
-              <button type="button" className="btn" onClick={cancelDelete} disabled={deleting}>
+              <button type="button" className="btn" onClick={cancelDelete} disabled={deleting} autoFocus>
                 Отмена
               </button>
               <button
@@ -857,7 +252,6 @@ export default function ChatHistorySidebar({
                 className="btn confirm-danger"
                 onClick={confirmDelete}
                 disabled={deleting}
-                autoFocus
               >
                 {deleting ? "Удаляю…" : "Удалить"}
               </button>
