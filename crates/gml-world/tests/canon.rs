@@ -368,21 +368,22 @@ fn from_worldgen_derives_legacy_world_from_canon() {
     assert_eq!(world.scene.title, canon_place.name);
     assert_eq!(world.scene.description, canon_place.default_description);
 
-    // One NPC card per canon actor, so ask_npc/get_npc_profile/move_npc work.
+    // Procedural worlds seed ZERO actors, so the derived roster is empty:
+    // significant NPCs are generated lazily at play time, not hardcoded.
+    assert!(
+        world.world_canon.actors.is_empty(),
+        "procedural canon seeds no actors"
+    );
+    // Still one NPC card per canon actor (0 == 0) — the derive invariant holds.
     assert_eq!(world.npcs.len(), world.world_canon.actors.len());
-    assert!(!world.npcs.is_empty(), "procedural roster has NPCs");
-    for actor_id in world.world_canon.actors.keys() {
-        assert!(world.npcs.contains_key(actor_id), "npc card for {actor_id}");
-    }
+    assert!(world.npcs.is_empty(), "procedural roster starts empty");
 
-    // Present NPCs in the derived scene are exactly the living actors at start.
-    let expected: std::collections::BTreeSet<String> = world
-        .world_canon
-        .actors_at(&player_place)
-        .into_iter()
-        .map(|a| a.actor_id.clone())
-        .collect();
-    assert_eq!(world.scene.present_npcs, expected);
+    // With no actors at the start place, the derived scene has no present NPCs.
+    assert!(
+        world.world_canon.actors_at(&player_place).is_empty(),
+        "no actors stand at the start place"
+    );
+    assert!(world.scene.present_npcs.is_empty());
 }
 
 #[test]

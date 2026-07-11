@@ -144,6 +144,29 @@ fn run_case(name: &str, action: &str) {
     let mut session = pinned_session();
     let events = tokio_block_on(run_turn(&mut session, &settings, action));
 
+    if std::env::var("GML_BLESS").as_deref() == Ok("1") {
+        let full_events: Vec<Value> = events
+            .iter()
+            .map(|e| serde_json::to_value(e).expect("event to value"))
+            .collect();
+        let skel: Vec<Value> = events
+            .iter()
+            .filter(|e| e.kind != "delta")
+            .map(|e| serde_json::json!({"kind": e.kind, "agent": e.agent}))
+            .collect();
+        let full_str = serde_json::to_string_pretty(&Value::Array(full_events))
+            .unwrap()
+            .replace('\n', "\r\n")
+            + "\r\n";
+        let skel_str = serde_json::to_string_pretty(&Value::Array(skel))
+            .unwrap()
+            .replace('\n', "\r\n")
+            + "\r\n";
+        std::fs::write(dir.join(format!("{name}.full.json")), full_str).unwrap();
+        std::fs::write(dir.join(format!("{name}.skeleton.json")), skel_str).unwrap();
+        return;
+    }
+
     // (a) non-delta (kind, agent) sequence equals skeleton.
     let got_skeleton: Vec<Value> = events
         .iter()

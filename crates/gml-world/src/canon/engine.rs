@@ -487,10 +487,19 @@ fn apply_move_player(
     // Lazily materialise a dangling (shell) edge target.
     if to_place.is_empty() {
         let new_place_id = ids::stable_id(&canon.world_seed, &from_place, "place", transition_id);
-        let name = if dest_hint.is_empty() {
-            label.clone()
+        // Name pick: the destination hint, unless it is a coercion placeholder
+        // ("unknown destination") or a bare id slug (no whitespace) — neither
+        // may become a player-facing place title. Fall back to the transition
+        // label, itself stripped of a trailing "-> id" (old saves carry the
+        // unsplit architect string).
+        let hint = dest_hint.trim();
+        let hint_usable = !hint.is_empty()
+            && !crate::helpers::is_placeholder_destination(hint)
+            && hint.chars().any(char::is_whitespace);
+        let name = if hint_usable {
+            hint.to_string()
         } else {
-            dest_hint.clone()
+            crate::helpers::split_exit_label(&label).0
         };
         let mut flags = BTreeSet::new();
         // A freshly lazy-generated destination is itself a shell interior until

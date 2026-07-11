@@ -187,11 +187,19 @@ fn gm_compaction_resets_world_query_cache_and_keeps_records() {
         "GM compaction must reset world_query_seen"
     );
 
-    // Summary applied; only the last GM_KEEP_TURNS=1 user-boundary kept verbatim.
+    // Summary applied; retained history STARTS with a FRESH snapshot (snapshot-
+    // once, GM_CONTEXT_TZ §2) followed by the last GM_KEEP_TURNS=1 user boundary.
     assert_eq!(s.gm_summary, "compact summary");
-    assert_eq!(s.gm_messages.len(), 1, "keep-last-1 verbatim");
+    assert_eq!(s.gm_messages.len(), 2, "fresh snapshot + keep-last-1 verbatim");
+    assert!(
+        s.gm_messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("WORLD SNAPSHOT"),
+        "post-compaction history must open with a fresh WORLD SNAPSHOT"
+    );
     assert_eq!(
-        s.gm_messages[0]["content"].as_str().unwrap(),
+        s.gm_messages[1]["content"].as_str().unwrap(),
         "новый ход ".repeat(20)
     );
 
@@ -274,10 +282,19 @@ fn gm_compaction_keeps_last_n_and_folds_old_plus_prior_summary() {
     tokio_block_on(maybe_compact(&mut s, client.as_ref()));
     // The prior summary was folded into the base; summary replaced with marker.
     assert_eq!(s.gm_summary, "compact summary");
-    // Kept tail starts at the (len-keep_turns)=2nd-from-last user boundary (U3).
+    // Retained history opens with a fresh snapshot (snapshot-once, §2), then the
+    // kept tail starting at the (len-keep_turns)=2nd-from-last user boundary (U3).
+    assert!(
+        s.gm_messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("WORLD SNAPSHOT"),
+        "post-compaction history must open with a fresh WORLD SNAPSHOT"
+    );
     let kept: Vec<&str> = s
         .gm_messages
         .iter()
+        .skip(1)
         .map(|m| m["content"].as_str().unwrap())
         .collect();
     assert_eq!(kept, vec!["U3 keep me", "A3 keep me", "U4 keep me too"]);
@@ -290,10 +307,11 @@ fn gm_compaction_keeps_last_n_and_folds_old_plus_prior_summary() {
 
 #[test]
 fn summary_text_asymmetry_gm_strips_player_action_npc_does_not() {
-    let marker = "PLAYER ACTION (latest user input, free roleplay text):";
+    // Snapshot-once (GM_CONTEXT_TZ §1): the bare per-turn header is "PLAYER ACTION:".
+    let marker = "PLAYER ACTION:";
     let user = json!({
         "role": "user",
-        "content": format!("CONTEXT PREAMBLE\n{marker} Я осматриваюсь."),
+        "content": format!("CONTEXT PREAMBLE\n{marker}\nЯ осматриваюсь."),
     });
 
     // GM summary strips everything up to and including the PLAYER ACTION marker.
@@ -313,6 +331,16 @@ fn summary_text_asymmetry_gm_strips_player_action_npc_does_not() {
     assert!(npc.contains("CONTEXT PREAMBLE"));
     assert!(npc.contains("PLAYER ACTION"));
     assert!(npc.contains("Я осматриваюсь."));
+
+    // Transient state messages (WORLD SNAPSHOT, player-options toggle notice) are
+    // dropped entirely from the GM summary base so they never bloat the summary.
+    let snapshot = json!({
+        "role": "user",
+        "content": "WORLD SNAPSHOT (актуальное состояние на момент снимка; дальше следи за дельтами из результатов тулов)\nTIME STATE:\n...",
+    });
+    assert_eq!(msg_text_for_summary(&snapshot), "");
+    let toggle = json!({"role": "user", "content": "PLAYER OPTION SUGGESTIONS: enabled"});
+    assert_eq!(msg_text_for_summary(&toggle), "");
 }
 
 // =========================================================================
@@ -506,4 +534,110 @@ fn npc_compaction_folds_prior_npc_summary() {
     let kept = s.npc_messages.get("borin").cloned().unwrap();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0]["content"].as_str().unwrap(), "keep u");
+}
+
+/// Review fix (major): a snapshot sitting INSIDE the retained keep-window (the
+/// legacy-save lazy injection lands at the END of the loaded history) must be
+/// STRIPPED by compaction — exactly one WORLD SNAPSHOT survives, at index 0.
+#[test]
+fn gm_compaction_strips_stale_snapshot_from_retained_tail() {
+    let client: Arc<dyn Backend> = Arc::new(MarkerCompactClient::new());
+    let mut s = session();
+    s.compaction.gm_history_tokens = 1;
+    s.compaction.gm_keep_turns = 3;
+    // Legacy-shaped history: old dialogue, then the lazily-injected snapshot at
+    // the tail, then the newest action — the keep-3 window straddles the snapshot.
+    s.gm_messages = vec![
+        umsg("PLAYER ACTION:\nстарый ход один"),
+        amsg("ответ один"),
+        umsg("PLAYER ACTION:\nстарый ход два"),
+        amsg("ответ два"),
+        gml_agents::gm_snapshot_message("WORLD SNAPSHOT (лениво встроенный, уже устаревший)"),
+        umsg("PLAYER ACTION:\nновый ход"),
+    ];
+    tokio_block_on(maybe_compact(&mut s, client.as_ref()));
+
+    let snapshots: Vec<usize> = s
+        .gm_messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| gml_agents::is_snapshot_message(m))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        snapshots,
+        vec![0],
+        "exactly one snapshot, at the head: {:?}",
+        s.gm_messages
+            .iter()
+            .map(|m| msg_text(m).chars().take(40).collect::<String>())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        msg_text(&s.gm_messages[0]).contains("DYNAMIC NPC ROSTER")
+            || !msg_text(&s.gm_messages[0]).contains("устаревший"),
+        "the surviving snapshot must be the FRESH one, not the stale tail copy"
+    );
+}
+
+// =========================================================================
+// GM compaction prunes stale SEARCHED/loaded tools (keeps initial + recent +
+// no-record legacy tools untouched)
+// =========================================================================
+
+#[test]
+fn gm_compaction_prunes_only_stale_searched_tools() {
+    let client: Arc<dyn Backend> = Arc::new(MarkerCompactClient::new());
+    let mut s = session();
+    s.client = client.clone();
+    s.compaction.gm_history_tokens = 1;
+    s.compaction.gm_keep_turns = 2;
+    s.turn = 10; // oldest_retained_turn = 10 - 2 + 1 = 9
+
+    // Start from the initial default tool set, then simulate several searched
+    // tools admitted into the visible set over the run.
+    s.ensure_initial_tools(false);
+    for extra in ["world_debug", "get_npc_profile", "set_scene"] {
+        s.loaded_gm_tools.insert(extra.to_string());
+    }
+
+    // STALE: both signals predate the retained window (turn 5 < 9) -> pruned.
+    s.tool_last_used.insert("world_debug".to_string(), 5);
+    s.tool_loaded_turn.insert("world_debug".to_string(), 5);
+    // RECENT: last used inside the retained window (turn 9 >= 9) -> kept.
+    s.tool_loaded_turn.insert("get_npc_profile".to_string(), 4);
+    s.tool_last_used.insert("get_npc_profile".to_string(), 9);
+    // set_scene has NO record at all -> legacy/native, kept.
+    // An INITIAL tool with a stale record must still never be pruned.
+    s.tool_last_used.insert("advance_time".to_string(), 1);
+
+    // Enough user boundaries to clear the boundary gate and actually compact.
+    s.gm_messages = vec![
+        umsg(&"ход один ".repeat(20)),
+        amsg(&"ответ один ".repeat(20)),
+        umsg(&"ход два ".repeat(20)),
+        amsg(&"ответ два ".repeat(20)),
+        umsg(&"ход три ".repeat(20)),
+    ];
+    tokio_block_on(maybe_compact(&mut s, client.as_ref()));
+
+    assert!(
+        !s.loaded_gm_tools.contains("world_debug"),
+        "a stale searched tool must be pruned at compaction"
+    );
+    assert!(
+        s.loaded_gm_tools.contains("get_npc_profile"),
+        "a recently used searched tool must be kept"
+    );
+    assert!(
+        s.loaded_gm_tools.contains("set_scene"),
+        "a searched tool with no staleness record must be kept (legacy/native load)"
+    );
+    assert!(
+        s.loaded_gm_tools.contains("advance_time"),
+        "an INITIAL tool must never be pruned, even with a stale record"
+    );
+    // The pruned tool's staleness records are cleaned up too.
+    assert!(!s.tool_last_used.contains_key("world_debug"));
+    assert!(!s.tool_loaded_turn.contains_key("world_debug"));
 }

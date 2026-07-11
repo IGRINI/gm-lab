@@ -31,7 +31,9 @@ pub mod tokenize;
 pub mod vector;
 
 pub use cache::EmbeddingCache;
-pub use client::{rerank_documents, Embedder, HashEmbeddingClient, LocalEmbeddingClient};
+pub use client::{
+    rerank_documents, rerank_scored, Embedder, HashEmbeddingClient, LocalEmbeddingClient,
+};
 pub use doc::{RagDocument, RagHit};
 pub use engine::{bm25_scores, query_instruction, rank_map, RagEngine, GOOD_STATUS};
 pub use error::{RagError, Result};

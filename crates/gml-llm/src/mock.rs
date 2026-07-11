@@ -89,6 +89,15 @@ impl MockClient {
             }
             return story_architect_reply_output();
         }
+        if system_text.contains("GM-Lab character architect") {
+            // Same agent loop for the CHARACTER architect: first hop drafts the
+            // hero sheet (tool call), then finishes with a chat reply once the
+            // tool result is fed back.
+            if count_tool_messages(messages) == 0 {
+                return character_architect_chat_output();
+            }
+            return character_architect_reply_output();
+        }
         let n_tool = count_tool_messages(messages);
 
         if n_tool == 0 {
@@ -222,6 +231,43 @@ impl MockClient {
                     Value::String("На дороге найдены следы уведённой повозки.".to_string()),
                 ),
             ]);
+        }
+        if system_text.contains("GM-Lab NPC generator") {
+            return serde_json::json!({
+                "name": "Тихон Ржавый",
+                "pronouns": "М",
+                "role": "бармен",
+                "public_label": "бармен за стойкой",
+                "age": "за пятьдесят",
+                "physical_type": "грузный, с проседью и мозолистыми руками",
+                "distinctive_features": "рыжий шрам на предплечье, полотенце через плечо",
+                "persona": "Немногословный хозяин таверны, что подмечает каждого гостя и держит язык за зубами.",
+                "personality": "спокойный, наблюдательный, недоверчивый к чужакам",
+                "values": "порядок в зале и безопасность своих завсегдатаев",
+                "habits": "протирает одну и ту же кружку, пока слушает разговоры",
+                "pressure_response": "уходит в глухую оборону и отмалчивается, но не лжёт прямо",
+                "boundaries": "не выдаёт постояльцев и не лезет в чужую поножовщину",
+                "voice": "низкий хриплый говор, короткие фразы, редкая сухая усмешка",
+                "goals": ["сохранить таверну на плаву", "понять, что случилось со смотрителем"],
+                "agenda": "протирает кружки и слушает зал",
+                "attitude_to_player": 0,
+                "knowledge": "Знает завсегдатаев таверны и слухи о ночных гостях смотрителя.",
+                "secret": "Прячет письмо пропавшего смотрителя под стойкой.",
+                "mechanics": {
+                    "abilities": {"STR": 12, "DEX": 9, "CON": 13, "INT": 10, "WIS": 12, "CHA": 11},
+                    "skills": {"Проницательность": 3, "Обман": 2},
+                    "ac": 11,
+                    "hp": {"current": 16, "max": 16},
+                    "speed": "30 футов",
+                    "senses": "обычное зрение",
+                    "languages": "Общий"
+                },
+                "anti_repeat_key": "barkeep-rusty-tikhon",
+                "memory_note": "Тихон Ржавый видел, кто приходил к смотрителю ночью."
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
         }
         if system_text.contains("starting scene") || system_text.contains("WorldSeed") {
             return world_seed_json();
@@ -478,6 +524,110 @@ fn story_architect_reply_output() -> ChatOutput {
         .to_string();
     ChatOutput {
         thinking: "Черновик сюжета собран — отвечаю пользователю.".to_string(),
+        content: reply.clone(),
+        assistant_msg: assistant_plain(&reply),
+        calls: Vec::new(),
+    }
+}
+
+/// First hop of the mock CHARACTER architect: draft a launchable hero via
+/// `draft_player_character`. FLAT sheet args (abilities/hp/inventory/spells) —
+/// the character schema is flat, like the world bible.
+fn character_architect_chat_output() -> ChatOutput {
+    let arr =
+        |items: &[&str]| Value::Array(items.iter().map(|s| Value::String(s.to_string())).collect());
+    let calls = vec![ParsedCall::new(
+        "draft_player_character",
+        obj([
+            ("name", Value::String("Кара Вент".to_string())),
+            ("pronouns", Value::String("Ж".to_string())),
+            (
+                "class_role",
+                Value::String("странствующая следопытка".to_string()),
+            ),
+            ("level", Value::from(2)),
+            (
+                "background",
+                Value::String(
+                    "Выросла на пограничных трактах, читает следы лучше любых карт.".to_string(),
+                ),
+            ),
+            (
+                "physical_type",
+                Value::String("жилистая, с обветренным лицом".to_string()),
+            ),
+            (
+                "abilities",
+                Value::Object(obj([
+                    ("STR", Value::from(12)),
+                    ("DEX", Value::from(16)),
+                    ("CON", Value::from(13)),
+                    ("INT", Value::from(10)),
+                    ("WIS", Value::from(14)),
+                    ("CHA", Value::from(9)),
+                ])),
+            ),
+            (
+                "skills",
+                Value::Object(obj([
+                    ("Выживание", Value::from(4)),
+                    ("Скрытность", Value::from(5)),
+                ])),
+            ),
+            ("ac", Value::from(14)),
+            (
+                "hp",
+                Value::Object(obj([
+                    ("current", Value::from(18)),
+                    ("max", Value::from(18)),
+                ])),
+            ),
+            ("speed", Value::String("30 ft".to_string())),
+            ("languages", Value::String("Общий, Лесной".to_string())),
+            (
+                "inventory",
+                arr(&["короткий лук", "колчан стрел", "охотничий нож", "плащ следопыта"]),
+            ),
+            (
+                "spells",
+                Value::Array(vec![Value::Object(obj([
+                    ("name", Value::String("Отметка охотника".to_string())),
+                    ("level", Value::from(1)),
+                    ("concentration", Value::Bool(true)),
+                    ("ritual", Value::Bool(false)),
+                    (
+                        "effect",
+                        Value::String("Помечает цель, добавляя урон по ней.".to_string()),
+                    ),
+                ]))]),
+            ),
+            (
+                "spell_slots",
+                Value::Object(obj([("1", Value::from(2))])),
+            ),
+            (
+                "spell_slots_max",
+                Value::Object(obj([("1", Value::from(2))])),
+            ),
+        ]),
+        "mock_character_architect0",
+    )];
+    ChatOutput {
+        thinking: "Собираю играбельного героя-следопыта.".to_string(),
+        content: String::new(),
+        assistant_msg: toolmsg(&calls),
+        calls,
+    }
+}
+
+/// Second hop of the mock CHARACTER architect: finish with a short chat reply so
+/// the loop terminates.
+fn character_architect_reply_output() -> ChatOutput {
+    let reply = "Собрал героиню «Кара Вент»: следопытка 2 уровня, ловкая, с луком и \
+                 отметкой охотника. Что доработать — предысторию, снаряжение или заклинания?"
+        .to_string();
+    ChatOutput {
+        thinking: "Черновик персонажа собран — отвечаю пользователю.".to_string(),
         content: reply.clone(),
         assistant_msg: assistant_plain(&reply),
         calls: Vec::new(),

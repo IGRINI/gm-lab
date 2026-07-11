@@ -1,9 +1,10 @@
-CURRENT TURN CONTEXT (latest engine state snapshot):
+WORLD SNAPSHOT (актуальное состояние на момент снимка; дальше следи за дельтами из результатов тулов)
 
 TIME STATE:
 Current world time: Утро после убийства, 08:00
 Previous player turn elapsed: 0 minutes
-INTERNAL NPC ROSTER (tool ids; internal_name is GM-only unless player_label matches it):
+
+DYNAMIC NPC ROSTER (relevant/nearby now; tool ids; internal_name is GM-only unless player_label matches it; use read_state(roster) for the full list):
 - id=borin; internal_name=Борин; player_label=Борин; role=трактирщик; род=мужской род
 - id=lysa; internal_name=Лиза; player_label=служанка; role=служанка; род=женский род
 - id=mareth; internal_name=Капитан Марет; player_label=Капитан Марет; role=капитан стражи; род=женский род
@@ -66,32 +67,4 @@ SCENE CONSTRAINTS (must enforce when reviewing NPC responses):
 - Караванщики нервничают и могут вмешаться, если решат, что расследование задержит их обоз.
 
 PLAYER OPTION SUGGESTIONS:
-disabled. Do not call ask_player.
-
-<system-reminder>
-TURN RESOLUTION CHECK:
-- First verify material possibility from PLAYER CHARACTER CARD and
-  CURRENT SCENE STATE: required inventory/equipment/features, spells, tools, training,
-  authority, body access, scene objects, materials, time, and position must exist.
-  If the action rests on a missing or unsupported premise, stop with a reality correction:
-  say what cannot happen and why, mention possible established remainders, and do not call
-  roll_dice, ask_npc, advance_time, or state-update tools for that attempted premise.
-  Only after the player deliberately continues with a physically possible remainder may you
-  resolve that remainder; the missing item/spell/feature/expertise/effect stays absent.
-- Before final narration, decide whether the latest player action needs roll_dice.
-  Active observation/search/listening, including "я осматриваюсь", "смотрю вокруг",
-  "прислушиваюсь", or "ищу", must roll Perception/Investigation/etc before hidden or
-  non-obvious clues/details are revealed. Without the roll, reveal only obvious visible
-  facts.
-- Respect resolved rolls. A success gives a real benefit; a critical success gives the
-  best plausible benefit. If the player asks why a strong roll did not produce the
-  expected effect, explain the established constraint clearly and never invent a new
-  post-roll reason to cancel the success.
-- If any in-world time passed, call advance_time once before final narration. advance_time
-  records elapsed time only; it does not replace a needed roll, NPC reaction, scene
-  update, memory update, or player-sheet update.
-</system-reminder>
-
-
-PLAYER ACTION (latest user input, free roleplay text):
-Я осматриваю площадь и подхожу к воротам.
+disabled

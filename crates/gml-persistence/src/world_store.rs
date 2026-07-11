@@ -46,6 +46,20 @@ use crate::{
 pub const WORLD_FORMAT: &str = "gmlab.world/1";
 /// Per-world manifest filename.
 const WORLD_FILE: &str = "world.json";
+/// Legacy per-world architect-chat filename (pre-DB packages): read as a
+/// fallback by [`WorldStore::get_architect_state`], deleted by
+/// [`WorldStore::purge_architect_artifacts`]. The conversation's real home is
+/// the dialogs SQLite (`DialogStore::architect_chats`).
+const ARCHITECT_FILE: &str = "architect.json";
+/// Legacy payload keys that carried the architect chat INSIDE `world.json`
+/// before the split. Read as a fallback by [`WorldStore::get_architect_state`]
+/// and stripped from `world.json` on the next [`WorldStore::set_architect_state`].
+const LEGACY_ARCHITECT_KEYS: [&str; 4] = [
+    "architect_messages",
+    "architect_model_history",
+    "architect_cache_session_id",
+    "architect_cache_thread_id",
+];
 /// Sub-directory under the packages root that holds world packages.
 const WORLDS_DIR: &str = "worlds";
 /// Per-world sub-directory that holds generated/imported binary assets
@@ -258,6 +272,66 @@ impl WorldStore {
         };
         self.write_envelope(&env)?;
         Ok(env.to_world_response())
+    }
+
+    /// Read the world's architect-chat state (`architect.json`). Falls back to
+    /// the LEGACY in-payload `architect_*` keys for packages written before the
+    /// world/chat split. `Ok(None)` when the world has no architect chat at all;
+    /// `Err(WorldNotFound)` when the world itself is absent.
+    pub fn get_architect_state(&self, world_id: &str) -> Result<Option<Value>, StoreError> {
+        let world_id = world_id.trim();
+        let env = self
+            .read_envelope(world_id)?
+            .ok_or_else(|| StoreError::WorldNotFound(world_id.to_string()))?;
+        let path = self.world_dir(world_id).join(ARCHITECT_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => {
+                let value: Value = serde_json::from_str(&raw).map_err(|e| {
+                    StoreError::Payload(format!("parse architect state {world_id}: {e}"))
+                })?;
+                Ok(Some(normalize_architect_state(value)))
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(legacy_architect_state(&env.payload))
+            }
+            Err(e) => Err(StoreError::Other(format!(
+                "read architect state {world_id}: {e}"
+            ))),
+        }
+    }
+
+    /// Purge every architect-chat artifact from the world PACKAGE after the
+    /// conversation has been persisted to its real home (the dialogs SQLite,
+    /// `DialogStore::set_architect_chat`): deletes a stray `architect.json`
+    /// and strips the legacy in-payload `architect_*` keys. Content-invariant —
+    /// `version`/`updated_at` are PRESERVED (no bump, no list reorder).
+    pub fn purge_architect_artifacts(&self, world_id: &str) -> Result<(), StoreError> {
+        let world_id = world_id.trim();
+        let _guard = self.write_lock.lock().expect("world write lock poisoned");
+        let env = self
+            .read_envelope(world_id)?
+            .ok_or_else(|| StoreError::WorldNotFound(world_id.to_string()))?;
+
+        let file = self.world_dir(world_id).join(ARCHITECT_FILE);
+        if file.is_file() {
+            std::fs::remove_file(&file)
+                .map_err(|e| StoreError::Other(format!("remove architect {world_id}: {e}")))?;
+        }
+
+        if let Value::Object(payload) = &env.payload {
+            if LEGACY_ARCHITECT_KEYS.iter().any(|k| payload.contains_key(*k)) {
+                let mut stripped = payload.clone();
+                for key in LEGACY_ARCHITECT_KEYS {
+                    stripped.remove(key);
+                }
+                let migrated = WorldEnvelope {
+                    payload: Value::Object(stripped),
+                    ..env
+                };
+                self.write_envelope(&migrated)?;
+            }
+        }
+        Ok(())
     }
 
     /// Delete a world package directory. Returns the same shape the SQLite store
@@ -480,12 +554,14 @@ impl WorldEnvelope {
         })
     }
 
-    /// The flattened world object the `/worlds` API returns — byte-shape
-    /// identical to what the SQLite store produced via `world_row_response`.
+    /// The flattened world object the `/worlds` API returns. The architect chat
+    /// is NOT part of the response (it lives in `architect.json`; legacy
+    /// in-payload keys are filtered so pre-split packages present identically).
     fn to_world_response(&self) -> Value {
-        let title = world_title_from_payload(&self.payload);
-        let preview = world_preview_from_payload(&self.payload, &title);
-        let payload_json = serde_json::to_string(&self.payload).unwrap_or_default();
+        let payload = payload_without_architect_keys(&self.payload);
+        let title = world_title_from_payload(&payload);
+        let preview = world_preview_from_payload(&payload, &title);
+        let payload_json = serde_json::to_string(&payload).unwrap_or_default();
         world_row_response(
             &self.id,
             &title,
@@ -495,6 +571,72 @@ impl WorldEnvelope {
             &self.updated_at,
         )
     }
+}
+
+/// A payload clone with the legacy in-payload architect-chat keys removed.
+fn payload_without_architect_keys(payload: &Value) -> Value {
+    match payload {
+        Value::Object(map) if LEGACY_ARCHITECT_KEYS.iter().any(|k| map.contains_key(*k)) => {
+            let mut stripped = map.clone();
+            for key in LEGACY_ARCHITECT_KEYS {
+                stripped.remove(key);
+            }
+            Value::Object(stripped)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Normalize an architect-state value to the canonical shape:
+/// `{messages: [...], model_history: [...], cache_session_id?, cache_thread_id?}`.
+/// Unknown keys are dropped; missing arrays become empty.
+fn normalize_architect_state(state: Value) -> Value {
+    let map = match state {
+        Value::Object(m) => m,
+        _ => Map::new(),
+    };
+    let arr = |key: &str| -> Value {
+        map.get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .map(Value::Array)
+            .unwrap_or_else(|| Value::Array(Vec::new()))
+    };
+    let mut out = Map::new();
+    out.insert("messages".into(), arr("messages"));
+    out.insert("model_history".into(), arr("model_history"));
+    for key in ["cache_session_id", "cache_thread_id"] {
+        if let Some(id) = map.get(key).and_then(Value::as_str) {
+            let id = id.trim();
+            if !id.is_empty() {
+                out.insert(key.into(), Value::String(id.to_string()));
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+/// Extract the LEGACY in-payload architect chat (pre-split packages) as a
+/// canonical architect-state value. `None` when the payload carries none.
+fn legacy_architect_state(payload: &Value) -> Option<Value> {
+    let map = payload.as_object()?;
+    if !LEGACY_ARCHITECT_KEYS.iter().any(|k| map.contains_key(*k)) {
+        return None;
+    }
+    let mut state = Map::new();
+    if let Some(v) = map.get("architect_messages") {
+        state.insert("messages".into(), v.clone());
+    }
+    if let Some(v) = map.get("architect_model_history") {
+        state.insert("model_history".into(), v.clone());
+    }
+    if let Some(v) = map.get("architect_cache_session_id") {
+        state.insert("cache_session_id".into(), v.clone());
+    }
+    if let Some(v) = map.get("architect_cache_thread_id") {
+        state.insert("cache_thread_id".into(), v.clone());
+    }
+    Some(normalize_architect_state(Value::Object(state)))
 }
 
 /// A raw legacy `worlds` row read from SQLite (migration source only).

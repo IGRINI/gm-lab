@@ -127,10 +127,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stories", get(get_stories).post(post_create_story))
         .route("/stories/{id}/draft", get(get_story_draft))
         .route("/stories/{id}/delete", post(post_delete_story))
+        .route("/stories/{id}/save-protagonist", post(post_save_protagonist))
         .route("/story-architect/chat", post(post_story_architect_chat))
+        .route("/character-architect/chat", post(post_character_architect_chat))
         .route("/chats", get(get_chats).post(post_create_chat))
         .route("/characters", get(get_characters).post(post_create_character))
+        .route("/characters/{id}/architect", get(get_character_architect))
         .route("/worlds", get(get_worlds).post(post_create_world))
+        .route("/worlds/{id}/architect", get(get_world_architect))
         .route("/world-architect/chat", post(post_world_architect_chat))
         .route("/export", get(get_export))
         .route("/codex/status", get(get_codex_status))
@@ -162,6 +166,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/chats/{id}/save-character", post(post_save_character))
         .route("/stories/{id}", post(post_update_story))
         .route("/characters/{id}", post(post_update_character))
+        .route("/characters/{id}/draft", post(post_character_draft))
         .route("/characters/{id}/delete", post(post_delete_character))
         .route("/worlds/{id}", post(post_update_world))
         .route("/worlds/{id}/delete", post(post_delete_world))
@@ -249,11 +254,6 @@ fn body_str(map: &Map<String, Value>, key: &str) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
-}
-
-fn body_cache_id(map: &Map<String, Value>, key: &str) -> Option<String> {
-    let value = body_str(map, key);
-    normalize_cache_id(&value)
 }
 
 fn normalize_cache_id(value: &str) -> Option<String> {
@@ -748,10 +748,32 @@ async fn get_story_draft(State(state): State<AppState>, AxPath(id): AxPath<Strin
     let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
     let result = {
         let store = state.story_store.lock().expect("story store lock poisoned");
-        store.draft_row(&id)
+        store.draft_row(&id).and_then(|row| {
+            // The conversation lives in the dialogs SQLite (package artifacts
+            // are the pre-migration fallback — row-NOT-PRESENT only; a read
+            // error is a 500, never a silently-empty conversation). Only the
+            // VISIBLE messages leave the server.
+            let chat = match state.store.get_architect_chat("story", &id) {
+                Ok(Some(v)) => Some(v),
+                Ok(None) => store.get_architect_state(&id)?,
+                Err(e) => {
+                    return Err(StoryStoreError::Io(format!(
+                        "read architect chat from the dialogs DB: {e}"
+                    )))
+                }
+            };
+            let messages = chat
+                .and_then(|s| s.get("messages").cloned())
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            Ok((row, messages))
+        })
     };
     match result {
-        Ok(row) => ok_json(&json!({"ok": true, "story": Value::Object(row)})),
+        Ok((row, messages)) => ok_json(&json!({
+            "ok": true,
+            "story": Value::Object(row),
+            "architect": {"messages": messages},
+        })),
         Err(StoryStoreError::StoryNotFound(_)) => json_response(
             StatusCode::NOT_FOUND,
             &json!({"ok": false, "error": format!("story not found: {id}")}),
@@ -864,7 +886,13 @@ async fn post_delete_story(
         store.delete_story(&story_id)
     };
     match result {
-        Ok(deleted) => ok_json(&json!({"ok": true, "deleted": deleted})),
+        Ok(deleted) => {
+            if deleted {
+                // Best-effort: the story's architect conversation goes with it.
+                let _ = state.store.delete_architect_chat("story", &story_id);
+            }
+            ok_json(&json!({"ok": true, "deleted": deleted}))
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &json!({"ok": false, "error": e.to_string()}),
@@ -914,16 +942,6 @@ async fn post_update_story(
 // K1 characters (docs/CHARACTERS_AND_STORY_TZ.md §К1.1–К1.4)
 // =========================================================================
 
-/// The canonical character-package payload for a fresh default hero: the
-/// default [`gml_world::PlayerCharacter`] serialized through THE canonical PC
-/// serializer, wrapped as `{player_character: {...}}`. This is the SERVER's job
-/// (it owns both the persistence and orchestrator deps) — the store keeps the
-/// payload opaque.
-fn default_character_payload() -> Value {
-    let pc = gml_world::PlayerCharacter::default();
-    json!({ "player_character": gml_orchestrator::session_payload::player_character_payload(&pc) })
-}
-
 /// `GET /characters` — list every character package
 /// (`{id, version, title, preview, created_at, updated_at, payload}`), newest
 /// first. Returns `{ok, characters:[...]}`.
@@ -938,9 +956,10 @@ async fn get_characters(State(state): State<AppState>) -> Response {
     ok_json(&json!({"ok": true, "characters": characters}))
 }
 
-/// `POST /characters` — create a character package. Body `{title, payload?}`.
-/// `payload` defaults to a default-hero package payload (`§К1.2`); `title`
-/// is required (non-empty after trim). Returns `{ok, character:{...}}`.
+/// `POST /characters` — create a character package. Body `{title, payload}`.
+/// `payload` is REQUIRED (a `player_character` object; no default hero, design
+/// §8) and `title` is required (non-empty after trim). Returns
+/// `{ok, character:{...}}`.
 async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let title = body_str(&data, "title");
@@ -950,12 +969,17 @@ async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Re
             &json!({"ok": false, "error": "title is required"}),
         );
     }
-    // payload: an explicit object, or the default-hero package payload. A
-    // non-object explicit payload is a 400 (the store also validates, but we
-    // reject early with a clear message).
+    // payload is required: no default hero is ever synthesized. Absent/null is a
+    // 400 "payload is required"; a non-object explicit payload is a 400 (the
+    // store also validates, but we reject early with a clear message).
     let payload = match data.get("payload") {
         Some(Value::Object(m)) => Value::Object(m.clone()),
-        Some(Value::Null) | None => default_character_payload(),
+        None | Some(Value::Null) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": "payload is required"}),
+            )
+        }
         Some(_) => {
             return json_response(
                 StatusCode::BAD_REQUEST,
@@ -1029,7 +1053,13 @@ async fn post_delete_character(
         store.delete_character(&id)
     };
     match result {
-        Ok(deleted) => ok_json(&json!({"ok": true, "deleted": deleted})),
+        Ok(deleted) => {
+            if deleted {
+                // Best-effort: the character's architect conversation goes with it.
+                let _ = state.store.delete_architect_chat("character", &id);
+            }
+            ok_json(&json!({"ok": true, "deleted": deleted}))
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &json!({"ok": false, "error": e.to_string()}),
@@ -1212,6 +1242,13 @@ impl gml_agents::ArchitectStream for ArchitectStreamSink {
 /// reply as it generates (`architect_delta`), surfaces each tool call
 /// (`architect_tool`), then sends the full result (`architect_done`) carrying the
 /// draft, usage, debug info and the persisted world. Terminates with `done`.
+/// `POST /world-architect/chat` — SERVER-AUTHORITATIVE architect turn. Body:
+/// `{message, world_id?, draft?}`. The conversation state (visible messages,
+/// model history, prompt-cache ids) is loaded from and saved to the world
+/// package's `architect.json` — the client sends only its message. An optional
+/// `draft` is the panel's hand-edited CONTENT, applied as a normal world update
+/// BEFORE the turn (so manual field edits are never lost); client-sent
+/// history/cache ids are ignored.
 async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let message = body_str(&data, "message");
@@ -1221,56 +1258,96 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
             &json!({"ok": false, "error": "message is required"}),
         );
     }
-    let history = data
-        .get("history")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let draft = data.get("draft").cloned().unwrap_or(Value::Null);
-    let fallback_cache_id = body_cache_id(&data, "cache_id");
-    let cache_session_id = body_cache_id(&data, "cache_session_id")
-        .or_else(|| body_cache_id(&data, "architect_session_id"))
-        .or_else(|| fallback_cache_id.clone());
-    let cache_thread_id = body_cache_id(&data, "cache_thread_id")
-        .or_else(|| body_cache_id(&data, "architect_thread_id"))
-        .or(fallback_cache_id);
+    let client_draft = match data.get("draft") {
+        Some(v @ Value::Object(_)) => Some(v.clone()),
+        _ => None,
+    };
     let world_id = body_str(&data, "world_id");
     let world_id = if world_id.is_empty() {
         None
     } else {
         Some(world_id)
     };
-    let visible_messages = visible_architect_messages_for_request(&data, &message);
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let app = state.clone();
     tokio::spawn(async move {
-        let initial_payload = architect_world_payload(
-            &draft,
-            visible_messages.clone(),
-            history.clone(),
-            cache_session_id.as_deref(),
-            cache_thread_id.as_deref(),
-        );
-        let (mut world, mut worlds) =
-            match persist_world_payload(&app, world_id, initial_payload).await {
-                Ok(saved) => saved,
-                Err(_resp) => {
-                    let _ = tx.send(json!({
-                        "kind": "architect_error",
-                        "data": "не удалось сохранить черновик мира",
-                    }));
-                    return;
-                }
-            };
+        // Content first: create the package (applying any client draft) on the
+        // first turn; apply the client draft as a plain update otherwise. With
+        // no client draft and an existing world, the content is NOT rewritten.
+        let creating = world_id.is_none();
+        let content_result = if creating || client_draft.is_some() {
+            let payload = architect_world_payload(client_draft.as_ref().unwrap_or(&Value::Null));
+            persist_world_payload(&app, world_id.clone(), payload).await
+        } else {
+            fetch_world_and_list(&app, world_id.as_deref().unwrap_or_default()).await
+        };
+        let (mut world, mut worlds) = match content_result {
+            Ok(saved) => saved,
+            Err(_resp) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": "не удалось сохранить черновик мира",
+                }));
+                return;
+            }
+        };
         let persisted_world_id = world
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
 
+        // Conversation state is server-side (the dialogs SQLite). Any load
+        // error aborts the turn LOUDLY — running on a silently-empty history
+        // would erase the real conversation on the next save.
+        let stored = match load_world_architect_state(&app, &persisted_world_id).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": format!("не удалось загрузить переписку архитектора: {e}"),
+                    "world": world,
+                    "worlds": worlds,
+                    "world_id": persisted_world_id,
+                }));
+                return;
+            }
+        };
+        let history = stored.model_history.clone();
+        let visible_with_user = visible_with_user_message(stored.messages.clone(), &message);
+        // Draft-first for the CHAT: persist the user message now so a failed
+        // model call never loses it. A failed write aborts BEFORE the model
+        // call — cheaper than losing the whole turn afterwards.
+        if let Err(e) = save_world_architect_state(
+            &app,
+            &persisted_world_id,
+            visible_with_user.clone(),
+            history.clone(),
+            stored.cache_session_id.as_deref(),
+            stored.cache_thread_id.as_deref(),
+        )
+        .await
+        {
+            let _ = tx.send(json!({
+                "kind": "architect_error",
+                "data": format!("не удалось сохранить переписку архитектора: {e}"),
+                "world": world,
+                "worlds": worlds,
+                "world_id": persisted_world_id,
+            }));
+            return;
+        }
+
+        // The model's draft source is the STORED world content (the response row
+        // carries the payload fields flattened — exactly the architect draft shape).
+        let draft = world.clone();
+
         let client = (app.make_client)();
-        client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
+        client.set_session_identity(
+            stored.cache_session_id.as_deref(),
+            stored.cache_thread_id.as_deref(),
+        );
         let mut sink = ArchitectStreamSink { tx: tx.clone() };
         let architect_options = gml_agents::WorldArchitectOptions {
             image_prompts: image_generation_enabled(&app),
@@ -1286,38 +1363,62 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
         .await
         {
             Ok(output) => {
-                // The agent loop already streamed each tool call live (architect_tool)
-                // via the sink. Persist the ordered visible segments (think / reply /
-                // tool) so reopening the world restores the interleaved view.
-                let mut visible_after = visible_messages;
+                // Content: persist only when the model actually changed the draft
+                // (a reply-only turn bumps nothing).
+                if let Some(new_draft) = output.draft.as_ref() {
+                    let final_payload = architect_world_payload(new_draft);
+                    match persist_world_payload(
+                        &app,
+                        Some(persisted_world_id.clone()),
+                        final_payload,
+                    )
+                    .await
+                    {
+                        Ok((saved_world, saved_worlds)) => {
+                            world = saved_world;
+                            worlds = saved_worlds;
+                        }
+                        Err(_resp) => {
+                            let _ = tx.send(json!({
+                                "kind": "architect_error",
+                                "data": "не удалось сохранить мир",
+                                "world": world,
+                                "worlds": worlds,
+                                "world_id": persisted_world_id,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                // Chat: the ordered visible segments restore the interleaved view
+                // on reopen; the model history stores the user TEXT only (the
+                // digest/draft never enters history — that is the token fix).
+                let mut visible_after = visible_with_user;
                 visible_after.extend(output.visible_segments.clone());
                 let mut model_history_after = history;
-                model_history_after.push(output.user_msg.clone());
+                model_history_after.push(json!({"role": "user", "content": message.trim()}));
                 model_history_after.push(output.assistant_history_msg.clone());
-                let final_payload = architect_world_payload(
-                    output.draft.as_ref().unwrap_or(&Value::Null),
+                if let Err(e) = save_world_architect_state(
+                    &app,
+                    &persisted_world_id,
                     visible_after,
                     model_history_after,
                     Some(client.session_id().as_str()),
                     Some(client.thread_id().as_str()),
-                );
-                match persist_world_payload(&app, Some(persisted_world_id.clone()), final_payload)
-                    .await
+                )
+                .await
                 {
-                    Ok((saved_world, saved_worlds)) => {
-                        world = saved_world;
-                        worlds = saved_worlds;
-                    }
-                    Err(_resp) => {
-                        let _ = tx.send(json!({
-                            "kind": "architect_error",
-                            "data": "не удалось сохранить мир",
-                            "world": world,
-                            "worlds": worlds,
-                            "world_id": persisted_world_id,
-                        }));
-                        return;
-                    }
+                    // The content is already persisted; losing the CHAT write
+                    // must still be loud — reopening would show a stale
+                    // conversation and the model would replay a stale history.
+                    let _ = tx.send(json!({
+                        "kind": "architect_error",
+                        "data": format!("ход выполнен, но переписка не сохранилась: {e}"),
+                        "world": world,
+                        "worlds": worlds,
+                        "world_id": persisted_world_id,
+                    }));
+                    return;
                 }
                 let _ = tx.send(json!({
                     "kind": "architect_done",
@@ -1375,10 +1476,60 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
     (headers, body).into_response()
 }
 
-fn visible_architect_messages_for_request(map: &Map<String, Value>, message: &str) -> Vec<Value> {
-    let mut visible = clean_architect_visible_messages(map.get("visible_messages"))
-        .or_else(|| clean_architect_visible_messages(map.get("architect_messages")))
-        .unwrap_or_default();
+/// `GET /worlds/{id}/architect` — the world-architect panel's conversation
+/// restore: `{ok, architect: {messages}}`. Only VISIBLE messages leave the
+/// server; the model history and cache ids are server-internal.
+async fn get_world_architect(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let db = state.store.clone();
+    let store = state.world_store.clone();
+    let world_id = id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        // DB first; package artifacts (architect.json / legacy keys) are the
+        // pre-migration fallback — for the row-NOT-PRESENT case only. A DB read
+        // error is a 500, never a silently-empty conversation. WorldNotFound
+        // still surfaces as a 404.
+        match db.get_architect_chat("world", &world_id) {
+            Ok(Some(v)) => {
+                if store.world_exists(&world_id) {
+                    Ok(Some(v))
+                } else {
+                    Err(gml_persistence::StoreError::WorldNotFound(world_id.clone()))
+                }
+            }
+            Ok(None) => store.get_architect_state(&world_id),
+            Err(e) => Err(e),
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(loaded)) => {
+            let messages = loaded
+                .and_then(|s| s.get("messages").cloned())
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            ok_json(&json!({"ok": true, "architect": {"messages": messages}}))
+        }
+        Ok(Err(gml_persistence::StoreError::WorldNotFound(_))) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": format!("world not found: {id}")}),
+        ),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+/// Append the current user message to the stored visible chat (skipping the
+/// append when an identical trailing user message is already present).
+fn visible_with_user_message(mut visible: Vec<Value>, message: &str) -> Vec<Value> {
     let has_current_user = visible.iter().rev().any(|item| {
         item.get("role").and_then(Value::as_str) == Some("user")
             && item
@@ -1410,6 +1561,12 @@ fn visible_architect_messages_for_request(map: &Map<String, Value>, message: &st
 /// bound to `world_id` with the live world version pinned, then update per turn);
 /// architect chat state (messages / model_history / cache ids) lives in the
 /// story's `meta` — NEVER in `seed` (`§С1.1`).
+/// `POST /story-architect/chat` — SERVER-AUTHORITATIVE architect turn, the
+/// story-level mirror of the world handler. Body: `{message, story_id?,
+/// world_id? (REQUIRED when story_id absent), draft?}`. The conversation state
+/// lives in the story package's `architect.json`; an optional `draft` is the
+/// panel's hand-edited PLOT, applied as a content update before the turn.
+/// Client-sent history/cache ids are ignored.
 async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let message = body_str(&data, "message");
@@ -1419,19 +1576,10 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             &json!({"ok": false, "error": "message is required"}),
         );
     }
-    let history = data
-        .get("history")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let draft = data.get("draft").cloned().unwrap_or(Value::Null);
-    let fallback_cache_id = body_cache_id(&data, "cache_id");
-    let cache_session_id = body_cache_id(&data, "cache_session_id")
-        .or_else(|| body_cache_id(&data, "architect_session_id"))
-        .or_else(|| fallback_cache_id.clone());
-    let cache_thread_id = body_cache_id(&data, "cache_thread_id")
-        .or_else(|| body_cache_id(&data, "architect_thread_id"))
-        .or(fallback_cache_id);
+    let client_draft = match data.get("draft") {
+        Some(v @ Value::Object(_)) => Some(v.clone()),
+        _ => None,
+    };
     let story_id = {
         let s = body_str(&data, "story_id");
         if s.is_empty() {
@@ -1448,7 +1596,6 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             Some(w)
         }
     };
-    let visible_messages = visible_architect_messages_for_request(&data, &message);
 
     // Resolve the bound world eagerly (before spawning): it must exist so we can
     // (a) build the read-only lore block for the model and (b) pin the live world
@@ -1462,21 +1609,15 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let app = state.clone();
     tokio::spawn(async move {
-        // Draft-first persist BEFORE the model call: create-on-first-turn (or
-        // update) so the story exists with the current plot + architect state.
-        let initial_meta = architect_story_meta(
-            visible_messages.clone(),
-            history.clone(),
-            cache_session_id.as_deref(),
-            cache_thread_id.as_deref(),
-        );
+        // Content first: create-on-first-turn (applying any client draft), or
+        // apply the client draft as a plain plot update. With no client draft and
+        // an existing story, the content is NOT rewritten.
         let (persisted_story_id, mut story, mut stories) = match persist_story_payload(
             &app,
             story_id.clone(),
             &resolved,
             &message,
-            &draft,
-            initial_meta,
+            client_draft.as_ref(),
         )
         .await
         {
@@ -1490,8 +1631,56 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             }
         };
 
+        // Conversation state is server-side (the dialogs SQLite). Any load
+        // error aborts the turn LOUDLY — running on a silently-empty history
+        // would erase the real conversation on the next save.
+        let stored = match load_story_architect_state(&app, &persisted_story_id).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": format!("не удалось загрузить переписку архитектора: {e}"),
+                    "story": story,
+                    "stories": stories,
+                    "story_id": persisted_story_id,
+                }));
+                return;
+            }
+        };
+        let history = stored.model_history.clone();
+        let visible_with_user = visible_with_user_message(stored.messages.clone(), &message);
+        // Draft-first for the CHAT: a failed write aborts BEFORE the model call.
+        if let Err(e) = save_story_architect_state(
+            &app,
+            &persisted_story_id,
+            visible_with_user.clone(),
+            history.clone(),
+            stored.cache_session_id.as_deref(),
+            stored.cache_thread_id.as_deref(),
+        )
+        .await
+        {
+            let _ = tx.send(json!({
+                "kind": "architect_error",
+                "data": format!("не удалось сохранить переписку архитектора: {e}"),
+                "story": story,
+                "stories": stories,
+                "story_id": persisted_story_id,
+            }));
+            return;
+        }
+
+        // The model's plot source is the STORED seed (post any client update).
+        let draft = story
+            .get("seed")
+            .cloned()
+            .unwrap_or(Value::Object(Map::new()));
+
         let client = (app.make_client)();
-        client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
+        client.set_session_identity(
+            stored.cache_session_id.as_deref(),
+            stored.cache_thread_id.as_deref(),
+        );
         let mut sink = ArchitectStreamSink { tx: tx.clone() };
         match gml_agents::story_architect_turn(
             client.as_ref(),
@@ -1504,43 +1693,58 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
         .await
         {
             Ok(output) => {
-                let mut visible_after = visible_messages;
+                // Content: persist only when the model actually changed the plot.
+                if output.draft.is_some() {
+                    match persist_story_payload(
+                        &app,
+                        Some(persisted_story_id.clone()),
+                        &resolved,
+                        &message,
+                        output.draft.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok((_id, saved_story, saved_stories)) => {
+                            story = saved_story;
+                            stories = saved_stories;
+                        }
+                        Err(_resp) => {
+                            let _ = tx.send(json!({
+                                "kind": "architect_error",
+                                "data": "не удалось сохранить историю",
+                                "story": story,
+                                "stories": stories,
+                                "story_id": persisted_story_id,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                // Chat: visible segments for the panel; model history stores the
+                // user TEXT only (never the digest/draft — the token fix).
+                let mut visible_after = visible_with_user;
                 visible_after.extend(output.visible_segments.clone());
                 let mut model_history_after = history;
-                model_history_after.push(output.user_msg.clone());
+                model_history_after.push(json!({"role": "user", "content": message.trim()}));
                 model_history_after.push(output.assistant_history_msg.clone());
-                let final_meta = architect_story_meta(
+                if let Err(e) = save_story_architect_state(
+                    &app,
+                    &persisted_story_id,
                     visible_after,
                     model_history_after,
                     Some(client.session_id().as_str()),
                     Some(client.thread_id().as_str()),
-                );
-                // Persist the (possibly updated) plot draft + refreshed architect
-                // state under the SAME story id captured above.
-                match persist_story_payload(
-                    &app,
-                    Some(persisted_story_id.clone()),
-                    &resolved,
-                    &message,
-                    output.draft.as_ref().unwrap_or(&draft),
-                    final_meta,
                 )
                 .await
                 {
-                    Ok((_id, saved_story, saved_stories)) => {
-                        story = saved_story;
-                        stories = saved_stories;
-                    }
-                    Err(_resp) => {
-                        let _ = tx.send(json!({
-                            "kind": "architect_error",
-                            "data": "не удалось сохранить историю",
-                            "story": story,
-                            "stories": stories,
-                            "story_id": persisted_story_id,
-                        }));
-                        return;
-                    }
+                    let _ = tx.send(json!({
+                        "kind": "architect_error",
+                        "data": format!("ход выполнен, но переписка не сохранилась: {e}"),
+                        "story": story,
+                        "stories": stories,
+                        "story_id": persisted_story_id,
+                    }));
+                    return;
                 }
                 let _ = tx.send(json!({
                     "kind": "architect_done",
@@ -1692,38 +1896,6 @@ fn resolve_story_architect_world(
     })
 }
 
-/// Build the story `meta` object carrying the architect chat state (`§С1.1`):
-/// `architect_messages` / `architect_model_history` / `architect_cache_*`. Reuses
-/// the SAME cleaner helpers as the world path so the persisted shape matches.
-fn architect_story_meta(
-    visible_messages: Vec<Value>,
-    model_history: Vec<Value>,
-    cache_session_id: Option<&str>,
-    cache_thread_id: Option<&str>,
-) -> Map<String, Value> {
-    let mut meta = Map::new();
-    meta.insert(
-        "architect_messages".to_string(),
-        Value::Array(
-            clean_architect_visible_messages(Some(&Value::Array(visible_messages)))
-                .unwrap_or_default(),
-        ),
-    );
-    meta.insert(
-        "architect_model_history".to_string(),
-        Value::Array(
-            clean_architect_model_history(Some(&Value::Array(model_history))).unwrap_or_default(),
-        ),
-    );
-    if let Some(id) = cache_session_id.and_then(normalize_cache_id) {
-        meta.insert("architect_cache_session_id".to_string(), Value::String(id));
-    }
-    if let Some(id) = cache_thread_id.and_then(normalize_cache_id) {
-        meta.insert("architect_cache_thread_id".to_string(), Value::String(id));
-    }
-    meta
-}
-
 /// The plot title for a create: the draft's title, else the first user message,
 /// else the locked fallback "Новая история" (`§С1.3`).
 fn story_title_from_draft(draft: &Value, message: &str) -> String {
@@ -1754,29 +1926,28 @@ fn story_plot_seed(draft: &Value) -> Value {
     }
 }
 
-/// Persist a story-architect turn (draft-first). Returns `(story_id, story,
+/// Persist a story-architect turn's CONTENT. Returns `(story_id, story,
 /// stories)`. For an ABSENT `story_id` this CREATES a world-bound authored story
 /// (title from the draft/message fallback, live world version pinned) then folds
-/// the plot + architect meta in; for a PRESENT id it `update_story`s in place.
-/// Both paths shallow-merge the plot into `seed` and the architect state into
-/// `meta` — mirroring how `persist_world_payload` funnels create+update through
-/// `update_world`.
+/// the plot in; for a PRESENT id with a draft it `update_story`s in place; for a
+/// PRESENT id WITHOUT a draft nothing is written (read-only fetch). The
+/// architect CHAT never rides here — it goes to `architect.json` via
+/// `save_story_architect_state`.
 async fn persist_story_payload(
     state: &AppState,
     story_id: Option<String>,
     resolved: &ResolvedStoryWorld,
     message: &str,
-    draft: &Value,
-    meta: Map<String, Value>,
+    draft: Option<&Value>,
 ) -> Result<(String, Value, Vec<Value>), Response> {
     let store = state.story_store.clone();
-    let plot_seed = story_plot_seed(draft);
+    let plot_seed = draft.map(story_plot_seed);
     // A create needs a title now (fallback: message → "Новая история"); an update
     // only carries `title` when the draft actually supplies a non-blank one, so a
     // fallback never clobbers a title the model already authored on a prior turn.
-    let create_title = story_title_from_draft(draft, message);
+    let create_title = story_title_from_draft(draft.unwrap_or(&Value::Null), message);
     let draft_title = draft
-        .as_object()
+        .and_then(Value::as_object)
         .and_then(|m| m.get("title"))
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -1810,30 +1981,28 @@ async fn persist_story_payload(
                 (id, true)
             }
         };
-        // Fold the plot into `seed` and the architect state into `meta`. The title
-        // is applied only when the draft supplies a non-blank one: a create's
-        // fallback yields to a model-authored title as the draft grows, and an
-        // update never overwrites an existing title with a fallback (update_story's
-        // null-drop/absent-key semantics keep the stored title when omitted).
-        let mut patch = Map::new();
-        if !draft_title.is_empty() {
-            patch.insert("title".to_string(), Value::String(draft_title.clone()));
-        }
-        patch.insert("seed".to_string(), plot_seed);
-        patch.insert("meta".to_string(), Value::Object(meta));
-        if let Err(e) = store.update_story(&id, Value::Object(patch)) {
-            // Best-effort rollback: drop the just-created story so the fold
-            // failure leaves the library untouched (the rollback error never
-            // masks the original).
-            if freshly_created {
-                let _ = store.delete_story(&id);
+        // Fold the plot into `seed` (only when a draft was actually supplied).
+        // The title is applied only when the draft supplies a non-blank one: a
+        // create's fallback yields to a model-authored title as the draft grows,
+        // and an update never overwrites an existing title with a fallback.
+        if let Some(plot_seed) = plot_seed {
+            let mut patch = Map::new();
+            if !draft_title.is_empty() {
+                patch.insert("title".to_string(), Value::String(draft_title.clone()));
             }
-            return Err(e);
+            patch.insert("seed".to_string(), plot_seed);
+            if let Err(e) = store.update_story(&id, Value::Object(patch)) {
+                // Best-effort rollback: drop the just-created story so the fold
+                // failure leaves the library untouched (the rollback error never
+                // masks the original).
+                if freshly_created {
+                    let _ = store.delete_story(&id);
+                }
+                return Err(e);
+            }
         }
-        // The architect SSE is GM-scoped: `story` carries the FULL draft row
-        // (seed + flattened architect_* chat state — same builder as
-        // `GET /stories/{id}/draft`) so the panel restores the plot + conversation;
-        // `stories` (the list refresher) stays the MINIMAL player-facing catalog.
+        // `story` carries the GM-scoped content draft row (same builder as
+        // `GET /stories/{id}/draft`); `stories` stays the MINIMAL catalog.
         let story = store.draft_row(&id)?;
         let stories = store.list_stories();
         Ok::<(String, Value, Vec<Value>), StoryStoreError>((
@@ -1857,38 +2026,809 @@ async fn persist_story_payload(
     }
 }
 
-fn architect_world_payload(
-    draft: &Value,
-    visible_messages: Vec<Value>,
+/// The CONTENT payload of a world-architect save: the draft's world fields plus
+/// the `draft` status stamp. The architect CHAT never rides in the payload —
+/// it lives in the package's `architect.json` (see `save_world_architect_state`).
+fn architect_world_payload(draft: &Value) -> Value {
+    let mut payload = draft_payload_fields(draft);
+    payload.insert("status".to_string(), json!("draft"));
+    Value::Object(payload)
+}
+
+/// Parsed architect-chat state loaded from a package's `architect.json`.
+#[derive(Default, Clone)]
+struct ArchitectStateParts {
+    messages: Vec<Value>,
+    model_history: Vec<Value>,
+    cache_session_id: Option<String>,
+    cache_thread_id: Option<String>,
+}
+
+fn architect_state_parts(state: Option<Value>) -> ArchitectStateParts {
+    let map = match state {
+        Some(Value::Object(m)) => m,
+        _ => return ArchitectStateParts::default(),
+    };
+    let arr = |key: &str| -> Vec<Value> {
+        map.get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let id = |key: &str| -> Option<String> {
+        map.get(key)
+            .and_then(Value::as_str)
+            .and_then(normalize_cache_id)
+    };
+    ArchitectStateParts {
+        messages: arr("messages"),
+        model_history: arr("model_history"),
+        cache_session_id: id("cache_session_id"),
+        cache_thread_id: id("cache_thread_id"),
+    }
+}
+
+/// Assemble the canonical architect-state value for persisting.
+fn architect_state_value(
+    messages: Vec<Value>,
     model_history: Vec<Value>,
     cache_session_id: Option<&str>,
     cache_thread_id: Option<&str>,
 ) -> Value {
-    let mut payload = draft_payload_fields(draft);
-    payload.insert("status".to_string(), json!("draft"));
-    payload.insert(
-        "architect_messages".to_string(),
-        Value::Array(visible_messages),
+    let mut state = Map::new();
+    state.insert(
+        "messages".into(),
+        Value::Array(
+            clean_architect_visible_messages(Some(&Value::Array(messages))).unwrap_or_default(),
+        ),
     );
-    payload.insert(
-        "architect_model_history".to_string(),
+    state.insert(
+        "model_history".into(),
         Value::Array(
             clean_architect_model_history(Some(&Value::Array(model_history))).unwrap_or_default(),
         ),
     );
-    if let Some(cache_session_id) = cache_session_id.and_then(normalize_cache_id) {
-        payload.insert(
-            "architect_cache_session_id".to_string(),
-            Value::String(cache_session_id),
+    if let Some(id) = cache_session_id.and_then(normalize_cache_id) {
+        state.insert("cache_session_id".into(), Value::String(id));
+    }
+    if let Some(id) = cache_thread_id.and_then(normalize_cache_id) {
+        state.insert("cache_thread_id".into(), Value::String(id));
+    }
+    Value::Object(state)
+}
+
+/// Validate a loaded architect-chat value: present state must be a JSON object
+/// (the canonical shape both writers produce). Anything else is corruption and
+/// must be LOUD — silently starting an empty conversation would erase the
+/// user's history on the next save.
+fn require_architect_object(loaded: Option<Value>, source: &str) -> Result<Option<Value>, String> {
+    match loaded {
+        None => Ok(None),
+        Some(v @ Value::Object(_)) => Ok(Some(v)),
+        Some(other) => Err(format!(
+            "architect chat in {source} is corrupted (expected an object, got {})",
+            json_type_name(&other)
+        )),
+    }
+}
+
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Load the world-architect conversation: the dialogs SQLite is the home
+/// (`architect_chats`), with a one-time MIGRATION fallback to package artifacts
+/// (`architect.json` / legacy in-payload keys) for packages written before the
+/// DB move. The fallback covers ONLY the row-not-present case — any read error
+/// (DB or package) fails the turn instead of silently starting an empty
+/// conversation.
+async fn load_world_architect_state(
+    state: &AppState,
+    world_id: &str,
+) -> Result<ArchitectStateParts, String> {
+    let db = state.store.clone();
+    let store = state.world_store.clone();
+    let id = world_id.to_string();
+    let loaded = tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
+        match db.get_architect_chat("world", &id) {
+            Ok(Some(v)) => require_architect_object(Some(v), "the dialogs DB"),
+            Ok(None) => {
+                let legacy = store
+                    .get_architect_state(&id)
+                    .map_err(|e| format!("read legacy architect state: {e}"))?;
+                require_architect_object(legacy, "the world package")
+            }
+            Err(e) => Err(format!("read architect chat from the dialogs DB: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))??;
+    Ok(architect_state_parts(loaded))
+}
+
+/// Persist the world architect chat into the dialogs SQLite. A failed DB write
+/// is an ERROR (the conversation would otherwise be silently lost on reload);
+/// only the post-write package purge stays best-effort — a stray legacy
+/// artifact is harmless (the DB row has precedence, exports exclude the file)
+/// and is retried on the next save.
+async fn save_world_architect_state(
+    state: &AppState,
+    world_id: &str,
+    messages: Vec<Value>,
+    model_history: Vec<Value>,
+    cache_session_id: Option<&str>,
+    cache_thread_id: Option<&str>,
+) -> Result<(), String> {
+    let db = state.store.clone();
+    let store = state.world_store.clone();
+    let id = world_id.to_string();
+    let value = architect_state_value(messages, model_history, cache_session_id, cache_thread_id);
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        db.set_architect_chat("world", &id, &value)
+            .map_err(|e| format!("save architect chat: {e}"))?;
+        let _ = store.purge_architect_artifacts(&id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+async fn load_story_architect_state(
+    state: &AppState,
+    story_id: &str,
+) -> Result<ArchitectStateParts, String> {
+    let db = state.store.clone();
+    let store = state.story_store.clone();
+    let id = story_id.to_string();
+    let loaded = tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
+        match db.get_architect_chat("story", &id) {
+            Ok(Some(v)) => require_architect_object(Some(v), "the dialogs DB"),
+            Ok(None) => {
+                let store = store.lock().expect("story store lock poisoned");
+                let legacy = store
+                    .get_architect_state(&id)
+                    .map_err(|e| format!("read legacy architect state: {e}"))?;
+                require_architect_object(legacy, "the story package")
+            }
+            Err(e) => Err(format!("read architect chat from the dialogs DB: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))??;
+    Ok(architect_state_parts(loaded))
+}
+
+async fn save_story_architect_state(
+    state: &AppState,
+    story_id: &str,
+    messages: Vec<Value>,
+    model_history: Vec<Value>,
+    cache_session_id: Option<&str>,
+    cache_thread_id: Option<&str>,
+) -> Result<(), String> {
+    let db = state.store.clone();
+    let store = state.story_store.clone();
+    let id = story_id.to_string();
+    let value = architect_state_value(messages, model_history, cache_session_id, cache_thread_id);
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        db.set_architect_chat("story", &id, &value)
+            .map_err(|e| format!("save architect chat: {e}"))?;
+        let mut store = store.lock().expect("story store lock poisoned");
+        let _ = store.purge_architect_artifacts(&id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+// =========================================================================
+// character-architect SSE (mirror of the story architect; standalone hero)
+// =========================================================================
+
+/// `POST /character-architect/chat` — Server-Sent Events, the CHARACTER-level
+/// mirror of `POST /story-architect/chat`. Streams the architect's reply
+/// (`architect_delta`), surfaces each tool call (`architect_tool`), then sends
+/// the full result (`architect_done`) carrying the sheet draft, usage, debug info
+/// and the persisted character. Terminates with `done`. Same event vocabulary as
+/// the other two so the frontend SSE reader is reused.
+///
+/// Body `{message, character_id?, draft?}`. A character is STANDALONE — there is
+/// no bound world to resolve. The conversation state lives in the dialogs SQLite
+/// (`architect_chats` kind='character'); an optional `draft` is the panel's
+/// hand-edited SHEET, applied as a content update BEFORE the turn. Create-on-
+/// first-turn: an absent `character_id` allocates a fresh `.gmchar` package. The
+/// model's sheet source is the STORED package content (`payload.player_character`),
+/// never the client draft (sent == stored).
+async fn post_character_architect_chat(State(state): State<AppState>, body: Bytes) -> Response {
+    let data = parse_body(&body);
+    let message = body_str(&data, "message");
+    if message.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "message is required"}),
         );
     }
-    if let Some(cache_thread_id) = cache_thread_id.and_then(normalize_cache_id) {
-        payload.insert(
-            "architect_cache_thread_id".to_string(),
-            Value::String(cache_thread_id),
+    let client_draft = match data.get("draft") {
+        Some(v @ Value::Object(_)) => Some(v.clone()),
+        _ => None,
+    };
+    let character_id = {
+        let c = body_str(&data, "character_id");
+        if c.is_empty() {
+            None
+        } else {
+            Some(c)
+        }
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let app = state.clone();
+    tokio::spawn(async move {
+        // Content first: create-on-first-turn (applying any client draft), or
+        // snapshot the client draft into an existing package. With no client
+        // draft and an existing character the content is NOT rewritten.
+        let (persisted_id, mut character, mut characters) = match persist_character_payload(
+            &app,
+            character_id.clone(),
+            &message,
+            client_draft.as_ref(),
+        )
+        .await
+        {
+            Ok(saved) => saved,
+            Err(_resp) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": "не удалось сохранить черновик персонажа",
+                }));
+                return;
+            }
+        };
+
+        // Conversation state is server-side. A load error aborts LOUDLY —
+        // running on a silently-empty history would erase the conversation.
+        let stored = match load_character_architect_state(&app, &persisted_id).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": format!("не удалось загрузить переписку архитектора: {e}"),
+                    "character": character,
+                    "characters": characters,
+                    "character_id": persisted_id,
+                }));
+                return;
+            }
+        };
+        let history = stored.model_history.clone();
+        let visible_with_user = visible_with_user_message(stored.messages.clone(), &message);
+        // Draft-first for the CHAT: a failed write aborts BEFORE the model call.
+        if let Err(e) = save_character_architect_state(
+            &app,
+            &persisted_id,
+            visible_with_user.clone(),
+            history.clone(),
+            stored.cache_session_id.as_deref(),
+            stored.cache_thread_id.as_deref(),
+        )
+        .await
+        {
+            let _ = tx.send(json!({
+                "kind": "architect_error",
+                "data": format!("не удалось сохранить переписку архитектора: {e}"),
+                "character": character,
+                "characters": characters,
+                "character_id": persisted_id,
+            }));
+            return;
+        }
+
+        // The model's sheet source is the STORED payload (post any client update).
+        let draft = character
+            .get("payload")
+            .and_then(|p| p.get("player_character"))
+            .cloned()
+            .unwrap_or(Value::Object(Map::new()));
+
+        let client = (app.make_client)();
+        client.set_session_identity(
+            stored.cache_session_id.as_deref(),
+            stored.cache_thread_id.as_deref(),
         );
+        let mut sink = ArchitectStreamSink { tx: tx.clone() };
+        match gml_agents::character_architect_turn(
+            client.as_ref(),
+            &history,
+            &draft,
+            &message,
+            &mut sink,
+        )
+        .await
+        {
+            Ok(output) => {
+                // Content: persist only when the model actually changed the sheet.
+                if output.draft.is_some() {
+                    match persist_character_payload(
+                        &app,
+                        Some(persisted_id.clone()),
+                        &message,
+                        output.draft.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok((_id, saved_char, saved_chars)) => {
+                            character = saved_char;
+                            characters = saved_chars;
+                        }
+                        Err(_resp) => {
+                            let _ = tx.send(json!({
+                                "kind": "architect_error",
+                                "data": "не удалось сохранить персонажа",
+                                "character": character,
+                                "characters": characters,
+                                "character_id": persisted_id,
+                            }));
+                            return;
+                        }
+                    }
+                }
+                // Chat: visible segments for the panel; model history stores the
+                // user TEXT only (never the draft — the token fix).
+                let mut visible_after = visible_with_user;
+                visible_after.extend(output.visible_segments.clone());
+                let mut model_history_after = history;
+                model_history_after.push(json!({"role": "user", "content": message.trim()}));
+                model_history_after.push(output.assistant_history_msg.clone());
+                if let Err(e) = save_character_architect_state(
+                    &app,
+                    &persisted_id,
+                    visible_after,
+                    model_history_after,
+                    Some(client.session_id().as_str()),
+                    Some(client.thread_id().as_str()),
+                )
+                .await
+                {
+                    let _ = tx.send(json!({
+                        "kind": "architect_error",
+                        "data": format!("ход выполнен, но переписка не сохранилась: {e}"),
+                        "character": character,
+                        "characters": characters,
+                        "character_id": persisted_id,
+                    }));
+                    return;
+                }
+                let _ = tx.send(json!({
+                    "kind": "architect_done",
+                    "data": {
+                        "ok": true,
+                        "reply": output.reply,
+                        "draft": output.draft,
+                        "user_message": output.user_msg,
+                        "assistant_history_message": output.assistant_history_msg,
+                        "assistant_message": output.assistant_msg,
+                        "calls": output.calls,
+                        "cache_session_id": client.session_id(),
+                        "cache_thread_id": client.thread_id(),
+                        "usage": architect_usage(&output.stats),
+                        "stats": output.stats,
+                        "thinking": output.thinking,
+                        "request_messages": output.request_messages,
+                        "character_id": persisted_id,
+                        "character": character,
+                        "characters": characters,
+                    }
+                }));
+            }
+            Err(e) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": e.to_string(),
+                    "character": character,
+                    "characters": characters,
+                    "character_id": persisted_id,
+                }));
+            }
+        }
+    });
+
+    let stream = async_stream::stream! {
+        let mut rx = rx;
+        while let Some(ev) = rx.recv().await {
+            let line = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
+        }
+        yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    let body = Body::from_stream(stream);
+    (headers, body).into_response()
+}
+
+/// `GET /characters/{id}/architect` — the character-architect panel's
+/// conversation restore: `{ok, architect: {messages}}`. Only VISIBLE messages
+/// leave the server; the model history and cache ids are server-internal. An
+/// unknown character id is a 404 (there is NO legacy package fallback — character
+/// packages are new and never carried in-package chat).
+async fn get_character_architect(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let db = state.store.clone();
+    let store = state.character_store.clone();
+    let cid = id.clone();
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<Option<Value>, gml_persistence::StoreError> {
+            let exists = {
+                let store = store.lock().expect("character store lock poisoned");
+                store.character_exists(&cid)
+            };
+            if !exists {
+                return Err(gml_persistence::StoreError::CharacterNotFound(cid));
+            }
+            db.get_architect_chat("character", &cid)
+        },
+    )
+    .await;
+    match result {
+        Ok(Ok(loaded)) => {
+            let messages = loaded
+                .and_then(|s| s.get("messages").cloned())
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            ok_json(&json!({"ok": true, "architect": {"messages": messages}}))
+        }
+        Ok(Err(gml_persistence::StoreError::CharacterNotFound(_))) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": format!("character not found: {id}")}),
+        ),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
     }
-    Value::Object(payload)
+}
+
+/// The character title for a create: the draft's `name`, else the first user
+/// message (clipped), else the locked fallback "Персонаж".
+fn character_title_from_draft(draft: &Value, message: &str) -> String {
+    let from_draft = draft
+        .as_object()
+        .and_then(|m| m.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if !from_draft.is_empty() {
+        return from_draft.to_string();
+    }
+    let msg = message.trim();
+    if !msg.is_empty() {
+        return msg.chars().take(80).collect();
+    }
+    "Персонаж".to_string()
+}
+
+/// Snapshot a character sheet into its package and follow the title to the hero
+/// name — the shared body of BOTH the architect update branch
+/// (`persist_character_payload`) and the direct draft-save route
+/// (`post_character_draft`). `pc` MUST already be a validated object. A
+/// non-empty hero name that differs from the current title retitles the package
+/// (mirrors worlds retitling from the draft). Snapshot bumps the version.
+/// Returns the updated character response.
+fn snapshot_and_retitle(
+    store: &mut CharacterStore,
+    id: &str,
+    pc: Value,
+) -> Result<Value, gml_persistence::StoreError> {
+    let hero_name = pc
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let mut character = store.snapshot_character(id, pc)?;
+    let current_title = character
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if !hero_name.is_empty() && hero_name != current_title {
+        character = store.update_metadata(id, json!({"title": hero_name}))?;
+    }
+    Ok(character)
+}
+
+/// `POST /characters/{id}/draft` — the character studio's DIRECT manual save:
+/// snapshot the edited sheet into the package WITHOUT any architect chat or SSE.
+/// Body `{player_character: {...}}` (must be an object, else 400). Snapshots the
+/// sheet (FULL REPLACE + version bump) and follows the title to the hero name —
+/// the SAME `snapshot_and_retitle` logic the architect update branch uses. The
+/// architect conversation is never touched. Unknown id -> 404. Returns
+/// `{ok, character}`.
+async fn post_character_draft(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    body: Bytes,
+) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let data = parse_body(&body);
+    // The sheet to store IS the player_character. A missing/non-object value is a
+    // 400 (never a silent no-op — a manual save with no sheet is a client bug).
+    let pc = match data.get("player_character") {
+        Some(Value::Object(m)) => Value::Object(m.clone()),
+        _ => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": "player_character must be an object"}),
+            )
+        }
+    };
+
+    let store = state.character_store.clone();
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<Value, gml_persistence::StoreError> {
+            let mut store = store.lock().expect("character store lock poisoned");
+            snapshot_and_retitle(&mut store, &id, pc)
+        })
+        .await;
+
+    match result {
+        Ok(Ok(character)) => ok_json(&json!({"ok": true, "character": character})),
+        Ok(Err(gml_persistence::StoreError::CharacterNotFound(id))) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": format!("character not found: {id}")}),
+        ),
+        Ok(Err(e)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+/// Persist a character-architect turn's CONTENT. Returns `(character_id,
+/// character, characters)`. For an ABSENT `character_id` this CREATES a `.gmchar`
+/// package (title from the draft name / message fallback) with the draft sheet as
+/// its `player_character`; for a PRESENT id with a draft it `snapshot_character`s
+/// (FULL REPLACE + version bump); for a PRESENT id WITHOUT a draft nothing is
+/// written (read-only fetch). The architect CHAT never rides here — it goes to
+/// the dialogs SQLite via `save_character_architect_state`.
+async fn persist_character_payload(
+    state: &AppState,
+    character_id: Option<String>,
+    message: &str,
+    draft: Option<&Value>,
+) -> Result<(String, Value, Vec<Value>), Response> {
+    let store = state.character_store.clone();
+    // The sheet object to store (the draft IS the player_character). Only a real
+    // object is folded — a null/absent draft is a no-op on an existing package.
+    let pc_draft = draft
+        .and_then(Value::as_object)
+        .map(|m| Value::Object(m.clone()));
+    let create_title = character_title_from_draft(draft.unwrap_or(&Value::Null), message);
+
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<(String, Value, Vec<Value>), gml_persistence::StoreError> {
+            let mut store = store.lock().expect("character store lock poisoned");
+            let (id, character) = match character_id {
+                Some(id) => {
+                    // Update in place: snapshot the sheet when a draft was
+                    // supplied, else just read the current package. The title
+                    // tracks the hero's name (mirrors worlds retitling from the
+                    // draft): a create-on-first-turn starts with the raw brief
+                    // as a transient title until the model names the hero.
+                    let character = match &pc_draft {
+                        Some(pc) => snapshot_and_retitle(&mut store, &id, pc.clone())?,
+                        None => store.get_character(&id)?,
+                    };
+                    (id, character)
+                }
+                None => {
+                    // Create-on-first-turn: the draft sheet (or an empty object)
+                    // becomes the package's player_character.
+                    let payload = json!({
+                        "player_character": pc_draft.clone().unwrap_or(Value::Object(Map::new()))
+                    });
+                    let created = store.create_character(&create_title, payload)?;
+                    let id = created
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    (id, created)
+                }
+            };
+            let characters = store.list_characters();
+            Ok((id, character, characters))
+        },
+    )
+    .await;
+
+    match result {
+        Ok(Ok(tuple)) => Ok(tuple),
+        Ok(Err(e)) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        )),
+        Err(e) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        )),
+    }
+}
+
+/// Load the character-architect conversation from the dialogs SQLite
+/// (`architect_chats` kind='character'). NO legacy package fallback — character
+/// packages never carried in-package chat. A read error fails the turn instead of
+/// silently starting an empty conversation.
+async fn load_character_architect_state(
+    state: &AppState,
+    character_id: &str,
+) -> Result<ArchitectStateParts, String> {
+    let db = state.store.clone();
+    let id = character_id.to_string();
+    let loaded = tokio::task::spawn_blocking(move || -> Result<Option<Value>, String> {
+        match db.get_architect_chat("character", &id) {
+            Ok(v) => require_architect_object(v, "the dialogs DB"),
+            Err(e) => Err(format!("read architect chat from the dialogs DB: {e}")),
+        }
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))??;
+    Ok(architect_state_parts(loaded))
+}
+
+/// Persist the character architect chat into the dialogs SQLite. A failed write
+/// is an ERROR (the conversation would otherwise be silently lost on reload).
+async fn save_character_architect_state(
+    state: &AppState,
+    character_id: &str,
+    messages: Vec<Value>,
+    model_history: Vec<Value>,
+    cache_session_id: Option<&str>,
+    cache_thread_id: Option<&str>,
+) -> Result<(), String> {
+    let db = state.store.clone();
+    let id = character_id.to_string();
+    let value = architect_state_value(messages, model_history, cache_session_id, cache_thread_id);
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        db.set_architect_chat("character", &id, &value)
+            .map_err(|e| format!("save architect chat: {e}"))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
+/// `POST /stories/{id}/save-protagonist` — create a `.gmchar` package from the
+/// story draft's `seed.player_character`. Guards like the other story-architect
+/// routes: unknown id -> 404, a self-contained builtin or a procedural story ->
+/// 400 (via `draft_row`); a story with no authored protagonist -> 400. The loose
+/// authored PC is coerced through the canonical PC seam so the package carries the
+/// full sheet (missing fields default). Returns `{ok, character}`.
+async fn post_save_protagonist(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    // Read the story draft (draft_row enforces world-bound-authored) and pull the
+    // suggested protagonist out of its seed.
+    let seed_pc = {
+        let store = state.story_store.lock().expect("story store lock poisoned");
+        match store.draft_row(&id) {
+            Ok(row) => row
+                .get("seed")
+                .and_then(|s| s.get("player_character"))
+                .cloned(),
+            Err(StoryStoreError::StoryNotFound(_)) => {
+                return json_response(
+                    StatusCode::NOT_FOUND,
+                    &json!({"ok": false, "error": format!("story not found: {id}")}),
+                )
+            }
+            Err(StoryStoreError::Invalid(msg)) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": msg}),
+                )
+            }
+            Err(e) => {
+                return json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &json!({"ok": false, "error": e.to_string()}),
+                )
+            }
+        }
+    };
+    let Some(seed_pc) = seed_pc.filter(Value::is_object) else {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "story has no protagonist to save"}),
+        );
+    };
+
+    // Coerce the loose authored PC through the canonical seam, then re-serialize
+    // to the full package sheet (missing fields default; card_revision preserved).
+    let pc = gml_orchestrator::session_payload::player_character_from_value(Some(&seed_pc));
+    let pc_payload = gml_orchestrator::session_payload::player_character_payload(&pc);
+    let name = pc_payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let title = if name.is_empty() { "Персонаж" } else { name };
+
+    let result = {
+        let mut cstore = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        cstore.create_character(title, json!({ "player_character": pc_payload }))
+    };
+    match result {
+        Ok(character) => ok_json(&json!({"ok": true, "character": character})),
+        Err(e) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": e.to_string()}),
+        ),
+    }
+}
+
+/// Read an existing world + the world list (asset URLs rewritten) without
+/// writing anything — the no-client-draft architect turn's content source.
+async fn fetch_world_and_list(
+    state: &AppState,
+    world_id: &str,
+) -> Result<(Value, Vec<Value>), Response> {
+    let store = state.world_store.clone();
+    let id = world_id.to_string();
+    let res = tokio::task::spawn_blocking(move || {
+        let world = store.get_world(&id)?;
+        let worlds = store.list_worlds()?;
+        Ok::<(Value, Vec<Value>), gml_persistence::StoreError>((world, worlds))
+    })
+    .await;
+    match res {
+        Ok(Ok((mut world, mut worlds))) => {
+            rewrite_world_asset_urls(world_id, &mut world);
+            rewrite_world_list_asset_urls(&mut worlds);
+            Ok((world, worlds))
+        }
+        Ok(Err(gml_persistence::StoreError::WorldNotFound(id))) => Err(json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": format!("world not found: {id}")}),
+        )),
+        Ok(Err(e)) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": e.to_string()}),
+        )),
+        Err(e) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {e}")}),
+        )),
+    }
 }
 
 fn draft_payload_fields(draft: &Value) -> Map<String, Value> {
@@ -2639,10 +3579,21 @@ fn build_story_world(
             };
             let world = match launch.kind.as_str() {
                 // Procedural story: generate the world from its bound lore and
-                // overlay the story's identity (title/brief/public_intro).
+                // overlay the story's identity (title/brief/public_intro). A plot
+                // that carries a protagonist seeds it too — the protagonist gate
+                // exempts `story_carries_pc` launches, so the PC must actually
+                // land in the world (otherwise the worldgen default hero leaks).
                 "procedural" => {
                     let mut world = World::from_worldgen_with_lore(&spec, lore);
                     overlay_story_identity(&mut world, &launch.plot);
+                    let pc_raw = launch
+                        .plot
+                        .get("player_character")
+                        .or_else(|| launch.plot.get("player"))
+                        .filter(|v| v.as_object().is_some_and(|m| !m.is_empty()));
+                    if pc_raw.is_some() {
+                        world.seed_player_character(pc_raw);
+                    }
                     world
                 }
                 // Authored story: compose the world bible + the authored plot.
@@ -2738,6 +3689,26 @@ fn overlay_story_identity(world: &mut World, plot: &Value) {
         let premise = world.world_canon.world_lore.public_premise.clone();
         world.set_public_intro(&premise);
     }
+}
+
+/// 400 response for a launch with no protagonist: neither a selected character
+/// package nor a story that carries its own `player_character` (design §8). No
+/// default hero is ever seeded — the player is sent to pick/generate a hero.
+/// `procedural` selects the message: a procedural / procedural-kind / brief
+/// campaign needs a library package; an authored story sends the player to the
+/// story architect (or the library).
+fn protagonist_required_response(procedural: bool) -> Response {
+    let error = if procedural {
+        "Для процедурной кампании нужен персонаж: выберите пакет из библиотеки \
+         (создать его можно у архитектора истории — сохраните героя как пакет)."
+    } else {
+        "В истории нет протагониста. Сгенерируйте героя у архитектора истории \
+         или выберите персонажа из библиотеки."
+    };
+    json_response(
+        StatusCode::BAD_REQUEST,
+        &json!({"ok": false, "code": "protagonist_required", "error": error}),
+    )
 }
 
 async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Response {
@@ -2847,6 +3818,11 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     // `player_character` key — the trigger for the override warning.
     let is_brief = !brief.is_empty();
     let (mut world, client, story_carries_pc) = if is_brief {
+        // Protagonist gate (design §8): a brief-seeded world never carries an
+        // authored PC, so it needs a selected character package. No default hero.
+        if selected_character.is_none() {
+            return protagonist_required_response(true);
+        }
         let client = (make_client)();
         if !model_hint.is_empty() {
             client.set_model(&model_hint);
@@ -2897,6 +3873,12 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                 }
             }
         };
+        // Protagonist gate (design §8): procedural worldgen never carries an
+        // authored PC. Placed AFTER world_lore validation to preserve the
+        // existing error precedence (missing world_lore still 400s first).
+        if selected_character.is_none() {
+            return protagonist_required_response(true);
+        }
         let client = (make_client)();
         let mut world = World::from_worldgen_with_lore(&spec, world_lore);
         world.world_ref = world_ref;
@@ -2946,6 +3928,13 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         // player_character (an authored protagonist) — read from the plot BEFORE
         // it is consumed by `build_story_world`.
         let story_carries_pc = story_plot_has_pc(&launch.plot);
+        // Protagonist gate (design §8): a story with no authored PC needs a
+        // selected character package. A procedural-KIND story routes the player
+        // to the library; an authored story to the story architect. No default
+        // hero. Placed AFTER launch resolution (unknown-id 400s first).
+        if selected_character.is_none() && !story_carries_pc {
+            return protagonist_required_response(launch.kind == "procedural");
+        }
         let client = (make_client)();
         let world = match build_story_world(&state, launch) {
             Ok((w, warnings)) => {
@@ -3154,6 +4143,7 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
         .unwrap_or(id);
     let store = state.world_store.clone();
     let config = state.config.clone();
+    let db = state.store.clone();
     let res = tokio::task::spawn_blocking(move || {
         let result = store.delete_world(&world_id)?;
         if result.get("deleted").and_then(Value::as_bool) != Some(true) {
@@ -3165,8 +4155,10 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
             return Ok(json!({"ok": false, "error": reason, "__status": 404}));
         }
         // Best-effort GC of the deleted world's per-world RAG cache (file +
-        // sqlite sidecars). Never fatal — matches the purge-hook culture.
+        // sqlite sidecars) AND its architect conversation in the dialogs DB.
+        // Never fatal — matches the purge-hook culture.
         gml_rag::delete_world_cache(&config, &world_id);
+        let _ = db.delete_architect_chat("world", &world_id);
         let worlds = store.list_worlds()?;
         Ok::<Value, gml_persistence::StoreError>(json!({
             "ok": true,

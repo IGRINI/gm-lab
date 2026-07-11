@@ -128,8 +128,30 @@ async fn drive(
     session.turn_time_advances = Vec::new();
     let mut turn_visible_output_seen = false;
 
-    let gm_user =
-        gml_agents::gm_user_message(&mut session.world, player_text, include_player_options_tool);
+    // Snapshot-once: push the full world snapshot into gm_messages ONCE at
+    // session start (or lazily for a legacy save whose history predates
+    // snapshots). Compaction re-injects its own fresh snapshot.
+    if !gml_agents::gm_messages_have_snapshot(&session.gm_messages) {
+        let recent = session.recent_contact_ids();
+        let snapshot = gml_agents::gm_world_snapshot(
+            &mut session.world,
+            &recent,
+            include_player_options_tool,
+        );
+        session
+            .gm_messages
+            .push(gml_agents::gm_snapshot_message(&snapshot));
+        session.snapshot_options_state = Some(include_player_options_tool);
+    } else if session.snapshot_options_state != Some(include_player_options_tool) {
+        // Player-options setting toggled mid-session: append-only notice.
+        session
+            .gm_messages
+            .push(gml_agents::gm_options_notice_message(
+                include_player_options_tool,
+            ));
+        session.snapshot_options_state = Some(include_player_options_tool);
+    }
+    let gm_user = gml_agents::gm_user_message(player_text);
     session.gm_messages.push(gm_user);
     sink.emit(ev(
         event_kind::PLAYER,
@@ -727,6 +749,11 @@ async fn run_executable_tool(
     metas: &mut Vec<Value>,
     sink: &Sink,
 ) -> ToolExecutionResult {
+    // Staleness "last used" signal for the compaction-time prune of searched
+    // tools — recorded for EVERY executed tool (this is the single choke for
+    // actually-run tools, including the canonical inner tool of the
+    // invoke_loaded_tool path, so the recorded name is always the real tool).
+    session.mark_tool_used(name);
     match name {
         "tool_search" => run_tool_search(session, args, sink),
         "load_tool_schema" => run_load_tool_schema(session, args, sink),
@@ -738,6 +765,7 @@ async fn run_executable_tool(
         "consolidate_memory" => run_consolidate_memory(session, args, sink),
         "get_npc_profile" => run_get_npc_profile(session, args, sink),
         "advance_time" => run_advance_time(session, args, sink),
+        "long_rest" => run_long_rest(session, args, sink),
         "update_player_character" => run_update_player_character(session, args, sink),
         "set_npc_whereabouts" => run_set_npc_whereabouts(session, args, sink),
         "move_npc" | "set_npc_presence" => run_move_npc(session, args, sink),
@@ -748,10 +776,12 @@ async fn run_executable_tool(
         "cast_spell" => run_cast_spell(session, args, sink),
         "world_debug" => run_world_debug(session, args, sink),
         "generate_location" => run_generate_location(session, args, sink).await,
+        "generate_npc" => run_generate_npc(session, args, sink).await,
+        "read_state" => run_read_state(session, args, sink),
         "ask_npc" => run_ask_npc_tool(session, args, metas, sink).await,
         other => tool_error(
             if other.is_empty() { "unknown" } else { other },
-            &format!("unknown tool: {other}"),
+            &format!("unknown tool: {other} — tool not loaded; find it via tool_search"),
             None,
             "unknown_tool",
             &[],
@@ -892,6 +922,15 @@ fn run_load_tool_schema(session: &mut Session, args: &Value, sink: &Sink) -> Too
         .get("loaded_schema")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    // Record the "recently loaded" staleness signal when a schema was actually
+    // loaded (or was already loaded) — the canonical name from the payload.
+    if matches!(status, "loaded_schema" | "already_loaded") {
+        let canonical = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(loaded_schema);
+        session.mark_tool_loaded(canonical);
+    }
     let mut lines = vec![format!("Статус: {status}")];
     if !loaded_schema.is_empty() {
         lines.push(format!("Схема: {loaded_schema}"));
@@ -977,9 +1016,14 @@ async fn run_invoke_loaded_tool(
     let canonical = schema_payload
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or(requested);
+        .unwrap_or(requested)
+        .to_string();
+    // Invoking a loaded tool re-arms its "recently loaded" staleness signal so a
+    // tool the GM keeps using through invoke_loaded_tool is not pruned out from
+    // under it at the next compaction.
+    session.mark_tool_loaded(&canonical);
 
-    run_executable_tool(session, canonical, &invocation_args, metas, sink).await
+    run_executable_tool(session, &canonical, &invocation_args, metas, sink).await
 }
 
 fn run_ask_player(args: &Value, sink: &Sink) -> ToolExecutionResult {
@@ -1202,7 +1246,27 @@ fn run_get_npc_profile(session: &mut Session, args: &Value, sink: &Sink) -> Tool
 fn run_advance_time(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
     let minutes = args.get("minutes").cloned().unwrap_or(json!(0));
     let reason = arg_str(args, "reason").to_string();
-    let payload = match session.world.advance_time(&minutes, &reason) {
+    let payload = apply_advance_time(session, &minutes, &reason, sink);
+    tool_result(
+        &json_compact(&payload),
+        Some(&model_time_text(&payload)),
+        None,
+        false,
+    )
+}
+
+/// The shared advance_time application path (canon clock + schedules + rumor
+/// tick via `World::advance_time`, plus the per-turn `turn_time_advances` bump
+/// and the TIME event). Returns the advance payload. `long_rest` reuses this so
+/// its +8h uses the exact same mechanics as `advance_time` rather than a
+/// duplicate clock write.
+fn apply_advance_time(
+    session: &mut Session,
+    minutes: &Value,
+    reason: &str,
+    sink: &Sink,
+) -> Value {
+    match session.world.advance_time(minutes, reason) {
         Ok(p) => {
             if p.get("ok").and_then(Value::as_bool).unwrap_or(false) {
                 session.turn_time_advances.push(json!({
@@ -1218,13 +1282,208 @@ fn run_advance_time(session: &mut Session, args: &Value, sink: &Sink) -> ToolExe
             sink.emit(ev(event_kind::ERROR, Some("ГМ"), Value::String(e), None));
             p
         }
+    }
+}
+
+/// `long_rest(reason)` — a LONG rest only (there is no `kind`: a short rest is
+/// `advance_time` + GM adjudication and must NOT call this). Restores the player
+/// to full: `spell_slots := spell_slots_max`, `hp.current := hp.max`,
+/// concentration cleared — applied through the same
+/// `update_player_character` path that emits PLAYER_CHARACTER_UPDATE — then
+/// advances the game clock by 8h (480 min) through the shared `advance_time`
+/// mechanics (canon clock, schedules). Consumes NO dice RNG and writes NO canon
+/// event beyond what the advance_time path already does.
+fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    const LONG_REST_MINUTES: i64 = 8 * 60;
+    let reason = {
+        let r = arg_str(args, "reason").trim();
+        if r.is_empty() {
+            "долгий отдых".to_string()
+        } else {
+            r.to_string()
+        }
     };
-    tool_result(
-        &json_compact(&payload),
-        Some(&model_time_text(&payload)),
+
+    // Build the full-restore field batch from the CURRENT card, then apply it via
+    // update_player_character (full-rewrite of spell_slots / hp; concentration is
+    // a plain text field cleared to "").
+    let had_concentration = !session.world.player_character.concentration.trim().is_empty();
+    let mut fields = Map::new();
+    if !session.world.player_character.spell_slots_max.is_empty() {
+        fields.insert(
+            "spell_slots".to_string(),
+            Value::Object(session.world.player_character.spell_slots_max.clone()),
+        );
+    }
+    if let Some(max_hp) = session.world.player_character.hp.get("max").cloned() {
+        let mut hp = session.world.player_character.hp.clone();
+        hp.insert("current".to_string(), max_hp);
+        fields.insert("hp".to_string(), Value::Object(hp));
+    }
+    fields.insert("concentration".to_string(), Value::String(String::new()));
+
+    let update_payload = session
+        .world
+        .update_player_character(&Value::Object(fields), &reason);
+    sink.emit(ev(
+        event_kind::PLAYER_CHARACTER_UPDATE,
+        Some("ГМ"),
+        update_payload.clone(),
         None,
-        false,
-    )
+    ));
+
+    // +8h through the exact advance_time path (canon clock + schedules + events).
+    let time_payload = apply_advance_time(session, &json!(LONG_REST_MINUTES), &reason, sink);
+
+    // Compact structured result: the new-time line (as advance_time renders it)
+    // plus a restored-summary line.
+    let pc = &session.world.player_character;
+    let slots: Vec<String> = pc
+        .spell_slots
+        .iter()
+        .map(|(level, count)| format!("{level}:{}", crate::helpers::clean_text(count)))
+        .collect();
+    let slots_text = if slots.is_empty() {
+        "нет".to_string()
+    } else {
+        slots.join(", ")
+    };
+    let hp_cur = crate::helpers::clean_text(pc.hp.get("current").unwrap_or(&Value::Null));
+    let hp_max = crate::helpers::clean_text(pc.hp.get("max").unwrap_or(&Value::Null));
+    let hp_text = if hp_cur.is_empty() && hp_max.is_empty() {
+        String::new()
+    } else {
+        format!(", ХП {}/{}", nonempty_string(hp_cur, "?"), nonempty_string(hp_max, "?"))
+    };
+    let mut restored_line = format!("восстановлено: слоты {slots_text}{hp_text}");
+    if had_concentration {
+        restored_line.push_str("; концентрация спала");
+    }
+    let elapsed = time_payload
+        .get("elapsed_minutes")
+        .and_then(Value::as_i64)
+        .unwrap_or(LONG_REST_MINUTES);
+    let model = format!(
+        "LONG REST\nВремя: {} (+{} мин)\n{}",
+        session.world.time_summary(),
+        elapsed,
+        restored_line,
+    );
+
+    let payload = json!({
+        "ok": true,
+        "status": "long_rest",
+        "reason": reason,
+        "elapsed_minutes": elapsed,
+        "current": session.world.time_export(),
+        "summary": session.world.time_summary(),
+        "spell_slots": Value::Object(pc.spell_slots.clone()),
+        "hp": Value::Object(pc.hp.clone()),
+        "concentration_dropped": had_concentration,
+        "restored": update_payload.get("updated").cloned().unwrap_or(json!([])),
+        "card_revision": pc.card_revision,
+    });
+    tool_result(&json_compact(&payload), Some(&model), None, false)
+}
+
+/// §4 `read_state` — deferred, on-demand read of CURRENT engine state. Renders
+/// the requested sections from live world state using the same renderers the
+/// WORLD SNAPSHOT uses (roster → the FULL roster, not the nearby-only snapshot
+/// slice). PURE READ: consumes no dice RNG, mutates no canon, emits no events
+/// beyond the standard tool result. GM-facing, so the player card includes its
+/// GM notes, but NPC secrets/knowledge are NEVER surfaced here (unchanged rule).
+fn run_read_state(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    const VALID: [&str; 5] = ["time", "scene", "player", "roster", "facts"];
+    let requested: Vec<String> = args
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Dedup preserving order; split known vs unknown.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut sections: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for name in requested {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if VALID.contains(&name.as_str()) {
+            sections.push(name);
+        } else {
+            unknown.push(name);
+        }
+    }
+
+    if sections.is_empty() {
+        let msg = format!(
+            "read_state requires at least one valid section. Available sections: {}.",
+            VALID.join(", ")
+        );
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("ГМ"),
+            Value::String(msg.clone()),
+            None,
+        ));
+        return tool_error(
+            "read_state",
+            &msg,
+            None,
+            "invalid_sections",
+            &[("sections", json!(VALID))],
+        );
+    }
+
+    let world = &session.world;
+    let mut blocks: Vec<String> = Vec::new();
+    for name in &sections {
+        let block = match name.as_str() {
+            "time" => format!("## TIME\n{}", world.time_context()),
+            "scene" => format!("## SCENE\n{}", world.scene_context()),
+            "player" => format!("## PLAYER\n{}", world.player_character_context()),
+            "roster" => format!("## ROSTER (full)\n{}", world.full_roster_context()),
+            "facts" => {
+                let facts: Vec<String> = world
+                    .fact_records
+                    .iter()
+                    .filter(|r| r.kind == "public")
+                    .map(|r| format!("- {}", r.text))
+                    .collect();
+                let body = if facts.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    facts.join("\n")
+                };
+                format!("## PUBLIC FACTS\n{body}")
+            }
+            _ => continue,
+        };
+        blocks.push(block);
+    }
+    let mut text = blocks.join("\n\n");
+    if !unknown.is_empty() {
+        text.push_str(&format!(
+            "\n\n(ignored unknown sections: {}; available: {})",
+            unknown.join(", "),
+            VALID.join(", ")
+        ));
+    }
+
+    let payload = json!({
+        "ok": true,
+        "sections": sections,
+        "unknown_sections": unknown,
+        "text": text,
+    });
+    tool_result(&json_compact(&payload), Some(&text), None, false)
 }
 
 fn run_update_player_character(
@@ -1721,15 +1980,26 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
             ));
         }
     }
+    // §5: a scene change can advance the clock — carry the current time in the
+    // result (same rendering advance_time uses) so the GM tracks time deltas.
+    if let Value::Object(ref mut m) = payload {
+        m.insert("current".to_string(), session.world.time_export());
+        m.insert(
+            "time_summary".to_string(),
+            json!(session.world.time_summary()),
+        );
+    }
     sink.emit(ev(
         event_kind::SCENE_UPDATE,
         Some("ГМ"),
         payload.clone(),
         None,
     ));
+    let mut model = model_scene_text(&payload);
+    model.push_str(&format!("\nВремя: {}", session.world.time_summary()));
     tool_result(
         &json_compact(&payload),
-        Some(&model_scene_text(&payload)),
+        Some(&model),
         Some(tool_reminder("set_scene")),
         false,
     )
@@ -1935,6 +2205,15 @@ from the player's current place.";
                 auto_generate_travel_situation(session, &events, &transition_id, &reason, sink)
                     .await;
             session.world.refresh_scene_from_canon();
+            // A road situation means the player stopped at an already-generated
+            // travel site; otherwise the destination itself may be a contentless
+            // lazy shell — fill it with the location generator on first entry.
+            let generated_destination = if generated_situation.is_none() {
+                auto_fill_lazy_destination(session, &transition_id, &reason, sink).await
+            } else {
+                None
+            };
+            session.world.refresh_scene_from_canon();
             let place_id = session.world.world_canon.player_place_id.clone();
             let title = session
                 .world
@@ -1957,6 +2236,11 @@ from the player's current place.";
                 "clock_minutes": session.world.world_canon.clock_minutes,
                 "effects": effects,
                 "generated_situation": generated_situation,
+                "generated_destination": generated_destination,
+                // §5: movement advances the clock — return the new time the same
+                // way advance_time does, so the GM tracks it from tool deltas.
+                "current": session.world.time_export(),
+                "time_summary": session.world.time_summary(),
             });
             sink.emit(ev(
                 event_kind::SCENE_UPDATE,
@@ -1965,7 +2249,7 @@ from the player's current place.";
                 None,
             ));
             let model = format!(
-                "Игрок перешёл в '{}' ({}); зафиксировано событий: {}.",
+                "Игрок перешёл в '{}' ({}); зафиксировано событий: {}.\nВремя: {}",
                 if title.is_empty() {
                     place_id.as_str()
                 } else {
@@ -1973,6 +2257,7 @@ from the player's current place.";
                 },
                 place_id,
                 events.len(),
+                session.world.time_summary(),
             );
             tool_result(
                 &json_compact(&payload),
@@ -2231,6 +2516,70 @@ async fn auto_generate_travel_situation(
         "route_time_minutes": elapsed_minutes + remaining_minutes,
         "situation_type": situation_type,
         "rarity": rarity,
+    });
+    let result = run_generate_location(session, &generator_args, sink).await;
+    let parsed = serde_json::from_str::<Value>(&result.full).unwrap_or_else(|_| {
+        json!({
+            "ok": false,
+            "status": "unparsed_generator_result",
+        })
+    });
+    Some(json!({
+        "ok": parsed.get("ok").and_then(Value::as_bool).unwrap_or(true),
+        "place_id": place_id,
+        "applied": parsed.get("applied").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+/// Auto-fill a CONTENTLESS destination with the local location generator on
+/// first entry. The GM's contract says a listed visible exit needs only
+/// `move_player` — nobody calls `generate_location` for the lazily materialised
+/// shell behind it, so the engine invokes the generator itself (the same
+/// pattern as [`auto_generate_travel_situation`] for road stops). A place that
+/// already carries a description/items never re-enters here, so each place is
+/// filled at most once; a generator failure degrades gracefully (the move
+/// stands, the stub fills on a later entry).
+async fn auto_fill_lazy_destination(
+    session: &mut Session,
+    transition_id: &str,
+    reason: &str,
+    sink: &Sink,
+) -> Option<Value> {
+    let place_id = session.world.world_canon.player_place_id.clone();
+    let (name, kind, contentless) = {
+        let place = session.world.world_canon.place(&place_id)?;
+        (
+            place.name.clone(),
+            place.kind.clone(),
+            place.default_description.trim().is_empty() && place.item_ids.is_empty(),
+        )
+    };
+    if !contentless {
+        return None;
+    }
+    let purpose = if kind == "dungeon_room" {
+        "room"
+    } else {
+        "local_place"
+    };
+    let via = session
+        .world
+        .world_canon
+        .transition(transition_id)
+        .map(|t| t.label.clone())
+        .unwrap_or_default();
+    let request = format!(
+        "Игрок вошёл в '{name}' ({place_id}) — место создано каркасно и пока пустое. \
+         Наполни именно ЕГО (target_place_id уже существует): при необходимости уточни \
+         название, сохранив смысл '{name}', дай видимое описание, 3-6 конкретных \
+         интерактивных деталей и реальные выходы, согласованные с уже существующими \
+         переходами этого места. Игрок пришёл через '{via}'; причина перехода: {reason}."
+    );
+    let generator_args = json!({
+        "purpose": purpose,
+        "request": request,
+        "target_place_id": place_id.clone(),
+        "commit": true,
     });
     let result = run_generate_location(session, &generator_args, sink).await;
     let parsed = serde_json::from_str::<Value>(&result.full).unwrap_or_else(|_| {
@@ -2974,6 +3323,571 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
     })
 }
 
+/// Dispatch handler for the `generate_npc` GM tool (NPC_GEN_DESIGN §6). Drafts
+/// ONE significant NPC via the dedicated character generator and commits a full
+/// canon card atomically. Mirrors [`run_generate_location`]. Consumes ZERO dice
+/// RNG; secrets/mechanics never leave the GM-private memory unit.
+async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    let request = arg_str(args, "request").trim().to_string();
+    let role = arg_str(args, "role").trim().to_string();
+    // 1. Validate BEFORE any client / dedup work (no generator client on reject).
+    if request.is_empty() || role.is_empty() {
+        let msg = "generate_npc requires non-empty `request` and `role`.";
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("ГМ"),
+            Value::String(msg.to_string()),
+            None,
+        ));
+        return tool_error("generate_npc", msg, None, "missing_generator_request", &[]);
+    }
+    // Per-turn budget: count NPCs already committed by the character generator on
+    // THIS turn (provenance origin + created_turn), gated by gen_budget.
+    let max_npcs = session.world.world_canon.gen_budget.max_npcs_per_turn;
+    let committed_this_turn = session
+        .world
+        .world_canon
+        .actors
+        .values()
+        .filter(|actor| {
+            actor.provenance.origin == "character_generator"
+                && actor.provenance.created_turn == session.turn
+        })
+        .count();
+    if committed_this_turn >= max_npcs {
+        let msg = format!(
+            "generate_npc budget exhausted this turn ({committed_this_turn}/{max_npcs})."
+        );
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("ГМ"),
+            Value::String(msg.clone()),
+            None,
+        ));
+        return tool_error("generate_npc", &msg, None, "npc_budget_exhausted", &[]);
+    }
+
+    // `retry` is honored ONLY while a prior duplicate_candidates result armed it —
+    // a confused GM sending retry=true on a fresh request still goes through the
+    // gate (observed live: two near-identical NPCs stamped back-to-back).
+    let retry_requested = args.get("retry").map(crate::truthy).unwrap_or(false);
+    let retry = retry_requested && session.character_generator_retry_armed;
+    let name_arg = arg_str(args, "name").trim().to_string();
+    let appearance = arg_str(args, "appearance").trim().to_string();
+    let power_tier = arg_str(args, "power_tier").trim().to_string();
+    let present = args.get("present").map(crate::truthy).unwrap_or(true);
+    let current_place_id = session.world.world_canon.player_place_id.clone();
+    let place_arg = arg_str(args, "place_id").trim().to_string();
+    let requested_place_id = if place_arg.is_empty() {
+        current_place_id.clone()
+    } else {
+        place_arg
+    };
+
+    // 2. Soft semantic dedup gate (skipped entirely on retry). NEVER blocks the
+    // turn: a disabled / degraded / no-candidates report has no `duplicate` flag,
+    // so the gate falls through to generation.
+    let dedup_status = if retry {
+        session.character_generator_retry_armed = false;
+        json!({ "enabled": true, "degraded": false, "reason": "retry_forced" })
+    } else {
+        let brief = [request.as_str(), role.as_str(), name_arg.as_str()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let dedup = crate::rag::npc_dedup_report(&session.world, &brief);
+        let gate_fires = dedup
+            .status
+            .get("duplicate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if gate_fires {
+            session.character_generator_retry_armed = true;
+            let candidates: Vec<Value> = dedup
+                .candidates
+                .iter()
+                .take(3)
+                .map(|candidate| {
+                    json!({
+                        "npc_id": candidate.npc_id,
+                        "internal_name": candidate.internal_name,
+                        "player_label": candidate.player_label,
+                        "role": candidate.role,
+                        "similarity": candidate.score,
+                    })
+                })
+                .collect();
+            let payload = json!({
+                "ok": false,
+                "status": "duplicate_candidates",
+                "candidates": candidates,
+                "dedup": dedup.status,
+            });
+            let model_message = "Похоже, такой персонаж уже есть в ростере. Используйте \
+                существующего через move_npc/ask_npc, либо повторите generate_npc с retry=true и \
+                укажите в request, чем предложенные кандидаты не подходят.";
+            return tool_result(
+                &json_compact(&payload),
+                Some(model_message),
+                Some(tool_reminder("generate_npc")),
+                false,
+            );
+        }
+        // The gate passed: this request is not a duplicate, so any stale arm
+        // from an earlier duplicate_candidates must not leak into later calls.
+        session.character_generator_retry_armed = false;
+        let mut status = dedup.status;
+        if retry_requested {
+            // retry=true without a prior duplicate_candidates — checked anyway.
+            status["retry_ignored"] = json!(true);
+        }
+        status
+    };
+
+    // 3. Server-side request payload (the object the agent actually sees).
+    let request_payload = json!({
+        "request": request,
+        "role": role,
+        "name": name_arg,
+        "appearance": appearance,
+        "power_tier": power_tier,
+        "place_id": requested_place_id,
+        "present": present,
+    });
+
+    // 4. Dedicated generator client + rolling history/anti-repeat snapshot.
+    let client = session.ensure_character_generator_client();
+    let recent = session.character_generator_anti_repeat.clone();
+    let history = session.character_generator_messages.clone();
+    let generated = match gml_agents::generate_character(
+        client.as_ref(),
+        &mut session.world,
+        &request_payload,
+        &recent,
+        &history,
+    )
+    .await
+    {
+        Ok(data) => data,
+        Err(e) => {
+            sink.emit(ev(
+                event_kind::ERROR,
+                Some("character_generator"),
+                Value::String(format!("Character generator failed: {e}")),
+                None,
+            ));
+            return tool_error(
+                "generate_npc",
+                &format!("Character generator failed: {e}"),
+                None,
+                "generator_failed",
+                &[],
+            );
+        }
+    };
+    session.character_generator_client = Some(client);
+    session.remember_character_generator_client();
+
+    let generated_value = Value::Object(generated.clone());
+    session.record_character_generator_exchange(&request_payload, &generated_value);
+
+    // 5. Atomic staged-canon commit + card insert.
+    let applied = commit_generated_npc(session, &request_payload, &generated_value);
+    let applied_ok = applied.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    if applied_ok {
+        if let Some(key) = generated
+            .get("anti_repeat_key")
+            .and_then(Value::as_str)
+            .filter(|key| !key.trim().is_empty())
+        {
+            session.note_character_anti_repeat_key(key);
+        }
+    }
+
+    // 6. REDACTED public payload — no secret / knowledge / mechanics anywhere.
+    let public_payload = if applied_ok {
+        json!({
+            "ok": true,
+            "status": "created",
+            "committed": true,
+            "npc": {
+                "npc_id": applied.get("npc_id").cloned().unwrap_or(Value::Null),
+                "name": applied.get("name").cloned().unwrap_or(Value::Null),
+                "player_label": applied.get("player_label").cloned().unwrap_or(Value::Null),
+                "role": applied.get("role").cloned().unwrap_or(Value::Null),
+                "persona": applied.get("persona").cloned().unwrap_or(Value::Null),
+                "agenda": applied.get("agenda").cloned().unwrap_or(Value::Null),
+                "present": applied.get("present").cloned().unwrap_or(Value::Bool(present)),
+            },
+            "note": "NPC committed and available NOW. Voice them via ask_npc with this \
+                     npc_id. Do NOT call generate_npc again for the same person.",
+            "dedup": dedup_status,
+        })
+    } else {
+        json!({
+            "ok": false,
+            "status": applied.get("status").cloned().unwrap_or(Value::String("rejected".to_string())),
+            "committed": false,
+            "code": applied.get("code").cloned().unwrap_or(Value::Null),
+            "reason": applied.get("reason").cloned().unwrap_or(Value::Null),
+            "dedup": dedup_status,
+        })
+    };
+
+    if !applied_ok {
+        let code = applied
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("rejected");
+        let reason = applied
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("npc commit rejected");
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("character_generator"),
+            Value::String(format!("NPC commit rejected ({code}): {reason}")),
+            None,
+        ));
+    }
+    sink.emit(ev(
+        event_kind::WORLD_STATE_UPDATE,
+        Some("character_generator"),
+        public_payload.clone(),
+        None,
+    ));
+    if applied_ok {
+        // The commit already refreshed the scene from canon; publish the new
+        // present-NPC set to the tool stream.
+        sink.emit(ev(
+            event_kind::SCENE_UPDATE,
+            Some("character_generator"),
+            session.world.scene_export(),
+            None,
+        ));
+    }
+
+    let name = applied
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("персонаж");
+    let model_message = if applied_ok {
+        format!(
+            "Генератор создал персонажа: {name}. Он уже в ростере — говори с ним через \
+             ask_npc, повторный generate_npc для него не нужен."
+        )
+    } else {
+        "Генератор подготовил персонажа, но канон отклонил коммит.".to_string()
+    };
+    tool_result(
+        &json_compact(&public_payload),
+        Some(&model_message),
+        Some(tool_reminder("generate_npc")),
+        false,
+    )
+}
+
+/// Deterministic, ASCII-safe salt for a generated NPC id — lowercase, non-alnum
+/// runs collapsed to `-`. Only feeds `ids::stable_id` (which hashes it), so it
+/// need not be reversible, only stable for a given name.
+fn npc_id_slug(name: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_alphanumeric() {
+            for lower in ch.to_lowercase() {
+                slug.push(lower);
+            }
+            prev_dash = false;
+        } else if !prev_dash {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = slug.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "npc".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Commit a generated NPC into canon + the live roster (NPC_GEN_DESIGN §6.5),
+/// atomically against a staged clone. Returns a status object (the `applied`
+/// dict). On any validator rejection the real canon is left untouched and no card
+/// is inserted. Consumes ZERO dice RNG.
+fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Value) -> Value {
+    use gml_world::canon::{
+        engine, ids, Action, MemoryTier, MemoryTruthStatus, MemoryUnit, ProposedAction, Scope,
+    };
+
+    let role_req = generated_str(request, "role");
+    let present = request
+        .get("present")
+        .map(crate::truthy)
+        .unwrap_or(true);
+    let current_place_id = session.world.world_canon.player_place_id.clone();
+    let requested_place_id = generated_str(request, "place_id");
+    // Where the actor lives; when `present`, it appears in the current scene.
+    let home_place_id = if requested_place_id.is_empty() {
+        current_place_id.clone()
+    } else {
+        requested_place_id
+    };
+    let actor_place_id = if present {
+        current_place_id.clone()
+    } else {
+        home_place_id.clone()
+    };
+
+    let world_seed = if session.world.world_canon.world_seed.is_empty() {
+        session.world.dice_seed.to_string()
+    } else {
+        session.world.world_canon.world_seed.clone()
+    };
+
+    let name = nonempty_string(generated_str(generated, "name"), "Безымянный персонаж");
+    let role = nonempty_string(generated_str(generated, "role"), &role_req);
+    let public_label = nonempty_string(generated_str(generated, "public_label"), &name);
+    let pronouns = generated_str(generated, "pronouns");
+    let persona = generated_str(generated, "persona");
+    let agenda = generated_str(generated, "agenda");
+    let goals_list = generated_string_list(generated, "goals");
+    let attitude = generated
+        .get("attitude_to_player")
+        .and_then(Value::as_i64)
+        .unwrap_or(0) as i32;
+    let knowledge = generated_str(generated, "knowledge");
+    let secret = generated_str(generated, "secret");
+    let memory_note = generated_str(generated, "memory_note");
+    let anti_repeat_key = generated_str(generated, "anti_repeat_key");
+
+    // Stable id from (seed, place, "actor", slug(name)); suffix on collision.
+    let base_id = ids::stable_id(&world_seed, &actor_place_id, "actor", &npc_id_slug(&name));
+    let npc_id = {
+        let taken = |id: &str| {
+            session.world.world_canon.actors.contains_key(id)
+                || session.world.npcs.contains_key(id)
+        };
+        if !taken(&base_id) {
+            base_id
+        } else {
+            let mut n = 2;
+            loop {
+                let candidate = format!("{base_id}_{n}");
+                if !taken(&candidate) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        }
+    };
+
+    // Staged canon actions: CreateActor + a player-facing (iff present) event.
+    let mut effects = vec![format!("actor:{npc_id}"), format!("role:{role}")];
+    if present {
+        effects.push(format!("present:{npc_id}"));
+    }
+    let event_scope = if present { Scope::Player } else { Scope::GmPrivate };
+    let actions: Vec<(Action, String)> = vec![
+        (
+            Action::CreateActor {
+                actor_id: npc_id.clone(),
+                public_label: public_label.clone(),
+                place_id: actor_place_id.clone(),
+                role: role.clone(),
+                faction_id: String::new(),
+            },
+            "generate significant npc".to_string(),
+        ),
+        (
+            Action::CreateEvent {
+                kind: "generate_npc".to_string(),
+                place_id: actor_place_id.clone(),
+                actors: vec![npc_id.clone()],
+                causes: vec![role.clone()],
+                effects,
+                visible_to_player: present,
+                scope: event_scope.clone(),
+                traces: Vec::new(),
+            },
+            generated_str(request, "request"),
+        ),
+    ];
+
+    let mut staged = session.world.world_canon.clone();
+    let mut committed_events = Vec::new();
+    for (action, reason) in actions {
+        let mut proposed = ProposedAction::new(action, "character_generator", &reason);
+        proposed.scope = event_scope.clone();
+        match engine::apply(&mut staged, &proposed, session.turn) {
+            Ok(mut events) => committed_events.append(&mut events),
+            Err(rejection) => {
+                return json!({
+                    "ok": false,
+                    "status": "rejected",
+                    "committed": false,
+                    "code": rejection.code,
+                    "reason": rejection.reason,
+                    "npc_id": npc_id,
+                });
+            }
+        }
+    }
+    let event_id = committed_events
+        .iter()
+        .find(|event| event.kind == "generate_npc")
+        .map(|event| event.event_id.clone())
+        .unwrap_or_default();
+
+    // Follow-on canon field fill on the STAGED actor (no engine op covers these;
+    // still atomic because `staged` is only assigned back on full success).
+    if let Some(actor) = staged.actors.get_mut(&npc_id) {
+        actor.attitude_to_player = attitude;
+        actor.goals = goals_list.clone();
+        actor.agenda = agenda.clone();
+        actor.home_place_id = home_place_id.clone();
+    }
+    session.world.world_canon = staged;
+
+    // Insert the full NPC card (world-model state, direct insert — the established
+    // seed_npcs / derive_legacy_from_canon pattern). `pronouns` REQUIRED for TTS.
+    let mechanics = generated
+        .get("mechanics")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mech_obj = |key: &str| {
+        mechanics
+            .get(key)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mech_str = |key: &str| {
+        mechanics
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let card = gml_world::Npc {
+        npc_id: npc_id.clone(),
+        name: name.clone(),
+        persona: persona.clone(),
+        voice: generated_str(generated, "voice"),
+        goals: goals_list.join("; "),
+        knowledge: knowledge.clone(),
+        secret: secret.clone(),
+        role: role.clone(),
+        pronouns: pronouns.clone(),
+        color: String::new(),
+        public_label: public_label.clone(),
+        age: generated_str(generated, "age"),
+        physical_type: generated_str(generated, "physical_type"),
+        distinctive_features: generated_str(generated, "distinctive_features"),
+        life_status: "alive".to_string(),
+        life_status_note: String::new(),
+        condition: String::new(),
+        personality: generated_str(generated, "personality"),
+        values: generated_str(generated, "values"),
+        habits: generated_str(generated, "habits"),
+        pressure_response: generated_str(generated, "pressure_response"),
+        boundaries: generated_str(generated, "boundaries"),
+        abilities: mech_obj("abilities"),
+        skills: mech_obj("skills"),
+        saving_throws: mech_obj("saving_throws"),
+        passive_perception: mechanics.get("passive_perception").and_then(Value::as_i64),
+        ac: mechanics.get("ac").cloned().unwrap_or(Value::Null),
+        hp: mech_obj("hp"),
+        speed: mech_str("speed"),
+        senses: mech_str("senses"),
+        languages: mech_str("languages"),
+        default_whereabouts: None,
+        card_revision: 0,
+    };
+    session.world.npcs.insert(npc_id.clone(), card);
+    if !name.is_empty() && !session.world.extra_proper_nouns.contains(&name) {
+        session.world.extra_proper_nouns.push(name.clone());
+    }
+    session.world.ensure_npc_whereabouts();
+    // present=false with no DISTINCT place would otherwise leave the actor at the
+    // current place, and the scene refresh below would surface it anyway (the
+    // review's confirmed failure). Route it off-scene explicitly: whereabouts
+    // note + OutOfPlay via the same path set_scene drops use. Must run BEFORE
+    // the refresh — set_npc_whereabouts no-ops on already-present NPCs.
+    if !present && actor_place_id == current_place_id {
+        let _ = session.world.set_npc_whereabouts(
+            &npc_id,
+            "",
+            "неподалёку",
+            "known",
+            "вне текущей сцены; появится, когда игрок с ним столкнётся",
+            "character_generator",
+        );
+    }
+    session.world.refresh_scene_from_canon();
+
+    // GM-only actor-scoped memory: secret + knowledge + note. Empty
+    // visibility_scopes → the NPC's own agent can recall it (owner scope), the
+    // player NEVER sees it. secret/knowledge never enter the tool result / SSE.
+    let mut hidden_parts: Vec<String> = Vec::new();
+    if !secret.is_empty() {
+        hidden_parts.push(format!("Тайна: {secret}"));
+    }
+    if !knowledge.is_empty() {
+        hidden_parts.push(format!("Знает: {knowledge}"));
+    }
+    if !memory_note.is_empty() {
+        hidden_parts.push(memory_note.clone());
+    }
+    if !hidden_parts.is_empty() {
+        session.world.add_memory_unit(MemoryUnit {
+            tier: MemoryTier::Raw,
+            owner_scope: format!("actor:{npc_id}"),
+            visibility_scopes: Vec::new(),
+            summary: format!(
+                "GM-заметка по персонажу {name}: {}",
+                hidden_parts[0]
+            ),
+            details: hidden_parts.join("\n"),
+            source_event_ids: if event_id.is_empty() {
+                Vec::new()
+            } else {
+                vec![event_id.clone()]
+            },
+            time_start: session.world.world_canon.clock_minutes,
+            time_end: session.world.world_canon.clock_minutes,
+            actor_ids: vec![npc_id.clone()],
+            topic_tags: vec!["character_secret".to_string(), "hidden".to_string()],
+            truth_status: MemoryTruthStatus::Actual,
+            created_by: "character_generator".to_string(),
+            ..Default::default()
+        });
+    }
+
+    let _ = anti_repeat_key; // persisted by the caller on success
+
+    // Report the DERIVED presence, not the requested flag — after the off-scene
+    // reroute above they can legitimately differ.
+    let present_now = session.world.scene.present_npcs.contains(&npc_id);
+    json!({
+        "ok": true,
+        "status": "created",
+        "committed": true,
+        "npc_id": npc_id,
+        "name": name,
+        "player_label": public_label,
+        "role": role,
+        "persona": persona,
+        "agenda": agenda,
+        "present": present_now,
+        "place_id": actor_place_id,
+        "event_id": event_id,
+    })
+}
+
 async fn run_ask_npc_tool(
     session: &mut Session,
     args: &Value,
@@ -3248,7 +4162,10 @@ async fn ask_npc(
             sink.emit(ev(event_kind::ERROR, Some("ГМ"), Value::String(e), None));
             return tool_error(
                 "ask_npc",
-                &format!("no such NPC: {npc_id}"),
+                &format!(
+                    "no such NPC: {npc_id}. If this is a significant newcomer the roster \
+                     lacks, call generate_npc first, then ask_npc with the returned id."
+                ),
                 Some(&format!("(no such NPC: {npc_id})")),
                 "unknown_npc",
                 &[("npc_id", json!(npc_id))],
@@ -3322,6 +4239,10 @@ only absence, travel/search, or generic scene response."
         .ensure_npc_client(&resolved)
         .unwrap_or_else(|| session.client.clone());
     maybe_compact_npc(session, &resolved, npc_client.as_ref()).await;
+    // §7: ensure the NPC card sits at the head of history (first contact,
+    // post-compaction re-inject, or legacy migration) and append a card-update
+    // notice on a card_revision bump — BEFORE the request history is read below.
+    session.ensure_npc_card_injected(&resolved);
 
     sink.emit(ev(
         event_kind::NPC_HISTORY,

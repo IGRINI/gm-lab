@@ -109,17 +109,21 @@ fn gm_world_setup_byte_identical() {
     assert_text_eq(&agents::gm_world_setup(&w), "gm_world_setup.txt");
 }
 
+// NOTE (GM_CONTEXT_TZ): `gm_turn_context` was split into `gm_world_snapshot`
+// (state-only, no checklist / no PLAYER ACTION) + a bare `gm_user_message`.
+// These byte-identical fixtures capture the NEW snapshot text; the reference
+// `.txt` files are re-blessed by the fixtures stage (currently RED here).
 #[test]
-fn gm_turn_context_noopts_byte_identical() {
+fn gm_world_snapshot_noopts_byte_identical() {
     let mut w = build_world();
-    let got = agents::gm_turn_context(&mut w, PLAYER_TEXT, false);
+    let got = agents::gm_world_snapshot(&mut w, &BTreeSet::new(), false);
     assert_text_eq(&got, "gm_turn_context_noopts.txt");
 }
 
 #[test]
-fn gm_turn_context_opts_byte_identical() {
+fn gm_world_snapshot_opts_byte_identical() {
     let mut w = build_world();
-    let got = agents::gm_turn_context(&mut w, PLAYER_TEXT, true);
+    let got = agents::gm_world_snapshot(&mut w, &BTreeSet::new(), true);
     assert_text_eq(&got, "gm_turn_context_opts.txt");
 }
 
@@ -131,7 +135,7 @@ fn worldgen_world_surfaces_canon_world_context_to_the_gm() {
         &gml_world::canon::WorldSpec::from_seed("777"),
         test_world_lore(),
     );
-    let ctx = agents::gm_turn_context(&mut w, PLAYER_TEXT, false);
+    let ctx = agents::gm_world_snapshot(&mut w, &BTreeSet::new(), false);
     assert!(
         ctx.contains("CANON WORLD"),
         "GM context must surface the structured canon world"
@@ -179,6 +183,42 @@ fn location_generator_receives_world_lore_guardrails() {
 }
 
 #[test]
+fn character_generator_receives_world_lore_guardrails() {
+    let spec = gml_world::canon::WorldSpec {
+        seed: "char-lore".to_string(),
+        genre: "postapocalyptic machine world".to_string(),
+        tone: "bleak".to_string(),
+        scale: "outpost".to_string(),
+    };
+    let mut w = World::from_worldgen_with_lore(&spec, test_world_lore());
+    let messages = agents::character_generator_messages(
+        &mut w,
+        &json!({
+            "request": "капитан стражи, намного сильнее игрока, держит ворота",
+            "role": "капитан стражи"
+        }),
+        &[],
+        &[],
+    );
+    let user = messages
+        .last()
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .expect("last user message");
+    // World-lore guardrails from canon_world_context reach the generator prompt.
+    assert!(
+        user.to_lowercase().contains("машин") || user.contains("Machine"),
+        "{user}"
+    );
+    assert!(user.contains("Do not add without cause"), "{user}");
+    assert!(user.contains("классическая магия"), "{user}");
+    assert!(user.contains("ремонтные дроны"), "{user}");
+    // The player character sheet block reaches the generator user message.
+    assert!(user.contains("## Player Character Sheet"), "{user}");
+    assert!(user.contains("Pronouns:"), "{user}");
+}
+
+#[test]
 fn gm_turn_context_includes_access_gated_living_memory_snapshot() {
     let mut w = World::from_worldgen(&gml_world::canon::WorldSpec::from_seed("778"));
     w.add_memory_unit(MemoryUnit {
@@ -194,7 +234,7 @@ fn gm_turn_context_includes_access_gated_living_memory_snapshot() {
         ..Default::default()
     });
 
-    let ctx = agents::gm_turn_context(&mut w, PLAYER_TEXT, false);
+    let ctx = agents::gm_world_snapshot(&mut w, &BTreeSet::new(), false);
     let canon = ctx.find("CANON WORLD").expect("canon block");
     let memory = ctx.find("LIVING MEMORY SNAPSHOT").expect("memory block");
     let entity = ctx.find("ENTITY REFERENCE MARKUP").expect("entity refs");
@@ -220,30 +260,48 @@ fn gm_world_setup_excludes_roster_and_public_facts() {
 }
 
 #[test]
-fn gm_turn_context_contains_roster_and_facts_and_ordering() {
+fn gm_world_snapshot_has_roster_and_facts_but_no_checklist_or_action() {
     let mut w = build_world();
-    let ctx = agents::gm_turn_context(&mut w, PLAYER_TEXT, false);
-    assert!(ctx.contains("INTERNAL NPC ROSTER"));
-    assert!(ctx.contains("CURRENT PUBLIC FACTS"));
-    // TURN RESOLUTION CHECK / <system-reminder> precede PLAYER ACTION.
-    let reminder = ctx.find("<system-reminder>").expect("reminder present");
-    let action = ctx.find("PLAYER ACTION").expect("player action present");
-    assert!(reminder < action, "reminder must precede PLAYER ACTION");
+    let snapshot = agents::gm_world_snapshot(&mut w, &BTreeSet::new(), false);
+    // Snapshot carries dynamic roster + public facts (state), but NOT the
+    // turn-resolution checklist (now standing GM_SYSTEM policy) nor a PLAYER
+    // ACTION block (that is the bare per-turn user message).
+    assert!(snapshot.contains("DYNAMIC NPC ROSTER"));
+    assert!(snapshot.contains("CURRENT PUBLIC FACTS"));
+    assert!(!snapshot.contains("<system-reminder>"), "checklist moved to GM_SYSTEM");
+    assert!(!snapshot.contains("PLAYER ACTION"), "action is a separate bare message");
+
+    // The bare per-turn user message is action-only: no roster, no checklist.
+    let action = agents::gm_user_message(PLAYER_TEXT);
+    let content = action["content"].as_str().expect("action content");
+    assert!(content.starts_with("PLAYER ACTION:"));
+    assert!(content.contains(PLAYER_TEXT));
+    assert!(!content.contains("DYNAMIC NPC ROSTER"));
+    assert!(!content.contains("<system-reminder>"));
+}
+
+// Snapshot-once shape (GM_CONTEXT_TZ §1-2): gm_messages now holds a WORLD
+// SNAPSHOT user message followed by the bare PLAYER ACTION user message. The
+// reference JSON fixtures are re-blessed to this shape by the fixtures stage
+// (currently RED here; they also fold in the GM_SYSTEM edits that stage makes).
+fn snapshot_then_action(w: &mut World, opts: bool) -> Vec<Value> {
+    let snapshot = agents::gm_snapshot_message(&agents::gm_world_snapshot(w, &BTreeSet::new(), opts));
+    vec![snapshot, agents::gm_user_message(PLAYER_TEXT)]
 }
 
 #[test]
 fn gm_request_messages_empty_byte_identical() {
     let mut w = build_world();
-    let gum = agents::gm_user_message(&mut w, PLAYER_TEXT, false);
-    let req = agents::gm_request_messages(&w, &[gum], "");
+    let messages = snapshot_then_action(&mut w, false);
+    let req = agents::gm_request_messages(&w, &messages, "");
     assert_json_indent2(&Value::Array(req), "gm_request_messages_empty.json");
 }
 
 #[test]
 fn gm_request_messages_summary_byte_identical() {
     let mut w = build_world();
-    let gum = agents::gm_user_message(&mut w, PLAYER_TEXT, false);
-    let req = agents::gm_request_messages(&w, &[gum], "Краткое содержание прошлых сцен.");
+    let messages = snapshot_then_action(&mut w, false);
+    let req = agents::gm_request_messages(&w, &messages, "Краткое содержание прошлых сцен.");
     assert_json_indent2(&Value::Array(req), "gm_request_messages_summary.json");
 }
 
@@ -342,9 +400,9 @@ fn build_for_model_filters_loaded_set() {
     // The full catalog is the static tools PLUS living-world canon tools and
     // the stable loader/invoker tools appended at the end.
     let all = agents::build_gm_tools_for_model(None, false);
-    assert_eq!(all.len(), 21); // 22 catalog tools minus ask_player (+take_item/drop_item/cast_spell)
+    assert_eq!(all.len(), 24); // catalog minus ask_player (+take_item/drop_item/cast_spell/generate_npc/read_state/long_rest)
     let all_with = agents::build_gm_tools_for_model(None, true);
-    assert_eq!(all_with.len(), 22);
+    assert_eq!(all_with.len(), 25);
     // Hidden loaded names no longer mutate top-level tools; move_player is a
     // PRIMARY/initial tool, world_debug and move_npc are invoked through the
     // stable schema loader path.
@@ -696,7 +754,6 @@ fn world_architect_has_static_prompt_and_draft_tool() {
 
     let messages = agents::world_architect_messages(
         &[json!({"role": "user", "content": "Хочу иссекай про клятвы."})],
-        &json!({"title": "Черновик"}),
         "Добавь богов и историю.",
     );
     assert_eq!(messages[0]["role"], "system");
@@ -711,13 +768,15 @@ fn world_architect_has_static_prompt_and_draft_tool() {
     assert!(!system.contains("story_brief"));
     assert!(!system.contains("public_intro"));
     assert!(!system.contains("\"scale\""));
-    assert!(messages.last().unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .contains("Current Draft JSON"));
+    // CACHE INVARIANT: the tail is the RAW user text (state comes only through
+    // read_world_bible), byte-equal to the history entry the server stores.
+    assert_eq!(
+        messages.last().unwrap()["content"],
+        "Добавь богов и историю."
+    );
 
     let tools = agents::world_architect_tools();
-    assert_eq!(tools.len(), 2);
+    assert_eq!(tools.len(), 3);
     assert_eq!(
         tools[0]["function"]["name"], "draft_world_bible",
         "architect builds with draft_world_bible"
@@ -725,6 +784,10 @@ fn world_architect_has_static_prompt_and_draft_tool() {
     assert_eq!(
         tools[1]["function"]["name"], "edit_world_bible",
         "architect patches with edit_world_bible"
+    );
+    assert_eq!(
+        tools[2]["function"]["name"], "read_world_bible",
+        "architect reads full sections on demand (the digest truncates)"
     );
     // The edit tool exposes the patch ops.
     let edit_props = &tools[1]["function"]["parameters"]["properties"];
@@ -752,34 +815,67 @@ fn world_architect_has_static_prompt_and_draft_tool() {
 }
 
 #[test]
+fn character_architect_has_static_prompt_and_draft_tool() {
+    use serde_json::json;
+
+    let messages = agents::character_architect_messages(
+        &[json!({"role": "user", "content": "Хочу следопыта."})],
+        "Добавь заклинания.",
+    );
+    assert_eq!(messages[0]["role"], "system");
+    let system = messages[0]["content"].as_str().unwrap();
+    assert!(system.contains("GM-Lab character architect"));
+    assert!(system.contains("draft_player_character"));
+    // A character is standalone — no bound-world lore block, so exactly ONE system.
+    let system_count = messages.iter().filter(|m| m["role"] == "system").count();
+    assert_eq!(system_count, 1);
+    // CACHE INVARIANT: the tail is the RAW user text, byte-equal to stored history.
+    assert_eq!(messages.last().unwrap()["content"], "Добавь заклинания.");
+
+    let tools = agents::character_architect_tools();
+    assert_eq!(tools.len(), 3);
+    assert_eq!(tools[0]["function"]["name"], "draft_player_character");
+    assert_eq!(tools[1]["function"]["name"], "edit_player_character");
+    assert_eq!(tools[2]["function"]["name"], "read_player_character");
+    // The edit tool exposes the patch ops AND is non-strict (the strict Responses
+    // conversion would otherwise empty the properties-less section maps).
+    let edit_props = &tools[1]["function"]["parameters"]["properties"];
+    assert!(edit_props["set"].is_object());
+    assert!(edit_props["add"].is_object());
+    assert!(edit_props["remove"].is_object());
+    assert!(edit_props["replace"].is_object());
+    assert_eq!(tools[1]["function"]["strict"], json!(false));
+    // The draft schema is the FLAT hero sheet: stats/lists are top-level fields.
+    let props = &tools[0]["function"]["parameters"]["properties"];
+    assert!(props["abilities"]["type"] == "object");
+    assert!(props["hp"]["type"] == "object");
+    assert!(props["inventory"]["type"] == "array");
+    assert!(props["spells"]["type"] == "array");
+    let required = tools[0]["function"]["parameters"]["required"]
+        .as_array()
+        .unwrap();
+    assert_eq!(required, &vec![json!("name")]);
+}
+
+#[test]
 fn world_architect_model_history_keeps_prior_user_message_stable() {
     use serde_json::json;
 
-    let first_user =
-        agents::world_architect_user_message(&json!({"title": "Первый"}), "Собери основу мира.");
+    // History entries are the RAW user/assistant texts; the current tail is the
+    // raw text too — so every position is byte-stable across turns (the whole
+    // prefix stays cacheable, and nothing draft-shaped ever enters history).
     let history = vec![
-        first_user.clone(),
+        json!({"role": "user", "content": "Собери основу мира."}),
         json!({"role": "assistant", "content": "Собрал первый черновик."}),
     ];
-    let messages = agents::world_architect_messages(
-        &history,
-        &json!({"title": "Второй"}),
-        "Теперь добавь власть и религию.",
-    );
+    let messages = agents::world_architect_messages(&history, "Теперь добавь власть и религию.");
 
-    assert_eq!(messages[1], first_user);
-    assert!(messages[1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("\"Первый\""));
-    assert!(!messages[1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("\"Второй\""));
-    assert!(messages.last().unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .contains("\"Второй\""));
+    assert_eq!(messages[1], history[0]);
+    assert_eq!(messages[2], history[1]);
+    assert_eq!(
+        messages.last().unwrap()["content"],
+        "Теперь добавь власть и религию."
+    );
 }
 
 #[test]
@@ -789,14 +885,10 @@ fn world_architect_model_history_is_not_windowed() {
     let history: Vec<_> = (0..36)
         .map(|index| json!({"role": "user", "content": format!("history-{index}")}))
         .collect();
-    let messages =
-        agents::world_architect_messages(&history, &json!({"title": "Черновик"}), "Продолжай.");
+    let messages = agents::world_architect_messages(&history, "Продолжай.");
 
     assert_eq!(messages.len(), history.len() + 2);
     assert_eq!(messages[1]["content"], "history-0");
     assert_eq!(messages[36]["content"], "history-35");
-    assert!(messages.last().unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .contains("Current Draft JSON"));
+    assert_eq!(messages.last().unwrap()["content"], "Продолжай.");
 }

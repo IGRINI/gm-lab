@@ -243,7 +243,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
                 exits.push(json!({
                     "id": safe_id(&get_str(m, "id"), &format!("exit_{idx}")),
                     "name": name,
-                    "destination": destination,
+                    "destination": crate::helpers::normalize_slug_like(&destination),
                     "visible": m.get("visible").map(crate::seed::as_bool).unwrap_or(true),
                     "blocked_by": get_str(m, "blocked_by"),
                 }));
@@ -251,10 +251,17 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
             _ => {
                 let name = as_str(raw);
                 if !name.is_empty() {
+                    // "label -> location_id" (architect convention) splits into
+                    // name/destination; a plain string keeps name=destination.
+                    let (label, target) = crate::helpers::split_exit_label(&name);
                     exits.push(json!({
                         "id": safe_id(&name, &format!("exit_{idx}")),
-                        "name": name.clone(),
-                        "destination": name,
+                        "name": label,
+                        "destination": if target.is_empty() {
+                            name
+                        } else {
+                            crate::helpers::normalize_slug_like(&target)
+                        },
                         "visible": true,
                     }));
                 }

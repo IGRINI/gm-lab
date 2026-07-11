@@ -1,13 +1,23 @@
 //! NPC sub-agent contract — faithful port of the NPC-side functions in `agents.py`.
 //!
 //! The NPC system prompt is fully STATIC (`NPC_SYSTEM_STATIC`); the concrete
-//! character is delivered late via [`npc_card_block`], prepended to a COPY of
-//! the final user turn so recorded history stays card-free (PORT_PLAN §4.1).
+//! character is delivered ONCE as the opening `CURRENT NPC CARD` user message of
+//! the NPC's history (GM_CONTEXT_TZ §7), then re-sent verbatim from persisted
+//! history every call — so the whole prefix stays cacheable instead of the card
+//! being glued to the final turn each request. A `card_revision` bump appends a
+//! `NPC CARD UPDATED` notice (append-only); compaction re-injects a fresh card.
 
 use serde_json::{json, Map, Value};
 
 use gml_prompts::{render_npc_card, NpcCardFields};
 use gml_world::Npc;
+
+/// Header of the opening persisted NPC-card message.
+pub const NPC_CARD_HEADER: &str = "CURRENT NPC CARD:";
+
+/// Header of the append-only NPC-card-updated notice (emitted on a
+/// `card_revision` bump).
+pub const NPC_CARD_UPDATE_HEADER: &str = "NPC CARD UPDATED:";
 
 /// NPC JSON-output schema — `NPC_SCHEMA` (used for the grammar fallback).
 pub fn npc_schema() -> Value {
@@ -131,6 +141,41 @@ pub fn npc_card_block(npc: &Npc) -> String {
     render_npc_card(&fields)
 }
 
+/// The opening persisted NPC-card message (`role:"user"`) — injected once at the
+/// head of an NPC's history on first contact (or lazily for a legacy history).
+pub fn npc_card_message(npc: &Npc) -> Value {
+    json!({
+        "role": "user",
+        "content": format!("{NPC_CARD_HEADER}\n{}", npc_card_block(npc)),
+    })
+}
+
+/// Append-only NPC-card-updated notice (`role:"user"`), emitted when the card's
+/// `card_revision` moved past the last injected revision. Cache-safe (append).
+pub fn npc_card_update_message(npc: &Npc) -> Value {
+    json!({
+        "role": "user",
+        "content": format!("{NPC_CARD_UPDATE_HEADER}\n{}", npc_card_block(npc)),
+    })
+}
+
+/// True when a message is a persisted NPC-card message (initial or update). Such
+/// messages are authoritative and exempt from historical downgrading.
+pub fn is_npc_card_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("user")
+        && message
+            .get("content")
+            .and_then(Value::as_str)
+            .map(|c| c.starts_with(NPC_CARD_HEADER) || c.starts_with(NPC_CARD_UPDATE_HEADER))
+            .unwrap_or(false)
+}
+
+/// True when `history` already carries a persisted NPC-card message. A legacy
+/// save (pre-card history) returns false → the caller injects one lazily.
+pub fn npc_messages_have_card(history: &[Value]) -> bool {
+    history.iter().any(is_npc_card_message)
+}
+
 /// Python `value not in (None, "", {}, [])`.
 fn is_droppable(v: &Value) -> bool {
     match v {
@@ -243,6 +288,11 @@ pub fn historical_npc_message(message: &Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    // Persisted NPC-card messages are authoritative, not historical exchanges:
+    // send them verbatim (no CURRENT->PREVIOUS rewrite, no HISTORICAL prefix).
+    if content.starts_with(NPC_CARD_HEADER) || content.starts_with(NPC_CARD_UPDATE_HEADER) {
+        return Value::Object(out);
+    }
     // Python str.replace with count=1 for the first, default (all) for the second.
     content = replace_first(
         &content,
@@ -287,6 +337,13 @@ fn replace_first(haystack: &str, old: &str, new: &str) -> String {
 }
 
 /// `npc_request_messages(npc, history, summary, user_message)`.
+///
+/// Snapshot-once (GM_CONTEXT_TZ §7): the NPC card is NO LONGER glued to a copy of
+/// the final turn each call — it lives once at the head of `history` (injected by
+/// the orchestrator via [`npc_card_message`]) and rides through unchanged, so the
+/// whole prefix stays cacheable. `npc` is retained for signature stability and as
+/// a defensive fallback: a history that somehow lacks a card (e.g. an in-flight
+/// legacy path) still gets the card block on the bare final turn.
 pub fn npc_request_messages(
     npc: &Npc,
     history: &[Value],
@@ -301,17 +358,25 @@ pub fn npc_request_messages(
         }));
     }
     messages.extend(history.iter().map(historical_npc_message));
-    // Late dynamic block: CURRENT NPC CARD prepended to a COPY of the final turn.
-    let mut final_turn = user_message.as_object().cloned().unwrap_or_default();
-    let existing = final_turn
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    final_turn.insert(
-        "content".to_string(),
-        Value::String(format!("{}\n\n{}", npc_card_block(npc), existing)),
-    );
-    messages.push(Value::Object(final_turn));
+    if npc_messages_have_card(history) {
+        // Card already persisted at the head of history — send the turn bare.
+        messages.push(user_message.clone());
+    } else {
+        // Defensive fallback only (orchestrator injects the card into history
+        // before building the request): keep the card visible for this call by
+        // gluing it to a COPY of the final turn — byte-identical to the legacy
+        // pre-§7 assembly, so a cardless history degrades gracefully.
+        let mut final_turn = user_message.as_object().cloned().unwrap_or_default();
+        let existing = final_turn
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        final_turn.insert(
+            "content".to_string(),
+            Value::String(format!("{}\n\n{}", npc_card_block(npc), existing)),
+        );
+        messages.push(Value::Object(final_turn));
+    }
     messages
 }

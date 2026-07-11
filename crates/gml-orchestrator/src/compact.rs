@@ -57,12 +57,19 @@ pub fn msg_text(m: &Value) -> String {
     format!("{role}: {content}").trim().to_string()
 }
 
-/// `_msg_text_for_summary(m)` — strips the PLAYER ACTION prefix for user msgs.
+/// `_msg_text_for_summary(m)` — strips the PLAYER ACTION prefix for user msgs
+/// and drops transient state messages (WORLD SNAPSHOT, player-options toggle
+/// notices) entirely so they never bloat the compaction summary base.
 pub fn msg_text_for_summary(m: &Value) -> String {
     let role = m.get("role").map(py_str).unwrap_or_default();
     let mut content = m.get("content").map(py_str).unwrap_or_default();
     if role == "user" {
-        let marker = "PLAYER ACTION (latest user input, free roleplay text):";
+        if content.starts_with(gml_agents::SNAPSHOT_HEADER)
+            || content.starts_with(gml_agents::OPTIONS_NOTICE_PREFIX)
+        {
+            return String::new();
+        }
+        let marker = gml_agents::PLAYER_ACTION_HEADER;
         if let Some(idx) = content.find(marker) {
             content = content[idx + marker.len()..].trim().to_string();
         }
@@ -353,8 +360,32 @@ pub async fn maybe_compact(session: &mut Session, client: &dyn Backend) {
         .await
         .unwrap_or_default();
     session.gm_summary = summary;
-    session.gm_messages = recent;
+    // Snapshot-once (GM_CONTEXT_TZ §2): the retained history must START with a
+    // FRESH snapshot, replacing any prior snapshot that got compacted away.
+    let recent_contact_ids = session.recent_contact_ids();
+    let options_state = session.snapshot_options_state.unwrap_or(false);
+    let snapshot =
+        gml_agents::gm_world_snapshot(&mut session.world, &recent_contact_ids, options_state);
+    let mut fresh = vec![gml_agents::gm_snapshot_message(&snapshot)];
+    // A snapshot can sit INSIDE the retained tail (legacy saves lazily inject it
+    // at the END of the loaded history, which the keep-window then straddles).
+    // Keeping it would feed the GM a second, stale full-state block positioned
+    // LATER than the fresh head — strip any tail snapshots before extending.
+    fresh.extend(
+        recent
+            .into_iter()
+            .filter(|m| !gml_agents::is_snapshot_message(m)),
+    );
+    session.gm_messages = fresh;
     session.reset_world_query_cache();
+    // Drop SEARCHED/loaded tools that fell out of the retained window (the GM
+    // prompt cache resets at compaction, so this is the cheap moment to shrink
+    // the visible tool set back toward the initial defaults). The retained tail
+    // keeps the last `gm_keep_turns` user boundaries, i.e. turns
+    // [turn - gm_keep_turns + 1 .. turn]; anything last used/loaded before that
+    // first retained turn is stale. The INITIAL set is untouched.
+    let oldest_retained_turn = (session.turn - gm_keep_turns.max(0) + 1).max(0);
+    session.prune_stale_loaded_tools(oldest_retained_turn);
 }
 
 /// `_maybe_compact_npc(session, npc, client)`.

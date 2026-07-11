@@ -31,6 +31,7 @@ mod tests {
         assert_eq!(Role::Npc.as_str(), "npc");
         assert_eq!(Role::Compact.as_str(), "compact");
         assert_eq!(Role::Location.as_str(), "location");
+        assert_eq!(Role::Character.as_str(), "character");
     }
 
     #[test]
@@ -48,7 +49,7 @@ mod tests {
     fn role_reasoning_roles_order() {
         assert_eq!(
             REASONING_ROLES,
-            [Role::Gm, Role::Npc, Role::Compact, Role::Location]
+            [Role::Gm, Role::Npc, Role::Compact, Role::Location, Role::Character]
         );
     }
 
@@ -64,8 +65,14 @@ mod tests {
             serde_json::to_string(&Role::Location).unwrap(),
             "\"location\""
         );
+        assert_eq!(
+            serde_json::to_string(&Role::Character).unwrap(),
+            "\"character\""
+        );
         let r: Role = serde_json::from_str("\"location\"").unwrap();
         assert_eq!(r, Role::Location);
+        let c: Role = serde_json::from_str("\"character\"").unwrap();
+        assert_eq!(c, Role::Character);
         assert!(serde_json::from_str::<Role>("\"bogus\"").is_err());
     }
 

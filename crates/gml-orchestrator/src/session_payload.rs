@@ -187,6 +187,32 @@ impl Session {
             );
         }
 
+        if !self.character_generator_client_state.model.is_empty()
+            || !self.character_generator_client_state.session_id.is_empty()
+            || !self.character_generator_client_state.thread_id.is_empty()
+        {
+            m.insert(
+                "character_generator_client_state".into(),
+                json!({
+                    "model": self.character_generator_client_state.model.clone(),
+                    "session_id": self.character_generator_client_state.session_id.clone(),
+                    "thread_id": self.character_generator_client_state.thread_id.clone(),
+                }),
+            );
+        }
+        if !self.character_generator_anti_repeat.is_empty() {
+            m.insert(
+                "character_generator_anti_repeat".into(),
+                json!(self.character_generator_anti_repeat),
+            );
+        }
+        if !self.character_generator_messages.is_empty() {
+            m.insert(
+                "character_generator_messages".into(),
+                Value::Array(self.character_generator_messages.clone()),
+            );
+        }
+
         let mut world_query_seen = Map::new();
         for (scope, keys) in &self.world_query_seen {
             // sorted(str(item) for item in keys if str(item)) — BTreeSet already
@@ -234,6 +260,39 @@ impl Session {
                 "npc_last_contact_minutes".into(),
                 Value::Object(last_contact),
             );
+        }
+
+        if let Some(state) = self.snapshot_options_state {
+            m.insert("snapshot_options_state".into(), json!(state));
+        }
+
+        if !self.npc_injected_card_revision.is_empty() {
+            let mut injected = Map::new();
+            for (npc_id, rev) in &self.npc_injected_card_revision {
+                injected.insert(npc_id.clone(), json!(*rev));
+            }
+            m.insert(
+                "npc_injected_card_revision".into(),
+                Value::Object(injected),
+            );
+        }
+
+        // Compaction-prune staleness signals for SEARCHED/loaded tools. Trailing +
+        // emitted only when non-empty, so pre-prune saves stay byte-identical (a
+        // fresh session never populates them until a searched tool runs / loads).
+        if !self.tool_last_used.is_empty() {
+            let mut used = Map::new();
+            for (name, turn) in &self.tool_last_used {
+                used.insert(name.clone(), json!(*turn));
+            }
+            m.insert("tool_last_used".into(), Value::Object(used));
+        }
+        if !self.tool_loaded_turn.is_empty() {
+            let mut loaded = Map::new();
+            for (name, turn) in &self.tool_loaded_turn {
+                loaded.insert(name.clone(), json!(*turn));
+            }
+            m.insert("tool_loaded_turn".into(), Value::Object(loaded));
         }
 
         Value::Object(m)
@@ -313,6 +372,21 @@ impl Session {
                 .unwrap_or(&Value::Null),
         );
 
+        let character_generator_state = json_dict(data.get("character_generator_client_state"));
+        if !character_generator_state.is_empty() {
+            session.character_generator_client_state = NpcClientState {
+                model: s(&character_generator_state, "model"),
+                session_id: s(&character_generator_state, "session_id"),
+                thread_id: s(&character_generator_state, "thread_id"),
+            };
+        }
+        session.character_generator_anti_repeat =
+            str_list(data.get("character_generator_anti_repeat"));
+        session.character_generator_messages = json_list(
+            data.get("character_generator_messages")
+                .unwrap_or(&Value::Null),
+        );
+
         let mut world_query_seen: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (scope, keys) in json_dict(data.get("world_query_seen")) {
             let set: BTreeSet<String> = json_list(&keys)
@@ -358,6 +432,28 @@ impl Session {
             last_contact.insert(k, v.as_i64().unwrap_or(0));
         }
         session.npc_last_contact_minutes = last_contact;
+
+        session.snapshot_options_state =
+            data.get("snapshot_options_state").and_then(Value::as_bool);
+
+        let mut injected_card_revision: BTreeMap<String, i64> = BTreeMap::new();
+        for (k, v) in json_dict(data.get("npc_injected_card_revision")) {
+            injected_card_revision.insert(k, v.as_i64().unwrap_or(0));
+        }
+        session.npc_injected_card_revision = injected_card_revision;
+
+        // Compaction-prune staleness signals (legacy payloads => empty maps).
+        let mut tool_last_used: BTreeMap<String, i64> = BTreeMap::new();
+        for (k, v) in json_dict(data.get("tool_last_used")) {
+            tool_last_used.insert(k, v.as_i64().unwrap_or(0));
+        }
+        session.tool_last_used = tool_last_used;
+
+        let mut tool_loaded_turn: BTreeMap<String, i64> = BTreeMap::new();
+        for (k, v) in json_dict(data.get("tool_loaded_turn")) {
+            tool_loaded_turn.insert(k, v.as_i64().unwrap_or(0));
+        }
+        session.tool_loaded_turn = tool_loaded_turn;
 
         Ok(session)
     }
@@ -701,10 +797,13 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
         .collect();
     world.rumor_seq = i(&data, "rumor_seq");
 
-    let npcs_raw = json_dict(data.get("npcs"));
-    if npcs_raw.is_empty() {
-        return Err("unsupported world payload: npcs is required".to_string());
+    // `npcs` must be PRESENT (enforced by the `required` list above) and be an
+    // OBJECT, but an EMPTY roster is now valid: procedural worlds start with
+    // zero actors (NPCs are generated lazily at play time), so `{}` is accepted.
+    if !matches!(data.get("npcs"), Some(Value::Object(_))) {
+        return Err("unsupported world payload: npcs must be an object".to_string());
     }
+    let npcs_raw = json_dict(data.get("npcs"));
     let mut npcs: BTreeMap<String, Npc> = BTreeMap::new();
     for (npc_id, npc_v) in &npcs_raw {
         if let Value::Object(_) = npc_v {

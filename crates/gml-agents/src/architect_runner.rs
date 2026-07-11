@@ -117,31 +117,42 @@ pub trait ArchitectConfig: Send + Sync {
     /// loop mutates and shows the model. This is the base edits apply onto.
     fn normalize_draft(&self, draft: &Value) -> Value;
 
-    /// Build the user message shown to the model (embeds the current draft +
-    /// the user's text; may also embed a stable read-only context block).
-    fn user_message(&self, draft: &Value, user_text: &str) -> Value;
+    /// Build the user message shown to the model. CACHE INVARIANT: this must be
+    /// byte-identical to the history entry the server stores for this turn
+    /// (the raw user text) — the request prefix across turns stays stable only
+    /// when sent == stored. State never rides here; the model reads it through
+    /// the domain's read tool.
+    fn user_message(&self, user_text: &str) -> Value {
+        json!({"role": "user", "content": user_text.trim()})
+    }
 
-    /// Apply ONE tool call to the working draft, returning the (draft, args) the
-    /// event/card should show. `working_draft` is mutated in place; return `true`
-    /// from the second tuple slot when the draft actually changed.
-    ///
-    /// `name`/`args` are the call the model made. The returned `Value` is what is
-    /// surfaced in the tool card (the world path shows the NESTED draft args for
-    /// a build and the raw edit args for an edit).
+    /// Apply ONE tool call to the working draft and produce everything the loop
+    /// needs from it: the args the event/card should show, whether the draft
+    /// actually changed, and the MODEL-FACING result text. The result must state
+    /// FACTS about what happened (what was set/added/removed, what missed) —
+    /// never a blind "ok" — so the model can self-correct a missed edit; READ
+    /// tools return the requested sections of the (post-call) working draft.
     fn apply_tool(
         &self,
         name: &str,
         args: &Map<String, Value>,
         working_draft: &mut Value,
-    ) -> (Value, bool);
+    ) -> ToolApplication;
 
     /// Finalize the working draft at the end of the turn (mirror summary fields,
     /// etc.). Called only when the draft changed.
     fn finalize_draft(&self, draft: Value) -> Value;
+}
 
-    /// The model-facing result text fed back after a tool call (confirms success
-    /// and nudges the model to refine or reply).
-    fn tool_result(&self, name: &str) -> String;
+/// One applied tool call: what to show, whether the draft changed, and the
+/// model-facing result text.
+pub struct ToolApplication {
+    /// The args surfaced in the tool card/event (the world build shows the
+    /// NESTED draft args; edits show the raw patch).
+    pub args: Value,
+    pub changed: bool,
+    /// Plain-text result fed back to the model (facts, not JSON).
+    pub result: String,
 }
 
 /// Assemble the model request messages: system + filtered history + the user
@@ -184,7 +195,7 @@ pub async fn architect_turn(
     user_text: &str,
     stream: &mut (dyn ArchitectStream + Send),
 ) -> Result<ArchitectOutput, BackendError> {
-    let user_msg = config.user_message(draft, user_text);
+    let user_msg = config.user_message(user_text);
     // The running model conversation: system (+ extra stable blocks) + history +
     // user, then assistant turns and tool results appended as the loop drives the
     // agent.
@@ -262,22 +273,22 @@ pub async fn architect_turn(
 
         for (name, args, id) in &normalized {
             // The domain config folds the call into the working draft and returns
-            // the args to show in the card/event.
-            let (tool_args, changed) = config.apply_tool(name, args, &mut working_draft);
-            if changed {
+            // the args to show in the card/event plus the model-facing result.
+            let applied = config.apply_tool(name, args, &mut working_draft);
+            if applied.changed {
                 draft_changed = true;
             }
-            let call_json = json!({"name": name, "arguments": tool_args, "id": id});
+            let call_json = json!({"name": name, "arguments": applied.args, "id": id});
             all_calls.push(call_json.clone());
             visible_segments
-                .push(json!({"role": "tool", "name": name, "args": tool_args, "sid": sid}));
+                .push(json!({"role": "tool", "name": name, "args": applied.args, "sid": sid}));
             stream.tool(&call_json, &sid);
             // Feed the result back so the model can keep refining or finish with a
             // chat reply (this is what makes it an agent loop, not a one-shot).
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": id,
-                "content": config.tool_result(name),
+                "content": applied.result,
             }));
         }
 

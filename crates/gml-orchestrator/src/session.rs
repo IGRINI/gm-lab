@@ -133,6 +133,53 @@ fn clip_location_text(text: &str) -> String {
     text.chars().take(LOCATION_GENERATOR_TEXT_CHARS).collect()
 }
 
+/// Character-generator request compaction — the NPC analogue of
+/// [`compact_location_generator_request`]. Keeps the qualitative brief fields the
+/// generator's own rolling history needs for anti-repeat; drops nothing sensitive
+/// because this history feeds ONLY the generator's private thread.
+fn compact_character_generator_request(request: &Value) -> Value {
+    let mut out = Map::new();
+    for key in ["role", "name", "appearance", "power_tier", "place_id"] {
+        insert_clipped_string(&mut out, key, request.get(key));
+    }
+    if let Some(value) = request.get("present").filter(|v| !v.is_null()) {
+        out.insert("present".to_string(), value.clone());
+    }
+    insert_clipped_string(&mut out, "request", request.get("request"));
+    Value::Object(out)
+}
+
+/// Character-generator result compaction — the NPC analogue of
+/// [`compact_location_generator_result`]. Retains the identity/motif fields that
+/// anti-repeat keys on (name, role, persona, voice, agenda, anti_repeat_key) plus
+/// the GM-only note; this history never leaves the generator's private thread.
+fn compact_character_generator_result(generated: &Value) -> Value {
+    let mut out = Map::new();
+    for key in [
+        "name",
+        "pronouns",
+        "role",
+        "public_label",
+        "persona",
+        "voice",
+        "agenda",
+        "knowledge",
+        "secret",
+        "anti_repeat_key",
+        "memory_note",
+    ] {
+        insert_clipped_string(&mut out, key, generated.get(key));
+    }
+    insert_clipped_string_list(&mut out, "goals", generated.get("goals"));
+    if let Some(value) = generated
+        .get("attitude_to_player")
+        .filter(|v| !v.is_null())
+    {
+        out.insert("attitude_to_player".to_string(), value.clone());
+    }
+    Value::Object(out)
+}
+
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string())
 }
@@ -149,6 +196,7 @@ const OBS_DIGEST_LINES: usize = 4;
 const OBS_LINE_CHARS: usize = 220;
 const LOCATION_GENERATOR_HISTORY_MESSAGES: usize = 12;
 const LOCATION_GENERATOR_TEXT_CHARS: usize = 600;
+const CHARACTER_GENERATOR_HISTORY_MESSAGES: usize = 12;
 
 /// Compaction thresholds — the Rust home for the `config.GM_HISTORY_TOKENS` /
 /// `config.GM_KEEP_TURNS` / `config.NPC_HISTORY_TOKENS` /
@@ -286,6 +334,17 @@ pub struct Session {
     pub location_generator_client_state: NpcClientState,
     pub location_generator_anti_repeat: Vec<String>,
     pub location_generator_messages: Vec<Value>,
+    /// Dedicated significant-NPC / character generator client. Like the location
+    /// generator it keeps its OWN thread/cache identity instead of sharing the GM
+    /// conversation, so its prompt cache is separate.
+    pub character_generator_client: Option<Arc<dyn Backend>>,
+    pub character_generator_client_state: NpcClientState,
+    pub character_generator_anti_repeat: Vec<String>,
+    pub character_generator_messages: Vec<Value>,
+    /// Armed by a `duplicate_candidates` gate result; `retry=true` bypasses the
+    /// dedup gate ONLY while armed. Keeps a confused GM from stamping duplicates
+    /// by sending `retry` on a fresh request. Not persisted (turn-scoped UX).
+    pub character_generator_retry_armed: bool,
 
     pub world: World,
     pub gm_messages: Vec<Value>,
@@ -293,6 +352,17 @@ pub struct Session {
     pub npc_messages: BTreeMap<String, Vec<Value>>,
     pub npc_summaries: BTreeMap<String, String>,
     pub loaded_gm_tools: BTreeSet<String>,
+    /// Turn index at which each executed tool was last run (updated in the
+    /// `run_tool` dispatch for EVERY executed tool). Feeds the compaction-time
+    /// prune of stale SEARCHED/loaded tools; persisted so the staleness signal
+    /// survives save/restore. Legacy payloads without it load as an empty map
+    /// (no records => nothing is pruned until the map starts filling).
+    pub tool_last_used: BTreeMap<String, i64>,
+    /// Turn index at which each SEARCHED tool was admitted into
+    /// `loaded_gm_tools` (recorded where `load_tool_schema` / `invoke_loaded_tool`
+    /// load a tool schema). Combined with `tool_last_used`, a non-initial tool is
+    /// pruned only when BOTH signals are older than the retained window.
+    pub tool_loaded_turn: BTreeMap<String, i64>,
     pub world_query_seen: BTreeMap<String, BTreeSet<String>>,
     pub run_usage: Map<String, Value>,
     pub last_player_action: String,
@@ -307,6 +377,14 @@ pub struct Session {
     pub pending: BTreeMap<String, PendingDraft>,
     pub commitments: BTreeMap<String, Vec<String>>,
     pub npc_last_contact_minutes: BTreeMap<String, i64>,
+    /// Last player-options state recorded into the GM WORLD SNAPSHOT / toggle
+    /// notice stream. `None` until the first snapshot is injected. A mid-session
+    /// change vs. this value appends a one-line toggle notice (persisted).
+    pub snapshot_options_state: Option<bool>,
+    /// Per-NPC card revision already injected into that NPC's history (§7). A
+    /// bump of `Npc.card_revision` past this value appends a fresh NPC CARD
+    /// UPDATED message. Persisted like `npc_last_contact_minutes`.
+    pub npc_injected_card_revision: BTreeMap<String, i64>,
     pub turn_player_event: Option<usize>, // index into `events`
 
     /// Compaction thresholds (the Rust home for the `config.*` globals Python
@@ -342,12 +420,19 @@ impl Session {
             location_generator_client_state: NpcClientState::default(),
             location_generator_anti_repeat: Vec::new(),
             location_generator_messages: Vec::new(),
+            character_generator_client: None,
+            character_generator_client_state: NpcClientState::default(),
+            character_generator_anti_repeat: Vec::new(),
+            character_generator_messages: Vec::new(),
+            character_generator_retry_armed: false,
             world,
             gm_messages: Vec::new(),
             gm_summary: String::new(),
             npc_messages: BTreeMap::new(),
             npc_summaries: BTreeMap::new(),
             loaded_gm_tools: BTreeSet::new(), // set below via configure_loaded_tools
+            tool_last_used: BTreeMap::new(),
+            tool_loaded_turn: BTreeMap::new(),
             world_query_seen: BTreeMap::new(),
             run_usage: empty_usage(),
             last_player_action: String::new(),
@@ -361,6 +446,8 @@ impl Session {
             pending: BTreeMap::new(),
             commitments: BTreeMap::new(),
             npc_last_contact_minutes: BTreeMap::new(),
+            snapshot_options_state: None,
+            npc_injected_card_revision: BTreeMap::new(),
             turn_player_event: None,
             compaction: CompactionThresholds::default(),
         }
@@ -378,6 +465,65 @@ impl Session {
 
     pub fn reset_world_query_cache(&mut self) {
         self.world_query_seen = BTreeMap::new();
+    }
+
+    /// Record that `name` was executed this turn (the staleness "last used"
+    /// signal for the compaction-time prune of searched tools). Called from the
+    /// `run_tool` dispatch for EVERY executed tool.
+    pub fn mark_tool_used(&mut self, name: &str) {
+        if name.is_empty() {
+            return;
+        }
+        self.tool_last_used.insert(name.to_string(), self.turn);
+    }
+
+    /// Record that `name` was admitted into `loaded_gm_tools` this turn (the
+    /// "recently loaded" signal). Called where `load_tool_schema` /
+    /// `invoke_loaded_tool` load a tool schema.
+    pub fn mark_tool_loaded(&mut self, name: &str) {
+        if name.is_empty() {
+            return;
+        }
+        self.tool_loaded_turn.insert(name.to_string(), self.turn);
+    }
+
+    /// Prune SEARCHED/loaded tools that went stale, called from `maybe_compact`
+    /// AFTER the retained history was rebuilt around a fresh snapshot (the GM
+    /// prompt cache resets at compaction anyway). A tool is dropped from
+    /// `loaded_gm_tools` only when ALL of:
+    ///   - it is NOT in the INITIAL default set (those are never pruned);
+    ///   - it HAS at least one staleness record (a legacy tool with no
+    ///     `tool_last_used` / `tool_loaded_turn` entry is kept — no record can
+    ///     prove it stale);
+    ///   - every record it does have is OLDER than `oldest_retained_turn` (the
+    ///     first turn still inside the retained keep-window). A record at or past
+    ///     that turn means the tool was used/loaded recently, so it is kept.
+    pub fn prune_stale_loaded_tools(&mut self, oldest_retained_turn: i64) {
+        // The superset (player options included) is the "initial" set: ask_player
+        // and the other defaults must never be pruned regardless of the toggle.
+        let initial = gml_agents::initial_gm_tool_names(true);
+        let mut drop: Vec<String> = Vec::new();
+        for name in &self.loaded_gm_tools {
+            if initial.contains(name) {
+                continue;
+            }
+            let last = self.tool_last_used.get(name).copied();
+            let loaded = self.tool_loaded_turn.get(name).copied();
+            if last.is_none() && loaded.is_none() {
+                // No record at all — a legacy/native-loaded tool. Keep it.
+                continue;
+            }
+            let last_stale = last.map_or(true, |t| t < oldest_retained_turn);
+            let loaded_stale = loaded.map_or(true, |t| t < oldest_retained_turn);
+            if last_stale && loaded_stale {
+                drop.push(name.clone());
+            }
+        }
+        for name in drop {
+            self.loaded_gm_tools.remove(&name);
+            self.tool_last_used.remove(&name);
+            self.tool_loaded_turn.remove(&name);
+        }
     }
 
     /// `_query_seen_set(session, scope_key)` — get-or-create the per-scope set.
@@ -495,6 +641,93 @@ impl Session {
         }
     }
 
+    /// Get-or-create the dedicated character generator client — mirrors
+    /// [`Session::ensure_location_generator_client`] exactly: same NPC factory,
+    /// own thread/cache identity restored from the persisted state so its prompt
+    /// cache is separate from the GM conversation and survives save/restore.
+    pub fn ensure_character_generator_client(&mut self) -> Arc<dyn Backend> {
+        if let Some(client) = &self.character_generator_client {
+            return client.clone();
+        }
+        let client: Arc<dyn Backend> = (self.npc_client_factory)();
+        let state = &mut self.character_generator_client_state;
+        let model = if !state.model.is_empty() {
+            state.model.clone()
+        } else if !self.client_model.is_empty() {
+            self.client_model.clone()
+        } else {
+            client.model()
+        };
+        if !model.is_empty() {
+            client.set_model(&model);
+        }
+        client.set_session_identity(
+            Some(state.session_id.as_str()),
+            Some(state.thread_id.as_str()),
+        );
+        self.character_generator_client = Some(client.clone());
+        self.remember_character_generator_client();
+        client
+    }
+
+    pub fn remember_character_generator_client(&mut self) {
+        let Some(client) = &self.character_generator_client else {
+            return;
+        };
+        let model = {
+            let m = client.model();
+            if m.is_empty() {
+                self.client_model.clone()
+            } else {
+                m
+            }
+        };
+        self.character_generator_client_state = NpcClientState {
+            model,
+            session_id: client.session_id(),
+            thread_id: client.thread_id(),
+        };
+    }
+
+    pub fn note_character_anti_repeat_key(&mut self, key: &str) {
+        let key = key.trim();
+        if key.is_empty() {
+            return;
+        }
+        self.character_generator_anti_repeat
+            .retain(|existing| existing != key);
+        self.character_generator_anti_repeat.push(key.to_string());
+        const MAX_GENERATOR_KEYS: usize = 24;
+        if self.character_generator_anti_repeat.len() > MAX_GENERATOR_KEYS {
+            let drop = self.character_generator_anti_repeat.len() - MAX_GENERATOR_KEYS;
+            self.character_generator_anti_repeat.drain(0..drop);
+        }
+    }
+
+    pub fn record_character_generator_exchange(&mut self, request: &Value, generated: &Value) {
+        let request_summary = compact_character_generator_request(request);
+        let generated_summary = compact_character_generator_result(generated);
+        self.character_generator_messages.push(json!({
+            "role": "user",
+            "content": format!(
+                "PREVIOUS NPC GENERATION REQUEST:\n{}",
+                compact_json(&request_summary)
+            ),
+        }));
+        self.character_generator_messages.push(json!({
+            "role": "assistant",
+            "content": format!(
+                "PREVIOUS NPC GENERATION RESULT:\n{}",
+                compact_json(&generated_summary)
+            ),
+        }));
+        if self.character_generator_messages.len() > CHARACTER_GENERATOR_HISTORY_MESSAGES {
+            let drop =
+                self.character_generator_messages.len() - CHARACTER_GENERATOR_HISTORY_MESSAGES;
+            self.character_generator_messages.drain(0..drop);
+        }
+    }
+
     /// `remember_npc_client(npc_id)`.
     pub fn remember_npc_client(&mut self, npc_id: &str) {
         let client = match self.npc_clients.get(npc_id) {
@@ -534,6 +767,7 @@ impl Session {
         self.commitments.remove(npc_id);
         self.pending.remove(npc_id);
         self.npc_last_contact_minutes.remove(npc_id);
+        self.npc_injected_card_revision.remove(npc_id);
         let owner_scope = format!("actor:{}", npc_id.trim().to_lowercase());
         self.world
             .world_canon
@@ -597,10 +831,14 @@ impl Session {
         if let Some(client) = &self.location_generator_client {
             client.set_model(model);
         }
+        if let Some(client) = &self.character_generator_client {
+            client.set_model(model);
+        }
         for state in self.npc_client_state.values_mut() {
             state.model = model.to_string();
         }
         self.location_generator_client_state.model = model.to_string();
+        self.character_generator_client_state.model = model.to_string();
     }
 
     pub fn set_run_usage(&mut self, usage: &Value) {
@@ -756,6 +994,59 @@ impl Session {
             self.npc_last_contact_minutes
                 .insert(npc_id.to_string(), self.current_game_minutes());
         }
+    }
+
+    /// Snapshot-once for the NPC sub-agent (GM_CONTEXT_TZ §7): guarantee the
+    /// NPC's history opens with its card, and append a one-line NPC CARD UPDATED
+    /// notice whenever `Npc.card_revision` moved past the last injected revision.
+    /// Call once per `ask_npc`, AFTER `maybe_compact_npc` (so a compaction that
+    /// dropped the card re-injects a fresh one) and BEFORE the request is built.
+    /// Append-only and idempotent: no persisted message is ever rewritten.
+    pub fn ensure_npc_card_injected(&mut self, npc_id: &str) {
+        let (rev, card_msg, update_msg) = match self.world.npcs.get(npc_id) {
+            Some(npc) => (
+                npc.card_revision,
+                gml_agents::npc_card_message(npc),
+                gml_agents::npc_card_update_message(npc),
+            ),
+            None => return,
+        };
+        let has_card = self
+            .npc_messages
+            .get(npc_id)
+            .map(|h| gml_agents::npc_messages_have_card(h))
+            .unwrap_or(false);
+        if !has_card {
+            // First contact, compaction re-inject, or legacy migration: the card
+            // becomes history[0] so the model reads it before any exchange.
+            self.npc_messages
+                .entry(npc_id.to_string())
+                .or_default()
+                .insert(0, card_msg);
+            self.npc_injected_card_revision
+                .insert(npc_id.to_string(), rev);
+        } else if self.npc_injected_card_revision.get(npc_id).copied() != Some(rev) {
+            // The card was edited since it was injected: append a fresh notice.
+            self.npc_messages
+                .entry(npc_id.to_string())
+                .or_default()
+                .push(update_msg);
+            self.npc_injected_card_revision
+                .insert(npc_id.to_string(), rev);
+        }
+    }
+
+    /// NPC ids the player contacted within the last game day (deterministic
+    /// input to the dynamic roster, §3.4). Falls back to all recorded contacts
+    /// when the calendar defines no positive day length.
+    pub fn recent_contact_ids(&self) -> BTreeSet<String> {
+        let now = self.current_game_minutes();
+        let day = self.world.time.minutes_per_hour * self.world.time.hours_per_day;
+        self.npc_last_contact_minutes
+            .iter()
+            .filter(|(_, &last)| day <= 0 || now - last <= day)
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// `record_public(actor, kind, speech, action)`.

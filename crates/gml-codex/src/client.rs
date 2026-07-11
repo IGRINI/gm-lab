@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use gml_config::{Config, Role, RuntimeSettings};
 use gml_llm::backend::{
@@ -28,6 +28,8 @@ use crate::responses::{
     split_messages_for_responses, think,
 };
 use crate::stream::{channel as sse_channel, StreamAccumulator, StreamResult};
+
+const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 
 /// The Codex Responses API client.
 pub struct CodexClient {
@@ -123,7 +125,25 @@ impl CodexClient {
         reasoning_role: &str,
     ) -> Value {
         let settings = self.settings.get();
-        let (instructions, input_items) = split_messages_for_responses(messages);
+        let model = self.model_for_role(reasoning_role);
+        let use_responses_lite = model_uses_responses_lite(&model);
+        let (instructions, mut input_items) = split_messages_for_responses(messages);
+
+        // json_object text.format requires the word "json" somewhere in the INPUT
+        // messages (the Responses API does not scan `instructions`, where the
+        // system prompt lands). Append a trailing hint message when absent —
+        // appending keeps the shared prompt-cache prefix byte-identical.
+        let json_mode = schema.map(is_truthy).unwrap_or(false);
+        if json_mode && !input_items_mention_json(&input_items) {
+            input_items.push(json!({
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Return the result strictly as a JSON object."
+                }],
+            }));
+        }
 
         // converted_tools = [convert_tool_for_responses(t) for t in (tools or [])]
         let converted_tools: Vec<Value> = match tools {
@@ -133,18 +153,39 @@ impl CodexClient {
         let has_tools = !converted_tools.is_empty();
         let tool_choice = self.settings.tool_choice_for_request(has_tools);
 
+        if use_responses_lite {
+            let mut lite_input = Vec::with_capacity(input_items.len() + 2);
+            lite_input.push(json!({
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": converted_tools,
+            }));
+            if !instructions.is_empty() {
+                lite_input.push(json!({
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{
+                        "type": "input_text",
+                        "text": instructions,
+                    }],
+                }));
+            }
+            lite_input.append(&mut input_items);
+            input_items = lite_input;
+        }
+
         let mut payload = Map::new();
-        payload.insert(
-            "model".into(),
-            Value::String(self.model_for_role(reasoning_role)),
-        );
-        payload.insert("instructions".into(), Value::String(instructions));
+        payload.insert("model".into(), Value::String(model));
         payload.insert("input".into(), Value::Array(input_items));
-        payload.insert("tools".into(), Value::Array(converted_tools));
+        if !use_responses_lite {
+            payload.insert("instructions".into(), Value::String(instructions));
+            payload.insert("tools".into(), Value::Array(converted_tools));
+        }
         payload.insert("tool_choice".into(), Value::String(tool_choice.clone()));
         // parallel_tool_calls = parallel_tool_calls_for_request(has_tools) and tool_choice != "none"
-        let parallel =
-            self.settings.parallel_tool_calls_for_request(has_tools) && tool_choice != "none";
+        let parallel = !use_responses_lite
+            && self.settings.parallel_tool_calls_for_request(has_tools)
+            && tool_choice != "none";
         payload.insert("parallel_tool_calls".into(), Value::Bool(parallel));
         payload.insert("store".into(), Value::Bool(false));
         payload.insert("stream".into(), Value::Bool(true));
@@ -161,10 +202,15 @@ impl CodexClient {
         );
 
         // reasoning = runtime_settings.reasoning_for_request(think, reasoning_role)
-        if let Some(reasoning) = self
+        // Responses Lite requires all_turns even when effort/summary are disabled.
+        let mut reasoning = self
             .settings
             .reasoning_for_request(think_flag, reasoning_role)
-        {
+            .unwrap_or_default();
+        if use_responses_lite {
+            reasoning.insert("context".into(), Value::String("all_turns".into()));
+        }
+        if !reasoning.is_empty() {
             payload.insert("reasoning".into(), Value::Object(reasoning));
             payload.insert(
                 "include".into(),
@@ -181,15 +227,13 @@ impl CodexClient {
         if verbosity != "default" {
             text.insert("verbosity".into(), Value::String(verbosity.to_string()));
         }
-        if let Some(shape_hint) = schema {
+        if json_mode {
             // `if schema:` keeps the legacy call-site contract, but the wire
             // request stays in loose JSON-object mode. The expected shape
             // belongs in the prompt.
-            if is_truthy(shape_hint) {
-                let mut format = Map::new();
-                format.insert("type".into(), Value::String("json_object".into()));
-                text.insert("format".into(), Value::Object(format));
-            }
+            let mut format = Map::new();
+            format.insert("type".into(), Value::String("json_object".into()));
+            text.insert("format".into(), Value::Object(format));
         }
         if !text.is_empty() {
             payload.insert("text".into(), Value::Object(text));
@@ -218,6 +262,7 @@ impl CodexClient {
     async fn auth_headers(
         &self,
         accept_sse: bool,
+        use_responses_lite: bool,
     ) -> Result<reqwest::header::HeaderMap, BackendError> {
         let credential = oauth::ensure_fresh_credential(&self.http, &self.cfg)
             .await
@@ -248,6 +293,9 @@ impl CodexClient {
         );
         if accept_sse {
             put("accept", "text/event-stream".to_string());
+        }
+        if use_responses_lite {
+            put(RESPONSES_LITE_HEADER, "true".to_string());
         }
         if let Some(account_id) = &credential.account_id {
             put("chatgpt-account-id", account_id.clone());
@@ -293,7 +341,11 @@ impl CodexClient {
         use futures_util::StreamExt;
 
         let t0 = Instant::now();
-        let headers = self.auth_headers(true).await?;
+        let use_responses_lite = payload
+            .get("model")
+            .and_then(Value::as_str)
+            .is_some_and(model_uses_responses_lite);
+        let headers = self.auth_headers(true, use_responses_lite).await?;
         let resp = self
             .http
             .post(&self.responses_url)
@@ -555,13 +607,40 @@ impl Backend for CodexClient {
 
 fn model_supports_native_tool_search(model: &str) -> bool {
     let model = model.to_ascii_lowercase();
-    model.contains("gpt-5.4") || model.contains("gpt-5.5") || model.starts_with("gpt-6")
+    model.contains("gpt-5.4")
+        || model.contains("gpt-5.5")
+        || model.contains("gpt-5.6")
+        || model.starts_with("gpt-6")
+}
+
+fn model_uses_responses_lite(model: &str) -> bool {
+    model.trim().to_ascii_lowercase().starts_with("gpt-5.6")
+}
+
+fn sort_models_for_picker(models: &mut [Value]) {
+    models.sort_by(|a, b| {
+        let sa = a.get("supported").and_then(Value::as_bool).unwrap_or(false);
+        let sb = b.get("supported").and_then(Value::as_bool).unwrap_or(false);
+
+        (!sa)
+            .cmp(&(!sb))
+            .then_with(|| {
+                let pa = a.get("priority").and_then(Value::as_i64).unwrap_or(0);
+                let pb = b.get("priority").and_then(Value::as_i64).unwrap_or(0);
+                pa.cmp(&pb)
+            })
+            .then_with(|| {
+                let na = a.get("name").and_then(Value::as_str).unwrap_or("");
+                let nb = b.get("name").and_then(Value::as_str).unwrap_or("");
+                na.cmp(nb)
+            })
+    });
 }
 
 impl CodexClient {
     /// `list_models()` — the live model listing (fallible, like Python).
     async fn list_models_inner(&self) -> Result<Vec<Value>, BackendError> {
-        let headers = self.auth_headers(false).await?;
+        let headers = self.auth_headers(false, false).await?;
         let resp = self
             .http
             .get(&self.models_url)
@@ -671,33 +750,22 @@ impl CodexClient {
                     "support_verbosity".into(),
                     obj.get("support_verbosity").cloned().unwrap_or(Value::Null),
                 );
+                entry.insert(
+                    "use_responses_lite".into(),
+                    obj.get("use_responses_lite")
+                        .cloned()
+                        .unwrap_or(Value::Bool(false)),
+                );
+                entry.insert(
+                    "tool_mode".into(),
+                    obj.get("tool_mode").cloned().unwrap_or(Value::Null),
+                );
                 models.push(Value::Object(entry));
             }
         }
-        // models.sort(key=lambda m: (not m["supported"], -int(m["priority"] or 0), m["name"]))
-        models.sort_by(|a, b| {
-            let sa = a
-                .get("supported")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let sb = b
-                .get("supported")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            // not supported sorts last: (!supported) ascending => supported first.
-            (!sa)
-                .cmp(&(!sb))
-                .then_with(|| {
-                    let pa = a.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let pb = b.get("priority").and_then(|v| v.as_i64()).unwrap_or(0);
-                    (-pa).cmp(&(-pb))
-                })
-                .then_with(|| {
-                    let na = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let nb = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    na.cmp(nb)
-                })
-        });
+        // Match the current Codex picker: supported models first, then lower
+        // server priority values first (the 5.6 family is currently 1..3).
+        sort_models_for_picker(&mut models);
         Ok(models)
     }
 }
@@ -799,6 +867,27 @@ fn is_truthy(v: &Value) -> bool {
     }
 }
 
+/// Does any Responses `input` item mention "json" (case-insensitive)? Scans
+/// message text parts and `function_call_output` payloads — the fields the
+/// Responses API json_object validation reads.
+fn input_items_mention_json(items: &[Value]) -> bool {
+    items.iter().any(|item| {
+        if let Some(output) = item.get("output").and_then(Value::as_str) {
+            if output.to_lowercase().contains("json") {
+                return true;
+            }
+        }
+        match item.get("content") {
+            Some(Value::Array(parts)) => parts.iter().any(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.to_lowercase().contains("json"))
+            }),
+            _ => false,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,6 +959,9 @@ mod tests {
         assert!(model_supports_native_tool_search("gpt-5.4"));
         assert!(model_supports_native_tool_search("gpt-5.4-mini"));
         assert!(model_supports_native_tool_search("gpt-5.5"));
+        assert!(model_supports_native_tool_search("gpt-5.6-sol"));
+        assert!(model_supports_native_tool_search("gpt-5.6-terra"));
+        assert!(model_supports_native_tool_search("gpt-5.6-luna"));
         assert!(model_supports_native_tool_search("gpt-6"));
         assert!(!model_supports_native_tool_search("gpt-5.3"));
         assert!(!model_supports_native_tool_search("codex-mini-latest"));
@@ -909,6 +1001,143 @@ mod tests {
             p.pointer("/client_metadata/provider").unwrap(),
             "codex-oauth"
         );
+    }
+
+    #[test]
+    fn responses_lite_payload_embeds_tools_and_instructions_in_input() {
+        let mut cfg = Config::from_env();
+        cfg.codex_prompt_cache_key = String::new();
+        cfg.codex_model = "gpt-5.6-sol".to_string();
+        let cfg = Arc::new(cfg);
+        let settings = Arc::new(RuntimeSettings::new(
+            &cfg,
+            std::env::temp_dir().join("gml_codex_responses_lite_payload.json"),
+        ));
+        let client = CodexClient::new(cfg, settings);
+        let messages = serde_json::json!([
+            {"role": "system", "content": "GM instructions"},
+            {"role": "user", "content": "hello"},
+        ]);
+        let tools = serde_json::json!([{
+            "type": "function",
+            "function": {
+                "name": "roll_dice",
+                "description": "Roll dice",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }]);
+
+        let payload = client.payload(&messages, Some(&tools), Some(true), None, Role::Gm.as_str());
+
+        assert!(payload.get("instructions").is_none());
+        assert!(payload.get("tools").is_none());
+        assert_eq!(
+            payload.get("parallel_tool_calls"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(payload.pointer("/reasoning/context").unwrap(), "all_turns");
+
+        let input = payload.get("input").and_then(Value::as_array).unwrap();
+        assert_eq!(input[0].get("type").unwrap(), "additional_tools");
+        assert_eq!(input[0].get("role").unwrap(), "developer");
+        assert_eq!(input[0].pointer("/tools/0/name").unwrap(), "roll_dice");
+        assert_eq!(input[1].get("role").unwrap(), "developer");
+        assert_eq!(
+            input[1].pointer("/content/0/text").unwrap(),
+            "GM instructions"
+        );
+        assert_eq!(input[2].get("role").unwrap(), "user");
+    }
+
+    #[test]
+    fn responses_lite_is_limited_to_gpt_5_6_family() {
+        assert!(model_uses_responses_lite("gpt-5.6"));
+        assert!(model_uses_responses_lite("gpt-5.6-terra"));
+        assert!(!model_uses_responses_lite("gpt-5.5"));
+        assert!(!model_uses_responses_lite("gpt-6"));
+    }
+
+    #[test]
+    fn responses_lite_keeps_required_context_when_reasoning_is_disabled() {
+        let mut cfg = Config::from_env();
+        cfg.codex_model = "gpt-5.6-luna".to_string();
+        let cfg = Arc::new(cfg);
+        let settings = Arc::new(RuntimeSettings::new(
+            &cfg,
+            std::env::temp_dir().join("gml_codex_responses_lite_no_reasoning.json"),
+        ));
+        let client = CodexClient::new(cfg, settings);
+        let messages = serde_json::json!([{"role": "user", "content": "hello"}]);
+
+        let payload = client.payload(&messages, None, Some(false), None, Role::Npc.as_str());
+
+        assert_eq!(payload.pointer("/reasoning/context").unwrap(), "all_turns");
+        assert!(payload.pointer("/reasoning/effort").is_none());
+        assert!(payload.pointer("/reasoning/summary").is_none());
+        assert_eq!(
+            payload.pointer("/include/0").unwrap(),
+            "reasoning.encrypted_content"
+        );
+    }
+
+    #[test]
+    fn model_catalog_uses_current_codex_priority_order() {
+        let mut models = vec![
+            json!({"id": "legacy", "name": "legacy", "supported": true, "priority": 16}),
+            json!({"id": "terra", "name": "terra", "supported": true, "priority": 2}),
+            json!({"id": "sol", "name": "sol", "supported": true, "priority": 1}),
+            json!({"id": "unsupported", "name": "unsupported", "supported": false, "priority": 0}),
+        ];
+
+        sort_models_for_picker(&mut models);
+
+        let ids: Vec<&str> = models
+            .iter()
+            .filter_map(|model| model.get("id").and_then(Value::as_str))
+            .collect();
+        assert_eq!(ids, vec!["sol", "terra", "legacy", "unsupported"]);
+    }
+
+    #[test]
+    fn legacy_models_keep_the_standard_responses_shape() {
+        let mut cfg = Config::from_env();
+        cfg.codex_model = "gpt-5.5".to_string();
+        let cfg = Arc::new(cfg);
+        let settings = Arc::new(RuntimeSettings::new(
+            &cfg,
+            std::env::temp_dir().join("gml_codex_standard_responses_payload.json"),
+        ));
+        let client = CodexClient::new(cfg, settings);
+        let messages = serde_json::json!([
+            {"role": "system", "content": "GM instructions"},
+            {"role": "user", "content": "hello"},
+        ]);
+        let tools = serde_json::json!([{
+            "type": "function",
+            "function": {
+                "name": "roll_dice",
+                "description": "Roll dice",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }]);
+
+        let payload = client.payload(
+            &messages,
+            Some(&tools),
+            Some(false),
+            None,
+            Role::Gm.as_str(),
+        );
+
+        assert_eq!(payload.get("instructions").unwrap(), "GM instructions");
+        assert_eq!(payload.pointer("/tools/0/name").unwrap(), "roll_dice");
+        assert_eq!(payload.pointer("/input/0/role").unwrap(), "user");
+        assert!(payload
+            .get("input")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .all(|item| item.get("type").and_then(Value::as_str) != Some("additional_tools")));
     }
 
     #[test]
@@ -975,6 +1204,57 @@ mod tests {
         assert!(p.pointer("/text/format/name").is_none());
         assert!(p.pointer("/text/format/strict").is_none());
         assert!(p.pointer("/text/format/schema").is_none());
+        // "hi" carries no "json": the client must append the input hint the
+        // Responses API requires for json_object mode (it ignores instructions).
+        let input = p.get("input").unwrap().as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        let hint = input.last().unwrap();
+        assert_eq!(hint.pointer("/role").unwrap(), "user");
+        assert!(hint
+            .pointer("/content/0/text")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("json"));
+    }
+
+    #[test]
+    fn payload_json_mode_skips_hint_when_input_mentions_json() {
+        let cfg = Arc::new(Config::from_env());
+        let settings = Arc::new(RuntimeSettings::new(
+            &cfg,
+            std::env::temp_dir().join("gml_codex_payload4.json"),
+        ));
+        let client = CodexClient::new(cfg, settings);
+        let messages = serde_json::json!([
+            {"role": "system", "content": "Return JSON only."},
+            {"role": "user", "content": "Верни ответ как JSON-объект: {\"moves\":[]}"},
+        ]);
+        let schema = serde_json::json!({"type": "object", "properties": {}});
+        let p = client.payload(
+            &messages,
+            None,
+            Some(false),
+            Some(&schema),
+            Role::Gm.as_str(),
+        );
+        let input = p.get("input").unwrap().as_array().unwrap();
+        assert_eq!(input.len(), 1);
+    }
+
+    #[test]
+    fn payload_without_schema_never_appends_json_hint() {
+        let cfg = Arc::new(Config::from_env());
+        let settings = Arc::new(RuntimeSettings::new(
+            &cfg,
+            std::env::temp_dir().join("gml_codex_payload5.json"),
+        ));
+        let client = CodexClient::new(cfg, settings);
+        let messages = serde_json::json!([{"role": "user", "content": "hi"}]);
+        let p = client.payload(&messages, None, Some(false), None, Role::Gm.as_str());
+        let input = p.get("input").unwrap().as_array().unwrap();
+        assert_eq!(input.len(), 1);
     }
 
     #[test]

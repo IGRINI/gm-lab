@@ -156,14 +156,18 @@ fn procedural_worldgen_session_round_trips_through_payload() {
     // survive a full persistence round-trip. Its legacy fact_records are empty
     // (facts live in the canon), so this also locks the relaxed contract: an
     // EMPTY fact_records list is valid (locked decision #7 dropped the old
-    // non-empty Python-byte-compat invariant), and the generated canon, npc
-    // cards, and start scene all reload intact.
+    // non-empty Python-byte-compat invariant), and the generated canon and
+    // start scene reload intact. The procedural roster now starts EMPTY —
+    // actors are no longer hardcoded, they are generated lazily at play time.
     let world = World::from_worldgen(&gml_world::WorldSpec::from_seed("12345"));
     assert!(
         !world.world_canon.is_empty(),
         "procedural world must carry a generated canon"
     );
-    assert!(!world.npcs.is_empty(), "procedural world derives npc cards");
+    assert!(
+        world.npcs.is_empty(),
+        "procedural world seeds no actors, so the derived roster is empty"
+    );
     assert!(
         !world.scene.title.is_empty(),
         "procedural world has a canon-derived start scene"

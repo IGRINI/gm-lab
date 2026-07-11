@@ -121,6 +121,41 @@ pub fn rerank_documents(
     Ok(order)
 }
 
+/// Like [`rerank_documents`] but ALSO returns each result's raw cosine score.
+///
+/// Same `/rerank` payload and blocking transport as [`rerank_documents`], but
+/// extracts `results[i].relevance_score` alongside `results[i].index`, yielding
+/// `(index, score)` pairs best-first. Scores are the sidecar's raw cosine in
+/// `[-1, 1]` (no sigmoid) — callers that need an actual similarity value (e.g. a
+/// threshold gate) use this instead of the order-only [`rerank_documents`],
+/// whose contract the retrieval engine pins. On ANY transport / HTTP / parse
+/// error returns `Err` so the caller can degrade.
+pub fn rerank_scored(
+    url: &str,
+    query: &str,
+    documents: &[String],
+    top_n: usize,
+    timeout: f64,
+) -> Result<Vec<(usize, f64)>> {
+    let payload = json!({ "query": query, "documents": documents, "top_n": top_n });
+    let body = post_json(url, payload, timeout)?;
+    let results = body
+        .get("results")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(results.len());
+    for item in &results {
+        if let (Some(idx), Some(score)) = (
+            item.get("index").and_then(|v| v.as_u64()),
+            item.get("relevance_score").and_then(|v| v.as_f64()),
+        ) {
+            scored.push((idx as usize, score));
+        }
+    }
+    Ok(scored)
+}
+
 impl Embedder for LocalEmbeddingClient {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f64>>> {
         let normalized_texts: Vec<String> = texts.iter().map(|t| py_strip(t).to_string()).collect();

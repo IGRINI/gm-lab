@@ -2,8 +2,10 @@
 //!
 //! Generates a fresh [`WorldCanon`] from a [`WorldSpec`] in ordered layers:
 //! region -> settlement (with a real *function*) -> start place -> neighbouring
-//! places -> a point-of-interest shell (a dungeon entry) -> actors -> a faction
-//! -> an initial history. Every id and bounded choice derives from
+//! places -> a point-of-interest shell (a dungeon entry) -> a faction -> an
+//! initial history. Procedural worlds start with ZERO actors — significant
+//! NPCs are generated lazily at play time. Every id and bounded choice derives
+//! from
 //! [`ids::stable_id`] / [`ids::DetRng`], a stream entirely separate from the
 //! campaign dice RNG — so generating a world consumes ZERO dice entropy and two
 //! runs with the same seed produce byte-identical canon (TZ §7.3, §12).
@@ -15,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::entity::{Actor, Containment, Faction};
+use super::entity::Faction;
 use super::event_log::{Account, CanonEvent};
 use super::ids;
 use super::knowledge::{Scope, Truthfulness};
@@ -63,7 +65,8 @@ impl WorldSpec {
 /// one settlement (with `has_function() == true`), a start place, several
 /// neighbouring places linked by two-way transitions, a point-of-interest shell
 /// reachable via a transition (a dungeon entry — lazy interior on first entry),
-/// a couple of actors at the start, one faction, and an initial history.
+/// one faction, and an initial history. No actors are seeded — the roster
+/// starts empty and grows through lazy NPC generation at play time.
 pub fn generate(spec: &WorldSpec) -> WorldCanon {
     generate_with_lore(spec, None)
 }
@@ -289,50 +292,11 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
     }
     let _ = transitions_made;
 
-    // --- Layer 6: Actors at the start (TZ §6.7) ---------------------------
-    // Bounded by the generation budget (TZ §7.3): never create more than
-    // `max_npcs_per_turn` actors in this generation pass.
-    let actor_specs: [(&str, &str, &str); 2] = [
-        ("warden", "Страж ворот", "guard"),
-        ("trader", "Торговец на площади", "merchant"),
-    ];
-    let max_npcs = canon.gen_budget.max_npcs_per_turn;
-    let mut important_npc_ids = Vec::new();
-    for (salt, label, role) in actor_specs.into_iter().take(max_npcs) {
-        let aid = ids::stable_id(&seed, &settlement_id, "actor", salt);
-        let home = if salt == "warden" {
-            ids::stable_id(&seed, &settlement_id, "place", "gate")
-        } else {
-            start_id.clone()
-        };
-        canon.actors.insert(
-            aid.clone(),
-            Actor {
-                actor_id: aid.clone(),
-                public_label: label.to_string(),
-                location: Containment::Place {
-                    place_id: home.clone(),
-                },
-                home_place_id: home.clone(),
-                role: role.to_string(),
-                attitude_to_player: 0,
-                relations: BTreeMap::new(),
-                faction_id: faction_id.clone(),
-                goals: vec!["держать пост".to_string()],
-                agenda: "следить за порядком".to_string(),
-                knowledge_ids: Vec::new(),
-                secret_ids: Vec::new(),
-                resources: Vec::new(),
-                schedule: BTreeMap::new(),
-                status: "alive".to_string(),
-                provenance: prov(),
-            },
-        );
-        if let Some(p) = canon.places.get_mut(&home) {
-            p.occupant_ids.insert(aid.clone());
-        }
-        important_npc_ids.push(aid);
-    }
+    // --- Layer 6 removed: procedural worlds start with ZERO actors --------
+    // Significant NPCs are now generated lazily at play time (the GM's
+    // `generate_npc` tool), never hardcoded here. `settlement.important_npc_ids`
+    // and `faction.member_ids` therefore stay empty until a generated NPC is
+    // wired in.
 
     // --- Commit region/settlement/faction with cross-links ----------------
     let mut region = region;
@@ -341,10 +305,6 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
 
     let mut settlement = settlement;
     settlement.place_ids = settlement_place_ids;
-    settlement.important_npc_ids = important_npc_ids.clone();
-
-    let mut faction = faction;
-    faction.member_ids = important_npc_ids;
 
     canon.regions.insert(region_id.clone(), region);
     canon.settlements.insert(settlement_id.clone(), settlement);

@@ -6,8 +6,8 @@
 //! the LLM-driven world-seed / scene-delta helpers.
 //!
 //! Modules:
-//! - [`gm`] — `_gm_system`, `_gm_world_setup`, `_gm_turn_context`,
-//!   `gm_user_message`, `_gm_request_messages`, `TURN_RESOLUTION_CHECKLIST`.
+//! - [`gm`] — `gm_system`, `gm_world_setup`, `gm_world_snapshot`,
+//!   `gm_user_message`, `gm_request_messages`.
 //! - [`tools`] — `build_gm_tools`, `gm_tool_catalog`, `build_gm_tools_for_model`,
 //!   `build_gm_tools_for_native_tool_search`, `search_gm_tools`,
 //!   `load_gm_tool_schema`, `initial_gm_tool_names`, `build_canon_gm_tools`,
@@ -26,6 +26,8 @@
 #![recursion_limit = "1024"]
 
 pub mod architect_runner;
+pub mod character;
+pub mod character_architect;
 pub mod coerce;
 pub mod gm;
 pub mod location;
@@ -44,21 +46,28 @@ use gml_world::World;
 
 // Re-exports mirroring the `agents.py` public surface.
 pub use architect_runner::{ArchitectOutput, ArchitectStream, NullArchitectStream};
+pub use character::{character_generator_messages, generate_character};
+pub use character_architect::{
+    character_architect_messages, character_architect_tools, character_architect_turn,
+    CharacterArchitectOutput, CHARACTER_ARCHITECT_SYSTEM,
+};
 pub use coerce::{as_list, claims, norm_npc, norm_npc_with_reasoning, text};
 pub use gm::{
-    gm_request_messages, gm_system, gm_turn_context, gm_user_message, gm_world_setup,
-    TURN_RESOLUTION_CHECKLIST,
+    gm_messages_have_snapshot, gm_options_notice_message, gm_request_messages, gm_snapshot_message,
+    gm_system, gm_user_message, gm_world_setup, gm_world_snapshot, is_snapshot_message,
+    OPTIONS_NOTICE_PREFIX, PLAYER_ACTION_HEADER, SNAPSHOT_HEADER,
 };
 pub use location::{generate_location, location_generator_messages};
 pub use npc::{
-    historical_npc_message, npc_card_block, npc_request_messages, npc_schema, npc_system_message,
-    npc_user_message, npc_user_message_with_contact, NPC_PERCEPTION_BRIEF_RULES,
+    historical_npc_message, is_npc_card_message, npc_card_block, npc_card_message,
+    npc_card_update_message, npc_messages_have_card, npc_request_messages, npc_schema,
+    npc_system_message, npc_user_message, npc_user_message_with_contact, NPC_CARD_HEADER,
+    NPC_CARD_UPDATE_HEADER, NPC_PERCEPTION_BRIEF_RULES,
 };
 pub use seed::{build_world_seed, extract_scene_delta, scene_delta_schema, world_seed_schema};
 pub use story_architect::{
     story_architect_messages, story_architect_tools, story_architect_turn,
-    story_architect_user_message, story_architect_world_lore_block, StoryArchitectOutput,
-    STORY_ARCHITECT_SYSTEM,
+    story_architect_world_lore_block, StoryArchitectOutput, STORY_ARCHITECT_SYSTEM,
 };
 pub use tools::{
     build_canon_gm_tools, build_gm_tools, build_gm_tools_for_model,
@@ -67,8 +76,8 @@ pub use tools::{
 };
 pub use world_architect::{
     world_architect_messages, world_architect_tools, world_architect_tools_with_options,
-    world_architect_turn, world_architect_turn_with_options, world_architect_user_message,
-    WorldArchitectOptions, WorldArchitectOutput,
+    world_architect_turn, world_architect_turn_with_options, WorldArchitectOptions,
+    WorldArchitectOutput,
 };
 
 /// `world._public_gender(value)` — RU grammatical-gender label, faithful port

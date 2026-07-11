@@ -18,7 +18,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::error::ParseRoleError;
 
 /// A reasoning role. Serializes to / parses from exactly `"gm"`, `"npc"`,
-/// `"compact"`, or `"location"`.
+/// `"compact"`, `"location"`, or `"character"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Role {
     /// `config.ROLE_GM == "gm"`. The game master with tools.
@@ -29,10 +29,13 @@ pub enum Role {
     Compact,
     /// Dedicated location / road-situation generator role.
     Location,
+    /// Dedicated significant-NPC generator role.
+    Character,
 }
 
 /// The reasoning roles, in declaration order.
-pub const REASONING_ROLES: [Role; 4] = [Role::Gm, Role::Npc, Role::Compact, Role::Location];
+pub const REASONING_ROLES: [Role; 5] =
+    [Role::Gm, Role::Npc, Role::Compact, Role::Location, Role::Character];
 
 impl Role {
     /// The canonical string for this role.
@@ -42,6 +45,7 @@ impl Role {
             Role::Npc => "npc",
             Role::Compact => "compact",
             Role::Location => "location",
+            Role::Character => "character",
         }
     }
 
@@ -52,6 +56,7 @@ impl Role {
             "npc" => Ok(Role::Npc),
             "compact" => Ok(Role::Compact),
             "location" => Ok(Role::Location),
+            "character" => Ok(Role::Character),
             other => Err(ParseRoleError(other.to_string())),
         }
     }

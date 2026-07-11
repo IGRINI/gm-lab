@@ -219,6 +219,26 @@ fn rerank_http_error_inside_tokio_runtime_does_not_panic() {
     );
 }
 
+#[test]
+fn rerank_scored_http_error_inside_tokio_runtime_does_not_panic() {
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let err = rt
+        .block_on(async {
+            gml_rag::rerank_scored(
+                "http://127.0.0.1:9/rerank",
+                "где ворота города",
+                &["ворота закрыты".to_string()],
+                1,
+                0.2,
+            )
+        })
+        .expect_err("dead endpoint must return an error");
+    assert!(
+        err.to_string().contains("http error"),
+        "expected HTTP error, got: {err}"
+    );
+}
+
 /// Live integration test for the new Rust -> sidecar `/rerank` glue
 /// ([`rerank_documents`]). Ignored by default — needs the unified sidecar up
 /// (start `sidecar/serve.py`, then `cargo test -p gml-rag -- --ignored`).
@@ -247,6 +267,49 @@ fn rerank_documents_orders_by_relevance_live() {
         order[0], 2,
         "the Pell/cellar doc (index 2) should rank first; got order {order:?}"
     );
+}
+
+/// Live integration test for [`rerank_scored`]: the same call as the order-only
+/// live test above, but asserting the raw cosine scores come back best-first
+/// (monotonically descending) and each sits within the sidecar's `[-1, 1]`
+/// range. Ignored by default — needs the unified sidecar up (start
+/// `sidecar/serve.py`, then `cargo test -p gml-rag -- --ignored`).
+#[test]
+#[ignore]
+fn rerank_scored_returns_descending_scores_live() {
+    let url = std::env::var("GM_RAG_RERANK_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8077/rerank".to_string());
+    let docs = vec![
+        "The harvest festival lasted three days in the village square.".to_string(),
+        "A grey cat slept on the windowsill all afternoon.".to_string(),
+        "Pell hid by the cellar door the night the cellar was locked.".to_string(),
+        "The blacksmith forged a new horseshoe at dawn.".to_string(),
+    ];
+    let scored = gml_rag::rerank_scored(
+        &url,
+        "Where was Pell when the cellar was locked?",
+        &docs,
+        4,
+        20.0,
+    )
+    .expect("rerank_scored call (is the sidecar up on :8077?)");
+    assert!(!scored.is_empty(), "expected a ranking");
+    assert_eq!(
+        scored[0].0, 2,
+        "the Pell/cellar doc (index 2) should rank first; got {scored:?}"
+    );
+    for &(idx, score) in &scored {
+        assert!(
+            (-1.0..=1.0).contains(&score),
+            "score for doc {idx} out of raw-cosine range [-1, 1]: {score}"
+        );
+    }
+    for pair in scored.windows(2) {
+        assert!(
+            pair[0].1 >= pair[1].1,
+            "scores must be descending best-first; got {scored:?}"
+        );
+    }
 }
 
 /// Live test for B5: `LocalEmbeddingClient::embed_query` sends the bare query

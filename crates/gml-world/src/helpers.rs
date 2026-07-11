@@ -55,6 +55,63 @@ pub fn str_strip(s: &str) -> String {
     s.trim().to_string()
 }
 
+/// Split a plain-string scene exit written in the story/world-architect
+/// convention `"label -> location_id"` into `(label, target)`. A string
+/// without `->` (the legacy shape) returns `(whole, "")` so callers keep the
+/// byte-identical legacy behaviour. Splits on the LAST `->` so labels
+/// containing an arrow still yield the trailing id.
+pub fn split_exit_label(raw: &str) -> (String, String) {
+    if let Some((label, target)) = raw.rsplit_once("->") {
+        let label = label.trim();
+        let target = target.trim();
+        if !label.is_empty() && !target.is_empty() {
+            return (label.to_string(), target.to_string());
+        }
+    }
+    (raw.trim().to_string(), String::new())
+}
+
+/// Is this exit-destination string one of the "not resolved yet" placeholders
+/// the exit coercions synthesize (`unknown destination` / `неизвестное
+/// направление`)? Such a value must never become a real place name or hint.
+pub fn is_placeholder_destination(s: &str) -> bool {
+    let lowered = s.trim().to_lowercase();
+    lowered == "unknown destination" || lowered == "неизвестное направление"
+}
+
+/// Normalize a slug-LIKE destination token written by the model: a
+/// whitespace-free token that MIXES ascii and non-ascii characters (a model
+/// artifact like `pyerс_ryadom` with a Cyrillic «с» inside an otherwise-ascii
+/// slug) collapses to its ascii skeleton via [`safe_id`]. Human phrases (with
+/// whitespace) and pure single-script words pass through untouched.
+pub fn normalize_slug_like(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let has_ws = trimmed.chars().any(char::is_whitespace);
+    let has_ascii_word = trimmed.chars().any(|c| c.is_ascii_alphanumeric());
+    let has_non_ascii = !trimmed.is_ascii();
+    if !has_ws && has_ascii_word && has_non_ascii {
+        // safe_id turns each stray foreign letter into `_`; collapse the runs
+        // it leaves next to real separators (`pyerс_ryadom` → `pyer_ryadom`,
+        // not `pyer__ryadom`).
+        let cleaned = safe_id(trimmed, trimmed);
+        let mut out = String::with_capacity(cleaned.len());
+        let mut prev_underscore = false;
+        for ch in cleaned.chars() {
+            if ch == '_' {
+                if !prev_underscore {
+                    out.push('_');
+                }
+                prev_underscore = true;
+            } else {
+                out.push(ch);
+                prev_underscore = false;
+            }
+        }
+        return out;
+    }
+    trimmed.to_string()
+}
+
 /// `_as_list(value)` — None -> []; list -> itself; tuple -> list; else [value].
 pub fn as_list(value: &Value) -> Vec<Value> {
     match value {

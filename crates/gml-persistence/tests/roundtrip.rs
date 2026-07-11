@@ -347,9 +347,10 @@ fn world_store_create_update_list_get_delete_roundtrip() {
 }
 
 #[test]
-fn world_store_update_preserves_architect_history() {
+fn world_store_architect_state_splits_from_content() {
     let (store, _dir) = temp_world_store();
 
+    // A LEGACY package: the architect chat still rides inside the payload.
     let world = store
         .create_world(json!({
             "status": "draft",
@@ -366,19 +367,26 @@ fn world_store_update_preserves_architect_history() {
             "architect_cache_thread_id": "world-architect:test-thread"
         }))
         .expect("create draft world");
-    let world_id = world["id"].as_str().expect("world id");
+    let world_id = world["id"].as_str().expect("world id").to_string();
 
+    // The chat NEVER appears in world responses (content/chat split)...
+    assert!(world.get("architect_messages").is_none());
+    // ...but the legacy in-payload state is readable through the split API.
+    let legacy = store
+        .get_architect_state(&world_id)
+        .expect("read architect state")
+        .expect("legacy architect state present");
+    assert_eq!(legacy["messages"][1]["content"], "Хочу мир клятв.");
+    assert_eq!(legacy["model_history"][1]["content"], "Собираю основу.");
+    assert_eq!(legacy["cache_session_id"], "world-architect:test-session");
+
+    // A content update (ready save) keeps the legacy chat readable and hidden.
     let updated = store
         .update_world(
-            world_id,
+            &world_id,
             json!({
                 "status": "ready",
                 "title": "Порог Второго Неба",
-                "genre": "fantasy isekai",
-                "tone": "tense hopeful",
-                "world_size": "Континент с несколькими королевствами",
-                "population": "Десятки миллионов жителей",
-                "public_premise": "Клятвы и долги имеют силу закона и магии.",
                 "world_lore": {
                     "name": "Порог Второго Неба",
                     "world_laws": ["магия требует имени, цены или признанного права"]
@@ -386,22 +394,79 @@ fn world_store_update_preserves_architect_history() {
             }),
         )
         .expect("update world");
-
-    assert_eq!(updated["id"], json!(world_id));
     assert_eq!(updated["status"], json!("ready"));
     assert_eq!(updated["title"], json!("Порог Второго Неба"));
+    assert!(updated.get("architect_messages").is_none());
+    assert!(store
+        .get_architect_state(&world_id)
+        .expect("read after update")
+        .is_some());
+    let version_before = store.world_version(&world_id).expect("version");
+
+    // After the conversation moves to the dialogs DB, the package artifacts are
+    // purged: a stray architect.json is deleted, the legacy payload keys are
+    // stripped, and the content version is NOT bumped.
+    std::fs::write(
+        store.world_dir(&world_id).join("architect.json"),
+        b"{\"messages\": []}",
+    )
+    .expect("plant stray architect.json");
+    store
+        .purge_architect_artifacts(&world_id)
+        .expect("purge artifacts");
     assert_eq!(
-        updated["architect_messages"][1]["content"],
-        "Хочу мир клятв."
+        store.world_version(&world_id).expect("version after purge"),
+        version_before,
+        "architect purge never bumps the content version"
     );
-    assert_eq!(
-        updated["architect_model_history"][1]["content"],
-        "Собираю основу."
-    );
-    assert_eq!(
-        updated["architect_cache_session_id"],
-        "world-architect:test-session"
-    );
+    assert!(!store.world_dir(&world_id).join("architect.json").is_file());
+    let raw = std::fs::read_to_string(
+        store.world_dir(&world_id).join("world.json"),
+    )
+    .expect("read world.json");
+    assert!(!raw.contains("architect_messages"));
+    // With every artifact gone the fallback reader has nothing left.
+    assert!(store
+        .get_architect_state(&world_id)
+        .expect("read after purge")
+        .is_none());
+}
+
+#[test]
+fn dialog_store_architect_chats_round_trip() {
+    let (store, _dir) = temp_store();
+    // Absent → None.
+    assert!(store
+        .get_architect_chat("world", "w1")
+        .expect("get empty")
+        .is_none());
+    // Upsert + read back.
+    store
+        .set_architect_chat(
+            "world",
+            "w1",
+            &json!({"messages": [{"role": "user", "content": "Хочу мир клятв."}]}),
+        )
+        .expect("set");
+    store
+        .set_architect_chat("world", "w1", &json!({"messages": [], "cache_session_id": "s2"}))
+        .expect("upsert");
+    let got = store
+        .get_architect_chat("world", "w1")
+        .expect("get")
+        .expect("present");
+    assert_eq!(got["cache_session_id"], "s2");
+    // Kinds are independent keys.
+    assert!(store
+        .get_architect_chat("story", "w1")
+        .expect("other kind")
+        .is_none());
+    // Delete is a no-op-safe cleanup.
+    store.delete_architect_chat("world", "w1").expect("delete");
+    assert!(store
+        .get_architect_chat("world", "w1")
+        .expect("get after delete")
+        .is_none());
 }
 
 #[test]

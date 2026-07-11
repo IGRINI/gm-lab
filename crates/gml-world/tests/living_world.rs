@@ -9,6 +9,7 @@ use gml_world::canon::action::{Action, ProposedAction};
 use gml_world::canon::engine;
 use gml_world::canon::worldgen::{self, WorldSpec};
 use gml_world::canon::{Place, Provenance, Scope, Transition};
+use gml_world::World;
 
 fn gen(seed: &str) -> gml_world::WorldCanon {
     worldgen::generate(&WorldSpec::from_seed(seed))
@@ -442,14 +443,52 @@ fn poi_is_lazy_generated_on_first_entry_then_canon() {
 // =========================================================================
 #[test]
 fn npc_exists_outside_scene_and_can_be_elsewhere() {
-    let mut canon = gen("camp5");
-    let start = canon.player_place_id.clone();
+    // Procedural worlds no longer seed any actors, so we mint the NPC by hand —
+    // the minimal playable pair (actor-npc-bridge.md §5): an `Npc` card in
+    // `world.npcs` plus a canon `Actor` placed at a NON-start place (the gate).
+    let mut world = World::from_worldgen_with_dice_seed(&WorldSpec::from_seed("camp5"), 5);
+    let start = world.world_canon.player_place_id.clone();
+    let gate_id = ids_place(&world.world_canon, "gate");
+    let npc_id =
+        gml_world::canon::ids::stable_id(&world.world_canon.world_seed, &gate_id, "actor", "warden");
 
-    // The generated "warden" actor lives at the gate, not the start square.
-    let warden = canon
-        .actors
-        .values()
-        .find(|a| a.role == "guard")
+    // Card first (resolve/whereabouts key off it), then the canon actor at the
+    // gate via the validated engine path. Only the 7 non-defaulted card fields
+    // are required.
+    world.npcs.insert(
+        npc_id.clone(),
+        serde_json::from_value(serde_json::json!({
+            "npc_id": npc_id,
+            "name": "Страж ворот",
+            "persona": "Немногословный часовой у ворот.",
+            "voice": "Ровно, по-военному.",
+            "goals": "держать пост",
+            "knowledge": "",
+            "secret": "",
+            "role": "guard",
+            "pronouns": "М",
+        }))
+        .expect("valid npc card"),
+    );
+    engine::apply(
+        &mut world.world_canon,
+        &propose(Action::CreateActor {
+            actor_id: npc_id.clone(),
+            public_label: "Страж ворот".into(),
+            place_id: gate_id.clone(),
+            role: "guard".into(),
+            faction_id: String::new(),
+        }),
+        1,
+    )
+    .expect("create actor");
+    world.ensure_npc_whereabouts();
+    world.refresh_scene_from_canon();
+
+    // The guard is physically in some place, and it is NOT the player's start.
+    let warden = world
+        .world_canon
+        .actor(&npc_id)
         .expect("a guard actor")
         .clone();
     assert!(
@@ -462,25 +501,25 @@ fn npc_exists_outside_scene_and_can_be_elsewhere() {
     );
 
     // It can be moved to yet another place via the engine.
-    let gate_id = ids_place(&canon, "gate");
-    let smithy_id = ids_place(&canon, "smithy");
+    let smithy_id = ids_place(&world.world_canon, "smithy");
     let dest = if warden.location.place() == Some(gate_id.as_str()) {
         smithy_id
     } else {
         gate_id
     };
     engine::apply(
-        &mut canon,
+        &mut world.world_canon,
         &propose(Action::MoveActor {
             actor_id: warden.actor_id.clone(),
             to_place: dest.clone(),
         }),
-        1,
+        2,
     )
     .expect("move actor");
-    assert!(canon.actor(&warden.actor_id).unwrap().is_at(&dest));
+    assert!(world.world_canon.actor(&warden.actor_id).unwrap().is_at(&dest));
     assert!(
-        canon
+        world
+            .world_canon
             .place(&dest)
             .unwrap()
             .occupant_ids
@@ -516,6 +555,21 @@ fn important_changes_are_written_to_the_event_log() {
 #[test]
 fn validator_blocks_contradictory_commits_and_mutates_nothing() {
     let mut canon = gen("camp7");
+    // Procedural worlds seed no actors, so mint one first — subtest 3 below
+    // needs a real actor to attempt an (invalid) move on.
+    let start = canon.player_place_id.clone();
+    engine::apply(
+        &mut canon,
+        &propose(Action::CreateActor {
+            actor_id: "sentry".to_string(),
+            public_label: "Часовой".to_string(),
+            place_id: start,
+            role: "guard".to_string(),
+            faction_id: String::new(),
+        }),
+        1,
+    )
+    .expect("create actor");
     let snapshot = canon.clone();
 
     // 1. Move through a non-existent transition.

@@ -158,6 +158,15 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
             json!({ "id": char_ref.id, "version": char_ref.version }),
         );
     }
+    // Surface the launched WORLD package provenance (mirrors char_ref) so the
+    // game-context bar can resolve the world name/genre/tone from the loaded
+    // worlds list. Emitted only when `Some`; absent -> UI shows a generic label.
+    if let Some(world_ref) = &w.world_ref {
+        data.insert(
+            "world_ref".to_string(),
+            json!({ "id": world_ref.id, "version": world_ref.version }),
+        );
+    }
     data.insert("scene".to_string(), scene);
     data.insert("entities".to_string(), entities);
     data.insert("status_labels".to_string(), status_labels());

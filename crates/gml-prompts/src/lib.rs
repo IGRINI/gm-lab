@@ -248,11 +248,20 @@ mod tests {
         h.finalize().iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    // GM_SYSTEM sha/len updated for Phase-С spells (`docs/ITEMS_AND_SPELLS_TZ.md`
-    // §С2): the spellcasting rule — cast via cast_spell, engine-authoritative
-    // slots/concentration, damage/saves via roll_dice, concentration reset via
-    // the field — appended after the Phase-И item pickup/drop rule.
-    const GM_SYSTEM_SHA: &str = "cb1646fd49f564a54ca6caa5d364c54b763e997deb3888159ccc348ad6e38bf0";
+    // GM_SYSTEM sha/len updated for the tool-search discipline batch: a new
+    // TOOL SEARCH DISCIPLINE section (default-permit / narrow-trigger /
+    // scoped-violation + a by-capability paragraph noting loaded tools persist
+    // for the session); generate_npc returned to the deferred set, so the TOOL
+    // ROUTING catalog moves it and generate_location (plus the item/spell tools)
+    // to the tool_search-loaded side and its Named-NPC guidance now reads as a
+    // searched tool; and a new deferred long_rest one-liner (full rest only —
+    // short rest stays advance_time + GM adjudication) joined TOOL ROUTING. This
+    // sits on top of the earlier snapshot-once refactor (GM_CONTEXT_TZ §6): the
+    // once-per-session WORLD SNAPSHOT + tool-result deltas + read_state re-read
+    // contract, standing TURN RESOLUTION / PLAYER OPTION SUGGESTIONS policy, and
+    // the WORLD SNAPSHOT / DYNAMIC NPC ROSTER labels.
+    const GM_SYSTEM_SHA: &str =
+    "bf71f83c8de4e45ca5dc1e514d12b77a98d3b6a8c787c7d07687f120d37dd751";
     const NPC_SYSTEM_STATIC_SHA: &str =
         "b9cff19d13db6dabd8510ab7685bbc9c7b903e1b867bc22f9ec781366250e4c9";
     const NPC_CARD_TEMPLATE_SHA: &str =
@@ -276,8 +285,8 @@ mod tests {
     fn gm_system_byte_identical() {
         assert_bytes_eq!(gm_system(), "GM_SYSTEM.txt");
         assert_eq!(sha256_hex(GM_SYSTEM), GM_SYSTEM_SHA);
-        assert_eq!(GM_SYSTEM.chars().count(), 37701);
-        assert_eq!(GM_SYSTEM.len(), 37958);
+        assert_eq!(GM_SYSTEM.chars().count(), 46001);
+        assert_eq!(GM_SYSTEM.len(), 46355);
     }
 
     #[test]

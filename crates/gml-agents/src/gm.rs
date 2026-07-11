@@ -3,13 +3,32 @@
 //! Cache-prefix discipline (PORT_PLAN §4.1): the request is
 //! `[system GM_SYSTEM][system world_setup (PUBLIC INTRO only)]`
 //! `[optional system "STORY SO FAR (compact): "+summary]`
-//! `[*append-only gm_messages]`. The mutable per-turn state (roster, public
-//! facts, scene, player card, entity refs, constraints, player action) lives in
-//! the late user turn produced by [`gm_user_message`] / [`gm_turn_context`].
+//! `[*append-only gm_messages]`.
+//!
+//! Snapshot-once design (GM_CONTEXT_TZ): the full engine-state snapshot is
+//! pushed into `gm_messages` ONCE at session start (and FRESH at every
+//! compaction) via [`gm_world_snapshot`] / [`gm_snapshot_message`]. Every turn
+//! after that appends only the bare player action ([`gm_user_message`]); state
+//! deltas arrive in tool results, not re-sent snapshots. This keeps the whole
+//! dialogue prefix cacheable between compactions.
+
+use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
 use gml_world::World;
+
+/// Header prefix identifying a WORLD SNAPSHOT user message in `gm_messages`.
+/// Used to detect whether a (possibly legacy) history already carries a
+/// snapshot, and to exclude the snapshot from compaction summaries.
+pub const SNAPSHOT_HEADER: &str =
+    "WORLD SNAPSHOT (актуальное состояние на момент снимка; дальше следи за дельтами из результатов тулов)";
+
+/// Prefix of the append-only player-options toggle notice.
+pub const OPTIONS_NOTICE_PREFIX: &str = "PLAYER OPTION SUGGESTIONS: ";
+
+/// Bare player-action header for the per-turn user message.
+pub const PLAYER_ACTION_HEADER: &str = "PLAYER ACTION:";
 
 /// `_gm_system(world, summary)` — returns the static GM prompt unchanged.
 pub fn gm_system() -> &'static str {
@@ -25,59 +44,22 @@ pub fn gm_world_setup(world: &World) -> String {
     parts.join("\n\n")
 }
 
-/// `TURN_RESOLUTION_CHECKLIST` — verbatim module constant.
-pub const TURN_RESOLUTION_CHECKLIST: &str = "<system-reminder>
-TURN RESOLUTION CHECK:
-- First verify material possibility from PLAYER CHARACTER CARD and
-  CURRENT SCENE STATE: required inventory/equipment/features, spells, tools, training,
-  authority, body access, scene objects, materials, time, and position must exist.
-  If the action rests on a missing or unsupported premise, stop with a reality correction:
-  say what cannot happen and why, mention possible established remainders, and do not call
-  roll_dice, ask_npc, advance_time, or state-update tools for that attempted premise.
-  Only after the player deliberately continues with a physically possible remainder may you
-  resolve that remainder; the missing item/spell/feature/expertise/effect stays absent.
-- Before final narration, decide whether the latest player action needs roll_dice.
-  Active observation/search/listening, including \"я осматриваюсь\", \"смотрю вокруг\",
-  \"прислушиваюсь\", or \"ищу\", must roll Perception/Investigation/etc before hidden or
-  non-obvious clues/details are revealed. Without the roll, reveal only obvious visible
-  facts.
-- Respect resolved rolls. A success gives a real benefit; a critical success gives the
-  best plausible benefit. If the player asks why a strong roll did not produce the
-  expected effect, explain the established constraint clearly and never invent a new
-  post-roll reason to cancel the success.
-- If any in-world time passed, call advance_time once before final narration. advance_time
-  records elapsed time only; it does not replace a needed roll, NPC reaction, scene
-  update, memory update, or player-sheet update.
-</system-reminder>
-";
-
-/// `_gm_turn_context(world, player_text, include_player_options_tool)`.
+/// `gm_world_snapshot(world, recent_contact_ids, include_player_options_tool)` —
+/// the one-time engine-state snapshot pushed into `gm_messages` at session start
+/// and rebuilt fresh at every compaction. Carries TIME / DYNAMIC ROSTER / PUBLIC
+/// FACTS / PLAYER CARD / SCENE / CANON / MEMORY / ENTITY REFS / CONSTRAINTS plus
+/// the current player-options STATE line. It deliberately does NOT include the
+/// turn-resolution checklist or the player-options behavior body (those are
+/// standing policy in GM_SYSTEM) nor a PLAYER ACTION block.
 ///
 /// Takes `&mut World` because the entity-reference projection memoizes/derives
-/// from world state (Python calls `world.entity_reference_context()`).
-pub fn gm_turn_context(
+/// from world state. Consumes ZERO dice RNG.
+pub fn gm_world_snapshot(
     world: &mut World,
-    player_text: &str,
+    recent_contact_ids: &BTreeSet<String>,
     include_player_options_tool: bool,
 ) -> String {
-    let roster: String = world
-        .npcs
-        .values()
-        .map(|npc| {
-            let mut line = format!(
-                "- id={}; internal_name={}; player_label={}; role={}",
-                npc.npc_id,
-                npc.name,
-                world.npc_player_label(&npc.npc_id, "player"),
-                npc.role
-            );
-            if !npc.pronouns.is_empty() {
-                line.push_str(&format!("; род={}", crate::public_gender(&npc.pronouns)));
-            }
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let roster = world.dynamic_roster_context(recent_contact_ids);
 
     let public_facts: Vec<String> = world
         .fact_records
@@ -86,16 +68,12 @@ pub fn gm_turn_context(
         .map(|r| r.text.clone())
         .collect();
 
-    let mut system = String::from("CURRENT TURN CONTEXT (latest engine state snapshot):\n");
+    let mut system = String::from(SNAPSHOT_HEADER);
+    system.push('\n');
     system.push_str(&format!("\nTIME STATE:\n{}", world.time_context()));
     system.push_str(&format!(
-        "\nINTERNAL NPC ROSTER (tool ids; internal_name is GM-only unless player_label \
-matches it):\n{}",
-        if roster.is_empty() {
-            "(none)".to_string()
-        } else {
-            roster
-        }
+        "\n\nDYNAMIC NPC ROSTER (relevant/nearby now; tool ids; internal_name is GM-only \
+unless player_label matches it; use read_state(roster) for the full list):\n{roster}"
     ));
     if !public_facts.is_empty() {
         system.push_str("\n\nCURRENT PUBLIC FACTS:\n");
@@ -131,38 +109,52 @@ matches it):\n{}",
         let lines: Vec<String> = world.constraints.iter().map(|c| format!("- {c}")).collect();
         system.push_str(&lines.join("\n"));
     }
-    if include_player_options_tool {
-        system.push_str(
-            "\n\nPLAYER OPTION SUGGESTIONS:\n\
-enabled. After resolving all needed tools for this player action, call ask_player \
-as the last tool before final narration with 4-8 useful Russian quick replies. \
-This is mandatory for every completed turn while the feature is enabled: do not \
-finish with narration only. Do not call more tools after ask_player unless the \
-ask_player result reports invalid arguments. After the ask_player tool result \
-confirms the buttons were shown, write the final player-facing narration and \
-stop. The engine does not create fallback buttons. Do not put a textual choice \
-menu in final narration; the quick-reply buttons handle it. Each option needs a \
-short label and a fuller message that can be sent as the player's next action. \
-Keep free text input available by offering suggestions, not commands.",
-        );
+    let options_state = if include_player_options_tool {
+        "enabled"
     } else {
-        system.push_str("\n\nPLAYER OPTION SUGGESTIONS:\ndisabled. Do not call ask_player.");
-    }
-    system.push_str(&format!("\n\n{TURN_RESOLUTION_CHECKLIST}"));
-    system.push_str("\n\nPLAYER ACTION (latest user input, free roleplay text):\n");
-    system.push_str(player_text.trim());
+        "disabled"
+    };
+    system.push_str(&format!("\n\nPLAYER OPTION SUGGESTIONS:\n{options_state}"));
     system
 }
 
-/// `gm_user_message(world, player_text, include_player_options_tool)`.
-pub fn gm_user_message(
-    world: &mut World,
-    player_text: &str,
-    include_player_options_tool: bool,
-) -> Value {
+/// Wrap a snapshot string as the `role:"user"` snapshot message.
+pub fn gm_snapshot_message(snapshot: &str) -> Value {
+    json!({"role": "user", "content": snapshot})
+}
+
+/// True when a message is a WORLD SNAPSHOT user message.
+pub fn is_snapshot_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("user")
+        && message
+            .get("content")
+            .and_then(Value::as_str)
+            .map(|c| c.starts_with(SNAPSHOT_HEADER))
+            .unwrap_or(false)
+}
+
+/// True when `gm_messages` already contains a WORLD SNAPSHOT message. A legacy
+/// save (pre-snapshot history) returns false → the caller injects one lazily.
+pub fn gm_messages_have_snapshot(gm_messages: &[Value]) -> bool {
+    gm_messages.iter().any(is_snapshot_message)
+}
+
+/// Append-only player-options toggle notice (`role:"user"`), emitted only when
+/// the setting changes mid-session. Cache-safe (append, never rewrite).
+pub fn gm_options_notice_message(include_player_options_tool: bool) -> Value {
+    let state = if include_player_options_tool {
+        "enabled"
+    } else {
+        "disabled"
+    };
+    json!({"role": "user", "content": format!("{OPTIONS_NOTICE_PREFIX}{state}")})
+}
+
+/// `gm_user_message(player_text)` — the bare per-turn player action message.
+pub fn gm_user_message(player_text: &str) -> Value {
     json!({
         "role": "user",
-        "content": gm_turn_context(world, player_text, include_player_options_tool),
+        "content": format!("{PLAYER_ACTION_HEADER}\n{}", player_text.trim()),
     })
 }
 

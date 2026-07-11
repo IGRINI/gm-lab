@@ -2106,6 +2106,112 @@ impl World {
         }
     }
 
+    /// Shared internal-roster line:
+    /// `- id=…; internal_name=…; player_label=…; role=…[; род=…]`.
+    fn roster_line(&self, npc: &Npc) -> String {
+        let mut line = format!(
+            "- id={}; internal_name={}; player_label={}; role={}",
+            npc.npc_id,
+            npc.name,
+            self.npc_player_label(&npc.npc_id, "player"),
+            npc.role
+        );
+        if !npc.pronouns.is_empty() {
+            line.push_str(&format!("; род={}", public_gender(&npc.pronouns)));
+        }
+        line
+    }
+
+    /// Full internal NPC roster (every card). Used by `read_state(roster)` for
+    /// the complete list. Pure read — consumes no RNG and mutates nothing.
+    pub fn full_roster_context(&self) -> String {
+        let lines: Vec<String> = self.npcs.values().map(|npc| self.roster_line(npc)).collect();
+        if lines.is_empty() {
+            "(none)".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
+
+    /// Dynamic, deterministically-filtered NPC roster for the world snapshot and
+    /// `read_state(scene)`. Includes NPCs that are (1) present in the current
+    /// scene, (2) located at the player's place or one transition away, (3) alive
+    /// story-seed NPCs (canon `provenance.origin == "seed"`), or (4) recently
+    /// contacted (`recent_contact_ids`, kept on the session). Deduped, capped at
+    /// 15 lines with an offscreen-count note pointing at `read_state(roster)`.
+    /// Consumes ZERO dice RNG and mutates nothing.
+    pub fn dynamic_roster_context(&self, recent_contact_ids: &BTreeSet<String>) -> String {
+        // Priority-ORDERED selection: when the cap truncates, the NPCs the GM is
+        // most likely to reference next must survive — present first, then
+        // recently contacted, then nearby, then story-seed. (A plain set would
+        // truncate by lexicographic id instead.)
+        let mut ordered: Vec<String> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        // (1) present in the current scene.
+        for id in &self.scene.present_npcs {
+            if self.npcs.contains_key(id) && seen.insert(id.clone()) {
+                ordered.push(id.clone());
+            }
+        }
+        // (2) recently contacted (session-tracked).
+        for id in recent_contact_ids {
+            if self.npcs.contains_key(id) && seen.insert(id.clone()) {
+                ordered.push(id.clone());
+            }
+        }
+        // (3) at the player's place or one transition away.
+        let player_place = self.world_canon.player_place_id.clone();
+        if !player_place.is_empty() {
+            let mut nearby_places: BTreeSet<String> = BTreeSet::new();
+            nearby_places.insert(player_place.clone());
+            for t in self.world_canon.exits_from(&player_place) {
+                if !t.to_place.is_empty() {
+                    nearby_places.insert(t.to_place.clone());
+                }
+            }
+            for place in &nearby_places {
+                for actor in self.world_canon.actors_at(place) {
+                    let id = actor.actor_id.clone();
+                    if self.npcs.contains_key(&id) && seen.insert(id.clone()) {
+                        ordered.push(id);
+                    }
+                }
+            }
+        }
+        // (4) story-seed NPCs still in play (engine convention: only "dead"
+        // removes an actor from play — wounded/missing statuses stay listed).
+        for npc in self.npcs.values() {
+            let is_seed = self
+                .world_canon
+                .actor(&npc.npc_id)
+                .map(|a| a.provenance.origin == "seed")
+                .unwrap_or(false);
+            let alive = npc.life_status != "dead";
+            if is_seed && alive && seen.insert(npc.npc_id.clone()) {
+                ordered.push(npc.npc_id.clone());
+            }
+        }
+
+        if ordered.is_empty() {
+            return "(none)".to_string();
+        }
+        let cap = 15usize;
+        let total = ordered.len();
+        let mut lines: Vec<String> = Vec::new();
+        for id in ordered.iter().take(cap) {
+            if let Some(npc) = self.npcs.get(id) {
+                lines.push(self.roster_line(npc));
+            }
+        }
+        if total > cap {
+            let offscreen = total - cap;
+            lines.push(format!(
+                "… (+{offscreen} offscreen — read_state(roster) для полного списка)"
+            ));
+        }
+        lines.join("\n")
+    }
+
     // =====================================================================
     // Whereabouts
     // =====================================================================
@@ -5931,7 +6037,7 @@ fn coerce_scene_exits(raw: Option<&Value>, default_dest: &str) -> Vec<SceneExit>
                 exits.push(SceneExit {
                     exit_id: safe_id(&get_str(m, "id"), &format!("exit_{i}")),
                     name,
-                    destination: nonempty_or(get_str(m, "destination"), default_dest),
+                    destination: crate::helpers::normalize_slug_like(&nonempty_or(get_str(m, "destination"), default_dest)),
                     visible: m.get("visible").map(as_bool_pyish).unwrap_or(true),
                     blocked_by: get_str(m, "blocked_by"),
                 });
@@ -5939,10 +6045,18 @@ fn coerce_scene_exits(raw: Option<&Value>, default_dest: &str) -> Vec<SceneExit>
             _ => {
                 let name = as_str(exit_);
                 if !name.is_empty() {
+                    // "label -> location_id" (story/world-architect convention)
+                    // splits into name/destination; a plain string keeps the
+                    // legacy name=destination shape byte-identically.
+                    let (label, target) = crate::helpers::split_exit_label(&name);
                     exits.push(SceneExit {
                         exit_id: safe_id(&name, &format!("exit_{i}")),
-                        name: name.clone(),
-                        destination: name,
+                        name: label,
+                        destination: if target.is_empty() {
+                            name
+                        } else {
+                            crate::helpers::normalize_slug_like(&target)
+                        },
                         visible: true,
                         blocked_by: String::new(),
                     });
@@ -5970,7 +6084,10 @@ fn coerce_scene_exits_setscene(raw: Option<&Value>) -> Vec<SceneExit> {
                 exits.push(SceneExit {
                     exit_id: safe_id(&get_str(m, "id"), &format!("exit_{i}")),
                     name,
-                    destination: nonempty_or(get_str(m, "destination"), "неизвестное направление"),
+                    destination: crate::helpers::normalize_slug_like(&nonempty_or(
+                        get_str(m, "destination"),
+                        "неизвестное направление",
+                    )),
                     visible: m.get("visible").map(as_bool_pyish).unwrap_or(true),
                     blocked_by: get_str(m, "blocked_by"),
                 });
@@ -5978,10 +6095,18 @@ fn coerce_scene_exits_setscene(raw: Option<&Value>) -> Vec<SceneExit> {
             _ => {
                 let name = as_str(exit_);
                 if !name.is_empty() {
+                    // "label -> location_id" (architect convention) carries a
+                    // real destination; only a plain string keeps the legacy
+                    // "unknown destination" placeholder.
+                    let (label, target) = crate::helpers::split_exit_label(&name);
                     exits.push(SceneExit {
                         exit_id: safe_id(&name, &format!("exit_{i}")),
-                        name: name.clone(),
-                        destination: "unknown destination".to_string(),
+                        name: label,
+                        destination: if target.is_empty() {
+                            "unknown destination".to_string()
+                        } else {
+                            crate::helpers::normalize_slug_like(&target)
+                        },
                         visible: true,
                         blocked_by: String::new(),
                     });
@@ -6819,15 +6944,16 @@ mod compose_authored_tests {
         assert_eq!(world2.story_brief, "Бриф из player_brief.");
     }
 
-    /// A plot with NO npcs must NOT overwrite the procedural worldgen roster
-    /// (the authored "stranger" default must never clobber generated actors).
+    /// A plot with NO npcs must NOT inject the authored "stranger" default over
+    /// the procedural base — the roster stays exactly as worldgen left it (now
+    /// empty; actors are generated lazily at play time, not hardcoded).
     #[test]
     fn empty_plot_preserves_worldgen_roster() {
         let generated = World::from_worldgen_with_dice_seed(&base_spec(), 20260622);
         let generated_ids: BTreeSet<String> = generated.npcs.keys().cloned().collect();
         assert!(
-            !generated_ids.is_empty(),
-            "worldgen must produce at least one actor for this test to be meaningful"
+            generated_ids.is_empty(),
+            "procedural worldgen now seeds no actors"
         );
 
         // An empty plot (no `npcs` key) overlaid on the same deterministic base.
@@ -6837,7 +6963,7 @@ mod compose_authored_tests {
 
         assert_eq!(
             composed_ids, generated_ids,
-            "empty plot must leave the worldgen roster untouched"
+            "empty plot must not inject a default NPC over the worldgen roster"
         );
     }
 

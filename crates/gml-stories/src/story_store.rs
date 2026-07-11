@@ -71,6 +71,18 @@ pub struct StoryWorldRef {
 
 /// On-disk envelope format tag for `story.json`.
 pub const STORY_FORMAT: &str = "gmlab.story/1";
+/// Legacy per-story architect-chat filename (pre-DB packages): read as a
+/// fallback by `get_architect_state`, deleted by `purge_architect_artifacts`.
+/// The conversation's real home is the dialogs SQLite.
+const ARCHITECT_FILE: &str = "architect.json";
+/// Legacy `meta` keys that carried the architect chat INSIDE `story.json`
+/// before the split; read as a fallback and stripped on the next architect save.
+const LEGACY_ARCHITECT_META_KEYS: [&str; 4] = [
+    "architect_messages",
+    "architect_model_history",
+    "architect_cache_session_id",
+    "architect_cache_thread_id",
+];
 /// Per-story manifest filename.
 const STORY_FILE: &str = "story.json";
 /// Sub-directory under the packages root that holds story packages.
@@ -224,11 +236,83 @@ impl StoryStore {
         self.stories.iter().map(|s| s.metadata()).collect()
     }
 
+    /// Read the story's architect-chat state (`architect.json` in the package
+    /// dir). Falls back to the LEGACY `meta.architect_*` keys for packages
+    /// written before the story/chat split. `Ok(None)` when the story has no
+    /// architect chat; `Err(StoryNotFound)` for an unknown id.
+    pub fn get_architect_state(&self, story_id: &str) -> Result<Option<Value>, StoryStoreError> {
+        let story_id = story_id.trim();
+        let env = self
+            .find(story_id)
+            .ok_or_else(|| StoryStoreError::StoryNotFound(story_id.to_string()))?;
+        let path = self.story_dir(story_id).join(ARCHITECT_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(raw) => {
+                let value: Value = serde_json::from_str(&raw).map_err(|e| {
+                    StoryStoreError::Io(format!("parse architect state {story_id}: {e}"))
+                })?;
+                Ok(Some(normalize_architect_state(value)))
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(legacy_architect_state(&env.meta))
+            }
+            Err(e) => Err(StoryStoreError::Io(format!(
+                "read architect state {story_id}: {e}"
+            ))),
+        }
+    }
+
+    /// Purge every architect-chat artifact from the story PACKAGE after the
+    /// conversation has been persisted to its real home (the dialogs SQLite,
+    /// `DialogStore::set_architect_chat`): deletes a stray `architect.json`
+    /// and strips the legacy `meta.architect_*` keys. Content-invariant —
+    /// `version`/`updated_at` preserved; the in-memory cache entry follows suit.
+    pub fn purge_architect_artifacts(&mut self, story_id: &str) -> Result<(), StoryStoreError> {
+        let story_id = story_id.trim().to_string();
+        {
+            let _guard = self.write_lock.lock().expect("story write lock poisoned");
+            self.find(&story_id)
+                .ok_or_else(|| StoryStoreError::StoryNotFound(story_id.clone()))?;
+            let file = self.story_dir(&story_id).join(ARCHITECT_FILE);
+            if file.is_file() {
+                std::fs::remove_file(&file).map_err(|e| {
+                    StoryStoreError::Io(format!("remove architect {story_id}: {e}"))
+                })?;
+            }
+        }
+
+        let needs_strip = self
+            .find(&story_id)
+            .map(|env| LEGACY_ARCHITECT_META_KEYS.iter().any(|k| env.meta.contains_key(*k)))
+            .unwrap_or(false);
+        if needs_strip {
+            let stripped_env = {
+                let env = self
+                    .find(&story_id)
+                    .ok_or_else(|| StoryStoreError::StoryNotFound(story_id.clone()))?;
+                let mut stripped = env.clone();
+                for key in LEGACY_ARCHITECT_META_KEYS {
+                    stripped.meta.remove(key);
+                }
+                stripped
+            };
+            {
+                let _guard = self.write_lock.lock().expect("story write lock poisoned");
+                self.write_envelope(&stripped_env)?;
+            }
+            if let Some(slot) = self.stories.iter_mut().find(|s| s.id == story_id) {
+                *slot = stripped_env;
+            }
+        }
+        Ok(())
+    }
+
     /// `draft_row(story_id) -> {id, version, title, description, kind, world_ref?,
-    /// seed, architect_*?}` — the GM-scoped plot DRAFT row for the story architect
+    /// seed}` — the GM-scoped plot DRAFT row for the story architect
     /// (`GET /stories/{id}/draft`, `§С1.3`). Unlike [`Self::story_metadata`] this
-    /// carries the full `seed` (the plot, incl. the GM's `hidden_truth`) plus the
-    /// flattened `architect_*` chat state (see [`StoryEnvelope::draft_row`]).
+    /// carries the full `seed` (the plot, incl. the GM's `hidden_truth`). The
+    /// architect CHAT state is NOT part of the row — it lives in `architect.json`
+    /// ([`Self::get_architect_state`]).
     ///
     /// Guards MIRROR `update_story` / `resolve_story_architect_world` so a caller
     /// gets the SAME rejections the architect turn would (mapped to 400 by the
@@ -653,6 +737,7 @@ impl StoryStore {
 
 /// In-memory view of one `story.json`. `seed` is the exact legacy catalog seed
 /// object; the surrounding fields are the package envelope.
+#[derive(Clone)]
 struct StoryEnvelope {
     id: String,
     version: u64,
@@ -763,17 +848,20 @@ impl StoryEnvelope {
         })
     }
 
-    /// `{id, title, description, story_brief, kind, world_ref?}` — the PLAYER-facing
-    /// catalog row (`GET /stories`). The leading four keys keep the legacy public
-    /// catalog shape (`story_brief` is the seed's `story_brief`, else
-    /// `public_intro`); `kind` (always) and `world_ref` (when present) are the ONLY
-    /// additive keys — just enough for the front-end to gate the "✎ edit"
-    /// affordance (`§С1.3`).
+    /// `{id, title, description, story_brief, kind, world_ref?, has_pc}` — the
+    /// PLAYER-facing catalog row (`GET /stories`). The leading four keys keep the
+    /// legacy public catalog shape (`story_brief` is the seed's `story_brief`, else
+    /// `public_intro`); `kind` (always), `world_ref` (when present) and `has_pc`
+    /// (always) are the ONLY additive keys — just enough for the front-end to gate
+    /// the "✎ edit" affordance (`§С1.3`) and for the new-game wizard to tell
+    /// whether an authored story ships its own protagonist.
     ///
-    /// This row is DELIBERATELY minimal: it carries NO `seed` and NO `architect_*`
-    /// chat state, because the catalog is loaded at app start for every player and
-    /// the `seed` holds GM-only secrets (e.g. `hidden_truth`, the mystery
-    /// solutions). The GM-scoped plot draft + chat state come from
+    /// `has_pc` is a NON-SECRET boolean (does the seed carry an authored
+    /// protagonist?) — the `hidden_truth`/mystery solution stays omitted with the
+    /// rest of the seed. This row is DELIBERATELY minimal: it carries NO `seed`
+    /// and NO `architect_*` chat state, because the catalog is loaded at app start
+    /// for every player and the `seed` holds GM-only secrets (e.g. `hidden_truth`,
+    /// the mystery solutions). The GM-scoped plot draft + chat state come from
     /// [`Self::draft_row`] via `GET /stories/{id}/draft` instead.
     fn metadata(&self) -> Map<String, Value> {
         let mut meta = Map::new();
@@ -797,21 +885,19 @@ impl StoryEnvelope {
                 json!({ "id": world_ref.id, "version": world_ref.version }),
             );
         }
+        meta.insert("has_pc".to_string(), Value::Bool(seed_has_pc(&self.seed)));
         meta
     }
 
-    /// `{id, version, title, description, kind, world_ref?, seed, architect_*?}` —
-    /// the GM-scoped DRAFT row (`GET /stories/{id}/draft`, `§С1.3`). Unlike
-    /// [`Self::metadata`] this DOES carry the full `seed` (the plot, incl. the GM's
-    /// `hidden_truth`) and the flattened `architect_*` chat state, so the story
-    /// architect panel can restore the plot draft + conversation on reopen. It is
-    /// NEVER emitted in the player-facing catalog.
+    /// `{id, version, title, description, kind, world_ref?, seed}` — the
+    /// GM-scoped DRAFT row (`GET /stories/{id}/draft`, `§С1.3`). Unlike
+    /// [`Self::metadata`] this DOES carry the full `seed` (the plot, incl. the
+    /// GM's `hidden_truth`). It is NEVER emitted in the player-facing catalog.
+    /// The architect CHAT state is NOT flattened here anymore — it lives in the
+    /// package's `architect.json` (`StoryStore::get_architect_state`).
     ///
     /// `seed` is the plot with `id`/`title` overwritten from the envelope (same
-    /// shape as [`Self::seed`] / `plot()`); the `architect_messages` /
-    /// `architect_model_history` / `architect_cache_*` keys are FLATTENED out of
-    /// `meta` to the top level (mirroring the world architect response) and emitted
-    /// only when present.
+    /// shape as [`Self::seed`] / `plot()`).
     fn draft_row(&self) -> Map<String, Value> {
         let mut row = Map::new();
         row.insert("id".to_string(), Value::String(self.id.clone()));
@@ -831,19 +917,6 @@ impl StoryEnvelope {
         // The plot draft (for the architect form): the seed with id/title
         // overwritten from the envelope, same shape as `seed()` / `plot()`.
         row.insert("seed".to_string(), self.seed_value());
-        // Flatten the architect chat-state keys (architect_messages /
-        // architect_model_history / architect_cache_*) so the panel restores the
-        // conversation via the same top-level fields the world response exposes.
-        for key in [
-            "architect_messages",
-            "architect_model_history",
-            "architect_cache_session_id",
-            "architect_cache_thread_id",
-        ] {
-            if let Some(value) = self.meta.get(key) {
-                row.insert(key.to_string(), value.clone());
-            }
-        }
         row
     }
 
@@ -934,6 +1007,20 @@ fn seed_str(seed: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Whether the seed carries an authored protagonist — a non-empty `player_character`
+/// (or the legacy `player` alias) OBJECT under either key. Mirrors the server's
+/// `story_plot_has_pc` launch-gate logic so the catalog `has_pc` flag and the
+/// gate agree. A NON-SECRET boolean, safe for the player-facing catalog.
+fn seed_has_pc(seed: &Value) -> bool {
+    let Some(obj) = seed.as_object() else {
+        return false;
+    };
+    ["player_character", "player"]
+        .iter()
+        .filter_map(|k| obj.get(*k))
+        .any(|v| matches!(v, Value::Object(m) if !m.is_empty()))
+}
+
 /// The id order of the embedded built-in catalog. Defines the default story
 /// discovery order so the `/stories` list stays stable regardless of how the
 /// filesystem enumerates the package directories.
@@ -1001,6 +1088,57 @@ fn embedded_default_envelopes() -> Result<Vec<StoryEnvelope>, StoryStoreError> {
 /// matching the world/character stores' timestamps. Computed from the wall clock
 /// via a plain civil-date conversion (no extra dependency): gml-stories has no
 /// rusqlite/chrono, and the value is a package annotation, not a byte-gated field.
+/// Normalize an architect-state value to the canonical shape:
+/// `{messages: [...], model_history: [...], cache_session_id?, cache_thread_id?}`.
+/// Unknown keys are dropped; missing arrays become empty.
+fn normalize_architect_state(state: Value) -> Value {
+    let map = match state {
+        Value::Object(m) => m,
+        _ => Map::new(),
+    };
+    let arr = |key: &str| -> Value {
+        map.get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .map(Value::Array)
+            .unwrap_or_else(|| Value::Array(Vec::new()))
+    };
+    let mut out = Map::new();
+    out.insert("messages".into(), arr("messages"));
+    out.insert("model_history".into(), arr("model_history"));
+    for key in ["cache_session_id", "cache_thread_id"] {
+        if let Some(id) = map.get(key).and_then(Value::as_str) {
+            let id = id.trim();
+            if !id.is_empty() {
+                out.insert(key.into(), Value::String(id.to_string()));
+            }
+        }
+    }
+    Value::Object(out)
+}
+
+/// Extract the LEGACY `meta.architect_*` chat state (pre-split packages) as a
+/// canonical architect-state value. `None` when the meta carries none.
+fn legacy_architect_state(meta: &Map<String, Value>) -> Option<Value> {
+    if !LEGACY_ARCHITECT_META_KEYS.iter().any(|k| meta.contains_key(*k)) {
+        return None;
+    }
+    let mut state = Map::new();
+    if let Some(v) = meta.get("architect_messages") {
+        state.insert("messages".into(), v.clone());
+    }
+    if let Some(v) = meta.get("architect_model_history") {
+        state.insert("model_history".into(), v.clone());
+    }
+    if let Some(v) = meta.get("architect_cache_session_id") {
+        state.insert("cache_session_id".into(), v.clone());
+    }
+    if let Some(v) = meta.get("architect_cache_thread_id") {
+        state.insert("cache_thread_id".into(), v.clone());
+    }
+    Some(normalize_architect_state(Value::Object(state)))
+}
+
 fn now_timestamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1445,19 +1583,39 @@ mod tests {
             seed.get("hidden_truth").and_then(Value::as_str),
             Some("тайна GM")
         );
-        // architect_* FLATTENED to the top level (not nested in meta).
+        // The story/chat split: the draft row is CONTENT-only — no architect_*
+        // keys — while the legacy meta chat stays readable via the split API...
+        assert!(row.get("architect_messages").is_none());
+        assert!(row.get("architect_cache_session_id").is_none());
+        let legacy = store
+            .get_architect_state(&id)
+            .expect("read architect state")
+            .expect("legacy meta state present");
+        assert_eq!(legacy["messages"][0]["content"], "привет");
+        assert_eq!(legacy["cache_session_id"], "story-architect:sess");
+
+        // ...and once the conversation moves to the dialogs DB, the package
+        // artifacts are purged: a stray architect.json is deleted, the legacy
+        // meta keys are stripped, and the content version is NOT bumped.
+        let version_before = store.version(&id).expect("version");
+        std::fs::write(store.story_dir(&id).join("architect.json"), b"{}")
+            .expect("plant stray architect.json");
+        store
+            .purge_architect_artifacts(&id)
+            .expect("purge artifacts");
         assert_eq!(
-            row["architect_messages"][0]["content"].as_str(),
-            Some("привет")
+            store.version(&id).expect("version after purge"),
+            version_before,
+            "architect purge never bumps the content version"
         );
-        assert_eq!(
-            row.get("architect_cache_session_id").and_then(Value::as_str),
-            Some("story-architect:sess")
-        );
-        assert_eq!(
-            row.get("architect_cache_thread_id").and_then(Value::as_str),
-            Some("story-architect:thread")
-        );
+        assert!(!store.story_dir(&id).join("architect.json").is_file());
+        let raw = std::fs::read_to_string(store.story_dir(&id).join("story.json"))
+            .expect("read story.json");
+        assert!(!raw.contains("architect_messages"));
+        assert!(store
+            .get_architect_state(&id)
+            .expect("read after purge")
+            .is_none());
     }
 
     #[test]

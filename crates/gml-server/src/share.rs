@@ -120,6 +120,17 @@ impl Archive {
                 continue;
             }
             let safe = safe_rel_path(&raw_name)?;
+            // Never ADOPT private/transient artifacts from a foreign archive
+            // either: a stray architect.json is someone's working conversation,
+            // not package content (mirrors the export-side exclusion).
+            if safe
+                .rsplit('/')
+                .next()
+                .map(is_export_excluded_name)
+                .unwrap_or(false)
+            {
+                continue;
+            }
             // Read with a hard per-entry ceiling. We do NOT pre-size the Vec
             // from the attacker-declared `file.size()` (a zip bomb lies about
             // it); read through a capped reader and reject on overflow.
@@ -375,9 +386,12 @@ fn add_dir_recursive<W: Write + std::io::Seek>(
 }
 
 /// Whether a bare file `name` (last path segment) must be excluded from an
-/// export archive: atomic-write temp files (`.<...>.tmp`) and sqlite sidecars
-/// (`*-wal`, `*-shm`, `*-journal`). The `rag.sqlite3` main DB is deliberately
-/// NOT matched — it is the Phase-B warm-start layer and must ship.
+/// export archive: atomic-write temp files (`.<...>.tmp`), sqlite sidecars
+/// (`*-wal`, `*-shm`, `*-journal`), and `architect.json` — the pre-DB-move
+/// architect CONVERSATION artifact (the chat lives in the dialogs SQLite now;
+/// a stray file is private working history and must never ship in a package).
+/// The `rag.sqlite3` main DB is deliberately NOT matched — it is the Phase-B
+/// warm-start layer and must ship.
 ///
 /// The `-wal`/`-shm`/`-journal` suffix match is INTENTIONALLY broad (any such
 /// name, not only `rag.sqlite3-*`): privacy trumps precision — we must never
@@ -388,6 +402,7 @@ fn is_export_excluded_name(name: &str) -> bool {
         || name.ends_with("-wal")
         || name.ends_with("-shm")
         || name.ends_with("-journal")
+        || name == "architect.json"
 }
 
 /// Recursively add files; any path (relative to `base`, forward-slash) listed in

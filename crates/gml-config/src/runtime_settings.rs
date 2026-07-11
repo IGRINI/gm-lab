@@ -37,12 +37,13 @@ pub const TOOL_CHOICES: [&str; 3] = ["auto", "required", "none"];
 pub const MAX_TOOL_HOPS_CAP: i64 = 100;
 
 /// The reasoning role string keys, in `config.REASONING_ROLES` order.
-fn reasoning_role_keys() -> [&'static str; 4] {
+fn reasoning_role_keys() -> [&'static str; 5] {
     [
         config::Role::Gm.as_str(),
         config::Role::Npc.as_str(),
         config::Role::Compact.as_str(),
         config::Role::Location.as_str(),
+        config::Role::Character.as_str(),
     ]
 }
 
@@ -610,6 +611,7 @@ fn migrate_legacy_reasoning(data: &Map<String, Value>) -> Map<String, Value> {
         config::Role::Gm.as_str(),
         config::Role::Npc.as_str(),
         config::Role::Location.as_str(),
+        config::Role::Character.as_str(),
     ] {
         let effort_key = format!("{role}_reasoning_effort");
         let summary_key = format!("{role}_reasoning_summary");
@@ -918,7 +920,7 @@ mod tests {
         let path = dir.path().join(format!("settings_{n}.json"));
         // Use a Config with codex base effort "low"/"auto" (Python defaults),
         // built from a clean env for the role-default vars.
-        for role in ["GM", "NPC", "COMPACT", "LOCATION"] {
+        for role in ["GM", "NPC", "COMPACT", "LOCATION", "CHARACTER"] {
             std::env::remove_var(format!("GM_{role}_REASONING_EFFORT"));
             std::env::remove_var(format!("GM_{role}_REASONING_SUMMARY"));
         }
@@ -945,6 +947,14 @@ mod tests {
         );
         assert_eq!(
             d.get("location_reasoning_summary"),
+            Some(&Value::from("auto"))
+        );
+        assert_eq!(
+            d.get("character_reasoning_effort"),
+            Some(&Value::from("low"))
+        );
+        assert_eq!(
+            d.get("character_reasoning_summary"),
             Some(&Value::from("auto"))
         );
         assert_eq!(
@@ -1052,6 +1062,14 @@ mod tests {
             loaded.get("location_reasoning_summary"),
             Some(&Value::from("detailed"))
         );
+        assert_eq!(
+            loaded.get("character_reasoning_effort"),
+            Some(&Value::from("high"))
+        );
+        assert_eq!(
+            loaded.get("character_reasoning_summary"),
+            Some(&Value::from("detailed"))
+        );
         // compact keeps its new default (none/none), NOT migrated
         assert_eq!(
             loaded.get("compact_reasoning_effort"),
@@ -1076,12 +1094,18 @@ mod tests {
         assert!(on_disk.ends_with("\n"));
         // 2-space indent
         assert!(on_disk.contains("\n  \"compact_reasoning_effort\""));
-        // keys appear in sorted order: compact_* before gm_*
+        // keys appear in sorted order: character_* before compact_* before gm_*
+        let i_character = on_disk.find("character_reasoning_effort").unwrap();
         let i_compact = on_disk.find("compact_reasoning_effort").unwrap();
         let i_gm = on_disk.find("gm_reasoning_effort").unwrap();
         let i_location = on_disk.find("location_reasoning_effort").unwrap();
         let i_npc = on_disk.find("npc_reasoning_effort").unwrap();
-        assert!(i_compact < i_gm && i_gm < i_location && i_location < i_npc);
+        assert!(
+            i_character < i_compact
+                && i_compact < i_gm
+                && i_gm < i_location
+                && i_location < i_npc
+        );
 
         // Reload into a fresh instance -> identical normalized map
         let cfg = Config::from_env();
@@ -1125,6 +1149,14 @@ mod tests {
         );
         assert_eq!(
             out.get("location_reasoning_summary"),
+            Some(&Value::from("none"))
+        );
+        assert_eq!(
+            out.get("character_reasoning_effort"),
+            Some(&Value::from("none"))
+        );
+        assert_eq!(
+            out.get("character_reasoning_summary"),
             Some(&Value::from("none"))
         );
         assert_eq!(

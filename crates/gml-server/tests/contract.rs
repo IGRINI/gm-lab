@@ -398,7 +398,9 @@ async fn get_state_has_reference_keys() {
     assert_eq!(got["backend"], "mock");
     assert_eq!(got["story_id"], "procedural");
     assert_eq!(got["story_title"], "Процедурный мир");
-    assert!(!got["npcs"].as_array().unwrap().is_empty());
+    // Procedural worlds now start with a zero-actor canon (worldgen Layer 6
+    // removed): the roster is present but empty until NPCs are generated lazily.
+    assert!(got["npcs"].is_array());
     // context_usage / settings sub-objects present.
     assert!(got["context_usage"].is_object());
     assert!(got["settings"].is_object());
@@ -418,7 +420,8 @@ async fn get_debug_has_ok_and_meta_shape() {
         assert!(got.get(key).is_some(), "/debug missing key `{key}`");
     }
     assert_eq!(got["meta"]["backend"], "mock");
-    assert!(!got["npcs"].as_array().unwrap().is_empty());
+    // Empty procedural roster at bootstrap (worldgen Layer 6 removed); present as array.
+    assert!(got["npcs"].is_array());
 }
 
 #[tokio::test]
@@ -803,6 +806,143 @@ async fn create_chat_without_story_requires_world_lore() {
         .contains("world_lore is required"));
 }
 
+/// Design §8: a bare procedural launch with world_lore but NO character is a 400
+/// `protagonist_required` — no default hero is ever seeded. (world_lore is
+/// present so the world_lore precedence 400 is NOT what fires here.)
+#[tokio::test]
+async fn procedural_chat_without_character_requires_protagonist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(
+        &state,
+        "/chats",
+        serde_json::json!({
+            "story_id": "procedural",
+            "seed": "no-protagonist",
+            "activate": true,
+            "world_lore": architect_lore_json()
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "procedural no-char must 400: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let rejected: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(rejected["code"], json!("protagonist_required"));
+}
+
+/// Design §8: an authored story whose plot carries NO `player_character`, launched
+/// without a `character_id`, is a 400 `protagonist_required`. With a character
+/// package it launches fine.
+#[tokio::test]
+async fn authored_story_without_pc_requires_protagonist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Мир без героя").await;
+
+    // An authored story whose plot has no player_character.
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "authored",
+            "world_id": world_id,
+            "title": "История без протагониста",
+            "plot": {"story_brief": "Пролог без своего героя."}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create authored: {}", String::from_utf8_lossy(&body));
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    // Launch WITHOUT a character_id -> 400 protagonist_required.
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "authored no-PC launch must 400: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let rejected: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(rejected["code"], json!("protagonist_required"));
+
+    // With a character package it launches fine.
+    let char_id = create_test_character(&state).await;
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "character_id": char_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "authored + character launches: {}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+/// Review finding: a PROCEDURAL-kind story whose plot carries a protagonist is
+/// exempt from the gate — so that protagonist must actually be seeded into the
+/// generated world (previously the worldgen default hero leaked silently).
+#[tokio::test]
+async fn procedural_story_with_plot_pc_seeds_it_without_character() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Мир с плотовым героем").await;
+
+    let (status, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "procedural",
+            "world_id": world_id,
+            "title": "Процедурная с героем",
+            "plot": {
+                "story_brief": "Процедурный пролог со своим героем.",
+                "player_character": {"name": "Икс Плотовой", "class_role": "следопыт"}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create: {}", String::from_utf8_lossy(&body));
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let story_id = created["story"]["id"].as_str().unwrap().to_string();
+
+    // No character_id: the gate is exempt because the plot carries a PC — and
+    // that PC (not the worldgen default hero) must be the one playing.
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({"story_id": story_id, "activate": true}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "plot-PC procedural launch must pass the gate: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        got["state"]["player_character"]["name"],
+        json!("Икс Плотовой"),
+        "the plot protagonist must be seeded, not the default hero: {}",
+        got["state"]["player_character"]
+    );
+}
+
 #[tokio::test]
 async fn create_chat_with_story_id_returns_state() {
     let tmp = tempfile::tempdir().unwrap();
@@ -828,6 +968,7 @@ async fn create_procedural_chat_is_canon_authoritative_and_turns() {
     // through a normal turn.
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
+    let char_id = create_test_character(&state).await;
 
     // Pin a seed so the generated world is deterministic.
     let (status, body) = post(
@@ -837,6 +978,7 @@ async fn create_procedural_chat_is_canon_authoritative_and_turns() {
             "story_id": "procedural",
             "seed": "12345",
             "activate": true,
+            "character_id": char_id,
             "world_lore": architect_lore_json()
         }),
     )
@@ -912,12 +1054,14 @@ async fn create_procedural_chat_is_canon_authoritative_and_turns() {
 async fn create_procedural_chat_applies_world_manager_story_fields() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
+    let char_id = create_test_character(&state).await;
     let (status, body) = post(
         &state,
         "/chats",
         serde_json::json!({
             "story_id": "procedural",
             "seed": "world-manager-seed",
+            "character_id": char_id,
             "genre": "postapocalyptic machine world",
             "tone": "bleak",
             "scale": "outpost",
@@ -1026,20 +1170,12 @@ async fn world_architect_chat_returns_structured_draft() {
 async fn world_architect_chat_creates_world_and_persists_history() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
-    let visible_messages = json!([
-        {"role": "assistant", "content": "Опиши мир."},
-        {"role": "user", "content": "Хочу фентезийный иссекай с богами и клятвами."}
-    ]);
     let (status, body) = post(
         &state,
         "/world-architect/chat",
         json!({
             "message": "Хочу фентезийный иссекай с богами и клятвами.",
-            "history": [],
-            "draft": {"genre": "fantasy isekai"},
-            "visible_messages": visible_messages,
-            "cache_session_id": "world-architect:test-session",
-            "cache_thread_id": "world-architect:test-thread"
+            "draft": {"genre": "fantasy isekai"}
         }),
     )
     .await;
@@ -1051,51 +1187,38 @@ async fn world_architect_chat_creates_world_and_persists_history() {
     assert_eq!(got["world_id"], json!(world_id));
     assert_eq!(got["world"]["status"], json!("draft"));
     assert_eq!(got["world"]["title"], json!("Порог Второго Неба"));
+    // The world/chat split: the CONTENT response never carries the chat.
+    assert!(got["world"].get("architect_messages").is_none());
+    assert!(got["world"].get("architect_model_history").is_none());
+    assert_eq!(got["worlds"].as_array().unwrap().len(), 1);
+
+    // The conversation is server-side now: GET /worlds/{id}/architect restores
+    // the interleaved view — user, hop-1 reasoning, draft tool, reasoning, reply.
+    let (status, body) = get(&state, &format!("/worlds/{world_id}/architect")).await;
+    assert_eq!(status, StatusCode::OK);
+    let chat: Value = serde_json::from_slice(&body).unwrap();
+    let visible = chat["architect"]["messages"].as_array().unwrap();
+    assert_eq!(visible.len(), 5);
+    assert_eq!(visible[0]["role"], "user");
     assert_eq!(
-        got["world"]["architect_messages"][1]["content"],
+        visible[0]["content"],
         "Хочу фентезийный иссекай с богами и клятвами."
     );
-    // The turn is now interleaved like the main chat: reasoning (think) → draft
-    // tool call → reasoning → chat reply. Index 2 is the hop-1 reasoning, index 3
-    // the draft tool, the last entry the model's chat reply.
-    assert_eq!(got["world"]["architect_messages"][2]["role"], "think");
-    assert_eq!(
-        got["world"]["architect_messages"][3]["name"],
-        "draft_world_bible"
-    );
-    let visible = got["world"]["architect_messages"].as_array().unwrap();
-    // [intro assistant, user, think, tool, think, assistant reply] = 6 segments.
-    assert_eq!(visible.len(), 6);
+    assert_eq!(visible[1]["role"], "think");
+    assert_eq!(visible[2]["name"], "draft_world_bible");
     assert_eq!(visible.last().unwrap()["role"], "assistant");
     assert!(visible.last().unwrap()["content"]
         .as_str()
         .unwrap_or("")
         .contains("Порог Второго Неба"));
-    // Model history keeps the user turn and the final assistant reply.
-    assert_eq!(
-        got["world"]["architect_model_history"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        got["world"]["architect_cache_session_id"],
-        "world-architect:test-session"
-    );
-    assert_eq!(got["worlds"].as_array().unwrap().len(), 1);
 
+    // The /worlds list stays chat-free.
     let (status, body) = get(&state, "/worlds").await;
     assert_eq!(status, StatusCode::OK);
     let listed: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(listed["worlds"][0]["id"], json!(world_id));
-    assert_eq!(
-        listed["worlds"][0]["architect_model_history"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    assert!(listed["worlds"][0].get("architect_model_history").is_none());
+    assert!(listed["worlds"][0].get("architect_messages").is_none());
 }
 
 #[tokio::test]
@@ -1107,9 +1230,7 @@ async fn update_world_marks_ready_and_preserves_architect_history() {
         "/world-architect/chat",
         json!({
             "message": "Хочу мир клятв.",
-            "history": [],
-            "draft": {"genre": "fantasy"},
-            "visible_messages": [{"role": "user", "content": "Хочу мир клятв."}]
+            "draft": {"genre": "fantasy"}
         }),
     )
     .await;
@@ -1140,19 +1261,13 @@ async fn update_world_marks_ready_and_preserves_architect_history() {
     assert_eq!(updated["ok"], true);
     assert_eq!(updated["world"]["id"], json!(world_id));
     assert_eq!(updated["world"]["status"], json!("ready"));
-    assert_eq!(
-        updated["world"]["architect_messages"][0]["content"],
-        "Хочу мир клятв."
-    );
-    // The agent loop ends with a chat reply, so model history keeps the user turn
-    // and the final assistant reply; the /worlds update preserves both.
-    assert_eq!(
-        updated["world"]["architect_model_history"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    // Content responses never carry the chat...
+    assert!(updated["world"].get("architect_messages").is_none());
+    // ...and the ready save leaves the server-side conversation intact.
+    let (status, body) = get(&state, &format!("/worlds/{world_id}/architect")).await;
+    assert_eq!(status, StatusCode::OK);
+    let chat: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(chat["architect"]["messages"][0]["content"], "Хочу мир клятв.");
 }
 
 #[tokio::test]
@@ -1161,55 +1276,79 @@ async fn world_architect_chat_restores_cache_identity_and_returns_model_history(
     let mut state = mock_state(&tmp);
     let spy = install_identity_spy(&mut state);
 
-    let prior_user = gml_agents::world_architect_user_message(
-        &json!({"title": "Первый черновик"}),
-        "Собери основу мира.",
+    // Turn 1 creates the world; the turn's cache identity is persisted
+    // server-side (architect.json), not round-tripped through the client.
+    let (status, body) = post(
+        &state,
+        "/world-architect/chat",
+        json!({
+            "message": "Собери основу мира.",
+            "draft": {"title": "Первый черновик"}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got = architect_result(&body);
+    assert_eq!(got["ok"], true);
+    let world_id = got["world"]["id"].as_str().expect("world id").to_string();
+
+    // The mock client has no identity of its own; seed the persisted chat (in
+    // the dialogs SQLite — its real home) with known cache ids, keeping the
+    // turn-1 conversation, then verify the next turn restores them.
+    let stored = state
+        .store
+        .get_architect_chat("world", &world_id)
+        .expect("read chat")
+        .expect("chat persisted to the DB by turn 1");
+    let mut seeded = stored.as_object().cloned().unwrap();
+    seeded.insert(
+        "cache_session_id".into(),
+        json!("world-architect:test-session"),
     );
+    seeded.insert(
+        "cache_thread_id".into(),
+        json!("world-architect:test-thread"),
+    );
+    state
+        .store
+        .set_architect_chat("world", &world_id, &Value::Object(seeded))
+        .expect("seed cache ids");
+    let session_1 = "world-architect:test-session".to_string();
+    let thread_1 = "world-architect:test-thread".to_string();
+
+    // Turn 2 against the SAME world: the server restores the stored identity
+    // into the fresh client, and the model history it replays carries the
+    // turn-1 user message as PLAIN TEXT (no draft snapshot — the token fix).
     let (status, body) = post(
         &state,
         "/world-architect/chat",
         json!({
             "message": "Добавь религии.",
-            "history": [
-                prior_user,
-                {"role": "assistant", "content": "Собрал первый черновик."}
-            ],
-            "draft": {"title": "Второй черновик"},
-            "cache_session_id": "world-architect:test-session",
-            "cache_thread_id": "world-architect:test-thread"
+            "world_id": world_id
         }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-
-    let got = architect_result(&body);
-    assert_eq!(got["ok"], true);
-    assert_eq!(got["cache_session_id"], "world-architect:test-session");
-    assert_eq!(got["cache_thread_id"], "world-architect:test-thread");
-    assert_eq!(got["user_message"]["role"], "user");
-    assert!(got["user_message"]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Current Draft JSON"));
-    assert_eq!(got["assistant_history_message"]["role"], "assistant");
+    let got2 = architect_result(&body);
+    assert_eq!(got2["ok"], true);
+    assert_eq!(got2["assistant_history_message"]["role"], "assistant");
     assert_eq!(
-        got["assistant_history_message"]["content"],
+        got2["assistant_history_message"]["content"],
         "Ответ архитектора"
     );
 
     let spy = spy.lock().expect("identity spy lock");
-    assert_eq!(spy.session_id, "world-architect:test-session");
-    assert_eq!(spy.thread_id, "world-architect:test-thread");
+    assert_eq!(spy.session_id, session_1);
+    assert_eq!(spy.thread_id, thread_1);
     let sent = spy.messages.last().unwrap().as_array().unwrap();
     assert_eq!(sent[0]["role"], "system");
-    assert!(sent[1]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Первый черновик"));
-    assert!(sent.last().unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .contains("Второй черновик"));
+    // History entry = the turn-1 user TEXT, verbatim, with no digest/draft.
+    assert_eq!(sent[1]["role"], "user");
+    assert_eq!(sent[1]["content"], "Собери основу мира.");
+    // CACHE INVARIANT: the tail is the RAW user text — byte-equal to what the
+    // server stores in history, so the whole prefix stays cacheable. State
+    // never rides in messages (the model reads it via read_world_bible).
+    assert_eq!(sent.last().unwrap()["content"], "Добавь религии.");
 }
 
 #[tokio::test]
@@ -1273,18 +1412,14 @@ async fn story_architect_chat_creates_bound_story_and_persists_meta() {
     let world_id = create_saved_world(&state, "Порог Второго Неба").await;
 
     // First turn with NO story_id: the handler creates a world-bound authored
-    // story BEFORE the model call, then folds the drafted plot + architect state.
+    // story BEFORE the model call, then folds the drafted plot in. The chat
+    // state goes to the package's architect.json, never into story.json.
     let (status, body) = post(
         &state,
         "/story-architect/chat",
         json!({
             "message": "Сделай пролог в деревне у живой дороги.",
-            "history": [],
-            "draft": {},
-            "world_id": world_id,
-            "visible_messages": [{"role": "user", "content": "Сделай пролог в деревне у живой дороги."}],
-            "cache_session_id": "story-architect:test-session",
-            "cache_thread_id": "story-architect:test-thread"
+            "world_id": world_id
         }),
     )
     .await;
@@ -1302,20 +1437,28 @@ async fn story_architect_chat_creates_bound_story_and_persists_meta() {
     assert_eq!(got["story"]["kind"], "authored");
     assert_eq!(got["story"]["world_ref"]["id"], json!(world_id));
     assert_eq!(got["story"]["seed"]["hidden_truth"], "Староста скормил дороге собственного сына ради урожая.");
-    // The architect SSE is GM-scoped: `story` is the FULL draft row (same builder
-    // as GET /stories/{id}/draft) — the plot seed plus the architect chat state
-    // FLATTENED to the top level (NOT nested in `meta`, NOT in `seed`), which is
-    // the shape the panel's architectShared helpers restore from.
-    assert_eq!(
-        got["story"]["architect_cache_session_id"],
-        "story-architect:test-session"
-    );
+    // The story/chat split: the content row carries NO chat state at all.
     assert!(got["story"]["seed"].get("architect_messages").is_none());
-    assert!(got["story"]["architect_messages"].is_array());
+    assert!(got["story"].get("architect_messages").is_none());
+    assert!(got["story"].get("architect_cache_session_id").is_none());
     assert!(
         got["story"].get("meta").is_none(),
-        "draft row is flattened — no nested meta"
+        "draft row is content-only — no nested meta"
     );
+    // The conversation is restored via GET /stories/{id}/draft's architect block.
+    let (status, body) = get(&state, &format!("/stories/{story_id}/draft")).await;
+    assert_eq!(status, StatusCode::OK);
+    let drafted: Value = serde_json::from_slice(&body).unwrap();
+    let messages = drafted["architect"]["messages"].as_array().unwrap();
+    assert_eq!(
+        messages[0]["content"],
+        "Сделай пролог в деревне у живой дороги."
+    );
+    assert!(messages.last().unwrap()["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Деревня у живой дороги"));
+    assert!(drafted["story"].get("architect_messages").is_none());
     // The done payload mirrors the world one + {story_id, story, stories}.
     assert!(got["stories"].is_array());
     // The list refresher stays the MINIMAL player-facing catalog: no plot seed
@@ -1387,6 +1530,227 @@ async fn story_architect_chat_rejects_unknown_world() {
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], false);
     assert!(got["error"].as_str().unwrap_or("").contains("nope-world"));
+}
+
+// =========================================================================
+// character architect (mirror of the story architect; standalone hero)
+// =========================================================================
+
+#[tokio::test]
+async fn character_architect_chat_creates_package_and_persists_chat() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    // First turn with NO character_id: the handler creates a .gmchar package
+    // BEFORE the model call, then snapshots the drafted sheet. The chat state goes
+    // to the dialogs SQLite (architect_chats), never into the package payload.
+    let (status, body) = post(
+        &state,
+        "/character-architect/chat",
+        json!({"message": "Сделай следопытку с луком."}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got = architect_result(&body);
+    assert_eq!(got["ok"], true, "architect_done: {got}");
+    let character_id = got["character_id"].as_str().expect("character_id").to_string();
+    assert_eq!(got["character"]["id"], json!(character_id));
+    // The mock character architect drafts a flat sheet: name + stats land in the
+    // package's payload.player_character.
+    assert!(got["reply"].as_str().unwrap_or("").contains("Кара Вент"));
+    assert_eq!(got["draft"]["name"], "Кара Вент");
+    assert_eq!(
+        got["character"]["payload"]["player_character"]["name"],
+        "Кара Вент"
+    );
+    assert_eq!(
+        got["character"]["payload"]["player_character"]["abilities"]["DEX"],
+        16
+    );
+    assert_eq!(
+        got["character"]["payload"]["player_character"]["spells"][0]["name"],
+        "Отметка охотника"
+    );
+    // The package/chat split: the content payload carries NO chat state.
+    assert!(got["character"]["payload"]
+        .get("architect_messages")
+        .is_none());
+    assert!(got["character"].get("architect_messages").is_none());
+    assert!(got["character"].get("architect_cache_session_id").is_none());
+    assert!(got["characters"].is_array());
+    assert_eq!(got["calls"][0]["name"], "draft_player_character");
+
+    // The conversation is restored via GET /characters/{id}/architect — user,
+    // hop-1 reasoning, draft tool, reasoning, reply.
+    let (status, body) = get(&state, &format!("/characters/{character_id}/architect")).await;
+    assert_eq!(status, StatusCode::OK);
+    let chat: Value = serde_json::from_slice(&body).unwrap();
+    let visible = chat["architect"]["messages"].as_array().unwrap();
+    assert_eq!(visible[0]["role"], "user");
+    assert_eq!(visible[0]["content"], "Сделай следопытку с луком.");
+    assert!(visible.iter().any(|m| m["name"] == "draft_player_character"));
+    assert_eq!(visible.last().unwrap()["role"], "assistant");
+    assert!(visible.last().unwrap()["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("Кара Вент"));
+
+    // The /characters list stays chat-free.
+    let (status, body) = get(&state, "/characters").await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: Value = serde_json::from_slice(&body).unwrap();
+    let row = &listed["characters"][0];
+    assert_eq!(row["id"], json!(character_id));
+    assert!(row.get("architect_messages").is_none());
+    assert!(row["payload"].get("architect_messages").is_none());
+
+    // Second turn WITH the character_id: version bumps, sheet is re-snapshotted.
+    let v1 = got["character"]["version"].as_u64().unwrap();
+    let (status, body) = post(
+        &state,
+        "/character-architect/chat",
+        json!({
+            "message": "Подними уровень.",
+            "draft": got["draft"].clone(),
+            "character_id": character_id
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got2 = architect_result(&body);
+    assert_eq!(got2["ok"], true);
+    assert_eq!(got2["character_id"], json!(character_id));
+    assert!(
+        got2["character"]["version"].as_u64().unwrap() > v1,
+        "version must bump per turn"
+    );
+}
+
+#[tokio::test]
+async fn character_architect_chat_requires_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(&state, "/character-architect/chat", json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"].as_str().unwrap_or("").contains("message"));
+}
+
+#[tokio::test]
+async fn get_character_architect_unknown_is_404() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = get(&state, "/characters/nope/architect").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"].as_str().unwrap_or("").contains("nope"));
+}
+
+#[tokio::test]
+async fn save_protagonist_creates_character_from_story_draft() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Мир для протагониста").await;
+
+    // Author a story via the architect (the mock drafts a player_character "Мира").
+    let (status, body) = post(
+        &state,
+        "/story-architect/chat",
+        json!({"message": "Сделай пролог.", "world_id": world_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got = architect_result(&body);
+    let story_id = got["story_id"].as_str().expect("story_id").to_string();
+    assert_eq!(got["story"]["seed"]["player_character"]["name"], "Мира");
+
+    // Save the suggested protagonist into a .gmchar package.
+    let (status, body) = post(
+        &state,
+        &format!("/stories/{story_id}/save-protagonist"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "save-protagonist: {}", String::from_utf8_lossy(&body));
+    let saved: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(saved["ok"], true);
+    // The loose authored PC is coerced through the canonical seam → full sheet.
+    assert_eq!(saved["character"]["payload"]["player_character"]["name"], "Мира");
+    assert_eq!(saved["character"]["title"], "Мира");
+    // The coercion fills the canonical stat fields even when the draft omitted them.
+    assert!(saved["character"]["payload"]["player_character"]
+        .get("abilities")
+        .is_some());
+    // The new package appears in the library.
+    let (status, body) = get(&state, "/characters").await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(listed["characters"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn save_protagonist_rejects_procedural_builtin_and_unknown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let world_id = create_saved_world(&state, "Мир").await;
+
+    // Procedural story -> 400 (draft_row rejects non-authored).
+    let (_s, body) = post(
+        &state,
+        "/stories",
+        json!({"kind": "procedural", "world_id": world_id, "title": "Процедурная"}),
+    )
+    .await;
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let proc_id = created["story"]["id"].as_str().unwrap().to_string();
+    let (status, body) = post(
+        &state,
+        &format!("/stories/{proc_id}/save-protagonist"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert!(got["error"].as_str().unwrap_or("").contains("authored"));
+
+    // Self-contained builtin -> 400.
+    let (status, _body) = post(
+        &state,
+        "/stories/turnvale-murder/save-protagonist",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Unknown story -> 404.
+    let (status, _body) = post(&state, "/stories/nope/save-protagonist", json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An authored story WITHOUT a protagonist -> 400 (nothing to save).
+    let (_s, body) = post(
+        &state,
+        "/stories",
+        json!({
+            "kind": "authored",
+            "world_id": world_id,
+            "title": "Без героя",
+            "plot": {"story_brief": "старт"}
+        }),
+    )
+    .await;
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let no_pc_id = created["story"]["id"].as_str().unwrap().to_string();
+    let (status, body) = post(
+        &state,
+        &format!("/stories/{no_pc_id}/save-protagonist"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert!(got["error"].as_str().unwrap_or("").contains("protagonist"));
 }
 
 #[tokio::test]
@@ -1490,12 +1854,14 @@ async fn update_story_route_rejects_builtin_and_unknown() {
 async fn create_procedural_chat_accepts_world_lore_from_architect() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
+    let char_id = create_test_character(&state).await;
     let (status, body) = post(
         &state,
         "/chats",
         serde_json::json!({
             "story_id": "procedural",
             "seed": "architect-lore-server",
+            "character_id": char_id,
             "genre": "fantasy isekai",
             "tone": "tense",
             "scale": "region",
@@ -1950,6 +2316,7 @@ async fn play_saved_world_procedurally_records_world_ref() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
     let world_id = create_saved_world(&state, "Порог Второго Неба").await;
+    let char_id = create_test_character(&state).await;
 
     // POST /chats {world_id, story_id:"procedural"} -> procedural launch from the
     // SAVED world's lore (no inline world_lore supplied).
@@ -1961,6 +2328,7 @@ async fn play_saved_world_procedurally_records_world_ref() {
             "story_id": "procedural",
             "seed": "play-saved-world",
             "activate": true,
+            "character_id": char_id,
         }),
     )
     .await;
@@ -2038,6 +2406,7 @@ async fn create_and_launch_procedural_story_bound_to_world() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
     let world_id = create_saved_world(&state, "Город Железных Снов").await;
+    let char_id = create_test_character(&state).await;
 
     // POST /stories {kind:"procedural", world_id, title} -> a story package bound
     // to the world.
@@ -2077,7 +2446,7 @@ async fn create_and_launch_procedural_story_bound_to_world() {
     let (status, body) = post(
         &state,
         "/chats",
-        json!({"story_id": story_id, "activate": true}),
+        json!({"story_id": story_id, "character_id": char_id, "activate": true}),
     )
     .await;
     assert_eq!(
@@ -2820,6 +3189,7 @@ async fn launch_story_warns_on_world_version_drift() {
     let state = mock_state(&tmp);
     // create_saved_world (create+update) -> world version 2.
     let world_id = create_saved_world(&state, "Порог Второго Неба").await;
+    let char_id = create_test_character(&state).await;
 
     // Bind a procedural story to the world; it pins the CURRENT version (v2).
     let (status, body) = post(
@@ -2867,7 +3237,7 @@ async fn launch_story_warns_on_world_version_drift() {
     let (status, body) = post(
         &state,
         "/chats",
-        json!({"story_id": story_id, "activate": true}),
+        json!({"story_id": story_id, "character_id": char_id, "activate": true}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "launch story: {}", String::from_utf8_lossy(&body));
@@ -2911,6 +3281,7 @@ async fn launch_story_without_drift_emits_no_warnings_key() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
     let world_id = create_saved_world(&state, "Город Железных Снов").await;
+    let char_id = create_test_character(&state).await;
 
     // Bind a story (pins the world's current v2) and launch immediately — the
     // world has not moved, so authored == live and there is no drift.
@@ -2932,7 +3303,7 @@ async fn launch_story_without_drift_emits_no_warnings_key() {
     let (status, body) = post(
         &state,
         "/chats",
-        json!({"story_id": story_id, "activate": true}),
+        json!({"story_id": story_id, "character_id": char_id, "activate": true}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "launch story: {}", String::from_utf8_lossy(&body));
@@ -2990,10 +3361,11 @@ async fn launch_unpinned_story_ref_records_no_pin_and_no_warning() {
         .reload()
         .expect("reload story store");
 
+    let char_id = create_test_character(&state).await;
     let (status, body) = post(
         &state,
         "/chats",
-        json!({"story_id": story_id, "activate": true}),
+        json!({"story_id": story_id, "character_id": char_id, "activate": true}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "launch unpinned story: {}", String::from_utf8_lossy(&body));
@@ -3019,14 +3391,10 @@ async fn launch_unpinned_story_ref_records_no_pin_and_no_warning() {
 // K1 characters (docs/CHARACTERS_AND_STORY_TZ.md §К1.1–К1.4)
 // =========================================================================
 
-/// Create a character via `POST /characters` and return its id.
+/// Create a character via `POST /characters` and return its id. `payload` is
+/// always sent (design §8: no default hero — a package must carry a PC).
 async fn create_character_via_api(state: &AppState, title: &str, payload: Value) -> String {
-    let body = if payload.is_null() {
-        json!({ "title": title })
-    } else {
-        json!({ "title": title, "payload": payload })
-    };
-    let (status, resp) = post(state, "/characters", body).await;
+    let (status, resp) = post(state, "/characters", json!({ "title": title, "payload": payload })).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -3037,17 +3405,29 @@ async fn create_character_via_api(state: &AppState, title: &str, payload: Value)
     v["character"]["id"].as_str().unwrap().to_string()
 }
 
-/// CRUD over the HTTP surface: create (default hero), list, update metadata
-/// (version bump + rename), delete.
+/// Create a minimal protagonist package and return its id — for the many
+/// launches that now REQUIRE a character (design §8: no default hero is seeded,
+/// so a procedural/PC-less launch without a `character_id` is a 400).
+async fn create_test_character(state: &AppState) -> String {
+    create_character_via_api(state, "Тест-Герой", json!({"player_character": {"name": "Тест-Герой"}})).await
+}
+
+/// CRUD over the HTTP surface: create (explicit payload — no default hero),
+/// list, update metadata (version bump + rename), delete, and no-payload -> 400.
 #[tokio::test]
 async fn character_crud_over_http() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
 
-    // Create with the DEFAULT hero payload (no payload in the body).
-    let id = create_character_via_api(&state, "Мой герой", Value::Null).await;
+    // Create with an EXPLICIT protagonist payload (design §8: no default hero).
+    let id = create_character_via_api(
+        &state,
+        "Мой герой",
+        json!({"player_character": {"name": "Мой герой"}}),
+    )
+    .await;
 
-    // Listed, version 1, default hero name in the payload.
+    // Listed, version 1, the supplied hero name in the payload.
     let (status, body) = get(&state, "/characters").await;
     assert_eq!(status, StatusCode::OK);
     let listed: Value = serde_json::from_slice(&body).unwrap();
@@ -3058,8 +3438,8 @@ async fn character_crud_over_http() {
     assert_eq!(chars[0]["title"], json!("Мой герой"));
     assert_eq!(
         chars[0]["payload"]["player_character"]["name"],
-        json!("Искатель"),
-        "default hero name from PlayerCharacter::default()"
+        json!("Мой герой"),
+        "supplied hero name round-trips into the package payload"
     );
 
     // Update metadata (rename) -> version 2.
@@ -3074,6 +3454,21 @@ async fn character_crud_over_http() {
     let (status, _b) = post(&state, "/characters", json!({"title": "   "})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
+    // A create WITHOUT a payload is a 400 (no default hero is synthesized).
+    let (status, body) = post(&state, "/characters", json!({"title": "Безгеройный"})).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "no payload -> 400: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let no_pc: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(no_pc["ok"], false);
+    assert!(no_pc["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("payload is required"));
+
     // Update of a missing id is a 400.
     let (status, _b) = post(&state, "/characters/nope", json!({"title": "x"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -3087,6 +3482,151 @@ async fn character_crud_over_http() {
     assert_eq!(status, StatusCode::OK);
     let listed: Value = serde_json::from_slice(&body).unwrap();
     assert!(listed["characters"].as_array().unwrap().is_empty());
+}
+
+/// `POST /characters/{id}/draft` — the character studio's DIRECT manual save
+/// (no architect chat, no SSE). Happy path (sheet FULL-replaced, version bumped,
+/// title follows the hero name), a name-preserving edit bumps once without
+/// retitling, a non-object / missing player_character -> 400, an unknown id ->
+/// 404, the architect conversation is left byte-for-byte intact, and the export
+/// stays clean (no chat leaks into the package).
+#[tokio::test]
+async fn character_draft_save_snapshots_sheet_and_follows_title() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+
+    // Create a character: version 1, title == hero name "Старое имя".
+    let id = create_character_via_api(
+        &state,
+        "Старое имя",
+        json!({"player_character": {"name": "Старое имя"}}),
+    )
+    .await;
+
+    // Seed an architect conversation for this character in the dialogs DB — a
+    // draft save must leave it byte-for-byte intact (it never touches the chat).
+    let chat_before = json!({
+        "messages": [{"role": "user", "content": "привет-архитектор"}],
+        "model_history": [{"role": "user", "content": "привет-архитектор"}],
+    });
+    state
+        .store
+        .set_architect_chat("character", &id, &chat_before)
+        .expect("seed architect chat");
+
+    // ---- Happy path: POST the fully edited sheet (renamed hero + list edits) ----
+    let (status, body) = post(
+        &state,
+        &format!("/characters/{id}/draft"),
+        json!({"player_character": {
+            "name": "Новое имя",
+            "abilities": {"STR": 15},
+            "spells": [{"name": "Огненный шар"}],
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "draft save: {}", String::from_utf8_lossy(&body));
+    let saved: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(saved["ok"], true);
+    // FULL REPLACE: the new name AND the edited lists land in the payload.
+    assert_eq!(saved["character"]["payload"]["player_character"]["name"], json!("Новое имя"));
+    assert_eq!(saved["character"]["payload"]["player_character"]["abilities"]["STR"], json!(15));
+    assert_eq!(
+        saved["character"]["payload"]["player_character"]["spells"][0]["name"],
+        json!("Огненный шар")
+    );
+    // Version 1 -> 3: snapshot bump (1->2) + retitle bump (2->3, name changed).
+    assert_eq!(saved["character"]["version"], json!(3));
+    assert_eq!(saved["character"]["title"], json!("Новое имя"), "title follows the hero name");
+    // No architect / SSE fields leak into the direct-save response.
+    assert!(saved["character"].get("architect_messages").is_none());
+    assert!(saved.get("reply").is_none());
+    assert!(saved.get("characters").is_none(), "direct save returns just {{ok, character}}");
+
+    // ---- A name-PRESERVING edit bumps exactly once and does NOT retitle ----
+    let (status, body) = post(
+        &state,
+        &format!("/characters/{id}/draft"),
+        json!({"player_character": {"name": "Новое имя", "spells": []}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second draft save: {}", String::from_utf8_lossy(&body));
+    let saved2: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(saved2["character"]["version"], json!(4), "snapshot-only bump 3->4");
+    assert_eq!(saved2["character"]["title"], json!("Новое имя"), "title unchanged when name is");
+    assert_eq!(
+        saved2["character"]["payload"]["player_character"]["spells"],
+        json!([]),
+        "list cleared to empty (full replace)"
+    );
+
+    // ---- The architect conversation is UNTOUCHED by the draft saves ----
+    let (status, body) = get(&state, &format!("/characters/{id}/architect")).await;
+    assert_eq!(status, StatusCode::OK);
+    let arch: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(arch["architect"]["messages"], chat_before["messages"]);
+    // The whole stored row is byte-for-byte identical.
+    let stored = state
+        .store
+        .get_architect_chat("character", &id)
+        .expect("read chat")
+        .expect("chat still present");
+    assert_eq!(stored, chat_before, "draft save must not rewrite the architect chat");
+
+    // ---- A non-object player_character -> 400 ----
+    let (status, body) = post(
+        &state,
+        &format!("/characters/{id}/draft"),
+        json!({"player_character": "не объект"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "non-object -> 400: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let err: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(err["ok"], false);
+    assert!(err["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("player_character must be an object"));
+    // A MISSING player_character key is likewise a 400 (no silent no-op).
+    let (status, _b) = post(&state, &format!("/characters/{id}/draft"), json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "missing player_character -> 400");
+
+    // ---- An unknown id -> 404 ----
+    let (status, body) = post(
+        &state,
+        "/characters/nope/draft",
+        json!({"player_character": {"name": "Никто"}}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unknown id -> 404: {}",
+        String::from_utf8_lossy(&body)
+    );
+
+    // ---- The export stays CLEAN: character.json carries only the sheet ----
+    let (status, exported) = get(&state, &format!("/characters/{id}/export")).await;
+    assert_eq!(status, StatusCode::OK);
+    let reader = std::io::Cursor::new(&exported);
+    let mut zip = zip::ZipArchive::new(reader).unwrap();
+    let mut f = zip.by_name("character.json").unwrap();
+    let mut s = String::new();
+    std::io::Read::read_to_string(&mut f, &mut s).unwrap();
+    let manifest: Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(manifest["title"], json!("Новое имя"));
+    assert_eq!(manifest["payload"]["player_character"]["name"], json!("Новое имя"));
+    assert!(manifest.get("architect_messages").is_none());
+    assert!(manifest["payload"].get("architect").is_none());
+    assert!(
+        !s.contains("привет-архитектор"),
+        "no architect chat leaks into the export"
+    );
 }
 
 /// Build a single-entry `character.json` zip with the given manifest value.
@@ -3295,35 +3835,24 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
     );
     assert!(st["char_ref"]["version"].is_u64(), "char_ref.version is a number");
 
-    // ---- Case C: no character_id -> no warn, no char_ref ----
+    // ---- Case C: no character_id on a PC-less procedural story -> 400 ----
+    // Design §8: no default hero is ever seeded, so a launch with neither a
+    // selected character nor an authored PC is rejected (protagonist_required).
     let (status, body) = post(
         &state,
         "/chats",
         json!({"story_id": proc_story_id, "activate": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "launch no-char: {}", String::from_utf8_lossy(&body));
-    let launched: Value = serde_json::from_slice(&body).unwrap();
-    let has_override = launched
-        .get("warnings")
-        .and_then(Value::as_array)
-        .map(|ws| ws.iter().any(|w| w["code"] == json!("story_pc_override")))
-        .unwrap_or(false);
-    assert!(!has_override, "no character_id -> no story_pc_override");
-    state
-        .store
-        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
-            assert!(rt.session.world.char_ref.is_none(), "no char_ref without character_id");
-        })
-        .unwrap();
-    // And `/state` omits the key entirely (additive, byte-identity discipline).
-    let (status, body) = get(&state, "/state").await;
-    assert_eq!(status, StatusCode::OK);
-    let st: Value = serde_json::from_slice(&body).unwrap();
-    assert!(
-        st.get("char_ref").is_none(),
-        "/state must omit char_ref when no character was launched: {st}"
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "no-char procedural launch must 400: {}",
+        String::from_utf8_lossy(&body)
     );
+    let rejected: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(rejected["code"], json!("protagonist_required"));
 
     // A supplied-but-unknown character_id is a 400 (no-fallback).
     let (status, _b) = post(
@@ -3342,8 +3871,11 @@ async fn save_character_new_update_and_missing_id() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
 
-    // A procedural chat gives us a default hero to save. The procedural launch
+    // A procedural chat gives us a hero to save. No default hero is seeded
+    // (design §8), so the launch carries an explicit character package; its PC
+    // (name "Тест-Герой") is what save-back snapshots. The procedural launch
     // requires world_lore, so use inline lore.
+    let char_id = create_test_character(&state).await;
     let (status, body) = post(
         &state,
         "/chats",
@@ -3351,6 +3883,7 @@ async fn save_character_new_update_and_missing_id() {
             "story_id": "procedural",
             "seed": "save-char-test",
             "activate": true,
+            "character_id": char_id,
             "world_lore": {
                 "name": "Тестовый мир",
                 "public_premise": "Мир для теста сохранения героя.",
@@ -3371,8 +3904,8 @@ async fn save_character_new_update_and_missing_id() {
     assert_eq!(saved["ok"], true);
     let new_id = saved["character"]["id"].as_str().unwrap().to_string();
     assert_eq!(saved["character"]["version"], json!(1));
-    // title = the default hero name.
-    assert_eq!(saved["character"]["title"], json!("Искатель"));
+    // title = the overlaid package hero name.
+    assert_eq!(saved["character"]["title"], json!("Тест-Герой"));
 
     // Save-back WITH the id -> snapshot the existing character (version bump).
     let (status, body) = post(

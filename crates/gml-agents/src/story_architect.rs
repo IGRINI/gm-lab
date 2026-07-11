@@ -25,7 +25,7 @@ use gml_llm::{Backend, BackendError};
 
 use crate::architect_runner::{
     architect_messages_with_system_blocks, architect_turn, ArchitectConfig, ArchitectOutput,
-    ArchitectStream,
+    ArchitectStream, ToolApplication,
 };
 
 /// The story architect turn output — the generic [`ArchitectOutput`] under the
@@ -63,6 +63,16 @@ in the scene lists present_npcs, exits, items). Do NOT resend the whole plot wit
 draft_story_plot for a small change; reserve draft_story_plot for the first build
 or a deliberate full rebuild.
 
+The plot itself lives on the server; user messages carry ONLY the user's text.
+The single source of the current state is the read_story_plot tool. When the
+conversation is empty and the user asks for a new story, build it straight away
+with draft_story_plot. In every other case, before editing existing content,
+before removing/replacing specific entries, and before making claims about what
+the plot already says — call read_story_plot for the relevant sections (or the
+whole plot) and act on what it returns. The state may have changed between
+turns (the user edits fields by hand in the form). Never invent or guess
+current content, and never ask the user to paste it.
+
 The player_character you author is only a SUGGESTED protagonist — the player may
 pick a different hero at launch, so write the story so its facts and NPCs still
 read sensibly around a different protagonist where possible.
@@ -96,49 +106,52 @@ them yet. Author only the opening state listed above."#;
 /// block + filtered history + the user message. `world_lore_block` is the
 /// pre-serialized, image-field-stripped bound-world context (`§С1.2`), placed as
 /// a STABLE system block so the cache prefix holds across turns.
+///
+/// CACHE INVARIANT: the tail user message is the RAW user text — byte-equal to
+/// the history entry the server stores for this turn. State never rides in
+/// messages; the model reads it via read_story_plot.
 pub fn story_architect_messages(
     history: &[Value],
     world_lore_block: &str,
-    draft: &Value,
     user_text: &str,
 ) -> Vec<Value> {
-    let user_msg = story_architect_user_message(draft, user_text);
-    story_architect_messages_with_user(history, world_lore_block, user_msg)
-}
-
-fn story_architect_messages_with_user(
-    history: &[Value],
-    world_lore_block: &str,
-    user_msg: Value,
-) -> Vec<Value> {
-    // The world-lore reference rides as a SECOND system block right after the
-    // static system prompt so the whole (prompt + world) prefix is stable and
-    // cacheable across turns; history + the mutating user message follow. This is
-    // the SAME assembly the loop uses (via `extra_system_blocks`).
     architect_messages_with_system_blocks(
         STORY_ARCHITECT_SYSTEM,
         &[world_lore_block.to_string()],
         history,
-        user_msg,
+        json!({"role": "user", "content": user_text.trim()}),
     )
 }
 
-pub fn story_architect_user_message(draft: &Value, user_text: &str) -> Value {
-    // Show the model the canonical plot draft so it can reference exact
-    // field/section names and existing entries when editing.
-    let draft_json =
-        serde_json::to_string(&normalize_input_plot(draft)).unwrap_or_else(|_| "null".to_string());
-    json!({
-        "role": "user",
-        "content": format!(
-            "## Current Plot Draft JSON\n{draft_json}\n\n## User Message\n{}\n\nAnswer now. If the plot is empty, build it with draft_story_plot (a playable opening: story_brief, public_intro, hidden_truth, a starting scene with present NPCs, a few public_facts and a suggested player_character). If it already has content, apply your changes with edit_story_plot (set/add/remove/replace) instead of resending the whole plot. Stay consistent with the bound world bible. Ask questions only if something important is genuinely missing.",
-            user_text.trim()
-        )
-    })
+pub fn story_architect_tools() -> Vec<Value> {
+    vec![
+        draft_story_plot_schema(),
+        edit_story_plot_schema(),
+        read_story_plot_schema(),
+    ]
 }
 
-pub fn story_architect_tools() -> Vec<Value> {
-    vec![draft_story_plot_schema(), edit_story_plot_schema()]
+/// The `read_story_plot` tool: return the FULL current text of the named plot
+/// sections. Supports the same `scene.<name>` addressing as `edit_story_plot`.
+fn read_story_plot_schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "read_story_plot",
+            "description": "The ONLY source of the current plot state. Pass section names (e.g. [\"hidden_truth\", \"npcs\", \"scene.items\"]) for their complete content, or omit/empty for the whole plot. ALWAYS read before edit_story_plot remove/replace of specific entries, before rewriting a field, and before reasoning about existing content — the state may have changed between turns.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "sections": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Section names to read (top-level keys or scene.<list>); empty or omitted = the whole plot."
+                    }
+                }
+            }
+        }
+    })
 }
 
 /// Image/URL fields of the world lore that MUST NOT be injected into the story
@@ -181,6 +194,33 @@ pub fn story_architect_world_lore_block(world_lore: &Value) -> String {
 /// minimum a launchable story needs); everything else is optional.
 fn draft_story_plot_schema() -> Value {
     let str_arr = |description: &str| json!({"type": "array", "items": {"type": "string"}, "description": description});
+    // Scene items/exits are OBJECTS — the same contract the world seed and the
+    // GM set_scene tool use (a plain string coerces with portable:false, which
+    // makes an authored prop untakeable, so the schema demands the full shape).
+    let item_arr = json!({
+        "type": "array",
+        "description": "Notable objects visible/available in the scene (full objects, not strings).",
+        "items": {"type": "object", "properties": {
+            "id": {"type": "string", "description": "Stable ascii snake_case id (a-z, 0-9, _ only)."},
+            "name": {"type": "string", "description": "Item name (Russian)."},
+            "details": {"type": "string", "description": "Short prose detail the player can learn (Russian)."},
+            "portable": {"type": "boolean", "description": "true = the player can pick it up (notes, keys, tools); false = scenery/furniture."},
+            "visible": {"type": "boolean", "description": "Visible to the player at scene start (default true)."},
+            "owner": {"type": "string", "description": "npc id who owns/holds it (empty = unowned)."},
+            "location": {"type": "string", "description": "Where in the scene it sits (Russian, e.g. 'на стойке')."}
+        }, "required": ["name", "portable"], "additionalProperties": false}
+    });
+    let exit_arr = json!({
+        "type": "array",
+        "description": "Ways out of the scene (full objects, not strings).",
+        "items": {"type": "object", "properties": {
+            "id": {"type": "string", "description": "Stable ascii snake_case id (a-z, 0-9, _ only)."},
+            "name": {"type": "string", "description": "Player-facing exit label (Russian, e.g. 'двор к пирсу')."},
+            "destination": {"type": "string", "description": "Where it leads: an ascii snake_case location_id (a-z, 0-9, _ only) or a short Russian phrase."},
+            "visible": {"type": "boolean", "description": "Visible at scene start (default true)."},
+            "blocked_by": {"type": "string", "description": "What blocks it (empty = passable)."}
+        }, "required": ["name", "destination"], "additionalProperties": false}
+    });
     let scene_schema = json!({
         "type": "object",
         "additionalProperties": true,
@@ -188,10 +228,10 @@ fn draft_story_plot_schema() -> Value {
         "properties": {
             "title": {"type": "string", "description": "Short scene/location name (Russian)."},
             "description": {"type": "string", "description": "What the player sees on arrival — concrete, sensory (Russian)."},
-            "location_id": {"type": "string", "description": "Stable snake_case id for this place (honored verbatim in canon)."},
+            "location_id": {"type": "string", "description": "Stable ascii snake_case id (a-z, 0-9, _ only) for this place (honored verbatim in canon)."},
             "present_npcs": str_arr("Ids of NPCs present in the scene at the start (must match npcs[].id)."),
-            "exits": str_arr("Ways out of the scene (short labels or 'label -> location_id')."),
-            "items": str_arr("Notable objects visible/available in the scene."),
+            "exits": exit_arr,
+            "items": item_arr,
             "constraints": str_arr("Hard limits on the scene (what is impossible or forbidden here)."),
             "tension": {"type": "string", "description": "The immediate pressure that makes this a scene, not a lobby."}
         }
@@ -212,7 +252,7 @@ fn draft_story_plot_schema() -> Value {
         "additionalProperties": true,
         "description": "One NPC card for the opening cast.",
         "properties": {
-            "id": {"type": "string", "description": "Stable snake_case id (referenced by scene.present_npcs)."},
+            "id": {"type": "string", "description": "Stable ascii snake_case id (a-z, 0-9, _ only; referenced by scene.present_npcs)."},
             "name": {"type": "string", "description": "NPC name (Russian)."},
             "role": {"type": "string", "description": "Their function in the scene (e.g. староста, стражник)."},
             "persona": {"type": "string", "description": "How they present — manner, mood, surface (Russian)."},
@@ -224,7 +264,7 @@ fn draft_story_plot_schema() -> Value {
         "additionalProperties": true,
         "description": "One starting public fact.",
         "properties": {
-            "id": {"type": "string", "description": "Stable snake_case id."},
+            "id": {"type": "string", "description": "Stable ascii snake_case id (a-z, 0-9, _ only)."},
             "text": {"type": "string", "description": "The fact as the world knows it (Russian)."},
             "kind": {"type": "string", "enum": ["public", "truth", "rumor"], "description": "public (openly known), rumor (unconfirmed), or truth (GM-confirmed)."},
             "keywords": str_arr("Keywords for retrieval."),
@@ -237,7 +277,7 @@ fn draft_story_plot_schema() -> Value {
         "additionalProperties": true,
         "description": "One initial state record (a tracked situation/relationship/condition).",
         "properties": {
-            "id": {"type": "string", "description": "Stable snake_case id."},
+            "id": {"type": "string", "description": "Stable ascii snake_case id (a-z, 0-9, _ only)."},
             "text": {"type": "string", "description": "The state as text (Russian)."},
             "kind": {"type": "string", "description": "Record kind (e.g. situation, relationship, condition)."},
             "scope": {"type": "string", "description": "Visibility scope of the record."}
@@ -286,6 +326,11 @@ fn edit_story_plot_schema() -> Value {
         "function": {
             "name": "edit_story_plot",
             "description": "Patch the EXISTING story plot — change only what differs, do NOT resend the whole plot. Prefer this over draft_story_plot once a plot exists. set overwrites scalars (title, description, story_brief, public_intro, hidden_truth) and whole objects (player_character, scene, time). add/remove/replace target list sections: npcs, public_facts, state_records, proper_nouns, and the scene lists scene.present_npcs, scene.exits, scene.items. All text in Russian.",
+            // Free-form section maps (properties-less objects) die under the
+            // strict Responses conversion — it forces additionalProperties:false
+            // + properties:{}, so the model can only ever send {}. Same reason
+            // invoke_loaded_tool is non-strict.
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "additionalProperties": false,
@@ -298,12 +343,12 @@ fn edit_story_plot_schema() -> Value {
                     "add": {
                         "type": "object",
                         "additionalProperties": {"type": "array"},
-                        "description": "Append entries to a list section (existing kept). Keys: npcs, public_facts, state_records, proper_nouns, scene.present_npcs, scene.exits, scene.items. Example: {\"proper_nouns\": [\"Живая Дорога\"]}."
+                        "description": "Append entries to a list section (existing kept). Keys: npcs, public_facts, state_records, proper_nouns, scene.present_npcs, scene.exits, scene.items. scene.items/scene.exits take the same OBJECT entries as draft_story_plot (items: name+portable required; exits: name+destination required). Example: {\"scene.items\": [{\"name\": \"записка\", \"portable\": true}]}."
                     },
                     "remove": {
                         "type": "object",
                         "additionalProperties": {"type": "array"},
-                        "description": "Remove entries from a list section. For object sections (npcs/public_facts/state_records) pass the ids to remove as strings; for string sections pass the exact strings. Example: {\"npcs\": [\"starosta\"]}."
+                        "description": "Remove entries from a list section. For object sections (npcs/public_facts/state_records/scene.items/scene.exits) pass the id or exact name as a string; for string sections pass the exact strings. Example: {\"npcs\": [\"starosta\"], \"scene.items\": [\"записка\"]}."
                     },
                     "replace": {
                         "type": "object",
@@ -417,13 +462,18 @@ fn set_list_section(top: &mut Map<String, Value>, key: &str, items: Vec<Value>) 
 fn add_to_list_section(top: &mut Map<String, Value>, key: &str, items: &[Value]) {
     let slot = list_section_slot(top, key);
     for item in items {
-        // Object entries dedup by id; string entries dedup by exact value.
+        // Object entries dedup by id, else by name (scene items/exits often
+        // carry no id); string entries dedup by exact value.
         let dup = match item {
-            Value::Object(obj) => obj
-                .get("id")
-                .and_then(Value::as_str)
-                .map(|id| slot.iter().any(|e| entry_id(e) == Some(id)))
-                .unwrap_or(false),
+            Value::Object(obj) => {
+                if let Some(id) = obj.get("id").and_then(Value::as_str) {
+                    slot.iter().any(|e| entry_id(e) == Some(id))
+                } else if let Some(name) = obj.get("name").and_then(Value::as_str) {
+                    slot.iter().any(|e| entry_name(e) == Some(name))
+                } else {
+                    false
+                }
+            }
             _ => slot.contains(item),
         };
         if !dup {
@@ -436,9 +486,13 @@ fn remove_from_list_section(top: &mut Map<String, Value>, key: &str, items: &[Va
     let slot = list_section_slot(top, key);
     slot.retain(|entry| {
         !items.iter().any(|target| match target {
-            // A string target removes the object entry whose id matches OR the
-            // exact string entry.
-            Value::String(s) => entry_id(entry) == Some(s.as_str()) || entry == target,
+            // A string target removes the object entry whose id OR name matches,
+            // or the exact string entry.
+            Value::String(s) => {
+                entry_id(entry) == Some(s.as_str())
+                    || entry_name(entry) == Some(s.as_str())
+                    || entry == target
+            }
             _ => entry == target,
         })
     });
@@ -474,24 +528,10 @@ fn entry_id(entry: &Value) -> Option<&str> {
     entry.as_object()?.get("id").and_then(Value::as_str)
 }
 
-/// The model-facing result of a story-plot tool call. No real side effect beyond
-/// recording the draft; the note nudges the model to refine or reply.
-fn story_tool_result(name: &str) -> String {
-    match name {
-        "draft_story_plot" => json!({
-            "ok": true,
-            "status": "draft_updated",
-            "note": "Черновик сюжета создан/обновлён и показан пользователю. Дальше правь точечно через edit_story_plot (не пересылай весь сюжет), либо кратко ответь пользователю в чат."
-        })
-        .to_string(),
-        "edit_story_plot" => json!({
-            "ok": true,
-            "status": "draft_edited",
-            "note": "Правка применена к черновику сюжета и показана пользователю. Продолжай точечные правки или кратко ответь в чат."
-        })
-        .to_string(),
-        _ => json!({"ok": false, "error": format!("unknown story architect tool: {name}")}).to_string(),
-    }
+/// The `name` of a list entry object (scene items/exits are name-keyed when the
+/// architect omits ids); `None` for a non-object or an object without a name.
+fn entry_name(entry: &Value) -> Option<&str> {
+    entry.as_object()?.get("name").and_then(Value::as_str)
 }
 
 // =========================================================================
@@ -526,26 +566,40 @@ impl ArchitectConfig for StoryArchitectConfig {
         normalize_input_plot(draft)
     }
 
-    fn user_message(&self, draft: &Value, user_text: &str) -> Value {
-        story_architect_user_message(draft, user_text)
-    }
-
     fn apply_tool(
         &self,
         name: &str,
         args: &Map<String, Value>,
         working_draft: &mut Value,
-    ) -> (Value, bool) {
+    ) -> ToolApplication {
         match name {
             "draft_story_plot" => {
                 *working_draft = merge_plot(working_draft.clone(), args);
-                (Value::Object(args.clone()), true)
+                ToolApplication {
+                    args: Value::Object(args.clone()),
+                    changed: true,
+                    result: "Черновик сюжета создан/обновлён и показан пользователю. Дальше правь точечно через edit_story_plot (не пересылай весь сюжет), либо кратко ответь пользователю в чат.".to_string(),
+                }
             }
             "edit_story_plot" => {
+                let before = working_draft.clone();
                 *working_draft = apply_story_plot_edit(working_draft, args);
-                (Value::Object(args.clone()), true)
+                ToolApplication {
+                    args: Value::Object(args.clone()),
+                    changed: true,
+                    result: story_edit_facts(args, &before, working_draft),
+                }
             }
-            _ => (Value::Object(args.clone()), false),
+            "read_story_plot" => ToolApplication {
+                args: Value::Object(args.clone()),
+                changed: false,
+                result: read_story_plot_result(args, working_draft),
+            },
+            _ => ToolApplication {
+                args: Value::Object(args.clone()),
+                changed: false,
+                result: format!("Неизвестный инструмент архитектора истории: {name}."),
+            },
         }
     }
 
@@ -554,9 +608,334 @@ impl ArchitectConfig for StoryArchitectConfig {
         // the draft is already canonical.
         draft
     }
+}
 
-    fn tool_result(&self, name: &str) -> String {
-        story_tool_result(name)
+/// FACTS about what an `edit_story_plot` call actually changed — never a blind
+/// "ok". Replays the list ops over the BEFORE plot in the same order the real
+/// apply uses (set → replace → add → remove), so per-op counts stay correct
+/// even when one call combines several ops on the same section. A remove that
+/// matched nothing says so explicitly (with the read-first nudge).
+fn story_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -> String {
+    // The staged working copies of each touched list section, keyed by the
+    // section addressing name (`npcs`, `scene.items`, …).
+    let mut stage: Map<String, Value> = Map::new();
+    let staged = |stage: &mut Map<String, Value>, key: &str| -> Value {
+        if let Some(v) = stage.get(key) {
+            return v.clone();
+        }
+        let value = if let Some(scene_key) = key.strip_prefix("scene.") {
+            before.get("scene").and_then(|s| s.get(scene_key)).cloned()
+        } else {
+            before.get(key).cloned()
+        };
+        let value = value.unwrap_or_else(|| Value::Array(Vec::new()));
+        stage.insert(key.to_string(), value.clone());
+        value
+    };
+    // Mirrors add/remove_from_list_section matching: object entries key by id
+    // (else name); a string target removes by id OR name OR the exact string.
+    let matches_target = |entry: &Value, target: &Value| -> bool {
+        match target {
+            Value::String(s) => {
+                entry_id(entry) == Some(s.as_str())
+                    || entry_name(entry) == Some(s.as_str())
+                    || entry == target
+            }
+            _ => entry == target,
+        }
+    };
+    let is_dup = |existing: &[Value], item: &Value| -> bool {
+        match item {
+            Value::Object(obj) => {
+                if let Some(id) = obj.get("id").and_then(Value::as_str) {
+                    existing.iter().any(|e| entry_id(e) == Some(id))
+                } else if let Some(name) = obj.get("name").and_then(Value::as_str) {
+                    existing.iter().any(|e| entry_name(e) == Some(name))
+                } else {
+                    false
+                }
+            }
+            _ => existing.contains(item),
+        }
+    };
+    let mut lines: Vec<String> = Vec::new();
+
+    if let Some(Value::Object(set)) = args.get("set") {
+        if !set.is_empty() {
+            lines.push(format!(
+                "Поля обновлены: {}.",
+                set.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+    if let Some(Value::Object(replace)) = args.get("replace") {
+        for (key, value) in replace {
+            let n = value.as_array().map(Vec::len).unwrap_or(0);
+            stage.insert(key.clone(), value.clone());
+            lines.push(format!("{key}: раздел заменён ({n} записей)."));
+        }
+    }
+    if let Some(Value::Object(add)) = args.get("add") {
+        for (key, value) in add {
+            let Some(items) = value.as_array() else { continue };
+            let mut current = staged(&mut stage, key);
+            let Some(existing) = current.as_array_mut() else { continue };
+            let mut added = 0usize;
+            for item in items {
+                if !is_dup(existing, item) {
+                    existing.push(item.clone());
+                    added += 1;
+                }
+            }
+            let now = existing.len();
+            stage.insert(key.clone(), current);
+            let skipped = items.len().saturating_sub(added);
+            let mut line = format!("{key}: добавлено {added} (теперь {now})");
+            if skipped > 0 {
+                line.push_str(&format!(", {skipped} пропущено как дубли"));
+            }
+            line.push('.');
+            lines.push(line);
+        }
+    }
+    if let Some(Value::Object(remove)) = args.get("remove") {
+        for (key, value) in remove {
+            let targets: Vec<Value> = value.as_array().cloned().unwrap_or_default();
+            let mut current = staged(&mut stage, key);
+            let Some(existing) = current.as_array_mut() else { continue };
+            let mut removed = 0usize;
+            let mut misses: Vec<String> = Vec::new();
+            for target in &targets {
+                let before_len = existing.len();
+                existing.retain(|e| !matches_target(e, target));
+                if existing.len() < before_len {
+                    removed += before_len - existing.len();
+                } else {
+                    misses.push(match target {
+                        Value::String(s) => format!("«{s}»"),
+                        other => serde_json::to_string(other).unwrap_or_default(),
+                    });
+                }
+            }
+            let now = existing.len();
+            stage.insert(key.clone(), current);
+            if removed > 0 {
+                lines.push(format!("{key}: удалено {removed} (теперь {now})."));
+            }
+            if !misses.is_empty() {
+                lines.push(format!(
+                    "{key}: НЕ найдено для удаления: {} — совпадения нет (id/имя/точная строка); прочитай раздел read_story_plot и повтори.",
+                    misses.join(", ")
+                ));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return "Правка НИЧЕГО не изменила (пустые операции). Прочитай нужный раздел read_story_plot и повтори с точными данными.".to_string();
+    }
+    lines.push("Продолжай точечные правки или кратко ответь в чат.".to_string());
+    lines.join("\n")
+}
+
+/// Render the requested plot sections (or the whole plot) from the working
+/// draft as MODEL-READY PLAIN TEXT — headed blocks, bullet lists, item/exit
+/// conventions — never raw JSON. Section names resolve against the plot's
+/// top-level keys plus the `scene.<name>` sub-lists; unknown names are
+/// reported back.
+fn read_story_plot_result(args: &Map<String, Value>, working_draft: &Value) -> String {
+    let sections: Vec<String> = args
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let plot = match working_draft.as_object() {
+        Some(m) => m,
+        None => return "Сюжет пуст.".to_string(),
+    };
+    let scene = plot.get("scene").and_then(Value::as_object);
+
+    let mut blocks: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    if sections.is_empty() {
+        for key in [
+            "title",
+            "description",
+            "story_brief",
+            "public_intro",
+            "hidden_truth",
+        ] {
+            if let Some(text) = plot.get(key).and_then(Value::as_str) {
+                if !text.trim().is_empty() {
+                    blocks.push(format!("## {key}\n{}", text.trim()));
+                }
+            }
+        }
+        if let Some(block) = plot
+            .get("player_character")
+            .and_then(|v| plot_section_block("player_character", v))
+        {
+            blocks.push(block);
+        }
+        if let Some(scene_value) = plot.get("scene") {
+            if let Some(block) = plot_section_block("scene", scene_value) {
+                blocks.push(block);
+            }
+        }
+        for key in ["npcs", "public_facts", "state_records", "proper_nouns"] {
+            if let Some(block) = plot.get(key).and_then(|v| plot_section_block(key, v)) {
+                blocks.push(block);
+            }
+        }
+    } else {
+        for name in sections {
+            let value = if let Some(scene_key) = name.strip_prefix("scene.") {
+                scene.and_then(|s| s.get(scene_key))
+            } else {
+                plot.get(&name)
+            };
+            match value {
+                Some(v) => match plot_section_block(&name, v) {
+                    Some(block) => blocks.push(block),
+                    None => blocks.push(format!("## {name}\n(пусто)")),
+                },
+                None => unknown.push(name),
+            }
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push("(пусто)".to_string());
+    }
+    if !unknown.is_empty() {
+        blocks.push(format!(
+            "Нет таких разделов: {}. Доступны: title, description, story_brief, public_intro, \
+             hidden_truth, player_character, scene, npcs, public_facts, state_records, \
+             proper_nouns, time и scene.<present_npcs|exits|items|constraints>.",
+            unknown.join(", ")
+        ));
+    }
+    blocks.join("\n\n")
+}
+
+/// One `## section` text block for a plot value: objects as `key: value` lines
+/// (nested lists via the entry labels), arrays as `-` bullets rendered through
+/// the item/exit conventions, strings as-is.
+fn plot_section_block(name: &str, value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) if !s.trim().is_empty() => Some(format!("## {name}\n{}", s.trim())),
+        Value::Number(n) => Some(format!("## {name}\n{n}")),
+        Value::Array(items) => {
+            if items.is_empty() {
+                return None;
+            }
+            let bullets: Vec<String> = items.iter().map(|v| format!("- {}", plot_entry_text(v))).collect();
+            Some(format!(
+                "## {name} ({} записей)\n{}",
+                bullets.len(),
+                bullets.join("\n")
+            ))
+        }
+        Value::Object(map) => {
+            if map.is_empty() {
+                return None;
+            }
+            let mut lines: Vec<String> = Vec::new();
+            for (key, v) in map {
+                match v {
+                    Value::String(s) if !s.trim().is_empty() => {
+                        lines.push(format!("{key}: {}", s.trim()));
+                    }
+                    Value::Number(n) => lines.push(format!("{key}: {n}")),
+                    Value::Bool(b) => lines.push(format!("{key}: {b}")),
+                    Value::Array(items) if !items.is_empty() => {
+                        let entries: Vec<String> =
+                            items.iter().map(plot_entry_text).collect();
+                        lines.push(format!("{key} ({}):", entries.len()));
+                        for entry in entries {
+                            lines.push(format!("  - {entry}"));
+                        }
+                    }
+                    Value::Object(nested) if !nested.is_empty() => {
+                        lines.push(format!("{key}: {}", plot_entry_text(v)));
+                        let _ = nested;
+                    }
+                    _ => {}
+                }
+            }
+            if lines.is_empty() {
+                return None;
+            }
+            Some(format!("## {name}\n{}", lines.join("\n")))
+        }
+        _ => None,
+    }
+}
+
+/// One line of a plot entry, model-readable: scene items as «имя — детали»
+/// (+ пометка непереносимости), exits as «имя -> куда», npcs/facts/records by
+/// their fields; plain strings as-is.
+fn plot_entry_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Object(o) => {
+            // Exit: name -> destination (+blocked note).
+            if let Some(dest) = o.get("destination").and_then(Value::as_str) {
+                let name = o.get("name").and_then(Value::as_str).unwrap_or("");
+                let blocked = o
+                    .get("blocked_by")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| format!(" (заблокирован: {s})"))
+                    .unwrap_or_default();
+                return format!("{name} -> {dest}{blocked}");
+            }
+            // Item: имя — детали [где] (+непереносимый).
+            if o.contains_key("portable") {
+                let name = o.get("name").and_then(Value::as_str).unwrap_or("");
+                let details = o.get("details").and_then(Value::as_str).unwrap_or("");
+                let location = o
+                    .get("location")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| format!(" [{s}]"))
+                    .unwrap_or_default();
+                let fixed = if o.get("portable").and_then(Value::as_bool) == Some(false) {
+                    " (непереносимый)"
+                } else {
+                    ""
+                };
+                return if details.trim().is_empty() {
+                    format!("{name}{location}{fixed}")
+                } else {
+                    format!("{name} — {details}{location}{fixed}")
+                };
+            }
+            // NPC / fact / state record: id + the meaningful text fields.
+            let id = o.get("id").and_then(Value::as_str).unwrap_or("");
+            let mut parts: Vec<String> = Vec::new();
+            for key in ["name", "role", "persona", "secret", "text", "kind", "scope"] {
+                if let Some(v) = o.get(key).and_then(Value::as_str) {
+                    if !v.trim().is_empty() {
+                        parts.push(format!("{key}: {}", v.trim()));
+                    }
+                }
+            }
+            if parts.is_empty() {
+                return serde_json::to_string(value).unwrap_or_default();
+            }
+            if id.is_empty() {
+                parts.join("; ")
+            } else {
+                format!("[{id}] {}", parts.join("; "))
+            }
+        }
+        other => serde_json::to_string(other).unwrap_or_default(),
     }
 }
 
@@ -724,6 +1103,112 @@ mod tests {
     }
 
     #[test]
+    fn edit_facts_report_hits_and_misses() {
+        let config = StoryArchitectConfig {
+            world_lore_block: String::new(),
+        };
+        let mut working = json!({
+            "npcs": [{"id": "marya", "name": "Марья"}, {"id": "efim", "name": "Ефим"}],
+            "scene": {"items": [{"name": "записка", "portable": true}]}
+        });
+        let args = json!({
+            "set": {"hidden_truth": "новая тайна"},
+            "add": {"scene.items": [{"name": "записка", "portable": true}, {"name": "нож", "portable": true}]},
+            "remove": {"npcs": ["marya", "нет_такого"]}
+        });
+        let applied =
+            config.apply_tool("edit_story_plot", args.as_object().unwrap(), &mut working);
+        assert!(applied.changed);
+        assert!(applied.result.contains("Поля обновлены: hidden_truth."));
+        assert!(applied.result.contains("scene.items: добавлено 1"), "{}", applied.result);
+        assert!(applied.result.contains("пропущено как дубли"));
+        assert!(applied.result.contains("npcs: удалено 1 (теперь 1)."));
+        assert!(applied.result.contains("НЕ найдено для удаления: «нет_такого»"));
+        assert!(applied.result.contains("read_story_plot"));
+    }
+
+    #[test]
+    fn user_tail_is_raw_text_matching_stored_history() {
+        // CACHE INVARIANT: sent tail == stored history entry, byte for byte.
+        let messages = story_architect_messages(&[], "## LORE", "  Усиль улики.  ");
+        let tail = messages.last().unwrap();
+        assert_eq!(tail["role"], "user");
+        assert_eq!(tail["content"], "Усиль улики.");
+    }
+
+    #[test]
+    fn read_story_plot_renders_plain_text_not_json() {
+        let config = StoryArchitectConfig {
+            world_lore_block: String::new(),
+        };
+        let working = json!({
+            "hidden_truth": "Староста виноват.",
+            "scene": {
+                "items": [
+                    {"name": "записка", "portable": true, "details": "имя китобоя"},
+                    {"name": "стойка", "portable": false}
+                ]
+            },
+            "npcs": [{"id": "marya", "name": "Марья", "role": "хозяйка", "secret": "боится культа"}],
+        });
+        let mut working = working;
+        let mut args = Map::new();
+        args.insert(
+            "sections".into(),
+            json!(["hidden_truth", "scene.items", "npcs", "nope"]),
+        );
+        let out = config
+            .apply_tool("read_story_plot", &args, &mut working)
+            .result;
+        assert!(out.contains("## hidden_truth\nСтароста виноват."));
+        assert!(out.contains("- записка — имя китобоя"));
+        assert!(out.contains("стойка (непереносимый)"));
+        assert!(out.contains("[marya] name: Марья; role: хозяйка; secret: боится культа"));
+        assert!(out.contains("Нет таких разделов: nope"));
+        assert!(!out.trim_start().starts_with('{'), "not JSON: {out}");
+    }
+
+    #[test]
+    fn edit_tool_is_non_strict_so_section_maps_survive_responses_conversion() {
+        // The strict Responses conversion rewrites properties-less objects into
+        // additionalProperties:false + properties:{} — the model could then only
+        // send empty set/add/remove/replace. The edit tool must opt out.
+        let tools = story_architect_tools();
+        let edit = tools
+            .iter()
+            .find(|t| t["function"]["name"] == "edit_story_plot")
+            .expect("edit_story_plot present");
+        assert_eq!(edit["function"]["strict"], json!(false));
+    }
+
+    #[test]
+    fn edit_scene_items_as_objects_dedups_and_removes_by_name() {
+        let base = json!({"scene": {"items": [
+            {"name": "записка", "portable": true, "details": "название китобоя"},
+            {"id": "counter", "name": "стойка", "portable": false},
+        ]}});
+        // add: a no-id object entry dedups by name; a new one appends.
+        let out = edit(
+            &base,
+            json!({"add": {"scene.items": [
+                {"name": "записка", "portable": true},
+                {"name": "нож", "portable": true},
+            ]}}),
+        );
+        let items = out["scene"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "duplicate name not re-added");
+        assert_eq!(items[2]["name"], "нож");
+        // remove: a string target matches an object by name AND by id.
+        let removed = edit(
+            &out,
+            json!({"remove": {"scene.items": ["записка", "counter"]}}),
+        );
+        let items = removed["scene"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["name"], "нож");
+    }
+
+    #[test]
     fn world_lore_block_strips_image_fields_and_keeps_hidden() {
         let lore = json!({
             "name": "Порог",
@@ -751,7 +1236,6 @@ mod tests {
         let msgs = story_architect_messages(
             &[],
             "## BOUND WORLD BIBLE (read-only reference)\n{...}",
-            &json!({}),
             "Собери сюжет.",
         );
         assert_eq!(msgs[0]["role"], "system");

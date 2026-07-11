@@ -303,6 +303,10 @@ pub struct Config {
     pub rag_rerank_model: String,     // GM_RAG_RERANK_MODEL
     pub rag_rerank_enabled: bool,     // GM_RAG_RERANK_ENABLED, true
     pub rag_rerank_candidates: i64, // GM_RAG_RERANK_CANDIDATES, 64 (RRF top-N fed to the reranker)
+    pub npc_dedup_enabled: bool,    // GM_NPC_DEDUP_ENABLED, true
+    pub npc_dedup_threshold: f64, // GM_NPC_DEDUP_THRESHOLD, 0.3 (raw cosine [-1,1], jina rerank scale;
+    // calibrated live 2026-07-07: true-duplicate brief ~0.33, similar-but-new ~0.24, unrelated ~-0.03)
+    pub npc_dedup_candidates: i64, // GM_NPC_DEDUP_CANDIDATES, 24 (max NPC docs sent to the reranker)
 
     // --- Unified inference sidecar ---
     pub infer_base_url: String, // GM_INFER_URL — single source for the sidecar URLs
@@ -351,7 +355,7 @@ impl Config {
 
         let prompt_cache_key = env_str("GM_PROMPT_CACHE_KEY", "");
 
-        let codex_client_version = env_str("GM_CODEX_CLIENT_VERSION", "0.133.0");
+        let codex_client_version = env_str("GM_CODEX_CLIENT_VERSION", "0.144.0");
         // default: f"codex_cli_rs/{CODEX_CLIENT_VERSION} (GM-Lab)"
         let codex_user_agent = env_str(
             "GM_CODEX_USER_AGENT",
@@ -444,6 +448,9 @@ impl Config {
             rag_rerank_model: env_str("GM_RAG_RERANK_MODEL", "jinaai/jina-reranker-v3"),
             rag_rerank_enabled: env_bool("GM_RAG_RERANK_ENABLED", true),
             rag_rerank_candidates: env_int_or("GM_RAG_RERANK_CANDIDATES", 64),
+            npc_dedup_enabled: env_bool("GM_NPC_DEDUP_ENABLED", true),
+            npc_dedup_threshold: env_float_or("GM_NPC_DEDUP_THRESHOLD", 0.3),
+            npc_dedup_candidates: env_int_or("GM_NPC_DEDUP_CANDIDATES", 24),
             infer_base_url,
 
             // Per-model quant for the unified sidecar; only bf16 | nf4 (int8 dropped).
@@ -683,6 +690,9 @@ EXPORTSPACED=export   spaced
             "GM_CODEX_REASONING_SUMMARY",
             "GM_RAG_MIN_DENSE_SCORE",
             "GM_RAG_STATUS_BOOST",
+            "GM_NPC_DEDUP_ENABLED",
+            "GM_NPC_DEDUP_THRESHOLD",
+            "GM_NPC_DEDUP_CANDIDATES",
             // also read by from_env with a backend-dependent default
             "GM_LLAMA_TEMPLATE_KWARGS",
             "GM_CODEX_USER_AGENT",
@@ -713,9 +723,12 @@ EXPORTSPACED=export   spaced
             assert_eq!(c.codex_compact_model, "");
             assert_eq!(c.codex_reasoning_effort, "low");
             assert_eq!(c.codex_reasoning_summary, "auto");
-            assert_eq!(c.codex_user_agent, "codex_cli_rs/0.133.0 (GM-Lab)");
+            assert_eq!(c.codex_user_agent, "codex_cli_rs/0.144.0 (GM-Lab)");
             assert!((c.rag_min_dense_score - 0.60).abs() < 1e-12);
             assert!((c.rag_status_boost - 1.04).abs() < 1e-12);
+            assert!(c.npc_dedup_enabled);
+            assert!((c.npc_dedup_threshold - 0.3).abs() < 1e-12);
+            assert_eq!(c.npc_dedup_candidates, 24);
             // default for use_llama_template_kwargs follows backend=="llamacpp"
             assert!(!c.use_llama_template_kwargs);
         });
@@ -729,6 +742,9 @@ EXPORTSPACED=export   spaced
             "GM_HISTORY_TOKENS",
             "GM_COMPACT_MODEL",
             "GM_CODEX_COMPACT_MODEL",
+            "GM_NPC_DEDUP_ENABLED",
+            "GM_NPC_DEDUP_THRESHOLD",
+            "GM_NPC_DEDUP_CANDIDATES",
         ];
         with_env_snapshot(KEYS, || {
             env::set_var("GM_BACKEND", "llamacpp");
@@ -736,6 +752,9 @@ EXPORTSPACED=export   spaced
             env::set_var("GM_HISTORY_TOKENS", "5");
             env::set_var("GM_COMPACT_MODEL", "gpt-5.4-mini");
             env::set_var("GM_CODEX_COMPACT_MODEL", "gpt-5.4-mini-codex");
+            env::set_var("GM_NPC_DEDUP_ENABLED", "off");
+            env::set_var("GM_NPC_DEDUP_THRESHOLD", "0.72");
+            env::set_var("GM_NPC_DEDUP_CANDIDATES", "8");
             let c = Config::from_env();
             assert_eq!(c.backend, "llamacpp");
             // default now true because backend == llamacpp
@@ -743,6 +762,9 @@ EXPORTSPACED=export   spaced
             assert_eq!(c.gm_history_tokens, 5);
             assert_eq!(c.compact_model, "gpt-5.4-mini");
             assert_eq!(c.codex_compact_model, "gpt-5.4-mini-codex");
+            assert!(!c.npc_dedup_enabled);
+            assert!((c.npc_dedup_threshold - 0.72).abs() < 1e-12);
+            assert_eq!(c.npc_dedup_candidates, 8);
         });
     }
 

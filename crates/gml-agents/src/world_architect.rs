@@ -11,6 +11,7 @@ use gml_llm::{Backend, BackendError};
 
 use crate::architect_runner::{
     architect_messages_with_user, architect_turn, ArchitectConfig, ArchitectOutput,
+    ToolApplication,
 };
 // Re-exported through this module's public surface (unchanged for callers).
 pub use crate::architect_runner::{ArchitectStream, NullArchitectStream};
@@ -39,6 +40,16 @@ Once a bible exists, make changes with edit_world_bible — patch only what diff
 (set a field, add/remove/replace entries in a section). Do NOT resend the whole
 bible with draft_world_bible for a small change; reserve draft_world_bible for the
 first build or a deliberate full rebuild.
+
+The bible itself lives on the server; user messages carry ONLY the user's text.
+The single source of the current state is the read_world_bible tool. When the
+conversation is empty and the user asks to create a world, build it straight
+away with draft_world_bible. In every other case, before editing existing
+content, before removing/replacing specific entries, and before making claims
+about what the bible already says — call read_world_bible for the relevant
+sections (or the whole bible) and act on what it returns. The state may have
+changed between turns (the user edits fields by hand in the form). Never invent
+or guess current content, and never ask the user to paste it.
 
 Ask the user a question only when something important is genuinely missing or
 unclear, and ask it in your chat reply, not in a tool field. Otherwise just note
@@ -87,16 +98,12 @@ impl ArchitectConfig for WorldArchitectConfig {
         normalize_input_draft(draft)
     }
 
-    fn user_message(&self, draft: &Value, user_text: &str) -> Value {
-        world_architect_user_message(draft, user_text)
-    }
-
     fn apply_tool(
         &self,
         name: &str,
         args: &Map<String, Value>,
         working_draft: &mut Value,
-    ) -> (Value, bool) {
+    ) -> ToolApplication {
         // draft_world_bible builds/rebuilds (FLAT args → nested world_lore);
         // edit_world_bible patches the existing draft in place. The card/event
         // shows what the model actually sent (nested for a build, raw for an edit).
@@ -105,49 +112,252 @@ impl ArchitectConfig for WorldArchitectConfig {
                 let nested = nest_draft_args(args);
                 if let Value::Object(map) = &nested {
                     *working_draft = merge_draft(Some(working_draft.clone()), map);
-                    (nested, true)
+                    ToolApplication {
+                        args: nested,
+                        changed: true,
+                        result: "Черновик мира создан/обновлён и показан пользователю. Дальше правь точечно через edit_world_bible (не пересылай весь черновик), либо кратко ответь пользователю в чат.".to_string(),
+                    }
                 } else {
-                    (nested, false)
+                    ToolApplication {
+                        args: nested,
+                        changed: false,
+                        result: "Аргументы draft_world_bible не разобраны — черновик не изменён.".to_string(),
+                    }
                 }
             }
             "edit_world_bible" => {
+                let before = working_draft.clone();
                 *working_draft = apply_world_bible_edit(working_draft, args);
-                (Value::Object(args.clone()), true)
+                ToolApplication {
+                    args: Value::Object(args.clone()),
+                    changed: true,
+                    result: world_edit_facts(args, &before, working_draft),
+                }
             }
-            _ => (Value::Object(args.clone()), false),
+            "read_world_bible" => ToolApplication {
+                args: Value::Object(args.clone()),
+                changed: false,
+                result: read_world_bible_result(args, working_draft),
+            },
+            _ => ToolApplication {
+                args: Value::Object(args.clone()),
+                changed: false,
+                result: format!("Неизвестный инструмент архитектора: {name}."),
+            },
         }
     }
 
     fn finalize_draft(&self, draft: Value) -> Value {
         finalize_draft(draft)
     }
+}
 
-    fn tool_result(&self, name: &str) -> String {
-        architect_tool_result(name)
+/// FACTS about what an `edit_world_bible` call actually changed — never a blind
+/// "ok". Replays the ops over the BEFORE draft in the same order the real apply
+/// uses (set → replace → add → remove), so per-op counts stay correct even when
+/// one call combines several ops on the same section. A remove that matched
+/// nothing says so explicitly and tells the model to read the section first.
+fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -> String {
+    // The staged working copy of each touched list section.
+    let mut stage: Map<String, Value> = before
+        .get("world_lore")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let list_len = |stage: &Map<String, Value>, key: &str| -> usize {
+        stage.get(key).and_then(Value::as_array).map(Vec::len).unwrap_or(0)
+    };
+    let mut lines: Vec<String> = Vec::new();
+
+    if let Some(Value::Object(set)) = args.get("set") {
+        if !set.is_empty() {
+            lines.push(format!(
+                "Поля обновлены: {}.",
+                set.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+    if let Some(Value::Object(replace)) = args.get("replace") {
+        for (key, value) in replace {
+            stage.insert(key.clone(), value.clone());
+            lines.push(format!(
+                "{key}: раздел заменён ({} записей).",
+                list_len(&stage, key)
+            ));
+        }
+    }
+    if let Some(Value::Object(add)) = args.get("add") {
+        for (key, value) in add {
+            let Some(items) = value.as_array() else { continue };
+            let entry = stage
+                .entry(key.clone())
+                .or_insert_with(|| Value::Array(Vec::new()));
+            let Value::Array(existing) = entry else { continue };
+            let mut added = 0usize;
+            for item in items {
+                if !existing.contains(item) {
+                    existing.push(item.clone());
+                    added += 1;
+                }
+            }
+            let skipped = items.len().saturating_sub(added);
+            let mut line = format!("{key}: добавлено {added} (теперь {})", existing.len());
+            if skipped > 0 {
+                line.push_str(&format!(", {skipped} пропущено как дубли"));
+            }
+            line.push('.');
+            lines.push(line);
+        }
+    }
+    if let Some(Value::Object(remove)) = args.get("remove") {
+        for (key, value) in remove {
+            let targets: Vec<Value> = value.as_array().cloned().unwrap_or_default();
+            let existing = stage
+                .get_mut(key)
+                .and_then(|v| v.as_array_mut());
+            let mut removed = 0usize;
+            let mut misses: Vec<String> = Vec::new();
+            if let Some(existing) = existing {
+                for target in &targets {
+                    let before_len = existing.len();
+                    existing.retain(|e| e != target);
+                    if existing.len() < before_len {
+                        removed += before_len - existing.len();
+                    } else if let Value::String(s) = target {
+                        misses.push(format!("«{s}»"));
+                    }
+                }
+                if removed > 0 {
+                    lines.push(format!("{key}: удалено {removed} (теперь {})." , existing.len()));
+                }
+            } else {
+                misses.extend(targets.iter().filter_map(|t| {
+                    t.as_str().map(|s| format!("«{s}»"))
+                }));
+            }
+            if !misses.is_empty() {
+                lines.push(format!(
+                    "{key}: НЕ найдено для удаления: {} — точного совпадения нет; прочитай раздел read_world_bible и повтори с точной строкой.",
+                    misses.join(", ")
+                ));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return "Правка НИЧЕГО не изменила (пустые операции). Прочитай нужный раздел read_world_bible и повтори с точными данными.".to_string();
+    }
+    lines.push("Продолжай точечные правки или кратко ответь в чат.".to_string());
+    lines.join("\n")
+}
+
+/// Render the requested bible sections (or the whole bible) from the working
+/// draft as MODEL-READY PLAIN TEXT — headed blocks with bullet lists, the same
+/// style as the GM context builders, never raw JSON. Section names resolve
+/// against BOTH the draft's top-level scalar fields and the nested `world_lore`
+/// sections; unknown names are reported so the model can correct itself.
+fn read_world_bible_result(args: &Map<String, Value>, working_draft: &Value) -> String {
+    let sections: Vec<String> = args
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let draft = match working_draft.as_object() {
+        Some(m) => m,
+        None => return "Библия пуста.".to_string(),
+    };
+    let lore = draft.get("world_lore").and_then(Value::as_object);
+
+    let mut blocks: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    if sections.is_empty() {
+        // The whole bible: scalars first, then every lore section, draft order.
+        for field in DRAFT_SUMMARY_FIELDS {
+            if let Some(text) = draft.get(field).and_then(Value::as_str) {
+                if !text.trim().is_empty() {
+                    blocks.push(format!("## {field}\n{}", text.trim()));
+                }
+            }
+        }
+        if let Some(lore) = lore {
+            for (key, value) in lore {
+                if let Some(block) = bible_section_block(key, value) {
+                    blocks.push(block);
+                }
+            }
+        }
+    } else {
+        for name in sections {
+            let value = draft
+                .get(&name)
+                .or_else(|| lore.and_then(|l| l.get(&name)));
+            match value {
+                Some(v) => {
+                    if let Some(block) = bible_section_block(&name, v) {
+                        blocks.push(block);
+                    } else {
+                        blocks.push(format!("## {name}\n(пусто)"));
+                    }
+                }
+                None => unknown.push(name),
+            }
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push("(пусто)".to_string());
+    }
+    if !unknown.is_empty() {
+        blocks.push(format!(
+            "Нет таких разделов: {}. Доступны поля ({}) и разделы world_lore.",
+            unknown.join(", "),
+            DRAFT_SUMMARY_FIELDS.join(", ")
+        ));
+    }
+    blocks.join("\n\n")
+}
+
+/// One `## section` text block: string lists as `-` bullets (exact entries —
+/// remove/replace match these verbatim), scalar strings as-is.
+fn bible_section_block(name: &str, value: &Value) -> Option<String> {
+    match value {
+        Value::Array(items) => {
+            let bullets: Vec<String> = items
+                .iter()
+                .map(|v| match v {
+                    Value::String(s) => format!("- {s}"),
+                    other => format!("- {}", serde_json::to_string(other).unwrap_or_default()),
+                })
+                .collect();
+            if bullets.is_empty() {
+                return None;
+            }
+            Some(format!(
+                "## {name} ({} записей)\n{}",
+                bullets.len(),
+                bullets.join("\n")
+            ))
+        }
+        Value::String(s) if !s.trim().is_empty() => Some(format!("## {name}\n{}", s.trim())),
+        _ => None,
     }
 }
 
-pub fn world_architect_messages(history: &[Value], draft: &Value, user_text: &str) -> Vec<Value> {
-    let user_msg = world_architect_user_message(draft, user_text);
-    world_architect_messages_with_user(history, user_msg)
-}
-
-pub fn world_architect_user_message(draft: &Value, user_text: &str) -> Value {
-    // Show the model the canonical draft shape (snake_case + nested world_lore) so
-    // it can reference exact field/section names and existing entries when editing.
-    let normalized = normalize_input_draft(draft);
-    let draft_json = serde_json::to_string(&normalized).unwrap_or_else(|_| "null".to_string());
-    json!({
-        "role": "user",
-        "content": format!(
-            "## Current Draft JSON\n{draft_json}\n\n## User Message\n{}\n\nAnswer now. If the bible is empty, build it with draft_world_bible, filling every relevant section in detail (several concrete entries each). If it already has content, apply your changes with edit_world_bible (set/add/remove/replace) instead of resending the whole draft. Ask questions only if something important is genuinely missing.",
-            user_text.trim()
-        )
-    })
-}
-
-fn world_architect_messages_with_user(history: &[Value], user_msg: Value) -> Vec<Value> {
-    architect_messages_with_user(WORLD_ARCHITECT_SYSTEM, history, user_msg)
+pub fn world_architect_messages(history: &[Value], user_text: &str) -> Vec<Value> {
+    // CACHE INVARIANT: the tail user message is the RAW user text — byte-equal
+    // to the history entry the server stores for this turn, so the request
+    // prefix stays stable across turns. State never rides in messages; the
+    // model reads it via read_world_bible.
+    architect_messages_with_user(
+        WORLD_ARCHITECT_SYSTEM,
+        history,
+        json!({"role": "user", "content": user_text.trim()}),
+    )
 }
 
 /// The list (string-array) sections of the world bible. Flat tool fields; folded
@@ -198,7 +408,33 @@ pub fn world_architect_tools_with_options(options: WorldArchitectOptions) -> Vec
     vec![
         world_architect_tool_schema(options),
         world_architect_edit_tool_schema(options),
+        world_architect_read_tool_schema(),
     ]
+}
+
+/// The `read_world_bible` tool: return the FULL current text of the named
+/// sections/fields (the digest in the user message truncates entries). The
+/// model must read a section before removing/replacing specific entries —
+/// `remove` matches exact strings.
+fn world_architect_read_tool_schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "read_world_bible",
+            "description": "The ONLY source of the current bible state. Pass section/field names (e.g. [\"taboos\", \"public_premise\"]) for their complete text, or omit/empty for the whole bible. ALWAYS read before edit_world_bible remove/replace of specific entries (remove matches exact strings) and before reasoning about existing content — the state may have changed between turns.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "sections": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Section/field names to read; empty or omitted = the whole bible."
+                    }
+                }
+            }
+        }
+    })
 }
 
 /// The `edit_world_bible` tool: targeted patches to an existing bible so the
@@ -238,6 +474,11 @@ fn world_architect_edit_tool_schema(options: WorldArchitectOptions) -> Value {
         "function": {
             "name": "edit_world_bible",
             "description": description,
+            // Free-form section maps (properties-less objects) die under the
+            // strict Responses conversion (forced additionalProperties:false +
+            // properties:{} -> the model can only send {}); same reason
+            // invoke_loaded_tool is non-strict.
+            "strict": false,
             "parameters": {
                 "type": "object",
                 "additionalProperties": false,
@@ -601,27 +842,6 @@ pub async fn world_architect_turn_with_options(
     architect_turn(&config, client, history, draft, user_text, stream).await
 }
 
-/// The model-facing result of a `draft_world_bible` call. The architect tool has
-/// no real side effect beyond recording the draft, so the result just confirms
-/// success and nudges the model to either refine further or finish with a reply.
-fn architect_tool_result(name: &str) -> String {
-    match name {
-        "draft_world_bible" => json!({
-            "ok": true,
-            "status": "draft_updated",
-            "note": "Черновик мира создан/обновлён и показан пользователю. Дальше правь точечно через edit_world_bible (не пересылай весь черновик), либо кратко ответь пользователю в чат."
-        })
-        .to_string(),
-        "edit_world_bible" => json!({
-            "ok": true,
-            "status": "draft_edited",
-            "note": "Правка применена к черновику и показана пользователю. Продолжай точечные правки или кратко ответь в чат."
-        })
-        .to_string(),
-        _ => json!({"ok": false, "error": format!("unknown architect tool: {name}")}).to_string(),
-    }
-}
-
 /// Merge a `draft_world_bible` call's arguments into the accumulating draft:
 /// top-level fields overwrite, `world_lore` is merged key-by-key so successive
 /// refinements add sections instead of replacing the whole bible.
@@ -673,6 +893,87 @@ mod tests {
         assert_eq!(n["public_premise"], "клятвы");
         assert_eq!(n["world_lore"]["gods"][0], "Старший");
         assert!(n.get("worldSize").is_none());
+    }
+
+    #[test]
+    fn edit_facts_report_hits_and_misses() {
+        let config = WorldArchitectConfig {
+            options: WorldArchitectOptions::default(),
+        };
+        let mut working = json!({
+            "title": "Карагай",
+            "world_lore": {"taboos": ["нельзя свистеть ночью", "нельзя сыпать соль"]}
+        });
+        let args = json!({
+            "set": {"tone": "мрачный"},
+            "add": {"taboos": ["нельзя сыпать соль", "нельзя лгать под знаменем"]},
+            "remove": {"taboos": ["нельзя свистеть ночью", "такого табу нет"]}
+        });
+        let applied = config.apply_tool("edit_world_bible", args.as_object().unwrap(), &mut working);
+        assert!(applied.changed);
+        assert!(applied.result.contains("Поля обновлены: tone."));
+        // One of the two adds was a duplicate.
+        assert!(applied.result.contains("добавлено 1"), "{}", applied.result);
+        assert!(applied.result.contains("пропущено как дубли"));
+        // One remove hit, one missed — the miss is called out with the nudge.
+        assert!(applied.result.contains("удалено 1"), "{}", applied.result);
+        assert!(applied.result.contains("НЕ найдено для удаления: «такого табу нет»"));
+        assert!(applied.result.contains("read_world_bible"));
+
+        // A remove that matches nothing at all must NOT read as success.
+        let miss_only = json!({"remove": {"taboos": ["мимо"]}});
+        let applied = config.apply_tool(
+            "edit_world_bible",
+            miss_only.as_object().unwrap(),
+            &mut working,
+        );
+        assert!(!applied.result.contains("удалено"));
+        assert!(applied.result.contains("НЕ найдено для удаления"));
+    }
+
+    #[test]
+    fn user_tail_is_raw_text_matching_stored_history() {
+        // CACHE INVARIANT: sent tail == stored history entry, byte for byte.
+        let messages = world_architect_messages(&[], "  Добавь религии.  ");
+        let tail = messages.last().unwrap();
+        assert_eq!(tail["role"], "user");
+        assert_eq!(tail["content"], "Добавь религии.");
+    }
+
+    #[test]
+    fn read_world_bible_renders_plain_text_not_json() {
+        let config = WorldArchitectConfig {
+            options: WorldArchitectOptions::default(),
+        };
+        let working = json!({
+            "title": "Карагай",
+            "world_lore": {
+                "taboos": ["нельзя свистеть ночью", "нельзя сыпать соль"]
+            }
+        });
+        let mut working = working;
+        let mut args = Map::new();
+        args.insert("sections".into(), json!(["taboos", "title", "nope"]));
+        let out = config
+            .apply_tool("read_world_bible", &args, &mut working)
+            .result;
+        assert!(out.contains("## taboos (2 записей)"));
+        assert!(out.contains("- нельзя свистеть ночью"));
+        assert!(out.contains("## title\nКарагай"));
+        assert!(out.contains("Нет таких разделов: nope"));
+        assert!(!out.trim_start().starts_with('{'), "not JSON: {out}");
+    }
+
+    #[test]
+    fn edit_tool_is_non_strict_so_section_maps_survive_responses_conversion() {
+        // Mirrors edit_story_plot: the strict Responses conversion would force
+        // the free-form set/add/remove/replace maps to empty objects.
+        let tools = world_architect_tools();
+        let edit = tools
+            .iter()
+            .find(|t| t["function"]["name"] == "edit_world_bible")
+            .expect("edit_world_bible present");
+        assert_eq!(edit["function"]["strict"], json!(false));
     }
 
     #[test]

@@ -77,7 +77,11 @@ const NPC_PROFILE_FIELDS: [&str; 25] = [
 
 /// `_INITIAL_GM_TOOL_NAMES` — the always-loaded GM tools. `move_player` is a
 /// PRIMARY living-world tool (LOCKED DECISION #2): travel goes through the canon,
-/// so the model always has it without a `tool_search`.
+/// so the model always has it without a `tool_search`. `generate_npc` is NOT
+/// initial: significant-NPC creation is a narrow, engine-authoritative trigger,
+/// so the generator is DEFERRED like the other canon tools and the GM reaches it
+/// through `tool_search`. Loaded tools persist for the session, so that search is
+/// a one-time cost, not a per-turn hop.
 pub(crate) const INITIAL_GM_TOOL_NAMES: [&str; 11] = [
     "ask_npc",
     "roll_dice",
@@ -100,7 +104,7 @@ pub(crate) const INVOKE_LOADED_TOOL_NAME: &str = "invoke_loaded_tool";
 
 /// `_TOOL_SEARCH_HINTS` — name -> hint keywords. Includes the living-world canon
 /// tools (`move_player`, `world_debug`).
-pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 19] = [
+pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 22] = [
     (
         "ask_npc",
         "npc нпс персонаж поговорить спросить допросить ответить реакция речь \
@@ -150,6 +154,21 @@ drop put down leave item inventory scene на стол на землю",
         "cast_spell",
         "заклинание спелл каст сотворить прочитать колдовать магия слот концентрация \
 заговор апкаст cast spell slot cantrip concentration magic ритуал",
+    ),
+    (
+        "generate_npc",
+        "нпс npc персонаж житель встреча значимый именной новый создать сгенерировать \
+герой сюжета character generate significant named recurring encounter roster",
+    ),
+    (
+        "read_state",
+        "состояние время сцена лист ростер факты текущее проверить посмотреть узнать \
+current state time scene sheet roster facts check inspect look up",
+    ),
+    (
+        "long_rest",
+        "долгий отдых передышка выспаться ночёвка спать сон восстановить слоты хп \
+концентрация полный отдых night sleep long rest recover restore slots hp full",
     ),
     (
         "get_npc_profile",
@@ -668,14 +687,19 @@ pub fn build_gm_tools() -> Vec<Value> {
 /// `cast_spell` is the Phase-С spell-slot/concentration mover
 /// (`docs/ITEMS_AND_SPELLS_TZ.md` §И3/§С2), all appended at the END: they mutate
 /// the player card and are NOT part of the byte-gated static catalog (no
-/// re-bless), matching the move_player precedent.
-pub const CANON_GM_TOOL_NAMES: [&str; 6] = [
+/// re-bless), matching the move_player precedent. `long_rest` is the Phase-О
+/// deferred full-rest mover, appended at the END after the core set: like the
+/// other card movers it is NOT part of the byte-gated static catalog.
+pub const CANON_GM_TOOL_NAMES: [&str; 9] = [
     "move_player",
     "world_debug",
     "generate_location",
     "take_item",
     "drop_item",
     "cast_spell",
+    "generate_npc",
+    "read_state",
+    "long_rest",
 ];
 
 /// The additive living-world GM tools that commit through the canon engine.
@@ -850,6 +874,86 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
                        "description": "Very short Russian reason for casting the spell."},
         }, "required": ["name"], "additionalProperties": false},
     }});
+    let generate_npc = json!({"type": "function", "function": {
+        "name": "generate_npc",
+        "description":
+            "Create ONE new significant NPC when the story needs a named, recurring, or \
+    consequential character the roster does not already provide. The dedicated character \
+    generator drafts a full canon card — persona, goals, agenda, voice, and calibrated \
+    mechanics — from your qualitative brief, then commits it and places the NPC in the \
+    scene. WHEN TO CALL: the player engages a person who matters (a suspect, patron, \
+    rival, informant, captain) and no present or rostered NPC fits — call this FIRST, \
+    then move_npc / ask_npc to voice them. Do NOT generate background extras, one-line \
+    vendors, or unnamed passersby — describe them inline in narration, and reuse a roster \
+    NPC (move_npc + ask_npc) when one already fits. Pass a QUALITATIVE brief only: who \
+    this is, why the story needs them, what they can do, and how their power compares to \
+    the player. NEVER pass numeric stats — the generator sets every number itself from the \
+    player sheet, roster, and power_tier. If the brief closely matches existing NPCs the \
+    tool returns duplicate_candidates instead of generating: reuse one of them, or resend \
+    the SAME call with retry=true and add to request why those candidates do not fit; \
+    retry is honored ONLY directly after a duplicate_candidates result and is ignored \
+    otherwise. A status=created result means the NPC already exists and is present — go \
+    straight to ask_npc with the returned npc_id; never call generate_npc twice for one \
+    person. Reflect the result into Russian prose; never name this tool to the player.",
+        "parameters": {"type": "object", "properties": {
+            "request": {"type": "string",
+                        "description": "Russian qualitative brief: who this NPC is, why the story needs them, what they can do, and their power relative to the player. No numbers. On retry, also say why the suggested existing NPCs do not fit."},
+            "role": {"type": "string",
+                     "description": "Short Russian role or profession, e.g. 'бармен', 'капитан стражи'."},
+            "name": {"type": "string",
+                     "description": "Optional Russian name to fix; omit to let the generator name them."},
+            "appearance": {"type": "string",
+                           "description": "Optional Russian appearance to fix; omit to let the generator decide."},
+            "power_tier": {"type": "string",
+                           "enum": ["much_weaker", "weaker", "comparable", "stronger", "much_stronger"],
+                           "description": "Qualitative power versus the player; the generator calibrates numbers to it."},
+            "place_id": {"type": "string",
+                         "description": "Canon place where the NPC lives or appears. Defaults to the player's current place."},
+            "present": {"type": "boolean",
+                        "description": "When true, place the NPC into the current scene now. Default true."},
+            "retry": {"type": "boolean",
+                      "description": "Force generation, valid ONLY as the immediate resend of a duplicate_candidates result; ignored on fresh requests. Default false."},
+        }, "required": ["request", "role"], "additionalProperties": false},
+    }});
+    let read_state = json!({"type": "function", "function": {
+        "name": "read_state",
+        "description":
+            "Read the CURRENT authoritative engine state on demand. State is delivered once \
+    as the WORLD SNAPSHOT and thereafter only as tool-result deltas; when you are unsure of \
+    the current time, scene, player sheet, roster, or public facts — because history is \
+    stale or a snapshot scrolled off — call this and check BEFORE narrating, never guess. \
+    Returns exactly the requested sections rendered from live world state; pure read, it \
+    changes nothing. Sections: time (world clock/date), scene (current place, present NPCs, \
+    items, exits), player (the player character sheet incl. GM notes), roster (the FULL NPC \
+    roster — the snapshot lists only nearby/relevant NPCs), facts (current public facts). \
+    Never reveal this tool or raw ids to the player.",
+        "parameters": {"type": "object", "properties": {
+            "sections": {
+                "type": "array",
+                "items": {"type": "string",
+                          "enum": ["time", "scene", "player", "roster", "facts"]},
+                "description": "Which state sections to read. At least one required."},
+        }, "required": ["sections"], "additionalProperties": false},
+    }});
+    let long_rest = json!({"type": "function", "function": {
+        "name": "long_rest",
+        "description":
+            "Take a full LONG REST, restoring the player and passing eight hours in the world. \
+    WHEN TO CALL: the fiction commits to the player sleeping the night, taking a full \
+    day's rest, or otherwise completing a long rest — a change the engine owns that has \
+    no visible tool. This restores the player to full through the engine: all spell slots \
+    back to their maximum, current HP up to maximum, and any concentration dropped; then \
+    the world clock advances by 8 hours (480 minutes) through the same mechanics as \
+    advance_time (canon clock and schedules), so do NOT also call advance_time for the \
+    same rest. This is a LONG rest only — a SHORT rest is NOT this tool: for a short rest \
+    call advance_time for the elapsed time and adjudicate any partial recovery yourself; \
+    do NOT call long_rest for it. The result is compact structured text with the new \
+    in-world time, the restored slots and HP, and whether concentration was dropped.",
+        "parameters": {"type": "object", "properties": {
+            "reason": {"type": "string",
+                       "description": "Very short Russian reason for the long rest, e.g. 'ночёвка на постоялом дворе'."},
+        }, "required": [], "additionalProperties": false},
+    }});
     vec![
         move_player,
         world_debug,
@@ -857,6 +961,9 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
         take_item,
         drop_item,
         cast_spell,
+        generate_npc,
+        read_state,
+        long_rest,
     ]
 }
 
@@ -1155,7 +1262,7 @@ struct ToolSearchMetadata {
     capabilities: &'static [&'static str],
 }
 
-const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 19] = [
+const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
     ToolSearchMetadata {
         name: "ask_npc",
         title: "Ask NPC",
@@ -1307,6 +1414,30 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 19] = [
         keywords: &["spell", "cast", "slot", "concentration", "cantrip"],
         aliases: &["заклинание", "каст", "колдовать"],
         capabilities: &["spell_slot_spend", "concentration_tracking"],
+    },
+    ToolSearchMetadata {
+        name: "generate_npc",
+        title: "Generate NPC",
+        description: "Draft and commit one new significant NPC through a dedicated character generator agent.",
+        keywords: &["npc", "character", "significant", "named", "нпс", "персонаж"],
+        aliases: &["создать нпс", "новый персонаж", "герой"],
+        capabilities: &["npc_generation", "power_calibration", "duplicate_gate"],
+    },
+    ToolSearchMetadata {
+        name: "read_state",
+        title: "Read State",
+        description: "Read current engine state on demand — time, scene, player sheet, full roster, or public facts.",
+        keywords: &["state", "time", "scene", "roster", "facts", "состояние", "сцена"],
+        aliases: &["проверить состояние", "текущее время", "полный ростер"],
+        capabilities: &["state_read", "roster_full", "no_mutation"],
+    },
+    ToolSearchMetadata {
+        name: "long_rest",
+        title: "Long Rest",
+        description: "Take a full long rest: restore spell slots and HP, drop concentration, advance 8 hours.",
+        keywords: &["rest", "sleep", "recover", "restore", "отдых", "выспаться"],
+        aliases: &["долгий отдых", "ночёвка", "night sleep"],
+        capabilities: &["full_restore", "slot_hp_recovery", "world_clock"],
     },
 ];
 

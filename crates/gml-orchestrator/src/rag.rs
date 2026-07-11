@@ -60,6 +60,140 @@ pub struct WorldFactRetrievalReport {
     pub status: Value,
 }
 
+/// One existing-roster NPC scored against a generation brief by the reranker.
+/// Carries only non-sensitive identity fields (no secret/knowledge/mechanics) so
+/// it is safe to surface in a `duplicate_candidates` tool result.
+#[derive(Clone, Debug)]
+pub struct NpcDedupCandidate {
+    pub npc_id: String,
+    pub internal_name: String,
+    pub player_label: String,
+    pub role: String,
+    pub score: f64,
+}
+
+/// Semantic NPC-dedup gate output plus operational diagnostics.
+///
+/// `candidates` are best-first by rerank score. The gate-firing decision lives in
+/// `status["duplicate"]` (true iff the top raw-cosine score >= the configured
+/// threshold); it is ABSENT on the disabled / no_candidates / degraded statuses,
+/// so those all degrade to "gate skipped, generation proceeds".
+#[derive(Clone, Debug)]
+pub struct NpcDedupReport {
+    pub candidates: Vec<NpcDedupCandidate>,
+    pub status: Value,
+}
+
+/// Soft semantic dedup for `generate_npc` (NPC_GEN_DESIGN §5). Reranks the
+/// existing roster against the GM's qualitative brief and reports whether the top
+/// match is close enough to warrant a "are you sure?" prompt.
+///
+/// `Config::from_env()` is read per call (env-lock test convention). Candidate
+/// docs are `"имя; роль; persona; goals"` per `world.npcs` entry, capped at
+/// `npc_dedup_candidates`. NEVER blocks the turn: disabled / no candidates / any
+/// rerank error all return an empty-or-partial report with NO `duplicate` flag so
+/// the caller proceeds with generation.
+pub fn npc_dedup_report(world: &World, brief: &str) -> NpcDedupReport {
+    let config = Config::from_env();
+    if !config.npc_dedup_enabled {
+        return NpcDedupReport {
+            candidates: Vec::new(),
+            status: json!({
+                "enabled": false,
+                "degraded": false,
+                "reason": "disabled",
+            }),
+        };
+    }
+    // Candidate rows (id, internal name, player label, role) + the doc text sent
+    // to the reranker. `world.npcs` is a BTreeMap → deterministic order; cap the
+    // number of docs at the configured budget.
+    let cap = config.npc_dedup_candidates.max(0) as usize;
+    let rows: Vec<(NpcDedupCandidate, String)> = world
+        .npcs
+        .values()
+        .take(cap)
+        .map(|npc| {
+            let doc = format!("{}; {}; {}; {}", npc.name, npc.role, npc.persona, npc.goals);
+            (
+                NpcDedupCandidate {
+                    npc_id: npc.npc_id.clone(),
+                    internal_name: npc.name.clone(),
+                    player_label: npc.public_label.clone(),
+                    role: npc.role.clone(),
+                    score: 0.0,
+                },
+                doc,
+            )
+        })
+        .collect();
+    if rows.is_empty() {
+        return NpcDedupReport {
+            candidates: Vec::new(),
+            status: json!({
+                "enabled": true,
+                "degraded": false,
+                "reason": "no_candidates",
+                "candidates": 0,
+            }),
+        };
+    }
+    let documents: Vec<String> = rows.iter().map(|(_, doc)| doc.clone()).collect();
+    match gml_rag::rerank_scored(
+        &config.rag_rerank_url,
+        brief,
+        &documents,
+        documents.len(),
+        config.rag_timeout_seconds,
+    ) {
+        Ok(scored) => {
+            // Reorder candidates best-first, attaching the raw cosine score. The
+            // reranker returns indices into `documents`; ignore out-of-range ids.
+            let mut candidates: Vec<NpcDedupCandidate> = scored
+                .into_iter()
+                .filter_map(|(idx, score)| {
+                    rows.get(idx).map(|(candidate, _)| {
+                        let mut candidate = candidate.clone();
+                        candidate.score = score;
+                        candidate
+                    })
+                })
+                .collect();
+            // Defensive: if the sidecar dropped some rows, keep only what it
+            // returned but ensure best-first ordering by score.
+            candidates.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let top_score = candidates.first().map(|c| c.score).unwrap_or(f64::MIN);
+            let duplicate = top_score >= config.npc_dedup_threshold;
+            NpcDedupReport {
+                status: json!({
+                    "enabled": true,
+                    "degraded": false,
+                    "reason": "checked",
+                    "candidates": candidates.len(),
+                    "threshold": config.npc_dedup_threshold,
+                    "top_score": top_score,
+                    "duplicate": duplicate,
+                }),
+                candidates,
+            }
+        }
+        Err(error) => NpcDedupReport {
+            candidates: Vec::new(),
+            status: json!({
+                "enabled": true,
+                "degraded": true,
+                "reason": "rerank_error",
+                "documents": documents.len(),
+                "error": compact_error(&error.to_string()),
+            }),
+        },
+    }
+}
+
 impl DocRetriever {
     /// Coerce a `&DocRetriever` to a `&dyn RagRetriever` for `world.fact`.
     pub fn as_dyn(&self) -> &dyn RagRetriever {

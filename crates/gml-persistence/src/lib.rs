@@ -182,7 +182,77 @@ impl DialogStore {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS architect_chats (
+                kind TEXT NOT NULL,
+                package_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (kind, package_id)
+            );
             "#,
+        )?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // architect chats (world/story architect conversations)
+    // ------------------------------------------------------------------
+    //
+    // The architect conversation is a WORKING DIALOG (like GM chats), not
+    // package content — it lives here in SQLite, keyed by (kind, package_id),
+    // never inside the portable world/story package. Worlds/stories are global,
+    // so there is no guest scope.
+
+    /// Read the architect conversation for a package (`kind` = "world"|"story").
+    /// `Ok(None)` when none has been stored yet.
+    pub fn get_architect_chat(
+        &self,
+        kind: &str,
+        package_id: &str,
+    ) -> Result<Option<Value>, StoreError> {
+        let con = self.connect()?;
+        let raw: Option<String> = con
+            .query_row(
+                "SELECT state FROM architect_chats WHERE kind = ?1 AND package_id = ?2",
+                rusqlite::params![kind, package_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match raw {
+            None => Ok(None),
+            Some(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| StoreError::Payload(format!("parse architect chat: {e}"))),
+        }
+    }
+
+    /// Upsert the architect conversation for a package.
+    pub fn set_architect_chat(
+        &self,
+        kind: &str,
+        package_id: &str,
+        state: &Value,
+    ) -> Result<(), StoreError> {
+        let body = serde_json::to_string(state)
+            .map_err(|e| StoreError::Payload(format!("serialize architect chat: {e}")))?;
+        let con = self.connect()?;
+        con.execute(
+            "INSERT INTO architect_chats (kind, package_id, state, updated_at)
+             VALUES (?1, ?2, ?3, datetime('now'))
+             ON CONFLICT(kind, package_id)
+             DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+            rusqlite::params![kind, package_id, body],
+        )?;
+        Ok(())
+    }
+
+    /// Delete the architect conversation for a package (no-op when absent) —
+    /// called when the package itself is deleted.
+    pub fn delete_architect_chat(&self, kind: &str, package_id: &str) -> Result<(), StoreError> {
+        let con = self.connect()?;
+        con.execute(
+            "DELETE FROM architect_chats WHERE kind = ?1 AND package_id = ?2",
+            rusqlite::params![kind, package_id],
         )?;
         Ok(())
     }

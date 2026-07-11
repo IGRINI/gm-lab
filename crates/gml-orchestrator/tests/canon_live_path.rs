@@ -109,19 +109,55 @@ fn move_player_makes_scene_export_and_gm_context_follow_the_canon() {
         "GM scene_context must report the canon place, got:\n{gm_ctx}"
     );
 
-    // The turn loop emitted a FULL scene update (not a stale stub).
+    // The turn loop emitted FULL scene updates (not stale stubs): the lazy
+    // destination is auto-filled by the location generator (its commit emits a
+    // scene_update of its own), then the move emits the final canon-derived one.
     let scene_updates: Vec<&gml_types::Event> =
         events.iter().filter(|e| e.kind == "scene_update").collect();
-    assert_eq!(
-        scene_updates.len(),
-        1,
-        "exactly one scene_update on a successful move"
+    assert!(
+        !scene_updates.is_empty(),
+        "a successful move emits scene updates"
     );
+    for update in &scene_updates {
+        assert_eq!(
+            update.data["location_id"].as_str().unwrap_or(""),
+            new_place,
+            "every emitted scene_update is the canon-derived scene"
+        );
+    }
+
+    // The contentless lazy destination was auto-filled on first entry: the move
+    // payload records it and the canon place now carries the generated content.
     assert_eq!(
-        scene_updates[0].data["location_id"].as_str().unwrap_or(""),
-        new_place,
-        "the emitted scene_update is the canon-derived scene"
+        payload["generated_destination"]["ok"],
+        json!(true),
+        "auto-fill reported in the move payload: {payload}"
     );
+    let place = session
+        .world
+        .world_canon
+        .place(&new_place)
+        .expect("destination place");
+    assert!(
+        !place.default_description.trim().is_empty(),
+        "the lazy destination must be filled with a description on first entry"
+    );
+
+    // Re-entering a filled place must NOT re-generate: leave and come back.
+    let back = session
+        .world
+        .world_canon
+        .exits_from(&new_place)
+        .first()
+        .map(|t| t.transition_id.clone())
+        .expect("a way back");
+    let (_events, result) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": back, "reason": "возвращаюсь"}),
+    ));
+    let payload_back: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(payload_back["ok"], json!(true));
 }
 
 #[test]
