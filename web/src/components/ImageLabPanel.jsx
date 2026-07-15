@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useMemo, useState } from "react";
 import ImageThumbnail from "./ImagePreview.jsx";
 
@@ -63,7 +64,7 @@ export default function ImageLabPanel({ locked, sidecarStatus, onGenerateImage }
     <form className="image-lab" onSubmit={submit}>
       <header className="image-lab-head">
         <div className="image-lab-id">
-          <span className="image-lab-emblem" aria-hidden="true">✦</span>
+          <span className="image-lab-emblem" aria-hidden="true"><Icon name="image" size={18} /></span>
           <div className="image-lab-title">
             <span className="image-lab-kicker">developer image lab</span>
             <b>Генерация картинки</b>

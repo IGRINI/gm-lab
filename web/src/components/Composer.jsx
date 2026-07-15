@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useRef, useState, useEffect, useCallback, useContext } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { fmtK } from "../util.js";
@@ -20,9 +21,8 @@ function pickRecorderMime() {
   return "";
 }
 
-const PLACEHOLDER =
-  "Действие игрока…  или /new ледяной порт, пропал корабль, рядом Ива и Рун\nEnter — отправить · Shift+Enter — новая строка";
-const PLACEHOLDER_COMPACT = "Действие игрока…  или /new <сцена>";
+const PLACEHOLDER = "Действие игрока…";
+const PLACEHOLDER_COMPACT = "Действие игрока…";
 
 function useCompact() {
   const [compact, setCompact] = useState(
@@ -246,7 +246,7 @@ function QuickReplies({ playerOptions, busy, onPick }) {
             aria-expanded={!collapsed}
             aria-label={collapsed ? "Развернуть варианты" : "Свернуть варианты"}
           >
-            {collapsed ? "▴" : "▾"}
+            <Icon name={collapsed ? "chevron-up" : "chevron-down"} size={14} />
           </button>
         </Tooltip>
       </div>
@@ -525,12 +525,12 @@ export default function Composer({
           {showVoice ? (
             <div className={"voice-pending voice-" + voiceState} role="status">
               <span className="voice-ico" aria-hidden="true">
-                {recording ? "●" : transcribing ? "⏳" : "⚠"}
+                {recording ? "●" : transcribing ? <Icon name="clock" size={14} /> : <Icon name="alert" size={14} />}
               </span>
               <span className="voice-text">{voiceLabel}</span>
               {voiceState === "error" && blobRef.current ? (
                 <button type="button" className="voice-retry" onClick={retryVoice}>
-                  ↻ Повторить
+                  Повторить
                 </button>
               ) : null}
               <Tooltip
@@ -550,7 +550,7 @@ export default function Composer({
                   onClick={cancelVoice}
                   aria-label={recording ? "Отменить запись" : "Отменить голосовое"}
                 >
-                  ✕
+                  <Icon name="x" size={13} />
                 </button>
               </Tooltip>
             </div>
@@ -588,7 +588,7 @@ export default function Composer({
                       disabled={transcribing}
                       aria-label={recording ? "Остановить запись" : "Голосовой ввод"}
                     >
-                      {recording ? "■" : "🎤"}
+                      {recording ? <Icon name="square" size={14} /> : <Icon name="mic" size={16} />}
                     </button>
                   </Tooltip>
                 ) : null}
@@ -611,7 +611,7 @@ export default function Composer({
                     disabled={busy || !value.trim()}
                     aria-label="Отправить"
                   >
-                    <span className="send-ico" aria-hidden="true">➤</span>
+                    <span className="send-ico" aria-hidden="true"><Icon name="arrow-up" size={17} strokeWidth={2} /></span>
                   </button>
                 </Tooltip>
               </div>

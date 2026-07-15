@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { memo, useContext } from "react";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
@@ -45,25 +46,25 @@ function TtsButton({ msgKey, segments }) {
           <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
             content={<TipContent title="Пауза" note="Приостановить текущую озвучку." />}>
             <button type="button" className="tts-btn is-playing" onClick={() => ttsPause(msgKey)}
-              aria-label="Пауза">⏸</button>
+              aria-label="Пауза"><Icon name="pause" size={14} /></button>
           </Tooltip>
         ) : (
           <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
             content={<TipContent title="Продолжить" note="Возобновить озвучку с места паузы." />}>
             <button type="button" className="tts-btn is-playing" onClick={() => ttsResume(msgKey)}
-              aria-label="Продолжить">▶</button>
+              aria-label="Продолжить"><Icon name="play" size={14} /></button>
           </Tooltip>
         )}
         <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
           content={<TipContent title="Стоп" note="Остановить озвучку этого сообщения." />}>
           <button type="button" className="tts-btn" onClick={() => ttsStop(msgKey)}
-            aria-label="Стоп">⏹</button>
+            aria-label="Стоп"><Icon name="square" size={13} /></button>
         </Tooltip>
       </span>
     );
   }
 
-  const icon = status === "error" ? "⚠" : "🔊";
+  const icon = status === "error" ? <Icon name="alert" size={14} /> : <Icon name="volume" size={14} />;
   const title = status === "error" ? "Ошибка озвучки — повторить" : "Озвучить";
   return (
     <span className="tts-ctl">
@@ -136,7 +137,6 @@ function Message({ m }) {
     case "player":
       return (
         <div className="player">
-          <div className="who">Вы</div>
           <MarkdownText>{m.text}</MarkdownText>
         </div>
       );
@@ -176,7 +176,6 @@ function Message({ m }) {
           <div className="hd">
             <span className="dot" style={{ "--c": npcAccent }} />
             <b><MarkdownInline>{m.name}</MarkdownInline></b>
-            <span className="tag">персонаж</span>
           </div>
           <div className="speech">
             {m.revealed ? (
@@ -243,7 +242,7 @@ function Message({ m }) {
         return (
           <div className="step">
           <div className="pill ok">Сцена: {m.title || m.scene_id}</div>
-          <div className="spoiler-body" style={{ border: 0, padding: 0, color: "var(--spoiler-text)" }}>
+          <div className="step-note">
               <MarkdownText>{`Сейчас в сцене: ${presentNames.join(", ") || "нет именованных персонажей"}`}</MarkdownText>
           </div>
           </div>
@@ -254,7 +253,7 @@ function Message({ m }) {
           <div className="pill ok">
             Сцена: <NameTag name={m.name} roster={roster} /> теперь {m.present ? "в сцене" : "вне сцены"}
           </div>
-          <div className="spoiler-body" style={{ border: 0, padding: 0, color: "var(--spoiler-text)" }}>
+          <div className="step-note">
             <MarkdownText>{`Сейчас в сцене: ${presentNames.join(", ") || "нет именованных персонажей"}`}</MarkdownText>
           </div>
         </div>
@@ -267,7 +266,7 @@ function Message({ m }) {
       return (
         <div className="step">
           <div className="pill ok">Местонахождение: <NameTag name={m.name} roster={roster} /> — {status}</div>
-          <div className="spoiler-body" style={{ border: 0, padding: 0, color: "var(--spoiler-text)" }}>
+          <div className="step-note">
             <MarkdownText>
               {`**Где искать:** ${place}${w.details ? `\n\n${w.details}` : ""}`}
             </MarkdownText>
@@ -286,7 +285,7 @@ function Message({ m }) {
     case "reject":
       if (!vis.gmThoughts) return null;
       return (
-        <div>
+        <div className="step">
           <div className="pill redo">✗ ГМ вернул действие <NameTag name={m.name} roster={roster} /> на переделку</div>
           <div className="reason">Замечание ГМ: <MarkdownInline>{m.reason}</MarkdownInline></div>
         </div>

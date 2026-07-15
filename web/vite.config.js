@@ -22,8 +22,13 @@ const API_PATHS = [
   "/debug",
   "/chats",
   "/stories",
+  "/worlds",
+  "/world-assets",
+  "/characters",
+  "/library",
   "/world-architect",
   "/story-architect",
+  "/character-architect",
   "/sidecar",
 ];
 

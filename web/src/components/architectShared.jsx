@@ -25,6 +25,14 @@ export function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// Controlled-input value binding: the RAW string, no trim — a trimmed binding
+// eats the trailing space the user just typed (the keystroke round-trips through
+// state and comes back without it). Trim at the save/draft boundary instead.
+export function rawText(value) {
+  if (value == null) return "";
+  return typeof value === "string" ? value : String(value);
+}
+
 export function normalizeVisibleMessage(value) {
   if (!value || typeof value !== "object") return null;
   const role = textValue(value.role);
@@ -289,7 +297,7 @@ export function ArchitectChatPane({
               onClick={onRetry}
               disabled={locked}
             >
-              ↻ Повторить
+              Повторить
             </button>
           )}
         </div>

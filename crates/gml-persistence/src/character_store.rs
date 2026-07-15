@@ -21,6 +21,8 @@
 //!   "preview": "...",
 //!   "created_at": "...",
 //!   "updated_at": "...",
+//!   "world_ref": { "id": "...", "version": 1 },   // OPTIONAL base world
+//!   "story_ref": { "id": "...", "version": 1 },   // OPTIONAL base story
 //!   "payload": { "player_character": { ...canonical PC shape... }, ... }
 //! }
 //! ```
@@ -47,6 +49,43 @@ use std::sync::Mutex;
 use serde_json::{json, Map, Value};
 
 use crate::{token_urlsafe, StoreError};
+
+/// A pinned package reference recorded on a character (`world_ref` /
+/// `story_ref`) — the world/story the hero was authored FOR. Same `{id, version}`
+/// shape as the story store's `StoryWorldRef`; `version` is the referenced
+/// package's version at character creation (`0` = unpinned). PROVENANCE ONLY:
+/// like a save's `char_ref`, a base ref MAY dangle after the referenced package
+/// is deleted — consumers must treat it as a hint, never a hard dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterBaseRef {
+    /// The referenced package id.
+    pub id: String,
+    /// The referenced package `version` at character creation (`0` = unpinned).
+    pub version: u64,
+}
+
+impl CharacterBaseRef {
+    /// The `{id, version}` JSON object stored in `character.json` and returned
+    /// by the `/characters` API.
+    pub fn to_value(&self) -> Value {
+        json!({ "id": self.id, "version": self.version })
+    }
+
+    /// Parse a `{id, version}` object; `None` for anything without a non-empty
+    /// string id (missing/blank version degrades to `0` = unpinned).
+    pub fn from_value(value: Option<&Value>) -> Option<CharacterBaseRef> {
+        let obj = value?.as_object()?;
+        let id = obj.get("id")?.as_str()?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let version = obj.get("version").and_then(Value::as_u64).unwrap_or(0);
+        Some(CharacterBaseRef {
+            id: id.to_string(),
+            version,
+        })
+    }
+}
 
 /// On-disk envelope format tag for `character.json`.
 pub const CHARACTER_FORMAT: &str = "gmlab.character/1";
@@ -140,7 +179,8 @@ impl CharacterStore {
 
     /// List every character package, sorted `(updated_at DESC, created_at DESC,
     /// id DESC)`. Each entry is the flattened response object
-    /// `{id, version, title, preview, created_at, updated_at, payload}`.
+    /// `{id, version, title, preview, created_at, updated_at, world_ref?,
+    /// story_ref?, payload}` (the optional base refs, emitted when set).
     pub fn list_characters(&self) -> Vec<Value> {
         let mut envs: Vec<&CharacterEnvelope> = self.characters.iter().collect();
         envs.sort_by(|a, b| {
@@ -175,10 +215,20 @@ impl CharacterStore {
     /// `character.json` atomically, and updates the in-memory list so the new
     /// character is immediately discoverable without a rescan.
     ///
+    /// `world_ref` / `story_ref` are the OPTIONAL base packages the hero is
+    /// authored for (provenance, pinned at creation like a story's `world_ref` —
+    /// never patchable afterwards; a standalone hero passes `None, None`).
+    ///
     /// VALIDATION (`§К1.1`): `title` non-empty after trim; `payload` is an object
     /// and `payload.player_character` is an object. The `payload` is stored
     /// VERBATIM (opaque round-trip) — the store never interprets it further.
-    pub fn create_character(&mut self, title: &str, payload: Value) -> Result<Value, StoreError> {
+    pub fn create_character(
+        &mut self,
+        title: &str,
+        payload: Value,
+        world_ref: Option<CharacterBaseRef>,
+        story_ref: Option<CharacterBaseRef>,
+    ) -> Result<Value, StoreError> {
         let title = title.trim();
         if title.is_empty() {
             return Err(StoreError::Payload(
@@ -196,6 +246,8 @@ impl CharacterStore {
             title: title.to_string(),
             created_at: now.clone(),
             updated_at: now,
+            world_ref,
+            story_ref,
             payload,
             preview_override: None,
         };
@@ -203,6 +255,20 @@ impl CharacterStore {
         let response = env.to_response();
         self.characters.push(env);
         Ok(response)
+    }
+
+    /// The character's base-package references `(world_ref, story_ref)` — the
+    /// world/story the hero was authored for, both optional. Returns
+    /// `Err(CharacterNotFound)` for an unknown id.
+    #[allow(clippy::type_complexity)]
+    pub fn base_refs(
+        &self,
+        id: &str,
+    ) -> Result<(Option<CharacterBaseRef>, Option<CharacterBaseRef>), StoreError> {
+        let id = id.trim();
+        self.find(id)
+            .map(|e| (e.world_ref.clone(), e.story_ref.clone()))
+            .ok_or_else(|| StoreError::CharacterNotFound(id.to_string()))
     }
 
     /// Shallow-merge `patch` into an existing character's TOP-LEVEL metadata
@@ -240,6 +306,8 @@ impl CharacterStore {
             title: self.characters[idx].title.clone(),
             created_at: self.characters[idx].created_at.clone(),
             updated_at: self.characters[idx].updated_at.clone(),
+            world_ref: self.characters[idx].world_ref.clone(),
+            story_ref: self.characters[idx].story_ref.clone(),
             payload: self.characters[idx].payload.clone(),
             preview_override: self.characters[idx].preview_override.clone(),
         };
@@ -307,6 +375,8 @@ impl CharacterStore {
             title: existing.title.clone(),
             created_at: existing.created_at.clone(),
             updated_at: now_timestamp()?,
+            world_ref: existing.world_ref.clone(),
+            story_ref: existing.story_ref.clone(),
             payload: Value::Object(payload),
             preview_override: existing.preview_override.clone(),
         };
@@ -421,6 +491,10 @@ struct CharacterEnvelope {
     title: String,
     created_at: String,
     updated_at: String,
+    /// The base WORLD the hero was authored for (provenance, may dangle).
+    world_ref: Option<CharacterBaseRef>,
+    /// The base STORY the hero was authored for (provenance, may dangle).
+    story_ref: Option<CharacterBaseRef>,
     /// The opaque round-trip payload (`{player_character: {...}, ...}`) exactly
     /// as stored. The store never interprets it beyond the create/snapshot
     /// object-shape validation.
@@ -454,6 +528,8 @@ impl CharacterEnvelope {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let world_ref = CharacterBaseRef::from_value(obj.and_then(|m| m.get("world_ref")));
+        let story_ref = CharacterBaseRef::from_value(obj.and_then(|m| m.get("story_ref")));
         let payload = obj
             .and_then(|m| m.get("payload"))
             .cloned()
@@ -468,6 +544,8 @@ impl CharacterEnvelope {
             title,
             created_at,
             updated_at,
+            world_ref,
+            story_ref,
             payload,
             preview_override,
         }
@@ -496,31 +574,45 @@ impl CharacterEnvelope {
         }
     }
 
+    /// The optional `world_ref`/`story_ref` keys shared by the file and response
+    /// shapes — emitted ONLY when set, so a ref-less character serializes
+    /// byte-identically to the pre-refs format.
+    fn insert_base_refs(&self, map: &mut Map<String, Value>) {
+        if let Some(world_ref) = &self.world_ref {
+            map.insert("world_ref".to_string(), world_ref.to_value());
+        }
+        if let Some(story_ref) = &self.story_ref {
+            map.insert("story_ref".to_string(), story_ref.to_value());
+        }
+    }
+
     /// The on-disk `character.json` value (envelope + payload).
     fn to_file_value(&self) -> Value {
-        json!({
-            "format": CHARACTER_FORMAT,
-            "id": self.id,
-            "version": self.version,
-            "title": self.title,
-            "preview": self.preview(),
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "payload": self.payload,
-        })
+        let mut map = Map::new();
+        map.insert("format".to_string(), json!(CHARACTER_FORMAT));
+        map.insert("id".to_string(), json!(self.id));
+        map.insert("version".to_string(), json!(self.version));
+        map.insert("title".to_string(), json!(self.title));
+        map.insert("preview".to_string(), json!(self.preview()));
+        map.insert("created_at".to_string(), json!(self.created_at));
+        map.insert("updated_at".to_string(), json!(self.updated_at));
+        self.insert_base_refs(&mut map);
+        map.insert("payload".to_string(), self.payload.clone());
+        Value::Object(map)
     }
 
     /// The flattened response object the `/characters` API returns.
     fn to_response(&self) -> Value {
-        json!({
-            "id": self.id,
-            "version": self.version,
-            "title": self.title,
-            "preview": self.preview(),
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "payload": self.payload,
-        })
+        let mut map = Map::new();
+        map.insert("id".to_string(), json!(self.id));
+        map.insert("version".to_string(), json!(self.version));
+        map.insert("title".to_string(), json!(self.title));
+        map.insert("preview".to_string(), json!(self.preview()));
+        map.insert("created_at".to_string(), json!(self.created_at));
+        map.insert("updated_at".to_string(), json!(self.updated_at));
+        self.insert_base_refs(&mut map);
+        map.insert("payload".to_string(), self.payload.clone());
+        Value::Object(map)
     }
 }
 
@@ -588,7 +680,7 @@ mod tests {
         assert!(store.list_characters().is_empty());
 
         let created = store
-            .create_character("Герой", pc_payload("Ариан", 2))
+            .create_character("Герой", pc_payload("Ариан", 2), None, None)
             .expect("create");
         let id = created["id"].as_str().unwrap().to_string();
         assert_eq!(created["version"], json!(1));
@@ -609,21 +701,74 @@ mod tests {
     }
 
     #[test]
+    fn base_refs_round_trip_and_stay_optional() {
+        let (dir, mut store) = temp_store();
+
+        // A standalone hero: no refs in the response, none on disk.
+        let plain = store
+            .create_character("Одиночка", pc_payload("Бран", 0), None, None)
+            .expect("create plain");
+        assert!(plain.get("world_ref").is_none());
+        assert!(plain.get("story_ref").is_none());
+        let plain_id = plain["id"].as_str().unwrap().to_string();
+
+        // A based hero: refs come back in the response…
+        let based = store
+            .create_character(
+                "Основанный",
+                pc_payload("Ариан", 1),
+                Some(CharacterBaseRef { id: "w1".into(), version: 3 }),
+                Some(CharacterBaseRef { id: "s1".into(), version: 7 }),
+            )
+            .expect("create based");
+        assert_eq!(based["world_ref"], json!({"id": "w1", "version": 3}));
+        assert_eq!(based["story_ref"], json!({"id": "s1", "version": 7}));
+        let based_id = based["id"].as_str().unwrap().to_string();
+
+        // …survive metadata + snapshot updates…
+        let renamed = store
+            .update_metadata(&based_id, json!({"title": "Новое имя"}))
+            .expect("rename");
+        assert_eq!(renamed["world_ref"], json!({"id": "w1", "version": 3}));
+        let snapped = store
+            .snapshot_character(&based_id, json!({"name": "Ариан II"}))
+            .expect("snapshot");
+        assert_eq!(snapped["story_ref"], json!({"id": "s1", "version": 7}));
+
+        // …and a disk re-scan; the accessor mirrors them.
+        let reopened = CharacterStore::new(dir.path()).expect("reopen");
+        let (world_ref, story_ref) = reopened.base_refs(&based_id).expect("refs");
+        assert_eq!(
+            world_ref,
+            Some(CharacterBaseRef { id: "w1".into(), version: 3 })
+        );
+        assert_eq!(
+            story_ref,
+            Some(CharacterBaseRef { id: "s1".into(), version: 7 })
+        );
+        assert_eq!(reopened.base_refs(&plain_id).expect("plain refs"), (None, None));
+        assert!(matches!(
+            reopened.base_refs("nope"),
+            Err(StoreError::CharacterNotFound(_))
+        ));
+    }
+
+    #[test]
     fn create_rejects_bad_input() {
         let (_dir, mut store) = temp_store();
-        assert!(store.create_character("  ", pc_payload("x", 0)).is_err());
+        assert!(store.create_character("  ", pc_payload("x", 0), None, None).is_err());
         assert!(store
-            .create_character("t", json!({"player_character": "not-an-object"}))
+            .create_character("t", json!({"player_character": "not-an-object"}), None, None)
             .is_err());
-        assert!(store.create_character("t", json!("not-an-object")).is_err());
-        assert!(store.create_character("t", json!({})).is_err());
+        assert!(store.create_character("t", json!("not-an-object"), None, None).is_err());
+        assert!(store.create_character("t", json!({}), None, None).is_err());
     }
 
     #[test]
     fn update_metadata_bumps_version_and_merges_null_drop() {
         let (_dir, mut store) = temp_store();
         let created = store
-            .create_character("Старое имя", pc_payload("Ариан", 0))
+            .create_character("Старое имя", pc_payload("Ариан", 0), None, None)
             .expect("create");
         let id = created["id"].as_str().unwrap().to_string();
 
@@ -663,6 +808,8 @@ mod tests {
                     "player_character": {"name": "Ариан", "old_field": "keep-me?", "card_revision": 1},
                     "sibling": "kept",
                 }),
+                None,
+                None,
             )
             .expect("create");
         let id = created["id"].as_str().unwrap().to_string();
@@ -697,7 +844,7 @@ mod tests {
         {
             let mut store = CharacterStore::new(dir.path()).expect("open");
             let created = store
-                .create_character("Герой", pc_payload("Ариан", 0))
+                .create_character("Герой", pc_payload("Ариан", 0), None, None)
                 .expect("create");
             id = created["id"].as_str().unwrap().to_string();
             assert!(store.delete_character(&id).expect("delete"));

@@ -1,9 +1,11 @@
+import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import Spoiler from "./Spoiler.jsx";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
+  rawText,
   normalizeVisibleMessage,
   AutoTextarea,
   useLiveSegments,
@@ -105,15 +107,31 @@ function architectMessagesFromChat(architect) {
 // The plot object POSTed as `draft` to the story architect (snake_case, matching
 // the runtime contract + the tool schema). Empty scalars/lists are dropped so a
 // blank field never clobbers an existing value on the shallow server-side merge.
+// Trim string values of a nested object at the payload boundary (the form binds
+// RAW values so typing spaces works — см. rawText); non-strings pass through.
+function cleanScalarStrings(obj) {
+  if (!obj) return obj;
+  const out = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) out[key] = trimmed;
+    } else if (value != null) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function cleanStoryDraft(draft) {
   const plot = {};
   for (const key of ["title", "description", "story_brief", "public_intro", "hidden_truth"]) {
     const v = textValue(draft[key]);
     if (v) plot[key] = v;
   }
-  const pc = asObject(draft.player_character);
+  const pc = cleanScalarStrings(asObject(draft.player_character));
   if (pc && Object.keys(pc).length > 0) plot.player_character = pc;
-  const scene = asObject(draft.scene);
+  const scene = cleanScalarStrings(asObject(draft.scene));
   if (scene && Object.keys(scene).length > 0) plot.scene = scene;
   for (const key of ["npcs", "public_facts", "state_records"]) {
     const arr = asArray(draft[key]);
@@ -418,6 +436,14 @@ export default function StoryArchitectPanel({
             }
           } else if (ev.kind === "architect_error") {
             failure = textValue(ev.data) || "Архитектор не ответил";
+            // The story is created BEFORE the model call; error events carry
+            // the persisted story_id as a sibling of `data`. Pin it so a retry
+            // edits that story instead of minting a duplicate package.
+            const errId = textValue(ev.story_id);
+            if (errId && !currentStoryId) {
+              setCurrentStoryId(errId);
+              loadedStoryIdRef.current = errId;
+            }
           } else if (ev.kind === "architect_done") {
             adopted = true;
             const data = ev.data || {};
@@ -486,7 +512,7 @@ export default function StoryArchitectPanel({
     <div className={`world-studio${className ? ` ${className}` : ""}`}>
       <header className="world-studio-head">
         <div className="world-studio-id">
-          <span className="world-studio-emblem" aria-hidden="true">✧</span>
+          <span className="world-studio-emblem" aria-hidden="true"><Icon name="book" size={18} /></span>
           <div className="world-studio-title">
             <span className="world-studio-kicker">создание истории</span>
             <b>Студия историй</b>
@@ -604,7 +630,7 @@ export default function StoryArchitectPanel({
                   <label className="world-field">
                     <span>Имя</span>
                     <input
-                      value={textValue(pc.name)}
+                      value={rawText(pc.name)}
                       onChange={(event) => updatePc("name", event.target.value)}
                       placeholder="Например: Мира"
                       disabled={locked}
@@ -613,7 +639,7 @@ export default function StoryArchitectPanel({
                   <label className="world-field">
                     <span>Роль/архетип</span>
                     <input
-                      value={textValue(pc.class_role)}
+                      value={rawText(pc.class_role)}
                       onChange={(event) => updatePc("class_role", event.target.value)}
                       placeholder="Например: морской досмотрщик"
                       disabled={locked}
@@ -624,7 +650,7 @@ export default function StoryArchitectPanel({
                   <label className="world-field">
                     <span>Местоимения</span>
                     <input
-                      value={textValue(pc.pronouns)}
+                      value={rawText(pc.pronouns)}
                       onChange={(event) => updatePc("pronouns", event.target.value)}
                       placeholder="она/её"
                       disabled={locked}
@@ -633,7 +659,7 @@ export default function StoryArchitectPanel({
                   <label className="world-field">
                     <span>Предыстория (одна строка)</span>
                     <input
-                      value={textValue(pc.background)}
+                      value={rawText(pc.background)}
                       onChange={(event) => updatePc("background", event.target.value)}
                       placeholder="Что связывает героя с этой историей."
                       disabled={locked}
@@ -649,7 +675,7 @@ export default function StoryArchitectPanel({
                 <label className="world-field">
                   <span>Название сцены</span>
                   <input
-                    value={textValue(scene.title)}
+                    value={rawText(scene.title)}
                     onChange={(event) => updateScene("title", event.target.value)}
                     placeholder="Например: Ворота Соляного порта"
                     disabled={locked}
@@ -658,7 +684,7 @@ export default function StoryArchitectPanel({
                 <label className="world-field">
                   <span>Описание сцены</span>
                   <AutoTextarea
-                    value={textValue(scene.description)}
+                    value={rawText(scene.description)}
                     onChange={(event) => updateScene("description", event.target.value)}
                     placeholder="Что игрок видит на старте — конкретно, сенсорно."
                     disabled={locked}
@@ -668,7 +694,7 @@ export default function StoryArchitectPanel({
                   <label className="world-field">
                     <span>location_id</span>
                     <input
-                      value={textValue(scene.location_id)}
+                      value={rawText(scene.location_id)}
                       onChange={(event) => updateScene("location_id", event.target.value)}
                       placeholder="salt_port_gate"
                       disabled={locked}
@@ -677,7 +703,7 @@ export default function StoryArchitectPanel({
                   <label className="world-field">
                     <span>Напряжение сцены</span>
                     <input
-                      value={textValue(scene.tension)}
+                      value={rawText(scene.tension)}
                       onChange={(event) => updateScene("tension", event.target.value)}
                       placeholder="Что делает это сценой, а не холлом."
                       disabled={locked}

@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useState, useRef, useLayoutEffect, useContext } from "react";
 import { ChatScrollContext } from "../chatScrollContext.js";
 
@@ -53,7 +54,7 @@ export default function Spoiler({ label, children }) {
         tabIndex={0}
         aria-expanded={open}
       >
-        <span className="mark">{open ? "▾" : "▸"}</span>
+        <span className="mark"><Icon name={open ? "chevron-down" : "chevron-right"} size={11} /></span>
         <span>{label}</span>
       </div>
       {open && <div className="spoiler-body">{children}</div>}

@@ -820,13 +820,14 @@ fn character_architect_has_static_prompt_and_draft_tool() {
 
     let messages = agents::character_architect_messages(
         &[json!({"role": "user", "content": "Хочу следопыта."})],
+        &[],
         "Добавь заклинания.",
     );
     assert_eq!(messages[0]["role"], "system");
     let system = messages[0]["content"].as_str().unwrap();
     assert!(system.contains("GM-Lab character architect"));
     assert!(system.contains("draft_player_character"));
-    // A character is standalone — no bound-world lore block, so exactly ONE system.
+    // A standalone hero (no base world/story blocks) — exactly ONE system.
     let system_count = messages.iter().filter(|m| m["role"] == "system").count();
     assert_eq!(system_count, 1);
     // CACHE INVARIANT: the tail is the RAW user text, byte-equal to stored history.

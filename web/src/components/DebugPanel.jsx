@@ -1123,7 +1123,7 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
   const runDeleteFact = useCallback((id) => apply(api.deleteFact(id)), [apply]);
   const runUpdatePlayer = useCallback((body) => { apply(api.updatePlayer(body)); closeTop(); }, [apply, closeTop]);
   const runUpdateNpc = useCallback((body) => { apply(api.updateNpc(body)); closeTop(); }, [apply, closeTop]);
-  const runUpdateStory = useCallback((body) => { apply(api.updateStory(body)); closeTop(); }, [apply, closeTop]);
+  const runUpdateStory = useCallback((body) => { apply(api.debugUpdateStory(body)); closeTop(); }, [apply, closeTop]);
   const runUpdateScene = useCallback((patch) => { apply(api.updateScene(patch)); closeTop(); }, [apply, closeTop]);
   const runStateRecord = useCallback((body) => apply(api.stateRecord(body)), [apply]);
   const runRumor = useCallback((body) => apply(api.rumor(body)), [apply]);
@@ -1167,7 +1167,7 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
 
         <div className="debug-actions">
           <button type="button" className="btn" onClick={load} disabled={loading}>
-            {loading ? "Обновляю…" : "↻ Обновить"}
+            {loading ? "Обновляю…" : "Обновить"}
           </button>
           {data?.meta && <span>{data.meta.backend} · {data.meta.model} · ходов: {data.meta.turns}</span>}
         </div>

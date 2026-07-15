@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 
@@ -60,6 +61,13 @@ export default function ChatHistorySidebar({
   onNewGame,
   onActivate,
   onDelete,
+  // Разделы приложения: на мобилке дровер — единственная навигация
+  // (нав-пилюля хедера спрятана), поэтому секция разделов живёт здесь.
+  mainView = "chat",
+  onNavGame,
+  onNavLibrary,
+  onNavImage,
+  imageLabEnabled = false,
 }) {
   const closeRef = useRef(null);
   const newGameRef = useRef(null);
@@ -68,6 +76,15 @@ export default function ChatHistorySidebar({
 
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
   const locked = busy || loading;
+  const isGameView = mainView === "chat";
+  const isImageView = mainView === "image";
+  const isLibraryView = !isGameView && !isImageView;
+  // Выбор раздела закрывает дровер (актуально только на мобилке — на десктопе
+  // секция разделов скрыта CSS'ом и сюда не попасть).
+  const pickNav = (fn) => () => {
+    fn?.();
+    onClose?.();
+  };
   const confirmItem = sortedChats.find((chat) => sameChatId(chat.id, confirmTarget?.id)) || null;
 
   const cancelDelete = () => {
@@ -137,12 +154,40 @@ export default function ChatHistorySidebar({
       />
       <aside
         id="chat-history-sidebar"
-        className={"chat-sidebar" + (open ? " is-open" : "")}
+        className={
+          "chat-sidebar" +
+          (open ? " is-open" : "") +
+          (isGameView ? "" : " sidebar-off-game")
+        }
         aria-label="Игры"
       >
+        <nav className="sidebar-nav" aria-label="Разделы">
+          <button
+            type="button"
+            className={"sidebar-nav-item" + (isGameView ? " is-current" : "")}
+            onClick={pickNav(onNavGame)}
+          >
+            <Icon name="d20" size={15} /> Игра
+          </button>
+          <button
+            type="button"
+            className={"sidebar-nav-item" + (isLibraryView ? " is-current" : "")}
+            onClick={pickNav(onNavLibrary)}
+          >
+            <Icon name="book" size={15} /> Библиотека
+          </button>
+          {imageLabEnabled && (
+            <button
+              type="button"
+              className={"sidebar-nav-item" + (isImageView ? " is-current" : "")}
+              onClick={pickNav(onNavImage)}
+            >
+              <Icon name="image" size={15} /> Image Lab
+            </button>
+          )}
+        </nav>
         <div className="chat-sidebar-head">
           <div>
-            <span>Игры</span>
             <h2>Мои игры</h2>
           </div>
           <button
@@ -152,7 +197,7 @@ export default function ChatHistorySidebar({
             onClick={onClose}
             aria-label="Закрыть боковую панель"
           >
-            x
+            <Icon name="x" size={15} />
           </button>
         </div>
 
@@ -164,9 +209,9 @@ export default function ChatHistorySidebar({
             onClick={onNewGame}
             disabled={busy}
           >
-            + Новая игра
+            <Icon name="plus" size={15} /> Новая игра
           </button>
-          {loading && <span className="chat-sidebar-status">Обновляю...</span>}
+          {loading && <span className="chat-sidebar-status">Обновляю…</span>}
         </div>
 
         {error && <div className="chat-sidebar-error">{error}</div>}
@@ -217,7 +262,7 @@ export default function ChatHistorySidebar({
                     onClick={() => setConfirmTarget({ kind: "chat", id: chat.id })}
                     disabled={locked}
                   >
-                    <span aria-hidden="true">🗑</span>
+                    <Icon name="trash" size={14} />
                   </button>
                 </Tooltip>
               </div>
@@ -236,7 +281,7 @@ export default function ChatHistorySidebar({
             aria-describedby="confirm-delete-note"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <div className="confirm-icon" aria-hidden="true">🗑</div>
+            <div className="confirm-icon" aria-hidden="true"><Icon name="trash" size={19} /></div>
             <h3 id="confirm-delete-title">Удалить игру?</h3>
             <p className="confirm-name">«{chatTitle(confirmItem)}»</p>
             <p id="confirm-delete-note" className="confirm-note">

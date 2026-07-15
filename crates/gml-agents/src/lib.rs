@@ -48,8 +48,10 @@ use gml_world::World;
 pub use architect_runner::{ArchitectOutput, ArchitectStream, NullArchitectStream};
 pub use character::{character_generator_messages, generate_character};
 pub use character_architect::{
-    character_architect_messages, character_architect_tools, character_architect_turn,
-    CharacterArchitectOutput, CHARACTER_ARCHITECT_SYSTEM,
+    character_architect_base_unavailable_block, character_architect_messages,
+    character_architect_story_block, character_architect_tools, character_architect_turn,
+    character_architect_world_block, CharacterArchitectOutput, CHARACTER_ARCHITECT_SYSTEM,
+    CHARACTER_ARCHITECT_SYSTEM_BASED,
 };
 pub use coerce::{as_list, claims, norm_npc, norm_npc_with_reasoning, text};
 pub use gm::{

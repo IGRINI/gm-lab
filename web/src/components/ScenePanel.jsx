@@ -1,7 +1,7 @@
 import { useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import WorldDetailModal from "./WorldDetailModal.jsx";
-import "../styles-studio.css";
+import Icon from "./Icon.jsx";
 
 // The right-side scene panel (UI_REDESIGN_TZ §Игра). It replaces the old inline
 // WorldHud and regroups the live game state into three sections — СЦЕНА (title +
@@ -40,6 +40,9 @@ export default function ScenePanel({
   const [detail, setDetail] = useState(null);
   // Save-hero control state: null (idle), true (choice row open), "busy" (in flight).
   const [saveState, setSaveState] = useState(null);
+  // Узкие экраны: панель свёрнута в одну строку-саммари; тап раскрывает.
+  // На десктопе саммари скрыта CSS'ом и состояние ни на что не влияет.
+  const [expanded, setExpanded] = useState(false);
 
   const dateLabel =
     txt(time?.current_date_label) || (time?.day_number ? `День ${time.day_number}` : "");
@@ -86,7 +89,25 @@ export default function ScenePanel({
 
   return (
     <>
-      <aside className="scene-panel" aria-label="Текущее состояние">
+      <aside className={"scene-panel" + (expanded ? " is-open" : "")} aria-label="Текущее состояние">
+        <button
+          type="button"
+          className="scene-panel-summary"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-label={expanded ? "Свернуть состояние сцены" : "Развернуть состояние сцены"}
+        >
+          <Icon name="pin" size={13} />
+          <span className="scene-summary-main">{sceneTitle || "Сцена"}</span>
+          {timeOfDay && <span className="scene-summary-meta">{timeOfDay}</span>}
+          {pcName && (
+            <span className="scene-summary-meta">
+              {pcName}
+              {hpText ? ` · ${hpText}` : ""}
+            </span>
+          )}
+          <Icon name={expanded ? "chevron-up" : "chevron-down"} size={14} className="scene-summary-caret" />
+        </button>
         <section className="scene-group">
           <div className="scene-group-kicker">сцена</div>
           <div className="scene-row">
@@ -166,7 +187,7 @@ export default function ScenePanel({
                   className="btn small scene-hero-btn"
                   onClick={() => setDetail("character")}
                 >
-                  Лист персонажа
+                  <Icon name="user" size={13} /> Лист персонажа
                 </button>
               )}
               {canSaveCharacter &&
@@ -205,7 +226,7 @@ export default function ScenePanel({
                     onClick={() => setSaveState(true)}
                     disabled={saveBusy}
                   >
-                    {saveBusy ? "Сохраняю…" : "Сохранить в библиотеку"}
+                    <Icon name="download" size={13} /> {saveBusy ? "Сохраняю…" : "Сохранить в библиотеку"}
                   </button>
                 ) : (
                   <button
@@ -214,7 +235,7 @@ export default function ScenePanel({
                     onClick={() => runSave("")}
                     disabled={saveBusy}
                   >
-                    {saveBusy ? "Сохраняю…" : "Сохранить в библиотеку"}
+                    <Icon name="download" size={13} /> {saveBusy ? "Сохраняю…" : "Сохранить в библиотеку"}
                   </button>
                 ))}
             </div>

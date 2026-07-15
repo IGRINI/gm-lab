@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useEffect, useRef, useState } from "react";
 import Spoiler from "./Spoiler.jsx";
 import MarkdownText from "./MarkdownText.jsx";
@@ -49,7 +50,7 @@ const GRADE = {
 const GRADE_ACCENT = {
   ok: "var(--gm)",
   "crit-ok": "var(--md-strong)",
-  fail: "var(--redo)",
+  fail: "var(--danger)",
   "crit-fail": "#d9485f",
   neutral: "var(--md-strong)",
 };
@@ -474,7 +475,7 @@ export default function DiceRoll({ roll, animate, rollId }) {
   return (
     <div className={"tool-card dice-card " + grade.cls}>
       <div className="tc-hd">
-        <span className="tc-ico dice-ico">🎲</span>
+        <span className="tc-ico dice-ico"><Icon name="d20" size={15} /></span>
         <span className="tc-title">Бросок кубика</span>
         {r.notation && <span className="tc-name">{r.notation}</span>}
       </div>

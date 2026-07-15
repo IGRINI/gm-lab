@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 // Full-screen Библиотека view (§Библиотека in the TZ). Toolbar with filter pills
@@ -147,12 +148,12 @@ function LibraryCard({ kind, title, badge, meta, preview, playLabel, studioLabel
       </div>
       <div className="lib-card-actions">
         <button type="button" className="btn primary lib-card-play" disabled={locked} onClick={onPlay}>
-          {playLabel}
+          <Icon name="play" size={13} /> {playLabel}
         </button>
         <button type="button" className="btn lib-card-studio" disabled={locked} onClick={onOpenStudio}>
-          {studioLabel}
+          <Icon name="pen" size={13} /> {studioLabel}
         </button>
-        <DropMenu label="⋯" ariaLabel={`Ещё · ${title}`} align="right" items={menuItems} disabled={locked} />
+        <DropMenu label={<Icon name="dots" size={15} />} ariaLabel={`Ещё · ${title}`} align="right" items={menuItems} disabled={locked} />
       </div>
     </article>
   );
@@ -222,6 +223,31 @@ export default function LibraryScreen({
     const world = worldsById.get(String(refId));
     const label = world ? worldTitle(world) : textValue(story?.world_ref?.title);
     return label ? `→ ${label}` : "";
+  };
+
+  const storiesById = useMemo(() => {
+    const map = new Map();
+    for (const story of storyList) if (story?.id != null) map.set(String(story.id), story);
+    return map;
+  }, [storyList]);
+
+  // «→ мир · история» for a character card: the base packages the hero was
+  // authored for (world_ref/story_ref provenance). A deleted base is labelled
+  // honestly — the ref may dangle by design and the label must not vanish, but
+  // a raw machine id never leaks into player-facing prose.
+  const characterBaseLabel = (character) => {
+    const parts = [];
+    const worldRefId = character?.world_ref?.id;
+    if (worldRefId != null) {
+      const world = worldsById.get(String(worldRefId));
+      parts.push(world ? worldTitle(world) : "мир недоступен");
+    }
+    const storyRefId = character?.story_ref?.id;
+    if (storyRefId != null) {
+      const story = storiesById.get(String(storyRefId));
+      parts.push(story ? storyTitle(story) : "история недоступна");
+    }
+    return parts.length > 0 ? `→ ${parts.join(" · ")}` : "";
   };
 
   const createItems = [
@@ -413,12 +439,14 @@ export default function LibraryScreen({
             items.push({ key: "rename", label: "Переименовать", onClick: () => onRename?.(character, "character") });
           }
           items.push({ key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(character, "character") });
+          const baseLabel = characterBaseLabel(character);
+          const meta = [characterMeta(character), baseLabel].filter(Boolean).join(" · ");
           return (
             <LibraryCard
               key={character.id}
               kind="character"
               title={characterTitle(character)}
-              meta={characterMeta(character)}
+              meta={meta}
               preview={characterPreview(character)}
               playLabel="Играть"
               studioLabel="Студия"
@@ -453,7 +481,7 @@ export default function LibraryScreen({
         </div>
         <div className="lib-toolbar-actions">
           <DropMenu
-            label="+ Создать ▾"
+            label={<><Icon name="plus" size={14} /> Создать</>}
             ariaLabel="Создать пакет"
             align="right"
             buttonClassName="primary"
@@ -461,10 +489,10 @@ export default function LibraryScreen({
             disabled={locked}
           />
           <button type="button" className="btn" onClick={triggerImport} disabled={locked || importing}>
-            {importing ? "Импорт…" : "Импорт"}
+            <Icon name="upload" size={14} /> {importing ? "Импорт…" : "Импорт"}
           </button>
           <button type="button" className="btn" onClick={() => onReveal?.()}>
-            Открыть папку
+            <Icon name="folder" size={14} /> Открыть папку
           </button>
           <input
             ref={importInputRef}
@@ -492,7 +520,7 @@ export default function LibraryScreen({
             aria-describedby="lib-confirm-note"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <div className="confirm-icon" aria-hidden="true">🗑</div>
+            <div className="confirm-icon" aria-hidden="true"><Icon name="trash" size={19} /></div>
             <h3 id="lib-confirm-title">
               {confirmKind === "world"
                 ? "Удалить мир?"
@@ -503,9 +531,9 @@ export default function LibraryScreen({
             <p className="confirm-name">«{confirmName}»</p>
             <p id="lib-confirm-note" className="confirm-note">
               {confirmKind === "world"
-                ? "Мир удалится из библиотеки. Игровые чаты и текущая сессия не изменятся. Это действие нельзя отменить."
+                ? "Мир удалится из библиотеки. Игровые чаты и текущая сессия не изменятся; истории и персонажи, созданные на этом мире, сохранятся, но потеряют его материал как основу. Это действие нельзя отменить."
                 : confirmKind === "story"
-                  ? "История удалится из библиотеки. Сохранённые игры не изменятся. Это действие нельзя отменить."
+                  ? "История удалится из библиотеки. Сохранённые игры не изменятся; персонажи, созданные под эту историю, сохранятся, но потеряют её материал как основу. Это действие нельзя отменить."
                   : "Персонаж удалится из библиотеки. Сохранённые игры не изменятся — их снапшот самодостаточен. Это действие нельзя отменить."}
             </p>
             <div className="confirm-actions">

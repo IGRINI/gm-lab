@@ -1,183 +1,245 @@
 /* ============================================================================
-   styles-studio.css — new-file styles for the UI redesign (UI_REDESIGN_TZ).
-   Imported by the new components (CharacterArchitectPanel / GameContextBar /
-   ScenePanel) so it loads without touching main.jsx or styles.css. Reuses the
-   existing palette vars (--bg/--line/--acc/--tone-* …) and shell classes
-   (.world-studio*, .world-field*, .btn, .confirm-*, .wd-*, .dot) — only the
-   genuinely new elements are defined here.
+   styles-studio.css — студия персонажа, game context bar, scene panel (HUD).
+   Токены/примитивы — theme.css.
    ============================================================================ */
 
-/* ---- Character studio: read-only sheet blocks inside the inspector body ---- */
-.character-abilities{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
-.character-ability{display:flex;flex-direction:column;align-items:center;gap:1px;
-  padding:6px 4px;border:1px solid var(--line);border-radius:8px;background:var(--bg3)}
-.character-ability-k{color:var(--acc);font-size:9.5px;font-weight:800;letter-spacing:.6px;
-  text-transform:uppercase}
-.character-ability-v{color:var(--tx);font-size:16px;line-height:1.1;font-weight:700}
-.character-ability-mod{color:var(--mut);font-size:10.5px}
-
-.character-vitals{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:6px}
-.character-vital{display:flex;flex-direction:column;align-items:center;gap:1px;
-  padding:7px 6px;border:1px solid var(--line);border-radius:8px;background:var(--bg3)}
-.character-vital b{color:var(--tx);font-size:15px;line-height:1.15;font-weight:700}
-.character-vital span{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.55px}
-
-.character-chips{display:flex;flex-wrap:wrap;gap:5px}
-.character-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;
-  border:1px solid var(--line);border-radius:999px;background:var(--bg3);font-size:11.5px}
-.character-chip-k{color:var(--mut)}
-.character-chip b{color:var(--tx);font-weight:700}
-
-/* ---- Character studio: FULL manual sheet editor (in-place inputs/maps/lists) ---- */
-/* Ability tiles become number inputs; the mod recomputes live below each score. */
-.character-ability-edit{gap:3px}
-.character-ability-input{width:100%;min-width:0;text-align:center;background:var(--bg);
-  color:var(--tx);border:1px solid var(--line);border-radius:6px;padding:4px 2px;font:inherit;
-  font-size:15px;font-weight:700;outline:none;-moz-appearance:textfield}
-.character-ability-input:focus{border-color:var(--acc)}
-.character-ability-input:disabled{opacity:.58;cursor:default}
-.character-ability-input::-webkit-outer-spin-button,
-.character-ability-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
-
-/* Shared row scaffold for the map / list / spell / slot editors. */
-.sheet-rows{display:grid;gap:6px;min-width:0}
-.sheet-map-row{display:grid;grid-template-columns:minmax(0,1fr) 68px auto;gap:6px;align-items:center;min-width:0}
-.sheet-list-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;min-width:0}
-/* §И1 two-field rows: [название][описание][✕]; the stored value is still one
-   «имя — описание» string, split/joined by the editor. */
-.sheet-named-row{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr) auto;gap:6px;align-items:center;min-width:0}
-@media (max-width:1400px){
-  .sheet-named-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"name del" "desc del"}
-  .sheet-named-row .sheet-named-name{grid-area:name}
-  .sheet-named-row .sheet-named-desc{grid-area:desc}
-  .sheet-named-row .sheet-row-del{grid-area:del}
+/* ---- Character studio: read-only sheet blocks ---- */
+.character-abilities { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.character-ability {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 7px 4px; border: 1px solid var(--border-0); border-radius: var(--r-md); background: var(--surface-2);
 }
-.sheet-map-key,.sheet-map-val,.sheet-list-input{width:100%;min-width:0;background:var(--bg);
-  color:var(--tx);border:1px solid var(--line);border-radius:7px;padding:6px 8px;font:inherit;
-  font-size:12.5px;outline:none}
-.sheet-map-val{text-align:center;-moz-appearance:textfield}
-.sheet-map-val::-webkit-outer-spin-button,.sheet-map-val::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
-.sheet-map-key:focus,.sheet-map-val:focus,.sheet-list-input:focus{border-color:var(--acc)}
-.sheet-map-key:disabled,.sheet-map-val:disabled,.sheet-list-input:disabled{opacity:.58;cursor:default}
+.character-ability-k { color: var(--text-3); font-size: 10px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+.character-ability-v { color: var(--text-1); font-size: 16px; line-height: 1.1; font-weight: 650; font-variant-numeric: tabular-nums; }
+.character-ability-mod { color: var(--text-3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 
-/* Small square «✕» row-remove control. */
-.sheet-row-del{flex:none;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
-  border:1px solid var(--line);border-radius:7px;background:var(--bg3);color:var(--mut);
-  font-size:12px;line-height:1;cursor:pointer;padding:0}
-.sheet-row-del:hover:not(:disabled){border-color:rgba(224,134,152,.5);color:var(--redo)}
-.sheet-row-del:disabled{opacity:.5;cursor:default}
+.character-vitals { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 6px; }
+.character-vital {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 7px 6px; border: 1px solid var(--border-0); border-radius: var(--r-md); background: var(--surface-2);
+}
+.character-vital b { color: var(--text-1); font-size: 15px; line-height: 1.15; font-weight: 650; font-variant-numeric: tabular-nums; }
+.character-vital span { color: var(--text-3); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
 
-/* «+ добавить» ghost button. */
-.sheet-add-btn{justify-self:start;display:inline-flex;align-items:center;gap:5px;
-  padding:5px 10px;border:1px dashed var(--line);border-radius:7px;background:transparent;
-  color:var(--acc);font:inherit;font-size:12px;font-weight:700;cursor:pointer}
-.sheet-add-btn:hover:not(:disabled){border-color:var(--acc);background:rgba(156,207,216,.06)}
-.sheet-add-btn:disabled{opacity:.5;cursor:default}
+.character-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.character-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px;
+  border: 1px solid var(--border-1); border-radius: var(--r-full); background: var(--surface-2); font-size: 11.5px;
+}
+.character-chip-k { color: var(--text-3); }
+.character-chip b { color: var(--text-1); font-weight: 600; }
 
-/* Spell cards — collapsed header «{name} · {level} круг», expandable 5-field body. */
-.spell-edit{border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.02);overflow:hidden}
-.spell-edit.open{border-color:rgba(156,207,216,.3)}
-.spell-edit-head{display:flex;align-items:center;gap:6px;padding:4px 6px}
-.spell-edit-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:6px;
-  background:transparent;border:0;padding:3px;color:var(--tx);font:inherit;text-align:left;cursor:pointer}
-.spell-edit-toggle .mark{flex:none;color:var(--mut);font-size:11px}
-.spell-edit-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-size:12.5px;font-weight:600}
-.spell-edit-body{display:grid;gap:9px;padding:2px 8px 9px}
-.spell-edit-flags{display:flex;flex-wrap:wrap;gap:14px}
-.sheet-check{display:inline-flex;align-items:center;gap:6px;color:var(--tx);font-size:12px;cursor:pointer}
-.sheet-check input{width:15px;height:15px;accent-color:var(--acc);cursor:pointer}
-.sheet-check input:disabled{cursor:default}
+/* ---- Character studio: manual sheet editor ---- */
+.character-ability-edit { gap: 3px; }
+.character-ability-input {
+  width: 100%; min-width: 0; text-align: center; background: var(--surface-0);
+  color: var(--text-1); border: 1px solid var(--border-1); border-radius: var(--r-sm); padding: 4px 2px;
+  font: 650 15px/1.3 var(--font-ui); outline: none; -moz-appearance: textfield;
+  transition: border-color var(--dur-1) var(--ease);
+}
+.character-ability-input:focus { border-color: var(--brand-line); }
+.character-ability-input:disabled { opacity: 0.55; cursor: default; }
+.character-ability-input::-webkit-outer-spin-button,
+.character-ability-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
-/* Spell-slot rows — level label + текущие/макс number pair + remove. */
-.slot-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto;gap:6px;
-  align-items:center;min-width:0}
-.slot-level{flex:none;color:var(--acc);font-size:11px;font-weight:700;white-space:nowrap}
-.slot-num{width:100%;min-width:0;text-align:center;background:var(--bg);color:var(--tx);
-  border:1px solid var(--line);border-radius:7px;padding:6px 4px;font:inherit;font-size:12.5px;
-  outline:none;-moz-appearance:textfield}
-.slot-num::-webkit-outer-spin-button,.slot-num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
-.slot-num:focus{border-color:var(--acc)}
-.slot-num:disabled{opacity:.58;cursor:default}
-.slot-sep{color:var(--mut);font-size:12px}
-.slot-add{display:flex;flex-wrap:wrap;gap:6px}
+/* Row scaffolds for map / list / spell / slot editors. */
+.sheet-rows { display: grid; gap: 6px; min-width: 0; }
+.sheet-map-row { display: grid; grid-template-columns: minmax(0, 1fr) 68px auto; gap: 6px; align-items: center; min-width: 0; }
+/* «Имя — описание»: имя одной строкой (крестик рядом), описание — растущей
+   textarea во всю ширину. Внутри пары зазор меньше, чем между пунктами,
+   чтобы пары читались как единые блоки. */
+.sheet-named-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name del" "desc desc";
+  gap: 4px 6px; align-items: center; min-width: 0;
+}
+.sheet-named-row + .sheet-named-row { margin-top: 6px; }
+.sheet-named-row .sheet-named-name { grid-area: name; }
+.sheet-named-row .sheet-named-desc { grid-area: desc; }
+.sheet-named-row .sheet-row-del { grid-area: del; }
+textarea.sheet-named-desc {
+  resize: none; field-sizing: content; min-height: 34px; max-height: 200px;
+  overflow-y: auto; line-height: 1.45;
+}
+/* Название заклинания — во всю ширину, круг — компактная колонка. */
+.spell-name-grid { grid-template-columns: minmax(0, 1fr) 88px; }
+@media (max-width: 700px) {
+  .spell-name-grid { grid-template-columns: 1fr; }
+  .spell-name-grid .world-field:last-child { max-width: 130px; }
+}
+.sheet-map-key, .sheet-map-val, .sheet-list-input { width: 100%; font-size: 12.5px; }
+.sheet-map-val { text-align: center; -moz-appearance: textfield; }
+.sheet-map-val::-webkit-outer-spin-button, .sheet-map-val::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+.sheet-row-del {
+  flex: none; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border-1); border-radius: var(--r-sm); background: var(--surface-2); color: var(--text-3);
+  font-size: 12px; line-height: 1; cursor: pointer; padding: 0;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.sheet-row-del:hover:not(:disabled) { border-color: var(--danger-line); color: var(--danger); }
+.sheet-row-del:disabled { opacity: 0.5; cursor: default; }
+
+.sheet-add-btn {
+  justify-self: start; display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border: 1px dashed var(--border-1); border-radius: var(--r-sm); background: transparent;
+  color: var(--brand-text); font: 600 12px/1.3 var(--font-ui); cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.sheet-add-btn:hover:not(:disabled) { border-color: var(--brand-line); background: var(--brand-tint); }
+.sheet-add-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Spell cards */
+.spell-edit { border: 1px solid var(--border-0); border-radius: var(--r-md); background: var(--surface-2); overflow: hidden; }
+.spell-edit.open { border-color: var(--border-1); }
+.spell-edit-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; }
+.spell-edit-toggle {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+  background: transparent; border: 0; padding: 3px; color: var(--text-1); font: inherit; text-align: left; cursor: pointer;
+}
+.spell-edit-toggle .mark { flex: none; color: var(--text-3); font-size: 11px; }
+.spell-edit-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
+.spell-edit-body { display: grid; gap: 9px; padding: 2px 8px 9px; }
+.spell-edit-flags { display: flex; flex-wrap: wrap; gap: 14px; }
+.sheet-check { display: inline-flex; align-items: center; gap: 6px; color: var(--text-1); font-size: 12px; cursor: pointer; }
+.sheet-check input { width: 15px; height: 15px; cursor: pointer; }
+.sheet-check input:disabled { cursor: default; }
+
+/* Spell-slot rows */
+.slot-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 6px; align-items: center; min-width: 0; }
+.slot-level { flex: none; color: var(--brand-text); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.slot-num { width: 100%; text-align: center; font-size: 12.5px; -moz-appearance: textfield; }
+.slot-num::-webkit-outer-spin-button, .slot-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.slot-sep { color: var(--text-3); font-size: 12px; }
+.slot-add { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* Sticky save footer row. */
-.sheet-save-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.sheet-save-btn{flex:none}
-.sheet-save-status{font-size:11.5px;line-height:1.3;color:var(--mut)}
-.sheet-save-status.is-ok{color:var(--acc)}
-.sheet-save-status.is-error{color:var(--redo)}
+.sheet-save-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sheet-save-btn { flex: none; }
+.sheet-save-status { font-size: 11.5px; line-height: 1.3; color: var(--text-3); }
+.sheet-save-status.is-ok { color: var(--ok); }
+.sheet-save-status.is-error { color: var(--danger); }
 
 /* ============================================================================
-   Game context bar — fixed read-only badges + «⋯» menu at the top of the chat.
+   Game context bar — бейджи + «⋯» меню над чатом.
    ============================================================================ */
-.game-context-bar{flex:none;display:flex;align-items:center;gap:10px;
-  padding:8px 12px;border-bottom:1px solid var(--line);
-  background:linear-gradient(180deg,rgba(156,207,216,.05),var(--bg2))}
-.game-badges{display:flex;align-items:stretch;gap:8px;min-width:0;flex-wrap:wrap;flex:1}
-.game-badge{display:flex;flex-direction:column;gap:1px;min-width:0;max-width:260px;
-  padding:5px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg3);
-  text-align:left}
-.game-badge-btn{cursor:pointer;font:inherit;color:inherit}
-.game-badge-btn:hover,.game-badge-btn:focus-visible{border-color:var(--acc);outline:none}
-.game-badge-k{color:var(--acc);font-size:9px;font-weight:800;letter-spacing:.7px;text-transform:uppercase}
-.game-badge-v{color:var(--tx);font-size:13px;line-height:1.2;font-weight:600;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Контекст партии: тихий breadcrumb, не второй хедер */
+.game-context-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px 9px; border-bottom: 1px solid var(--border-0);
+}
+.game-badges { display: flex; align-items: center; gap: 20px; min-width: 0; flex-wrap: wrap; flex: 1; }
+.game-badge {
+  display: flex; flex-direction: column; gap: 1px; min-width: 0; max-width: 280px;
+  padding: 2px 0; border: 0; border-radius: var(--r-sm);
+  background: transparent; text-align: left;
+}
+.game-badge-btn {
+  cursor: pointer; font: inherit; color: inherit;
+  transition: color var(--dur-1) var(--ease);
+}
+.game-badge-btn:hover .game-badge-v, .game-badge-btn:focus-visible .game-badge-v { color: var(--brand-text); }
+.game-badge-btn:focus-visible { outline: none; }
+.game-badge-k { color: var(--text-3); font-size: 9.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.8; }
+.game-badge-v {
+  color: var(--text-2); font-size: 13px; line-height: 1.3; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: color var(--dur-1) var(--ease);
+}
+.game-badge:first-child .game-badge-v { color: var(--text-1); font: 600 14px/1.3 var(--font-ui); letter-spacing: -0.005em; }
 
-.game-context-menu{position:relative;flex:none}
-.game-context-more{width:34px;height:34px;justify-content:center;font-size:18px;line-height:1}
-.game-context-dropdown{position:absolute;top:calc(100% + 6px);right:0;z-index:20;
-  min-width:172px;display:flex;flex-direction:column;padding:5px;gap:2px;
-  border:1px solid var(--line);border-radius:10px;background:var(--bg2);
-  box-shadow:0 12px 30px rgba(0,0,0,.42)}
-.game-context-item{display:block;width:100%;text-align:left;padding:8px 10px;
-  border:0;border-radius:7px;background:transparent;color:var(--tx);
-  font:inherit;font-size:13px;cursor:pointer}
-.game-context-item:hover{background:var(--bg3)}
-.game-context-item.danger{color:var(--redo)}
-.game-context-item.danger:hover{background:rgba(224,134,152,.12)}
-.game-context-item:disabled{opacity:.5;cursor:default;background:transparent}
+.game-context-menu { position: relative; flex: none; }
+.game-context-more { width: 36px; height: 36px; padding: 0; justify-content: center; font-size: 16px; line-height: 1; }
+.game-context-dropdown {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+  min-width: 176px; display: flex; flex-direction: column; padding: 5px; gap: 2px;
+  border: 1px solid var(--border-1); border-radius: var(--r-lg); background: var(--surface-2);
+  box-shadow: var(--shadow-2);
+}
+.game-context-item {
+  display: block; width: 100%; text-align: left; padding: 8px 10px;
+  border: 0; border-radius: var(--r-md); background: transparent; color: var(--text-1);
+  font: 400 13px/1.3 var(--font-ui); cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.game-context-item:hover { background: var(--surface-3); }
+.game-context-item.danger { color: var(--danger); }
+.game-context-item.danger:hover { background: var(--danger-tint); }
+.game-context-item:disabled { opacity: 0.5; cursor: default; background: transparent; }
 
 /* ============================================================================
-   Scene panel — the right-side game HUD, regrouped into СЦЕНА / РЯДОМ / ГЕРОЙ.
-   Docked as an absolute card over the chat pane (mirrors the old .world-hud so
-   it drops into the same slot); hidden on narrow screens like the old card.
+   Scene panel — правый HUD (СЦЕНА / РЯДОМ / ГЕРОЙ).
    ============================================================================ */
-.scene-panel{position:absolute;top:14px;right:18px;z-index:3;width:244px;
-  max-height:calc(100% - 28px);overflow-y:auto;overflow-x:hidden;pointer-events:auto;
-  display:flex;flex-direction:column;gap:12px;padding:12px 13px;
-  border:1px solid var(--line);border-radius:12px;
-  background:linear-gradient(180deg,rgba(25,25,38,.96),rgba(18,18,28,.96));
-  box-shadow:0 10px 30px rgba(0,0,0,.34);
-  scrollbar-width:thin;scrollbar-color:var(--line) transparent}
-.scene-group{display:flex;flex-direction:column;gap:6px}
-.scene-group + .scene-group{padding-top:11px;border-top:1px solid var(--line)}
-.scene-group-kicker{color:var(--acc);font-size:10px;font-weight:800;letter-spacing:.9px;text-transform:uppercase}
-.scene-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-.scene-row span{flex:none;color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.65px}
-.scene-row b{min-width:0;color:var(--tx);font-size:12px;line-height:1.25;text-align:right;word-break:break-word}
-.scene-link{min-width:0;pointer-events:auto;cursor:pointer;background:none;border:0;margin:0;padding:0;
-  color:var(--tx);font:inherit;font-size:12px;line-height:1.25;font-weight:600;text-align:right;
-  word-break:break-word;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:2px}
-.scene-link:hover,.scene-link:focus-visible{color:var(--acc);text-decoration-color:var(--acc);outline:none}
-.scene-npcs{display:flex;flex-direction:column;gap:5px}
-.scene-npc{display:flex;align-items:center;gap:7px;min-width:0}
-.scene-npc b{min-width:0;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.scene-empty{margin:0;color:var(--mut);font-size:11.5px;line-height:1.35}
-.scene-hero-actions{display:flex;flex-direction:column;gap:5px;margin-top:2px}
-.scene-hero-btn{width:100%;justify-content:center}
-.scene-save-choice{display:flex;flex-direction:column;gap:5px}
-.scene-save-cancel{width:100%;justify-content:center;opacity:.75}
-/* Narrow width (mirrors the old .world-hud breakpoint): the floating card would
-   overlap the transcript, so rather than hide it we reflow the HUD into a static
-   compact strip between the game header and the chat. This keeps the scene state
-   — and the ГЕРОЙ «Сохранить в библиотеку» action, the sole entry point for it —
-   reachable at ~900–1000px instead of vanishing. */
-@media(max-width:1220px){
-  .scene-panel{position:static;width:auto;max-height:none;overflow:visible;
-    flex-direction:row;flex-wrap:wrap;align-items:flex-start;gap:8px 18px;
-    border-width:0 0 1px 0;border-radius:0;box-shadow:none}
-  .scene-group{flex:1 1 190px;min-width:150px}
-  .scene-group + .scene-group{padding-top:0;border-top:0}
+.scene-panel {
+  grid-column: 2; grid-row: 1 / -1;
+  width: 264px; min-height: 0; margin: 14px 16px 14px 0;
+  overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 14px; padding: 18px;
+  align-self: start; max-height: calc(100% - 28px);
+  border: 1px solid var(--border-0); border-radius: var(--r-xl);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-1);
+}
+/* строка-саммари для узких экранов; на десктопной колонке не существует */
+.scene-panel-summary { display: none; }
+.scene-group { display: flex; flex-direction: column; gap: 6px; }
+.scene-group + .scene-group { padding-top: 11px; border-top: 1px solid var(--border-0); }
+.scene-group-kicker { color: var(--brand-text); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.scene-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.scene-row span { flex: none; color: var(--text-3); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-top: 2px; }
+.scene-row b { min-width: 0; color: var(--text-1); font-size: 12.5px; line-height: 1.3; font-weight: 500; text-align: right; word-break: break-word; }
+.scene-link {
+  min-width: 0; pointer-events: auto; cursor: pointer; background: none; border: 0; margin: 0; padding: 0;
+  color: var(--text-1); font: 500 12.5px/1.3 var(--font-ui); text-align: right;
+  word-break: break-word; text-decoration: underline; text-decoration-color: var(--border-1); text-underline-offset: 3px;
+  transition: color var(--dur-1) var(--ease);
+}
+.scene-link:hover, .scene-link:focus-visible { color: var(--brand-text); text-decoration-color: var(--brand-line); outline: none; }
+.scene-npcs { display: flex; flex-direction: column; gap: 5px; }
+.scene-npc { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.scene-npc b { min-width: 0; font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scene-empty { margin: 0; color: var(--text-3); font-size: 11.5px; line-height: 1.35; }
+.scene-hero-actions { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+.scene-hero-btn { width: 100%; justify-content: center; }
+.scene-save-choice { display: flex; flex-direction: column; gap: 5px; }
+.scene-save-cancel { width: 100%; justify-content: center; opacity: 0.75; }
+/* Узкие экраны: HUD сворачивается в одну строку-саммари («Локация · время ·
+   герой»); тап раскрывает секции. Лента больше не теряет пол-экрана. */
+@media (max-width: 1220px) {
+  .scene-panel {
+    position: static; width: auto; max-height: none; overflow: visible; margin: 0;
+    flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 10px 24px;
+    border-width: 0 0 1px 0; border-radius: 0; box-shadow: none;
+    background: transparent; padding: 4px 16px 6px;
+  }
+  .scene-panel-summary {
+    display: flex; align-items: center; gap: 8px; flex: 1 1 100%; min-width: 0;
+    background: transparent; border: 0; padding: 6px 4px; margin: 0;
+    color: var(--text-3); font: 500 12.5px/1.3 var(--font-ui);
+    text-align: left; cursor: pointer;
+  }
+  .scene-panel-summary .ico { flex: none; }
+  .scene-summary-main {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text-1); font-weight: 600;
+  }
+  .scene-summary-meta { flex: none; color: var(--text-3); white-space: nowrap; }
+  .scene-summary-meta::before { content: "·"; margin-right: 8px; opacity: 0.6; }
+  .scene-summary-caret { margin-left: auto; color: var(--text-3); }
+  /* свёрнуто по умолчанию: секции скрыты, остаётся одна строка */
+  .scene-panel:not(.is-open) .scene-group { display: none; }
+  .scene-panel.is-open { padding-bottom: 12px; }
+  .scene-group { flex: 0 1 auto; min-width: 150px; max-width: 340px; }
+  .scene-group + .scene-group { padding-top: 0; border-top: 0; }
+  .scene-row { justify-content: flex-start; gap: 8px; }
+  .scene-row b, .scene-link { text-align: left; }
+  .scene-hero-actions { flex-direction: row; flex-wrap: wrap; margin-top: 4px; }
+  .scene-hero-btn, .scene-save-choice .btn {
+    width: auto; flex: 0 1 auto; min-height: 28px; padding: 4px 12px; font-size: 12px;
+  }
+  .scene-save-choice { flex-direction: row; flex-wrap: wrap; }
+}
+/* телефон: ещё плотнее */
+@media (max-width: 700px) {
+  .scene-panel { gap: 8px 16px; padding: 8px 14px 10px; }
 }

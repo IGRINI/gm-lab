@@ -28,8 +28,26 @@
   `library/characters/<id>/character.json`. БЕЗ `ensure_defaults` и воскрешения:
   удалённый персонаж остаётся удалённым.
 - Манифест: `{format:"gmlab.character/1", id, version:u64, title, preview,
-  created_at, updated_at, payload}`; `payload` — непрозрачный round-trip объект
-  (как у WorldEnvelope), внутри `payload.player_character`.
+  created_at, updated_at, world_ref?, story_ref?, payload}`; `payload` —
+  непрозрачный round-trip объект (как у WorldEnvelope), внутри
+  `payload.player_character`.
+- `world_ref`/`story_ref` (2026-07: связность создания) — ОПЦИОНАЛЬНАЯ основа
+  героя `{id, version}` (`CharacterBaseRef`): мир и/или история, ПОД которые
+  персонаж создан. Пиннятся при create (архитектор/ручной save/save-protagonist/
+  save-character-from-chat), НЕ патчатся после, эмитятся только когда Some
+  (байт-идентичность старых пакетов). Провенанс-семантика как у `char_ref`
+  сейва: ссылка может «повиснуть» после удаления базового пакета — потребители
+  обязаны это переживать (студия скипает блок, запуск даёт warn-but-allow
+  `character_world_mismatch`). Архитектор персонажа получает от базы ТОЛЬКО
+  публичный канон (`## BASE WORLD` — whitelist `CHARACTER_WORLD_PUBLIC_FIELDS`,
+  `## BASE STORY` — whitelist title/description/story_brief/public_intro):
+  он говорит с ИГРОКОМ, GM-секреты в его контекст не допускаются. Процедурная
+  история основой быть НЕ может (гейт и в UI-пикерах, и в серверном резолвере —
+  400). Системный промпт — ДВА варианта с общим телом: standalone (про базы ни
+  слова — ноль токенов на неиспользуемую фичу) и based (generic grounding); вся
+  видо-специфика мира/истории живёт в самих блоках и оплачивается только при
+  наличии блока. Привязка фиксирована при создании → вариант промпта стабилен
+  в рамках диалога (кэш-префикс не рвётся).
 - Канонический сериализатор ГГ ОДИН: форма `player_character_to_payload`
   (session payload) используется и для пакета. `player_character_export` —
   UI/tool-проекция, для пакета НЕ применяется.
@@ -56,7 +74,8 @@
 - `POST /chats`: опц. `character_id`. Несуществующий id → 400 (no-fallback).
 - Рефактор `post_create_chat`: все три ветки (brief / procedural / named story)
   возвращают `(World, warnings)`; ЕДИНЫЙ хвост: оверлей персонажа → сборка session
-  один раз. Прецеденс: выбранный пакет > player_character из plot/seed > дефолт.
+  один раз. Прецеденс: выбранный пакет > player_character из plot/seed (дефолта
+  НЕТ — protagonist-гейт отдаёт 400 `protagonist_required`).
 - Оверлей = `seed_player_character(payload.player_character)` — полная замена, БЕЗ
   события и БЕЗ инкремента (события — только тул-путь). `card_revision` пакета
   принимается как есть (edu-счётчик героя едет с ним; version пакета — отдельный

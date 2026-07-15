@@ -26,6 +26,7 @@ import StoryArchitectPanel from "./components/StoryArchitectPanel.jsx";
 import CharacterArchitectPanel from "./components/CharacterArchitectPanel.jsx";
 import LibraryScreen from "./components/LibraryScreen.jsx";
 import NewGameWizard from "./components/NewGameWizard.jsx";
+import BasePickerModal from "./components/BasePickerModal.jsx";
 import GameContextBar from "./components/GameContextBar.jsx";
 import ScenePanel from "./components/ScenePanel.jsx";
 import Toasts, { useToasts } from "./components/Toasts.jsx";
@@ -268,6 +269,13 @@ export default function App() {
   // the create-on-first-turn id assignment ("" -> new id) does NOT remount the
   // panel and wipe its live stream (review finding).
   const [characterStudioEpoch, setCharacterStudioEpoch] = useState(0);
+  // The base a NEW character is built on ({worldId, storyId}, both optional) —
+  // picked in BasePickerModal (or passed by the wizard) and sent with the
+  // create-on-first-turn / manual save. An EXISTING character ignores this: its
+  // binding is fixed in the package (world_ref/story_ref).
+  const [characterStudioBase, setCharacterStudioBase] = useState(null);
+  // Which creation base picker is open: null | "story" | "character".
+  const [basePickerKind, setBasePickerKind] = useState(null);
   // The New-Game wizard: the ONLY way to create a game. `wizardPreselect` seeds a
   // step from a Library «Играть» click ({worldId}|{storyId}|{characterId}).
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -486,7 +494,8 @@ export default function App() {
       try {
         const t = await api.transcript();
         store.clear();
-        const events = t.events || [];
+        // Прод отдаёт {events:[...]}, мок-бэкенд — голый массив; принимаем оба.
+        const events = Array.isArray(t) ? t : t?.events || [];
         store.dispatchMany(events);
         setPlayerOptions(playerOptionsFromEvents(events));
       } catch (e) {
@@ -656,9 +665,12 @@ export default function App() {
   );
 
   const openCharacterStudio = useCallback(
-    (characterId = "") => {
+    (characterId = "", base = null) => {
       if (busy || chatActionBusy) return;
       setSelectedCharacterArchitectId(characterId || "");
+      // The base only matters for a FRESH draft (create-on-first-turn); an
+      // existing character carries its own world_ref/story_ref.
+      setCharacterStudioBase(characterId ? null : base);
       setCharacterStudioEpoch((n) => n + 1);
       setStatus("");
       setMainView("character-studio");
@@ -678,26 +690,51 @@ export default function App() {
   );
 
   // Library toolbar «+ Создать ▾ → …» and wizard «+ Создать …» — a fresh studio.
+  // A story is ALWAYS based on a world and a character MAY be based on a world
+  // and/or story: when the context doesn't already carry the user's explicit
+  // choice (the wizard passes it), the BasePickerModal asks first — the base is
+  // never silently inferred.
   const onCreateEntity = useCallback(
     (kind, ctx = null) => {
       if (kind === "world") {
         openWorldStudio("");
       } else if (kind === "story") {
-        const worldId =
-          textValue(ctx?.worldId) ||
-          selectedWorldId ||
-          textValue((Array.isArray(worlds) ? worlds : [])[0]?.id);
-        if (!worldId) {
-          notify("Сначала создайте мир — история строится над миром");
-          return;
-        }
-        openStoryArchitect(worldId, "");
+        const worldId = textValue(ctx?.worldId);
+        if (worldId) openStoryArchitect(worldId, "");
+        else setBasePickerKind("story");
       } else if (kind === "character") {
-        openCharacterStudio("");
+        if (ctx && (textValue(ctx.worldId) || textValue(ctx.storyId))) {
+          openCharacterStudio("", {
+            worldId: textValue(ctx.worldId),
+            storyId: textValue(ctx.storyId),
+          });
+        } else {
+          setBasePickerKind("character");
+        }
       }
     },
-    [openWorldStudio, openStoryArchitect, openCharacterStudio, selectedWorldId, worlds, notify]
+    [openWorldStudio, openStoryArchitect, openCharacterStudio]
   );
+
+  // BasePickerModal «В студию →»: open the matching studio with the picked base.
+  const onBasePicked = useCallback(
+    (kind, { worldId = "", storyId = "" } = {}) => {
+      setBasePickerKind(null);
+      if (kind === "story") {
+        if (!worldId) return; // the picker enforces this; belt-and-braces
+        openStoryArchitect(worldId, "");
+      } else if (kind === "character") {
+        openCharacterStudio("", worldId || storyId ? { worldId, storyId } : null);
+      }
+    },
+    [openStoryArchitect, openCharacterStudio]
+  );
+
+  // BasePickerModal's empty-library escape hatch: straight to the world studio.
+  const onBasePickerCreateWorld = useCallback(() => {
+    setBasePickerKind(null);
+    openWorldStudio("");
+  }, [openWorldStudio]);
 
   // Convenience for panels/back-links.
   const onCreateStory = useCallback((worldId) => openStoryArchitect(worldId, ""), [openStoryArchitect]);
@@ -1157,6 +1194,38 @@ export default function App() {
         : null,
     [characters, selectedCharacterArchitectId]
   );
+  // The character studio's base world/story: a FRESH draft uses the picker's
+  // choice (characterStudioBase); an EXISTING character shows the refs pinned in
+  // its package. Titles resolve against the loaded lists; a deleted base keeps
+  // its raw id as the label (refs may dangle by design).
+  const characterStudioRefs = useMemo(() => {
+    const source = characterArchitectCharacter
+      ? {
+          worldId: textValue(characterArchitectCharacter?.world_ref?.id),
+          storyId: textValue(characterArchitectCharacter?.story_ref?.id),
+        }
+      : {
+          worldId: textValue(characterStudioBase?.worldId),
+          storyId: textValue(characterStudioBase?.storyId),
+        };
+    const world = source.worldId
+      ? (Array.isArray(worlds) ? worlds : []).find((w) => sameChatId(w.id, source.worldId))
+      : null;
+    const story = source.storyId
+      ? (Array.isArray(stories) ? stories : []).find((s) => sameChatId(s.id, source.storyId))
+      : null;
+    // A ref whose package is gone keeps its id (the binding stays) but gets NO
+    // title — the panel renders an honest «пакет недоступен» instead of leaking
+    // a machine id into player-facing prose.
+    return {
+      worldId: source.worldId,
+      storyId: source.storyId,
+      worldTitle: world ? textValue(world.title) || textValue(world.world_lore?.name) : "",
+      storyTitle: story ? textValue(story.title) : "",
+      worldMissing: !!source.worldId && !world,
+      storyMissing: !!source.storyId && !story,
+    };
+  }, [characterArchitectCharacter, characterStudioBase, worlds, stories]);
 
   // The context bar / scene panel read the launched game's story + world.
   const contextProcedural = !srv.storyId || srv.storyId === "procedural";
@@ -1270,7 +1339,6 @@ export default function App() {
       <Header
         onToggleChats={toggleChats}
         chatsOpen={chatsOpen}
-        showChatToggle={isGame}
         mainView={mainView}
         onNavGame={showGame}
         onNavLibrary={showLibrary}
@@ -1287,20 +1355,25 @@ export default function App() {
         onLogout={onLogout}
       />
       <div className={"app-body" + (debugOpen ? " debug-open" : "") + (chatsOpen ? "" : " chats-collapsed")}>
-        {isGame && (
-          <ChatHistorySidebar
-            chats={chats}
-            activeChatId={activeChatId}
-            open={chatsOpen}
-            busy={interactionBusy}
-            loading={chatsLoading}
-            error={chatsError}
-            onClose={closeChats}
-            onNewGame={() => openWizard(null)}
-            onActivate={onActivateChat}
-            onDelete={onDeleteChat}
-          />
-        )}
+        <ChatHistorySidebar
+          chats={chats}
+          activeChatId={activeChatId}
+          open={chatsOpen}
+          busy={interactionBusy}
+          loading={chatsLoading}
+          error={chatsError}
+          onClose={closeChats}
+          onNewGame={() => openWizard(null)}
+          onActivate={onActivateChat}
+          onDelete={onDeleteChat}
+          mainView={mainView}
+          onNavGame={showGame}
+          onNavLibrary={showLibrary}
+          onNavImage={showImage}
+          imageLabEnabled={imageLabEnabled}
+        />
+        {/* дровер смонтирован во всех вьюхах: на мобилке он носит навигацию
+            разделов; на десктопе вне игры прячется CSS'ом (.sidebar-off-game) */}
         {mainView === "library" ? (
           <main className="world-creation-pane">
             <LibraryScreen
@@ -1371,6 +1444,12 @@ export default function App() {
               <CharacterArchitectPanel
                 key={`char-studio-${characterStudioEpoch}`}
                 character={characterArchitectCharacter}
+                worldId={characterStudioRefs.worldId}
+                storyId={characterStudioRefs.storyId}
+                worldTitle={characterStudioRefs.worldTitle}
+                storyTitle={characterStudioRefs.storyTitle}
+                worldMissing={characterStudioRefs.worldMissing}
+                storyMissing={characterStudioRefs.storyMissing}
                 locked={interactionBusy}
                 onArchitectStream={onCharacterArchitectStream}
                 onPlayCharacter={onPlayCharacter}
@@ -1448,6 +1527,17 @@ export default function App() {
             onCreateEntity(kind, ctx);
           }}
           onClose={closeWizard}
+        />
+      )}
+      {basePickerKind && (
+        <BasePickerModal
+          kind={basePickerKind}
+          worlds={worlds}
+          stories={stories}
+          busy={interactionBusy}
+          onConfirm={onBasePicked}
+          onCreateWorld={onBasePickerCreateWorld}
+          onClose={() => setBasePickerKind(null)}
         />
       )}
       <Toasts toasts={toasts} onDismiss={dismissToast} />

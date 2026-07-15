@@ -943,8 +943,9 @@ async fn post_update_story(
 // =========================================================================
 
 /// `GET /characters` — list every character package
-/// (`{id, version, title, preview, created_at, updated_at, payload}`), newest
-/// first. Returns `{ok, characters:[...]}`.
+/// (`{id, version, title, preview, created_at, updated_at, world_ref?,
+/// story_ref?, payload}` — the optional refs are the base packages the hero
+/// was authored for), newest first. Returns `{ok, characters:[...]}`.
 async fn get_characters(State(state): State<AppState>) -> Response {
     let characters = {
         let store = state
@@ -956,10 +957,14 @@ async fn get_characters(State(state): State<AppState>) -> Response {
     ok_json(&json!({"ok": true, "characters": characters}))
 }
 
-/// `POST /characters` — create a character package. Body `{title, payload}`.
-/// `payload` is REQUIRED (a `player_character` object; no default hero, design
-/// §8) and `title` is required (non-empty after trim). Returns
-/// `{ok, character:{...}}`.
+/// `POST /characters` — create a character package. Body
+/// `{title, payload, world_id?, story_id?}`. `payload` is REQUIRED (a
+/// `player_character` object; no default hero, design §8) and `title` is
+/// required (non-empty after trim). The optional `world_id`/`story_id` pin the
+/// BASE packages the hero was authored for into `world_ref`/`story_ref`
+/// (provenance; a story's own `world_ref` overrides an explicit `world_id`); a
+/// dangling id — and a procedural story, which has no authored plot to base a
+/// hero on — is a 400 and nothing is written. Returns `{ok, character:{...}}`.
 async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let title = body_str(&data, "title");
@@ -987,13 +992,25 @@ async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Re
             )
         }
     };
+    // Resolve the optional base refs BEFORE writing anything (dangling = 400).
+    let world_id = body_str(&data, "world_id");
+    let story_id = body_str(&data, "story_id");
+    let base = match resolve_character_architect_base(
+        &state,
+        None,
+        if world_id.is_empty() { None } else { Some(&world_id) },
+        if story_id.is_empty() { None } else { Some(&story_id) },
+    ) {
+        Ok(base) => base,
+        Err(resp) => return resp,
+    };
 
     let result = {
         let mut store = state
             .character_store
             .lock()
             .expect("character store lock poisoned");
-        store.create_character(&title, payload)
+        store.create_character(&title, payload, base.world_ref, base.story_ref)
     };
     match result {
         Ok(character) => ok_json(&json!({"ok": true, "character": character})),
@@ -1137,14 +1154,27 @@ async fn post_save_character(
     let store = state.store.clone();
     let scope2 = scope.clone();
     let chat_id2 = chat_id.clone();
-    let read = tokio::task::spawn_blocking(move || -> Result<Option<Value>, gml_persistence::StoreError> {
+    let read = tokio::task::spawn_blocking(move || -> Result<Option<(Value, Option<gml_persistence::CharacterBaseRef>, Option<gml_persistence::CharacterBaseRef>)>, gml_persistence::StoreError> {
         store.with_runtime(&scope2, &chat_id2, |rt| {
-            gml_orchestrator::session_payload::player_character_payload(&rt.session.world.player_character)
+            let pc = gml_orchestrator::session_payload::player_character_payload(&rt.session.world.player_character);
+            // The session's launch provenance becomes the saved character's base
+            // refs: the world/story this hero was actually played in.
+            let to_base = |r: &Option<gml_world::PackageRef>| {
+                r.as_ref().map(|r| gml_persistence::CharacterBaseRef {
+                    id: r.id.clone(),
+                    version: r.version,
+                })
+            };
+            (
+                pc,
+                to_base(&rt.session.world.world_ref),
+                to_base(&rt.session.world.story_ref),
+            )
         })
     })
     .await;
-    let pc = match read {
-        Ok(Ok(Some(pc))) => pc,
+    let (pc, world_ref, story_ref) = match read {
+        Ok(Ok(Some(tuple))) => tuple,
         Ok(Ok(None)) => {
             return json_response(
                 StatusCode::NOT_FOUND,
@@ -1164,6 +1194,29 @@ async fn post_save_character(
             )
         }
     };
+    // Align the pins with every other creation path (CharacterBaseRef contract:
+    // "version at character creation"): re-pin LIVE package versions, keeping
+    // the session's launch-time version only when the package is gone. And a
+    // story_ref must point at a real AUTHORED story: the synthetic "procedural"
+    // pseudo-id and procedural-kind stories carry no plot to base a hero on —
+    // the resolver 400s exactly such refs, so never mint them here.
+    let world_ref = world_ref.map(|r| gml_persistence::CharacterBaseRef {
+        version: state.world_store.world_version(&r.id).unwrap_or(r.version),
+        id: r.id,
+    });
+    let story_ref = story_ref.filter(|r| r.id != PROCEDURAL_STORY_ID).and_then(|r| {
+        let store = state.story_store.lock().expect("story store lock poisoned");
+        match store.kind(&r.id) {
+            Ok(kind) if kind == "procedural" => None,
+            Ok(_) => Some(gml_persistence::CharacterBaseRef {
+                version: store.version(&r.id).unwrap_or(r.version),
+                id: r.id,
+            }),
+            // Story deleted since launch: keep the launch-time pin (refs may
+            // dangle; kind unknown, so give it the benefit of the doubt).
+            Err(_) => Some(r),
+        }
+    });
 
     let result = {
         let mut cstore = state
@@ -1172,13 +1225,19 @@ async fn post_save_character(
             .expect("character store lock poisoned");
         if target_id.is_empty() {
             // Create a new character. title = the hero's name, fallback "Персонаж".
+            // The session's world/story refs ride along as base provenance.
             let name = pc
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim();
             let title = if name.is_empty() { "Персонаж" } else { name };
-            cstore.create_character(title, json!({ "player_character": pc }))
+            cstore.create_character(
+                title,
+                json!({ "player_character": pc }),
+                world_ref,
+                story_ref,
+            )
         } else {
             // Snapshot an existing character (FULL REPLACE + version bump).
             cstore.snapshot_character(&target_id, pc)
@@ -1888,6 +1947,22 @@ fn resolve_story_architect_world(
         )
     })?;
     let lore = world.get("world_lore").cloned().unwrap_or(Value::Null);
+    // An EMPTY bible would inject a '## BOUND WORLD BIBLE' block over a literal
+    // `{}` — instructions about canon that does not exist (and the system
+    // prompt hard-references the bible, so the block cannot simply be
+    // dropped). Reject cleanly instead: a story is authored over a filled world.
+    if !value_has_text(&lore) {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({
+                "ok": false,
+                "code": "world_lore_required",
+                "error": format!(
+                    "у мира {world_id} пустая библия — заполните мир в студии, история строится над его каноном"
+                ),
+            }),
+        ));
+    }
     let lore_block = gml_agents::story_architect_world_lore_block(&lore);
     Ok(ResolvedStoryWorld {
         world_id,
@@ -2229,7 +2304,7 @@ async fn save_story_architect_state(
 }
 
 // =========================================================================
-// character-architect SSE (mirror of the story architect; standalone hero)
+// character-architect SSE (mirror of the story architect; optionally world/story-based hero)
 // =========================================================================
 
 /// `POST /character-architect/chat` — Server-Sent Events, the CHARACTER-level
@@ -2239,13 +2314,18 @@ async fn save_story_architect_state(
 /// and the persisted character. Terminates with `done`. Same event vocabulary as
 /// the other two so the frontend SSE reader is reused.
 ///
-/// Body `{message, character_id?, draft?}`. A character is STANDALONE — there is
-/// no bound world to resolve. The conversation state lives in the dialogs SQLite
-/// (`architect_chats` kind='character'); an optional `draft` is the panel's
-/// hand-edited SHEET, applied as a content update BEFORE the turn. Create-on-
-/// first-turn: an absent `character_id` allocates a fresh `.gmchar` package. The
-/// model's sheet source is the STORED package content (`payload.player_character`),
-/// never the client draft (sent == stored).
+/// Body `{message, character_id?, draft?, world_id?, story_id?}`. A character
+/// MAY be based on a world and/or story: on a CREATE (absent `character_id`)
+/// the optional `world_id`/`story_id` pin the base packages into the new
+/// `.gmchar` (`world_ref`/`story_ref`) and their PUBLIC content rides into the
+/// model as read-only system blocks; for an existing character the stored refs
+/// are used and the request ids are ignored (the base is fixed at creation).
+/// Without a base the hero is standalone, as before. The conversation state
+/// lives in the dialogs SQLite (`architect_chats` kind='character'); an optional
+/// `draft` is the panel's hand-edited SHEET, applied as a content update BEFORE
+/// the turn. Create-on-first-turn: an absent `character_id` allocates a fresh
+/// `.gmchar` package. The model's sheet source is the STORED package content
+/// (`payload.player_character`), never the client draft (sent == stored).
 async fn post_character_architect_chat(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let message = body_str(&data, "message");
@@ -2267,6 +2347,34 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
             Some(c)
         }
     };
+    let world_id = {
+        let w = body_str(&data, "world_id");
+        if w.is_empty() {
+            None
+        } else {
+            Some(w)
+        }
+    };
+    let story_id = {
+        let s = body_str(&data, "story_id");
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    };
+
+    // Resolve the base world/story EAGERLY (mirrors the story architect's world
+    // resolve): a dangling id on a create is a clean 400 before any model call.
+    let base = match resolve_character_architect_base(
+        &state,
+        character_id.as_deref(),
+        world_id.as_deref(),
+        story_id.as_deref(),
+    ) {
+        Ok(base) => base,
+        Err(resp) => return resp,
+    };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let app = state.clone();
@@ -2279,6 +2387,8 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
             character_id.clone(),
             &message,
             client_draft.as_ref(),
+            base.world_ref.clone(),
+            base.story_ref.clone(),
         )
         .await
         {
@@ -2346,6 +2456,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
         match gml_agents::character_architect_turn(
             client.as_ref(),
             &history,
+            &base.context_blocks,
             &draft,
             &message,
             &mut sink,
@@ -2360,6 +2471,8 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                         Some(persisted_id.clone()),
                         &message,
                         output.draft.as_ref(),
+                        None,
+                        None,
                     )
                     .await
                     {
@@ -2558,6 +2671,192 @@ fn snapshot_and_retitle(
     Ok(character)
 }
 
+/// The optional base packages resolved for a character-architect turn: the refs
+/// to pin into a create and the public, read-only context blocks for the model.
+#[derive(Default)]
+struct ResolvedCharacterBase {
+    world_ref: Option<gml_persistence::CharacterBaseRef>,
+    story_ref: Option<gml_persistence::CharacterBaseRef>,
+    context_blocks: Vec<String>,
+}
+
+/// Resolve the base world/story of a character-architect turn.
+///
+/// For an EXISTING character the binding is FIXED at creation: the stored
+/// `world_ref`/`story_ref` are read back and any request ids are ignored; a
+/// base package deleted since then is SKIPPED silently (refs are provenance and
+/// may dangle — a missing world must not brick the studio). For a NEW character
+/// the request's `story_id`/`world_id` define the base: the ids the user NAMED
+/// must exist (a dangling pick is a clean 400 before any model call) and their
+/// live versions are pinned; a PROCEDURAL story is a 400 (no authored plot to
+/// base a hero on). A story pin implies (and overrides) the world pin
+/// via its own `world_ref` — but that implied world was NOT named by the user,
+/// so when it dangles (base world deleted after the story was authored) the
+/// story stays usable: the story's RECORDED world pin is kept as provenance and
+/// only the world context block is skipped.
+///
+/// The context blocks are PUBLIC-ONLY (built by
+/// `character_architect_world_block` / `character_architect_story_block`): the
+/// character architect talks to the player, so GM secrets never ride here.
+#[allow(clippy::result_large_err)]
+fn resolve_character_architect_base(
+    state: &AppState,
+    character_id: Option<&str>,
+    world_id: Option<&str>,
+    story_id: Option<&str>,
+) -> Result<ResolvedCharacterBase, Response> {
+    // Existing character: refs come from the package, request ids are ignored.
+    let (world_ref, story_ref, strict) = if let Some(cid) = character_id {
+        let refs = {
+            let store = state
+                .character_store
+                .lock()
+                .expect("character store lock poisoned");
+            store.base_refs(cid)
+        };
+        match refs {
+            Ok((world_ref, story_ref)) => (world_ref, story_ref, false),
+            // An unknown character id fails later on the package read with the
+            // same 404-ish path as before; no base context either way.
+            Err(_) => return Ok(ResolvedCharacterBase::default()),
+        }
+    } else {
+        // New character: the request defines the base. A story pin implies (and
+        // overrides) the world pin via its own world_ref. A PROCEDURAL story is
+        // rejected here, not just in the UI pickers: it carries no authored plot
+        // to base a hero on, so a story_ref to one would be meaningless
+        // provenance driving false «под эту историю» badges.
+        let (story_ref, story_world_ref) = match story_id {
+            Some(sid) => {
+                let store = state.story_store.lock().expect("story store lock poisoned");
+                match store.version(sid) {
+                    Ok(version) => {
+                        if store.kind(sid).map(|k| k == "procedural").unwrap_or(false) {
+                            return Err(json_response(
+                                StatusCode::BAD_REQUEST,
+                                &json!({"ok": false, "error": format!(
+                                    "story {sid} is procedural and has no authored plot to base a character on"
+                                )}),
+                            ));
+                        }
+                        (
+                            Some(gml_persistence::CharacterBaseRef {
+                                id: sid.to_string(),
+                                version,
+                            }),
+                            store.world_ref(sid).ok().flatten(),
+                        )
+                    }
+                    Err(_) => {
+                        return Err(json_response(
+                            StatusCode::BAD_REQUEST,
+                            &json!({"ok": false, "error": format!("story not found: {sid}")}),
+                        ))
+                    }
+                }
+            }
+            None => (None, None),
+        };
+        let world_ref = if let Some(story_world) = story_world_ref {
+            // Implied by the story — the user never named this id, so it MAY
+            // dangle: pin the live version when the world exists, else keep the
+            // story's recorded pin as provenance (the block is skipped below).
+            let version = state
+                .world_store
+                .world_version(&story_world.id)
+                .unwrap_or(story_world.version);
+            Some(gml_persistence::CharacterBaseRef {
+                id: story_world.id,
+                version,
+            })
+        } else {
+            match world_id {
+                // Named by the user — a dangling id is a clean 400.
+                Some(wid) => match state.world_store.world_version(wid) {
+                    Ok(version) => Some(gml_persistence::CharacterBaseRef {
+                        id: wid.to_string(),
+                        version,
+                    }),
+                    Err(_) => {
+                        return Err(json_response(
+                            StatusCode::BAD_REQUEST,
+                            &json!({"ok": false, "error": format!("world not found: {wid}")}),
+                        ))
+                    }
+                },
+                None => None,
+            }
+        };
+        (world_ref, story_ref, true)
+    };
+
+    // Build the public context blocks from the LIVE packages. `strict` (a fresh
+    // create) has already 400-ed on every USER-NAMED dangling id above; a stored
+    // or story-implied ref whose package is missing just skips its block.
+    let mut context_blocks = Vec::new();
+    if let Some(world_ref) = &world_ref {
+        if let Ok(world) = state.world_store.get_world(&world_ref.id) {
+            let lore = world.get("world_lore").cloned().unwrap_or(Value::Null);
+            context_blocks.push(gml_agents::character_architect_world_block(&lore));
+        }
+    }
+    if let Some(story_ref) = &story_ref {
+        let public = {
+            let store = state.story_store.lock().expect("story store lock poisoned");
+            story_public_for_character(&store, &story_ref.id)
+        };
+        match public {
+            Some(public) => {
+                context_blocks.push(gml_agents::character_architect_story_block(&public))
+            }
+            None if strict => {
+                return Err(json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": format!("story not found: {}", story_ref.id)}),
+                ))
+            }
+            None => {}
+        }
+    }
+
+    // Refs recorded but NO live material (bases deleted / nothing public):
+    // substitute the static "reference unavailable" note. It keeps the
+    // conversation on the BASED prompt — the standalone prompt's "do NOT tie"
+    // would actively contradict a sheet that is already grounded in the base.
+    if context_blocks.iter().all(|b| b.trim().is_empty())
+        && (world_ref.is_some() || story_ref.is_some())
+    {
+        context_blocks = vec![gml_agents::character_architect_base_unavailable_block()];
+    }
+
+    Ok(ResolvedCharacterBase {
+        world_ref,
+        story_ref,
+        context_blocks,
+    })
+}
+
+/// The PUBLIC story object for the character architect's BASE STORY block:
+/// `title`/`description` from the catalog row plus `story_brief`/`public_intro`
+/// from the seed — exactly the player-visible premise, never `hidden_truth` or
+/// NPC secrets (the block builder whitelists again on top of this).
+fn story_public_for_character(store: &StoryStore, story_id: &str) -> Option<Value> {
+    let meta = store.story_metadata(story_id).ok()?;
+    let seed = store.seed(story_id).ok().unwrap_or(Value::Null);
+    let mut public = Map::new();
+    for key in ["title", "description"] {
+        if let Some(v) = meta.get(key) {
+            public.insert(key.to_string(), v.clone());
+        }
+    }
+    for key in ["story_brief", "public_intro"] {
+        if let Some(v) = seed.get(key) {
+            public.insert(key.to_string(), v.clone());
+        }
+    }
+    Some(Value::Object(public))
+}
+
 /// `POST /characters/{id}/draft` — the character studio's DIRECT manual save:
 /// snapshot the edited sheet into the package WITHOUT any architect chat or SSE.
 /// Body `{player_character: {...}}` (must be an object, else 400). Snapshots the
@@ -2612,15 +2911,19 @@ async fn post_character_draft(
 /// Persist a character-architect turn's CONTENT. Returns `(character_id,
 /// character, characters)`. For an ABSENT `character_id` this CREATES a `.gmchar`
 /// package (title from the draft name / message fallback) with the draft sheet as
-/// its `player_character`; for a PRESENT id with a draft it `snapshot_character`s
-/// (FULL REPLACE + version bump); for a PRESENT id WITHOUT a draft nothing is
-/// written (read-only fetch). The architect CHAT never rides here — it goes to
-/// the dialogs SQLite via `save_character_architect_state`.
+/// its `player_character` and the resolved base `world_ref`/`story_ref` pinned
+/// in; for a PRESENT id with a draft it `snapshot_character`s (FULL REPLACE +
+/// version bump — the refs on the create-branch args are ignored, the stored
+/// ones survive); for a PRESENT id WITHOUT a draft nothing is written (read-only
+/// fetch). The architect CHAT never rides here — it goes to the dialogs SQLite
+/// via `save_character_architect_state`.
 async fn persist_character_payload(
     state: &AppState,
     character_id: Option<String>,
     message: &str,
     draft: Option<&Value>,
+    world_ref: Option<gml_persistence::CharacterBaseRef>,
+    story_ref: Option<gml_persistence::CharacterBaseRef>,
 ) -> Result<(String, Value, Vec<Value>), Response> {
     let store = state.character_store.clone();
     // The sheet object to store (the draft IS the player_character). Only a real
@@ -2648,11 +2951,13 @@ async fn persist_character_payload(
                 }
                 None => {
                     // Create-on-first-turn: the draft sheet (or an empty object)
-                    // becomes the package's player_character.
+                    // becomes the package's player_character; the resolved base
+                    // refs are pinned in (None, None for a standalone hero).
                     let payload = json!({
                         "player_character": pc_draft.clone().unwrap_or(Value::Object(Map::new()))
                     });
-                    let created = store.create_character(&create_title, payload)?;
+                    let created =
+                        store.create_character(&create_title, payload, world_ref, story_ref)?;
                     let id = created
                         .get("id")
                         .and_then(Value::as_str)
@@ -2727,21 +3032,39 @@ async fn save_character_architect_state(
 /// routes: unknown id -> 404, a self-contained builtin or a procedural story ->
 /// 400 (via `draft_row`); a story with no authored protagonist -> 400. The loose
 /// authored PC is coerced through the canonical PC seam so the package carries the
-/// full sheet (missing fields default). Returns `{ok, character}`.
+/// full sheet (missing fields default). The minted character records where it
+/// came from: `story_ref` (this story, live version) and `world_ref` (the
+/// story's own bound world). Returns `{ok, character}`.
 async fn post_save_protagonist(
     State(state): State<AppState>,
     AxPath(id): AxPath<String>,
 ) -> Response {
     let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
     // Read the story draft (draft_row enforces world-bound-authored) and pull the
-    // suggested protagonist out of its seed.
-    let seed_pc = {
+    // suggested protagonist out of its seed, plus the provenance to pin: the
+    // story itself (live version) and the story's own bound world.
+    let (seed_pc, story_ref, world_ref) = {
         let store = state.story_store.lock().expect("story store lock poisoned");
         match store.draft_row(&id) {
-            Ok(row) => row
-                .get("seed")
-                .and_then(|s| s.get("player_character"))
-                .cloned(),
+            Ok(row) => {
+                let seed_pc = row
+                    .get("seed")
+                    .and_then(|s| s.get("player_character"))
+                    .cloned();
+                let story_ref = Some(gml_persistence::CharacterBaseRef {
+                    id: id.clone(),
+                    version: row.get("version").and_then(Value::as_u64).unwrap_or(0),
+                });
+                // Pin the LIVE world version (the CharacterBaseRef contract:
+                // "version at character creation"), falling back to the story's
+                // recorded pin when the world is gone (refs may dangle).
+                let world_ref = gml_persistence::CharacterBaseRef::from_value(row.get("world_ref"))
+                    .map(|r| gml_persistence::CharacterBaseRef {
+                        version: state.world_store.world_version(&r.id).unwrap_or(r.version),
+                        id: r.id,
+                    });
+                (seed_pc, story_ref, world_ref)
+            }
             Err(StoryStoreError::StoryNotFound(_)) => {
                 return json_response(
                     StatusCode::NOT_FOUND,
@@ -2785,7 +3108,12 @@ async fn post_save_protagonist(
             .character_store
             .lock()
             .expect("character store lock poisoned");
-        cstore.create_character(title, json!({ "player_character": pc_payload }))
+        cstore.create_character(
+            title,
+            json!({ "player_character": pc_payload }),
+            world_ref,
+            story_ref,
+        )
     };
     match result {
         Ok(character) => ok_json(&json!({"ok": true, "character": character})),
@@ -3728,8 +4056,16 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     // K1 (§К1.3): an optional `character_id` selects a CHARACTER package whose
     // hero is overlaid onto the launched world. A supplied-but-unknown id is a
     // 400 BEFORE anything is written (no-fallback). We resolve it up front and
-    // carry the `{payload, version}` into the single overlay tail below.
-    let selected_character: Option<(Value, u64)> = if character_id.is_empty() {
+    // carry the `{payload, version, base refs}` into the single overlay tail
+    // below (the base refs power the warn-but-allow mismatch notices and the
+    // story_pc_override exemption for a hero built FOR the launched story).
+    type SelectedCharacter = (
+        Value,
+        u64,
+        Option<gml_persistence::CharacterBaseRef>,
+        Option<gml_persistence::CharacterBaseRef>,
+    );
+    let selected_character: Option<SelectedCharacter> = if character_id.is_empty() {
         None
     } else {
         let resolved = {
@@ -3737,12 +4073,19 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                 .character_store
                 .lock()
                 .expect("character store lock poisoned");
-            store
-                .get_character(&character_id)
-                .map(|c| (c, store.version(&character_id).unwrap_or(0)))
+            store.get_character(&character_id).map(|c| {
+                let (base_world_ref, base_story_ref) =
+                    store.base_refs(&character_id).unwrap_or((None, None));
+                (
+                    c,
+                    store.version(&character_id).unwrap_or(0),
+                    base_world_ref,
+                    base_story_ref,
+                )
+            })
         };
         match resolved {
-            Ok((character, version)) => {
+            Ok((character, version, base_world_ref, base_story_ref)) => {
                 // Extract the opaque `payload.player_character` object; the store
                 // guarantees it is an object on create/import, but be defensive.
                 let pc = character
@@ -3750,7 +4093,9 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                     .and_then(|p| p.get("player_character"))
                     .cloned();
                 match pc {
-                    Some(pc @ Value::Object(_)) => Some((pc, version)),
+                    Some(pc @ Value::Object(_)) => {
+                        Some((pc, version, base_world_ref, base_story_ref))
+                    }
                     _ => {
                         return json_response(
                             StatusCode::BAD_REQUEST,
@@ -3802,9 +4147,11 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         _ => String::new(),
     };
 
-    // Structured launch warnings (currently only `world_version_drift`, produced
-    // by `build_story_world`). Non-empty only on a story-launch with drift; every
-    // other branch leaves this empty and no `warnings` key is emitted.
+    // Structured launch warnings: seeded by `build_story_world`
+    // (`world_version_drift`) and extended by the unified overlay tail below
+    // (`story_pc_override`, `character_world_mismatch`,
+    // `character_story_mismatch` — any launch shape with a selected character).
+    // The `warnings` key is emitted only when non-empty.
     let mut launch_warnings: Vec<Value> = Vec::new();
 
     // K1 (§К1.3) launch refactor: each of the three launch shapes (brief /
@@ -3952,19 +4299,33 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     };
 
     // K1 (§К1.3) UNIFIED overlay tail — runs for all three launch shapes.
-    // Precedence: chosen character package > player_character from plot/seed >
-    // default. When a package is chosen we overlay it via `seed_player_character`
-    // (FULL REPLACE, no event, no revision bump — the package's card_revision
-    // travels verbatim), record `char_ref` provenance, and — if the STORY also
-    // carried its own player_character — surface the `story_pc_override` warning
-    // (warn-but-allow, like world_version_drift).
-    if let Some((pc_payload, char_version)) = &selected_character {
+    // Precedence: chosen character package > player_character from plot/seed
+    // (no default hero exists — the protagonist gates above 400 instead). When
+    // a package is chosen we overlay it via `seed_player_character` (FULL
+    // REPLACE, no event, no revision bump — the package's card_revision travels
+    // verbatim), record `char_ref` provenance, and surface the warn-but-allow
+    // notices (like world_version_drift).
+    //
+    // The launched STORY id for the story-mismatch/override checks: only a real
+    // named-story launch counts — a procedural campaign is not "another story".
+    let launch_story_id_for_warnings = if is_procedural {
+        String::new()
+    } else {
+        story_id.clone()
+    };
+    if let Some((pc_payload, char_version, base_world_ref, base_story_ref)) = &selected_character {
         world.seed_player_character(Some(pc_payload));
         world.char_ref = Some(PackageRef {
             id: character_id.clone(),
             version: *char_version,
         });
-        if story_carries_pc {
+        // A hero authored FOR the launched story (story_ref matches) IS its
+        // intended protagonist replacement — the blessed picker/wizard flow —
+        // so overriding the story's own PC is expected, not warning-worthy.
+        let built_for_this_story = base_story_ref
+            .as_ref()
+            .is_some_and(|r| r.id == launch_story_id_for_warnings);
+        if story_carries_pc && !built_for_this_story {
             launch_warnings.push(json!({
                 "code": "story_pc_override",
                 "character_id": character_id,
@@ -3972,6 +4333,41 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                             перекрывает его — сюжет, улики и NPC могут ссылаться на \
                             исходного протагониста.",
             }));
+        }
+        // Warn-but-allow: the hero was authored FOR a different world than the
+        // one launching. Only fires when BOTH sides are known — a standalone
+        // hero or a brief/self-contained launch stays quiet.
+        let world_mismatch = match (base_world_ref, &world.world_ref) {
+            (Some(base), Some(launch_world)) if base.id != launch_world.id => {
+                launch_warnings.push(json!({
+                    "code": "character_world_mismatch",
+                    "character_id": character_id,
+                    "character_world_id": base.id,
+                    "world_id": launch_world.id,
+                    "message": "Персонаж создавался под другой мир — его предыстория \
+                                и имена могут не совпадать с этим сеттингом.",
+                }));
+                true
+            }
+            _ => false,
+        };
+        // The story-shaped sibling (covers heroes based on a builtin
+        // self-contained story, which have story_ref but NO world_ref).
+        // Suppressed when the world already warned — one mismatch notice is
+        // enough to make the point.
+        if !world_mismatch && !launch_story_id_for_warnings.is_empty() {
+            if let Some(base) = base_story_ref {
+                if base.id != launch_story_id_for_warnings {
+                    launch_warnings.push(json!({
+                        "code": "character_story_mismatch",
+                        "character_id": character_id,
+                        "character_story_id": base.id,
+                        "story_id": launch_story_id_for_warnings,
+                        "message": "Персонаж создавался под другую историю — его \
+                                    предыстория может не совпадать с этой завязкой.",
+                    }));
+                }
+            }
         }
     }
 

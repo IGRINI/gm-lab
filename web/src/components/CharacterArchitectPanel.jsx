@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import WorldDetailModal from "./WorldDetailModal.jsx";
@@ -12,15 +13,18 @@ import {
   accumulateUsage,
   debugFromDone,
 } from "./architectShared.jsx";
-import "../styles-studio.css";
 
 // The character architect panel (UI_REDESIGN_TZ §Студия персонажа). It is the
 // third sibling of WorldArchitectPanel / StoryArchitectPanel and shares their
-// chat/SSE machinery (architectShared.jsx). It authors a STANDALONE, portable
-// character sheet (the `.gmchar` package's `player_character` object): the draft
-// is the flat sheet the backend's draft_player_character / edit_player_character
-// tools mutate (name, pronouns, class_role, level, background, abilities, skills,
-// hp, inventory, spells, …). There is NO bound world — a character is orthogonal.
+// chat/SSE machinery (architectShared.jsx). It authors a portable character
+// sheet (the `.gmchar` package's `player_character` object): the draft is the
+// flat sheet the backend's draft_player_character / edit_player_character tools
+// mutate (name, pronouns, class_role, level, background, abilities, skills, hp,
+// inventory, spells, …). A hero MAY be based on a world and/or story (the
+// optional worldId/storyId props, picked in BasePickerModal): the ids ride with
+// the CREATE only — the backend pins them into the package (world_ref/story_ref)
+// and feeds the architect the base's public canon. Without a base the hero is
+// standalone/orthogonal, as before.
 //
 // The right column is a FULL manual editor: every scalar, map and list is edited
 // in place. Two persistence paths coexist:
@@ -35,13 +39,37 @@ import "../styles-studio.css";
 // sheet (preserving unknown keys such as `card_revision`), never a pruned subset
 // — dropping a key would erase it from the package.
 
-const DEFAULT_ARCHITECT_MESSAGES = [
-  {
-    role: "assistant",
-    content:
-      "Опиши персонажа, которого хочешь собрать, — или дай направление, а лист я соберу сам.\n\nЧто особенно полезно:\n\n1. Имя, роль или класс, уровень.\n2. Характер, ценности, происхождение и внешность.\n3. Характеристики (сила, ловкость и т.д.) и ключевые навыки.\n4. ХП, класс доспеха, снаряжение и инвентарь.\n5. Заклинания и слоты, если персонаж их использует.\n\nЯ собираю один переносимый лист персонажа — его можно будет запустить в любой истории.",
-  },
-];
+// The panel's greeting (UI-only — never part of the model history). The closing
+// line reflects the base: a standalone hero is pitched as portable, a based one
+// as grounded in its world/story — the old «запустить в любой истории» would
+// read as a lie right under an «Основа: …» header. Keyed on the base IDS (not
+// titles): a dangling base still IS a base — its material is just unavailable,
+// and the greeting says so instead of pretending the hero is standalone.
+function defaultArchitectMessages({
+  worldId = "",
+  storyId = "",
+  worldTitle = "",
+  storyTitle = "",
+} = {}) {
+  // Prefer whichever base is actually AVAILABLE (a dangling story must not
+  // hide a live world); only when every recorded base is gone say so.
+  const closing =
+    storyId && storyTitle
+      ? `Я соберу героя под историю «${storyTitle}» с опорой на её публичную завязку — при этом лист останется переносимым.`
+      : worldId && worldTitle
+        ? `Я соберу героя под мир «${worldTitle}» с опорой на его публичный канон — при этом лист останется переносимым.`
+        : worldId || storyId
+          ? "Основа героя записана в пакете, но её материал сейчас недоступен — я сохраню существующие связи листа."
+          : "Я собираю один переносимый лист персонажа — его можно будет запустить в любой истории.";
+  return [
+    {
+      role: "assistant",
+      content:
+        "Опиши персонажа, которого хочешь собрать, — или дай направление, а лист я соберу сам.\n\nЧто особенно полезно:\n\n1. Имя, роль или класс, уровень.\n2. Характер, ценности, происхождение и внешность.\n3. Характеристики (сила, ловкость и т.д.) и ключевые навыки.\n4. ХП, класс доспеха, снаряжение и инвентарь.\n5. Заклинания и слоты, если персонаж их использует.\n\n" +
+        closing,
+    },
+  ];
+}
 
 // D&D ability keys arrive from the model in English — localize the six core ones.
 const ABILITY_SHORT = { STR: "СИЛ", DEX: "ЛОВ", CON: "ТЕЛ", INT: "ИНТ", WIS: "МДР", CHA: "ХАР" };
@@ -163,15 +191,31 @@ function characterSheetFromSaved(character) {
 // Restore the visible conversation from the server's architect block
 // (`GET /characters/{id}/architect` → `{architect: {messages}}`). The chat lives
 // in the dialogs SQLite (architect_chats kind='character'), never in the package.
-function characterMessagesFromChat(architect) {
+// `fallback` is the base-aware greeting for an empty conversation.
+function characterMessagesFromChat(architect, fallback) {
   const messages = asArray(architect?.messages).map(normalizeVisibleMessage).filter(Boolean);
-  return messages.length > 0 ? messages : DEFAULT_ARCHITECT_MESSAGES;
+  return messages.length > 0 ? messages : fallback;
 }
 
 // The sheet POSTed as `draft` (and, verbatim, as the direct-save body). The
 // backend REPLACES the whole player_character, so send the FULL sheet — only
 // truly-empty values (blank strings, empty lists / objects) are dropped as noise;
 // numbers, booleans and unknown keys pass through.
+// §И1 разделитель «имя — описание» (пробел + EM DASH + пробел, сплит по ПЕРВОМУ
+// вхождению — зеркалит gml-world helpers::item_head/item_tail).
+const ITEM_DESC_SEP = " — ";
+
+// Normalize an «имя — описание» entry at the payload boundary: the editors bind
+// RAW values while typing (trim in a controlled input eats the trailing space
+// the user just typed), so head/tail are trimmed only here.
+function normalizeEntryString(text) {
+  const idx = text.indexOf(ITEM_DESC_SEP);
+  if (idx < 0) return text.trim();
+  const head = text.slice(0, idx).trim();
+  const tail = text.slice(idx + ITEM_DESC_SEP.length).trim();
+  return tail ? `${head}${ITEM_DESC_SEP}${tail}` : head;
+}
+
 function cleanCharacterDraft(sheet) {
   const out = {};
   for (const [key, value] of Object.entries(asObject(sheet) || {})) {
@@ -180,7 +224,12 @@ function cleanCharacterDraft(sheet) {
       const trimmed = value.trim();
       if (trimmed) out[key] = trimmed;
     } else if (Array.isArray(value)) {
-      if (value.length > 0) out[key] = value;
+      // Инвентарь/снаряжение/особенности — строки «имя — описание»; заклинания
+      // (объекты) проходят как есть.
+      const list = value
+        .map((item) => (typeof item === "string" ? normalizeEntryString(item) : item))
+        .filter((item) => item != null && item !== "");
+      if (list.length > 0) out[key] = list;
     } else if (typeof value === "object") {
       if (Object.keys(value).length > 0) out[key] = value;
     } else {
@@ -215,6 +264,20 @@ function characterReady(sheet) {
 
 export default function CharacterArchitectPanel({
   character,
+  // The OPTIONAL base the hero is built on. For a fresh draft these come from
+  // the BasePickerModal or the wizard's «Создать персонажа» ctx (App state) and
+  // ride with the create (first architect turn / manual save) so the backend
+  // pins world_ref/story_ref and feeds the architect the base's public context;
+  // for an existing character they mirror the refs already stored in the
+  // package (display-only — the binding is fixed at creation). A missing flag
+  // marks a ref whose package is gone from the library (dangling by design):
+  // the title is then empty and the header/greeting say so honestly.
+  worldId = "",
+  storyId = "",
+  worldTitle = "",
+  storyTitle = "",
+  worldMissing = false,
+  storyMissing = false,
   locked,
   onArchitectStream,
   onPlayCharacter,
@@ -226,8 +289,9 @@ export default function CharacterArchitectPanel({
   // catalog row's `payload` (the /characters list carries it); the conversation
   // comes from the architect fetch below. Model history + cache ids are SERVER-
   // side (the dialogs SQLite) — the panel holds only the visible chat.
+  const greeting = defaultArchitectMessages({ worldId, storyId, worldTitle, storyTitle });
   const [sheet, setSheet] = useState(() => characterSheetFromSaved(character));
-  const [messages, setMessages] = useState(() => characterMessagesFromChat(null));
+  const [messages, setMessages] = useState(() => characterMessagesFromChat(null, greeting));
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
@@ -324,7 +388,7 @@ export default function CharacterArchitectPanel({
     setSheet(nextSheet);
     setPersistedKey(stableStringify(cleanCharacterDraft(nextSheet)));
     setExternalRev((v) => v + 1);
-    setMessages(characterMessagesFromChat(null));
+    setMessages(characterMessagesFromChat(null, greeting));
     setCurrentCharacterId(id || "");
     clearLive();
     setInput("");
@@ -345,7 +409,7 @@ export default function CharacterArchitectPanel({
         if (!data?.ok) {
           throw new Error(data?.error || "не удалось загрузить переписку персонажа");
         }
-        setMessages(characterMessagesFromChat(data.architect));
+        setMessages(characterMessagesFromChat(data.architect, greeting));
       })
       .catch((error) => {
         if (cancelled || loadedCharacterIdRef.current !== id) return;
@@ -583,7 +647,15 @@ export default function CharacterArchitectPanel({
           message: text,
           draft: draftPayload,
           // A create sends no id; an edit carries the resolved character_id.
-          ...(currentCharacterId ? { character_id: currentCharacterId } : {}),
+          // The base world/story ids ride ONLY with the create (the server pins
+          // them into the new package; for an existing character it reads the
+          // stored refs and ignores request ids).
+          ...(currentCharacterId
+            ? { character_id: currentCharacterId }
+            : {
+                ...(worldId ? { world_id: worldId } : {}),
+                ...(storyId ? { story_id: storyId } : {}),
+              }),
         },
         (ev) => {
           if (ev.kind === "architect_delta") {
@@ -606,6 +678,16 @@ export default function CharacterArchitectPanel({
             }
           } else if (ev.kind === "architect_error") {
             failure = textValue(ev.data) || "Архитектор не ответил";
+            // The server creates the package (and saves the user message into
+            // its conversation) BEFORE the model call, and its error events
+            // carry the persisted character_id as a SIBLING of `data`. Pin it,
+            // or «Повторить» would re-post without an id and mint a DUPLICATE
+            // package with the same base refs, stranding this one.
+            const errId = textValue(ev.character_id);
+            if (errId && !currentCharacterId) {
+              setCurrentCharacterId(errId);
+              loadedCharacterIdRef.current = errId;
+            }
           } else if (ev.kind === "architect_done") {
             adopted = true;
             const data = ev.data || {};
@@ -690,6 +772,10 @@ export default function CharacterArchitectPanel({
         const data = await api.createCharacter({
           title,
           payload: { player_character: payload },
+          // The picked base rides with the create so the package pins its
+          // world_ref/story_ref even on the no-chat manual path.
+          ...(worldId ? { world_id: worldId } : {}),
+          ...(storyId ? { story_id: storyId } : {}),
         });
         if (!data?.ok) throw new Error(data?.error || "не удалось создать персонажа");
         character = data.character;
@@ -752,45 +838,7 @@ export default function CharacterArchitectPanel({
                 disabled={editDisabled}
                 aria-label="Удалить строку"
               >
-                ✕
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="sheet-add-btn"
-            onClick={ops.add}
-            disabled={editDisabled}
-          >
-            + добавить
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderListEditor = (label, rows, ops, placeholder) => (
-    <div className="world-bible">
-      <div className="world-bible-fields">
-        <p className="world-bible-hint">{label}</p>
-        <div className="sheet-rows">
-          {rows.map((r, i) => (
-            <div className="sheet-list-row" key={i}>
-              <input
-                className="sheet-list-input"
-                value={r.text}
-                onChange={(e) => ops.edit(i, e.target.value)}
-                placeholder={placeholder}
-                disabled={editDisabled}
-              />
-              <button
-                type="button"
-                className="sheet-row-del"
-                onClick={() => ops.remove(i)}
-                disabled={editDisabled}
-                aria-label="Удалить строку"
-              >
-                ✕
+                <Icon name="x" size={12} />
               </button>
             </div>
           ))}
@@ -811,21 +859,18 @@ export default function CharacterArchitectPanel({
   // EM DASH + space, split on the FIRST separator — mirrors gml-world
   // helpers::item_head/item_tail/item_entry_string). The stored value stays a
   // single string so the engine's head-matching keeps working; the editor only
-  // splits/joins for display.
-  const ITEM_DESC_SEP = " — ";
+  // splits/joins for display. NO trim here: a trimmed controlled input eats the
+  // trailing space the user just typed — normalization lives in
+  // cleanCharacterDraft at the payload boundary.
   const entryName = (text) => {
     const idx = String(text).indexOf(ITEM_DESC_SEP);
-    return (idx >= 0 ? String(text).slice(0, idx) : String(text)).trim();
+    return idx >= 0 ? String(text).slice(0, idx) : String(text);
   };
   const entryDesc = (text) => {
     const idx = String(text).indexOf(ITEM_DESC_SEP);
-    return idx >= 0 ? String(text).slice(idx + ITEM_DESC_SEP.length).trim() : "";
+    return idx >= 0 ? String(text).slice(idx + ITEM_DESC_SEP.length) : "";
   };
-  const entryJoin = (name, desc) => {
-    const n = name.trim();
-    const d = desc.trim();
-    return d ? `${n}${ITEM_DESC_SEP}${d}` : n;
-  };
+  const entryJoin = (name, desc) => (desc ? `${name}${ITEM_DESC_SEP}${desc}` : name);
   const renderNamedListEditor = (label, rows, ops, namePh, descPh) => (
     <div className="world-bible">
       <div className="world-bible-fields">
@@ -840,12 +885,13 @@ export default function CharacterArchitectPanel({
                 placeholder={namePh}
                 disabled={editDisabled}
               />
-              <input
+              <textarea
                 className="sheet-list-input sheet-named-desc"
                 value={entryDesc(r.text)}
                 onChange={(e) => ops.edit(i, entryJoin(entryName(r.text), e.target.value))}
                 placeholder={descPh}
                 disabled={editDisabled}
+                rows={1}
               />
               <button
                 type="button"
@@ -854,7 +900,7 @@ export default function CharacterArchitectPanel({
                 disabled={editDisabled}
                 aria-label="Удалить строку"
               >
-                ✕
+                <Icon name="x" size={12} />
               </button>
             </div>
           ))}
@@ -875,13 +921,40 @@ export default function CharacterArchitectPanel({
     <div className={`world-studio character-studio${className ? ` ${className}` : ""}`}>
       <header className="world-studio-head">
         <div className="world-studio-id">
-          <span className="world-studio-emblem" aria-hidden="true">✦</span>
+          <span className="world-studio-emblem" aria-hidden="true"><Icon name="user" size={18} /></span>
           <div className="world-studio-title">
             <span className="world-studio-kicker">создание персонажа</span>
             <b>Студия персонажей</b>
             <p className="world-studio-sub">
-              Соберите переносимый лист героя с архитектором или отредактируйте каждое поле вручную
-              и сохраните лист напрямую.
+              {worldId || storyId ? (
+                <>
+                  Основа:{" "}
+                  {worldId && (
+                    <>
+                      {worldMissing ? "мир (пакет недоступен)" : `мир «${worldTitle}»`}
+                      {storyId ? " · " : ""}
+                    </>
+                  )}
+                  {storyId &&
+                    (storyMissing ? "история (пакет недоступен)" : `история «${storyTitle}»`)}
+                  {(worldId && !worldMissing) || (storyId && !storyMissing)
+                    ? // Pronoun agrees with what is actually available: их (оба),
+                      // её (история), его (мир).
+                      ` — архитектор опирается на ${
+                        worldId && !worldMissing && storyId && !storyMissing
+                          ? "их"
+                          : storyId && !storyMissing
+                            ? "её"
+                            : "его"
+                      } публичный канон.`
+                    : " — материал основы недоступен: архитектор сохранит записанные связи листа."}
+                </>
+              ) : (
+                <>
+                  Соберите переносимый лист героя с архитектором или отредактируйте каждое поле
+                  вручную и сохраните лист напрямую.
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -897,7 +970,7 @@ export default function CharacterArchitectPanel({
           usageTitle="Токены архитектора персонажа"
           helpTitle="Архитектор персонажа"
           helpSubtitle="Отдельный AI-контур до старта игры."
-          helpNote="Он собирает один переносимый лист персонажа: имя и роль, характеристики, навыки, ХП, инвентарь, снаряжение и заклинания. Готового героя можно запустить в любой истории или заменить им протагониста."
+          helpNote="Он собирает один переносимый лист персонажа: имя и роль, характеристики, навыки, ХП, инвентарь, снаряжение и заклинания. Без основы герой универсален; с основой архитектор опирается на её публичный канон. Лист в любом случае переносим — героя можно запустить и в другой истории (при несовпадении мира придёт предупреждение)."
           thinkLabel="🧠 Архитектор рассуждает"
           placeholder="Например: суровый следопыт-полуэльф, выросший на болотах, мастер лука и трав… (Enter — отправить)"
           messages={messages}
@@ -929,7 +1002,7 @@ export default function CharacterArchitectPanel({
               <label className="world-field">
                 <span>Имя</span>
                 <input
-                  value={textValue(sheet.name)}
+                  value={scalarText(sheet.name)}
                   onChange={(event) => updateField("name", event.target.value)}
                   placeholder="Например: Кара Вент"
                   disabled={editDisabled}
@@ -938,7 +1011,7 @@ export default function CharacterArchitectPanel({
               <label className="world-field">
                 <span>Роль / класс</span>
                 <input
-                  value={textValue(sheet.class_role)}
+                  value={scalarText(sheet.class_role)}
                   onChange={(event) => updateField("class_role", event.target.value)}
                   placeholder="Например: следопыт"
                   disabled={editDisabled}
@@ -950,7 +1023,7 @@ export default function CharacterArchitectPanel({
               <label className="world-field">
                 <span>Местоимения</span>
                 <input
-                  value={textValue(sheet.pronouns)}
+                  value={scalarText(sheet.pronouns)}
                   onChange={(event) => updateField("pronouns", event.target.value)}
                   placeholder="она/её"
                   disabled={editDisabled}
@@ -971,7 +1044,7 @@ export default function CharacterArchitectPanel({
             <label className="world-field">
               <span>Возраст</span>
               <input
-                value={textValue(sheet.age)}
+                value={scalarText(sheet.age)}
                 onChange={(event) => updateField("age", event.target.value)}
                 placeholder="Например: 27"
                 disabled={editDisabled}
@@ -981,7 +1054,7 @@ export default function CharacterArchitectPanel({
             <label className="world-field">
               <span>Внешность</span>
               <AutoTextarea
-                value={textValue(sheet.physical_type)}
+                value={scalarText(sheet.physical_type)}
                 onChange={(event) => updateField("physical_type", event.target.value)}
                 placeholder="Телосложение, черты, как выглядит."
                 disabled={editDisabled}
@@ -991,7 +1064,7 @@ export default function CharacterArchitectPanel({
             <label className="world-field">
               <span>Особые приметы</span>
               <AutoTextarea
-                value={textValue(sheet.distinctive_features)}
+                value={scalarText(sheet.distinctive_features)}
                 onChange={(event) => updateField("distinctive_features", event.target.value)}
                 placeholder="Шрамы, татуировки, что запоминается."
                 disabled={editDisabled}
@@ -1001,7 +1074,7 @@ export default function CharacterArchitectPanel({
             <label className="world-field">
               <span>Происхождение</span>
               <AutoTextarea
-                value={textValue(sheet.background)}
+                value={scalarText(sheet.background)}
                 onChange={(event) => updateField("background", event.target.value)}
                 placeholder="Откуда герой, что его сформировало."
                 disabled={editDisabled}
@@ -1011,7 +1084,7 @@ export default function CharacterArchitectPanel({
             <label className="world-field">
               <span>Характер</span>
               <AutoTextarea
-                value={textValue(sheet.personality)}
+                value={scalarText(sheet.personality)}
                 onChange={(event) => updateField("personality", event.target.value)}
                 placeholder="Как ведёт себя, что движет героем."
                 disabled={editDisabled}
@@ -1021,7 +1094,7 @@ export default function CharacterArchitectPanel({
             <label className="world-field">
               <span>Ценности</span>
               <AutoTextarea
-                value={textValue(sheet.values)}
+                value={scalarText(sheet.values)}
                 onChange={(event) => updateField("values", event.target.value)}
                 placeholder="Во что верит, чем не поступится."
                 disabled={editDisabled}
@@ -1160,7 +1233,7 @@ export default function CharacterArchitectPanel({
                             className="spell-edit-toggle"
                             onClick={() => toggleSpell(i)}
                           >
-                            <span className="mark">{open ? "▾" : "▸"}</span>
+                            <span className="mark"><Icon name={open ? "chevron-down" : "chevron-right"} size={11} /></span>
                             <span className="spell-edit-label">
                               {(r.name || "").trim() || "Без названия"} · {lvl} круг
                             </span>
@@ -1172,12 +1245,12 @@ export default function CharacterArchitectPanel({
                             disabled={editDisabled}
                             aria-label="Удалить заклинание"
                           >
-                            ✕
+                            <Icon name="x" size={12} />
                           </button>
                         </div>
                         {open && (
                           <div className="spell-edit-body">
-                            <div className="world-field-grid">
+                            <div className="world-field-grid spell-name-grid">
                               <label className="world-field">
                                 <span>Название</span>
                                 <input
@@ -1280,7 +1353,7 @@ export default function CharacterArchitectPanel({
                         disabled={editDisabled}
                         aria-label="Удалить круг"
                       >
-                        ✕
+                        <Icon name="x" size={12} />
                       </button>
                     </div>
                   ))}
@@ -1309,7 +1382,7 @@ export default function CharacterArchitectPanel({
                 <label className="world-field">
                   <span>Тайна героя (видит только ГМ — публичный образ остаётся легендой)</span>
                   <AutoTextarea
-                    value={textValue(sheet.gm_notes)}
+                    value={scalarText(sheet.gm_notes)}
                     onChange={(e) => updateField("gm_notes", e.target.value)}
                     placeholder="Служебные заметки для ведущего."
                     disabled={editDisabled}

@@ -1,7 +1,7 @@
+import Icon from "./Icon.jsx";
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
 import WorldDetailModal from "./WorldDetailModal.jsx";
-import "../styles-studio.css";
 
 // The game context bar (UI_REDESIGN_TZ §Игра). It sits at the top of the chat
 // pane and shows the launched game's FIXED, read-only context — История (or
@@ -93,7 +93,7 @@ function ResetConfirm({ busy, onConfirm, onCancel }) {
         aria-modal="true"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="confirm-icon" aria-hidden="true">⟲</div>
+        <div className="confirm-icon" aria-hidden="true"><Icon name="refresh" size={20} /></div>
         <h3>Сбросить партию?</h3>
         <p className="confirm-note">
           Текущий ход и состояние сцены будут сброшены к началу. Это действие нельзя отменить.
@@ -217,7 +217,7 @@ export default function GameContextBar({
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
         >
-          ⋯
+          <Icon name="dots" size={18} />
         </button>
         {menuOpen && (
           <div className="game-context-dropdown" role="menu">

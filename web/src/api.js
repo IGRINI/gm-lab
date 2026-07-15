@@ -1,5 +1,4 @@
-// Thin wrappers around the GM-Lab Python backend.
-// Same endpoints/semantics as the original index.html.
+// Thin wrappers around the GM-Lab Rust backend (gml-server).
 
 async function getJSON(url, opts) {
   const r = await fetch(url, opts);
@@ -48,9 +47,13 @@ export const api = {
   deleteStory: (storyId) => _post(`/stories/${encodeURIComponent(storyId)}/delete`),
 
   // --- K1: character packages (§К1.5) ---
-  // GET /characters -> {ok, characters:[{id,version,title,preview,created_at,updated_at,payload}]}
+  // GET /characters -> {ok, characters:[{id,version,title,preview,created_at,
+  // updated_at,payload, world_ref?, story_ref?}]} — the refs are the OPTIONAL
+  // base packages the hero was authored for ({id, version}, may dangle).
   characters: () => getJSON("/characters"),
-  // POST /characters {title, payload?} -> {ok, character:{...}}
+  // POST /characters {title, payload, world_id?, story_id?} -> {ok, character:{...}}
+  // The optional ids pin base world_ref/story_ref provenance (400 on a dangling
+  // id and on a procedural story — it has no authored plot to base a hero on).
   createCharacter: (body) => _post("/characters", body),
   // POST /characters/{id} (metadata patch, e.g. {title}) -> {ok, character:{...}}
   updateCharacter: (id, body) => _post(`/characters/${encodeURIComponent(id)}`, body),
@@ -168,7 +171,9 @@ export const api = {
   deleteFact: (id) => _post("/debug/fact_delete", { id }),
   updatePlayer: (body) => _post("/debug/player", body),
   updateNpc: (body) => _post("/debug/npc", body),
-  updateStory: (body) => _post("/debug/story", body),
+  // Debug-panel story mutation (NOT the package patch above — that one is
+  // `updateStory`; this key used to shadow it as a duplicate `updateStory`).
+  debugUpdateStory: (body) => _post("/debug/story", body),
   updateScene: (patch) => _post("/debug/scene", { patch }),
   stateRecord: (body) => _post("/debug/state_record", body),
   rumor: (body) => _post("/debug/rumor", body),
@@ -256,12 +261,28 @@ export async function transcribeAudio(blob) {
 //   architect_done  {…}                                       — final payload
 //   architect_error {…}
 // Returns when the stream ends. Throws on network error.
+//
+// The architect routes validate EAGERLY and answer a plain JSON error (e.g. a
+// 400 for a dangling world_id/story_id on a character create) BEFORE any SSE
+// stream starts. A JSON body carries no `data:` frames, so without this check
+// the read loop would drain it silently and the turn would no-op with no error
+// shown — surface it as a throw instead (the panels' catch renders it).
 async function streamArchitectAt(endpoint, body, onEvent) {
   const resp = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
   });
+  if (!resp.ok) {
+    let message = "";
+    try {
+      const data = await resp.json();
+      message = typeof data?.error === "string" ? data.error : "";
+    } catch {
+      // non-JSON error body — fall through to the status line
+    }
+    throw new Error(message || `архитектор недоступен (HTTP ${resp.status})`);
+  }
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -296,7 +317,9 @@ export function streamStoryArchitect(body, onEvent) {
 
 // Stream a CHARACTER-architect turn. Same event vocabulary as the other two; the
 // done payload additionally carries {character_id, character, characters}. Body:
-// {message, character_id?, draft?} (create-on-first-turn when character_id absent).
+// {message, character_id?, draft?, world_id?, story_id?} — create-on-first-turn
+// when character_id is absent; the optional base ids ride ONLY with that create
+// (they pin world_ref/story_ref and give the architect the base's public canon).
 export function streamCharacterArchitect(body, onEvent) {
   return streamArchitectAt("/character-architect/chat", body, onEvent);
 }

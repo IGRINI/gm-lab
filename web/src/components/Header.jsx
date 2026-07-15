@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import Icon from "./Icon.jsx";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
 import TokenCounter from "./TokenCounter.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
@@ -121,15 +122,15 @@ function sidecarUiStatus(status) {
   if (hasImage) parts.push("Image");
   const name = parts.join("/") || "Инференс";
   if (status.ready) {
-    return { level: "ok", label: `${name} готов`, title: "Инференс готов" };
+    return { level: "ok", label: name, title: "Инференс готов" };
   }
   if (status.state === "failed") {
-    return { level: "error", label: `${name} ошибка`, title: "Инференс не загрузился" };
+    return { level: "error", label: name, title: "Инференс не загрузился" };
   }
   if (status.state === "unavailable") {
-    return { level: "warn", label: `${name} ?`, title: "Статус инференса недоступен" };
+    return { level: "warn", label: name, title: "Статус инференса недоступен" };
   }
-  return { level: "warn", label: `${name} грузится`, title: "Инференс загружается" };
+  return { level: "warn", label: name, title: "Инференс загружается" };
 }
 
 function SidecarTooltip({ status, ui }) {
@@ -358,31 +359,38 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
     ...(dev.developerMode ? [{ id: "debug", label: "Дебаг-вид" }] : []),
   ];
 
+  const activeTab = tabs.find((t) => t.id === tab) || tabs[0];
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <form className="settings-modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <h2>Настройки</h2>
+        <div className="settings-side">
+          <div className="settings-side-head">Настройки</div>
+          <nav className="settings-tabs" role="tablist" aria-label="Разделы настроек">
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                className={"settings-tab-btn" + (tab === t.id ? " active" : "")}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        <div className="settings-main">
+        <div className="settings-main-head">
+          <h2>{activeTab.label}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть">
-            x
+            <Icon name="x" size={15} />
           </button>
         </div>
 
-        <nav className="settings-tabs" role="tablist" aria-label="Разделы настроек">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={"settings-tab-btn" + (tab === t.id ? " active" : "")}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
+        <div className="settings-main-body">
         {tab === "view" && (
           <section className="settings-section">
             <h3>Режим разработчика</h3>
@@ -599,11 +607,14 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
         </>
         )}
 
+        </div>
+
         <div className="modal-actions">
           <button type="button" className="btn" onClick={onClose}>
             {tab === "model" ? "Отмена" : "Закрыть"}
           </button>
           {tab === "model" && <button type="submit" className="btn primary">Сохранить</button>}
+        </div>
         </div>
       </form>
     </div>
@@ -646,7 +657,7 @@ export default function Header({
     [models, srv.model]
   );
 
-  const chip = srv.backend ? srv.backend + (srv.stream_gm_content ? " · GM stream" : "") : "…";
+  const chip = srv.backend || "…";
   const conn = codexStatus(srv);
   const sidecar = sidecarUiStatus(sidecarStatus);
 
@@ -657,6 +668,7 @@ export default function Header({
 
   return (
     <header>
+      <div className="header-left">
       {showChatToggle && onToggleChats && (
         <Tooltip
           className="tooltip-wrap"
@@ -671,20 +683,25 @@ export default function Header({
         >
           <button
             type="button"
-            className={"btn btn-icon chat-toggle" + (chatsOpen ? " is-active" : "")}
+            className={
+              "btn btn-icon chat-toggle" +
+              (chatsOpen ? " is-active" : "") +
+              (isGame ? "" : " chat-toggle--offgame")
+            }
             onClick={onToggleChats}
             aria-label={chatsOpen ? "Свернуть чаты и миры" : "Развернуть чаты и миры"}
             aria-expanded={chatsOpen}
             aria-controls="chat-history-sidebar"
           >
-            <span className="bi" aria-hidden="true">☰</span>
-            <span className="btn-label">Чаты</span>
+            <Icon name="panel-left" size={16} />
           </button>
         </Tooltip>
       )}
       <h1>
-        GM-<b>Lab</b>
+        <Icon name="d20" size={18} className="logo-mark" />
+        <span>GM-<b>Lab</b></span>
       </h1>
+      </div>
       <nav className="header-nav" aria-label="Разделы">
         <button
           type="button"
@@ -713,6 +730,7 @@ export default function Header({
           </button>
         )}
       </nav>
+      <div className="header-right">
       {conn ? (
         <Tooltip
           content={<ConnTooltip status={conn} />}
@@ -760,11 +778,18 @@ export default function Header({
           ))}
         </select>
       </Tooltip>
-      <div className="spacer" />
       <div className="header-actions">
-        <button className="btn" onClick={() => setSettingsOpen(true)}>
-          Настройки
-        </button>
+        <Tooltip
+          className="tooltip-wrap"
+          tipClassName="ui-tip-wrap"
+          focusable={false}
+          content={<TipContent title="Настройки" note="Модель, интерфейс, озвучка и подключения." />}
+        >
+          <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Настройки">
+            <Icon name="sliders" size={16} />
+          </button>
+        </Tooltip>
+      </div>
       </div>
       {settingsOpen && (
         <SettingsModal

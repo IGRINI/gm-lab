@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal.jsx";
 
@@ -79,35 +80,58 @@ function storyHasProtagonist(story, procedural) {
 }
 
 // Resolve the initial step/selection from a preselect hint (Library «Играть»):
-// a story jumps straight to Персонаж, a world to История, a lone character just
-// pre-picks the hero and starts at Мир.
-function deriveInitial(preselect, worlds, stories) {
+// a story jumps straight to Персонаж, a world to История. A lone character
+// follows its OWN base refs — a hero built «под историю» jumps to Персонаж with
+// that story picked, a world-based hero to История of his world; only a
+// standalone hero (or one whose base was deleted) starts at Мир. The hero is
+// pre-picked in every branch.
+function deriveInitial(preselect, worlds, stories, characters) {
   const pre = preselect || {};
   const preChar = idOf(pre.characterId) || null;
 
-  const preStory = idOf(pre.storyId);
-  if (preStory) {
-    const story = (stories || []).find((s) => sameId(s.id, preStory));
-    if (story) {
-      const bound = idOf(story?.world_ref?.id);
-      const worldChoice = bound
-        ? { type: "world", id: bound }
-        : { type: "builtin", id: idOf(story.id), storyId: idOf(story.id) };
-      return { step: 3, worldChoice, storyId: idOf(story.id), characterChoice: preChar };
-    }
-  }
+  // A story pick (explicit, or implied by the preselected character's base).
+  // A world-bound story whose world was DELETED is unresolvable: the wizard
+  // would show «Без названия» and the launch would 400 — degrade instead.
+  // `allowProcedural`: an EXPLICIT «Играть» on a saved procedural story is a
+  // legitimate launch; a hero's story_ref never legitimately points at one.
+  const storyChoiceFor = (storyId, allowProcedural) => {
+    if (!storyId) return null;
+    const story = (stories || []).find((s) => sameId(s.id, storyId));
+    if (!story || (!allowProcedural && story.kind === "procedural")) return null;
+    const bound = idOf(story?.world_ref?.id);
+    if (bound && !(worlds || []).find((w) => sameId(w.id, bound))) return null;
+    const worldChoice = bound
+      ? { type: "world", id: bound }
+      : { type: "builtin", id: idOf(story.id), storyId: idOf(story.id) };
+    return { step: 3, worldChoice, storyId: idOf(story.id), characterChoice: preChar };
+  };
 
-  const preWorld = idOf(pre.worldId);
-  if (preWorld) {
-    const world = (worlds || []).find((w) => sameId(w.id, preWorld));
-    if (world) {
-      return {
-        step: 2,
-        worldChoice: { type: "world", id: preWorld },
-        storyId: "",
-        characterChoice: preChar,
-      };
-    }
+  const fromStory = storyChoiceFor(idOf(pre.storyId), true);
+  if (fromStory) return fromStory;
+
+  const worldChoiceFor = (worldId) => {
+    if (!worldId) return null;
+    const world = (worlds || []).find((w) => sameId(w.id, worldId));
+    if (!world) return null;
+    return {
+      step: 2,
+      worldChoice: { type: "world", id: idOf(worldId) },
+      storyId: "",
+      characterChoice: preChar,
+    };
+  };
+
+  const fromWorld = worldChoiceFor(idOf(pre.worldId));
+  if (fromWorld) return fromWorld;
+
+  // A lone character: follow its base refs (story first — it implies the
+  // world), degrading gracefully when the base package no longer exists.
+  if (preChar) {
+    const hero = (characters || []).find((c) => sameId(c.id, preChar));
+    const fromHeroStory = storyChoiceFor(idOf(hero?.story_ref?.id), false);
+    if (fromHeroStory) return fromHeroStory;
+    const fromHeroWorld = worldChoiceFor(idOf(hero?.world_ref?.id));
+    if (fromHeroWorld) return fromHeroWorld;
   }
 
   return { step: 1, worldChoice: null, storyId: "", characterChoice: preChar };
@@ -126,7 +150,7 @@ function WizCard({ selected, disabled, onClick, kicker, title, badge, meta, desc
     >
       {add ? (
         <>
-          <span className="wiz-card-add-icon" aria-hidden="true">＋</span>
+          <span className="wiz-card-add-icon" aria-hidden="true"><Icon name="plus" size={20} /></span>
           <span className="wiz-card-add-label">{title}</span>
         </>
       ) : (
@@ -142,7 +166,7 @@ function WizCard({ selected, disabled, onClick, kicker, title, badge, meta, desc
           {desc && <span className="wiz-card-desc">{desc}</span>}
           {selected && (
             <span className="wiz-card-check" aria-hidden="true">
-              ✓
+              <Icon name="check" size={13} strokeWidth={2.4} />
             </span>
           )}
         </>
@@ -163,7 +187,7 @@ export default function NewGameWizard({
 }) {
   // Seed the selection once, from the preselect hint. The integrator mounts a
   // fresh wizard per open, so a one-shot initializer is enough (no re-sync).
-  const [init] = useState(() => deriveInitial(preselect, worlds, stories));
+  const [init] = useState(() => deriveInitial(preselect, worlds, stories, characters));
   const [step, setStep] = useState(init.step);
   const [worldChoice, setWorldChoice] = useState(init.worldChoice);
   const [storyId, setStoryId] = useState(init.storyId);
@@ -219,6 +243,29 @@ export default function NewGameWizard({
         : null,
     [characters, characterChoice],
   );
+
+  // Match rank of a character against the CURRENT world/story pick, from its
+  // base refs (world_ref/story_ref provenance): 2 = built for this story,
+  // 1 = built for this world, 0 = neutral. Powers the step-3 badge + ordering —
+  // matching heroes float first, but NOTHING is filtered out (any hero can play
+  // any story; a mismatch only warns at launch).
+  const characterMatchRank = (c) => {
+    if (!isProcedural && storyId && sameId(c?.story_ref?.id, storyId)) return 2;
+    if (worldChoice?.type === "world" && sameId(c?.world_ref?.id, worldChoice.id)) return 1;
+    return 0;
+  };
+  const sortedCharacters = useMemo(() => {
+    const list = Array.isArray(characters) ? [...characters] : [];
+    return list
+      .map((c, i) => ({ c, i, rank: characterMatchRank(c) }))
+      .sort((a, b) => b.rank - a.rank || a.i - b.i)
+      .map((x) => x.c);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [characters, worldChoice, storyId, isProcedural]);
+  const characterBaseBadge = (c) => {
+    const rank = characterMatchRank(c);
+    return rank === 2 ? "под эту историю" : rank === 1 ? "из этого мира" : undefined;
+  };
 
   // On entering Персонаж with nothing picked yet, default to the story's own
   // protagonist when it has one (procedural has none → stays empty → a package
@@ -523,7 +570,9 @@ export default function NewGameWizard({
             <p className="wiz-lead">
               {isProcedural
                 ? "Процедурной кампании нужен персонаж из библиотеки."
-                : "Выберите персонажа. По умолчанию — протагонист истории."}
+                : hasProtagonist
+                  ? "Выберите персонажа. По умолчанию — протагонист истории."
+                  : "У этой истории нет готового протагониста — выберите персонажа из библиотеки."}
             </p>
             <div className="wiz-grid">
               {hasProtagonist && (
@@ -537,7 +586,7 @@ export default function NewGameWizard({
                   desc="Готовый герой, заданный автором истории."
                 />
               )}
-              {(characters || []).map((c) => {
+              {sortedCharacters.map((c) => {
                 const preview = textValue(c.preview);
                 return (
                   <WizCard
@@ -546,6 +595,7 @@ export default function NewGameWizard({
                     disabled={locked}
                     onClick={() => chooseCharacter(idOf(c.id))}
                     kicker="персонаж"
+                    badge={characterBaseBadge(c)}
                     title={characterTitle(c)}
                     meta={characterMeta(c)}
                     desc={preview && preview !== characterTitle(c) ? preview : ""}
@@ -556,13 +606,21 @@ export default function NewGameWizard({
                 add
                 title="Создать персонажа"
                 disabled={locked}
-                onClick={() => openStudio("character", null)}
+                onClick={() =>
+                  openStudio("character", {
+                    worldId: worldChoice?.type === "world" ? idOf(worldChoice.id) : "",
+                    // A procedural pick (synthetic OR a saved procedural-kind
+                    // story) carries no plot to base a hero on — same gate as
+                    // BasePickerModal; the base degrades to world-only.
+                    storyId: isProcedural ? "" : idOf(storyId),
+                  })
+                }
               />
             </div>
-            {isProcedural && (characters || []).length === 0 && (
+            {!hasProtagonist && (characters || []).length === 0 && (
               <p className="wiz-hint">
-                Персонажей пока нет — создайте в студии или импортируйте .gmchar, чтобы начать
-                процедурную кампанию.
+                Персонажей пока нет — создайте в студии или импортируйте .gmchar, без него эта
+                игра не запустится.
               </p>
             )}
             {!characterOk && (characters || []).length > 0 && (

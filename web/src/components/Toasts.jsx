@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useCallback, useEffect, useState } from "react";
 
 // Bottom-right toast stack for the redesigned shell (§Игра/Ошибки in the TZ).
@@ -9,8 +10,8 @@ import { useCallback, useEffect, useState } from "react";
 // live inside each item so the parent only ever holds plain data.
 //
 // A toast is a plain object:
-//   { id?, kind?: "error"|"success"|"info", code?, message?, detail?, title?,
-//     sticky?, ttl? }
+//   { id?, kind?: "error"|"success"|"info"|"warning", code?, message?, detail?,
+//     title?, sticky?, ttl? }
 // `code` is a stable machine string the server surfaces (protagonist_required,
 // world_lore_required, …); it maps to a human headline. Raw server text rides in
 // `message`/`detail` and is tucked behind the "детали" expander so the headline
@@ -37,7 +38,14 @@ export function mapErrorCode(code) {
   return ERROR_MESSAGES[code] || "";
 }
 
-const KIND_ICON = { error: "⚠", success: "✓", info: "ℹ" };
+const KIND_ICON = {
+  error: <Icon name="alert" size={15} />,
+  success: <Icon name="check" size={15} />,
+  info: <Icon name="info" size={15} />,
+  // warn-but-allow launch notices (character_world_mismatch, story_pc_override,
+  // world_version_drift…) — visually distinct from neutral info.
+  warning: <Icon name="alert" size={15} />,
+};
 
 // The one-line headline shown in the toast body. Prefers an explicit title, then
 // the mapped error code, then the raw human message, then a kind-generic line.
@@ -91,7 +99,7 @@ function ToastItem({ toast, onDismiss }) {
           onClick={() => onDismiss?.(toast.id)}
           aria-label="Закрыть уведомление"
         >
-          ×
+          <Icon name="x" size={13} />
         </button>
       </div>
       {detail && (

@@ -1,0 +1,366 @@
+/* ============================================================================
+   theme.css — GM-Lab design system v3 «modern floating dark».
+   Стиль: холодный почти-чёрный нейтрал, один лавандовый акцент, пилюли и
+   большие радиусы, «острова» вместо полос с рамками, светлые активные
+   элементы (light pill + тёмный текст), мягкие большие тени, один гротеск.
+   Правила:
+     · разделение поверхностей — светлотой и воздухом; тонкие рамки только
+       там, где остров лежит на острове; тени — мягкие и большие;
+     · активное состояние = СВЕТЛАЯ пилюля с тёмным текстом, не цветная заливка;
+     · радиусы крупные: 10 / 14 / 18 / 24 / full — прямых углов нет;
+     · кнопки — пилюли; иконочные — скруглённые квадраты-тайлы;
+     · один шрифт (Inter), иерархия весом и размером; серифов нет;
+     · транскрипт остаётся цветным (имена NPC, сущности, кости) — хром вокруг
+       нейтральный; ховер светлее; переходы 120–200мс ease-out.
+   ============================================================================ */
+
+:root {
+  /* ---- поверхности: холодный графит, лёгкий фиолетовый каст ---- */
+  --surface-0: #101014;
+  --surface-1: #17171d;
+  --surface-2: #1f1f27;
+  --surface-3: #282832;
+
+  /* ---- рамки ---- */
+  --border-0: rgba(255, 255, 255, 0.06);
+  --border-1: rgba(255, 255, 255, 0.10);
+  --border-2: rgba(255, 255, 255, 0.20);
+
+  /* ---- текст ---- */
+  --text-1: #f1f0f6;
+  --text-2: #b5b4c2;
+  --text-3: #7f7e8c;
+  --text-book: #d6d4e0;  /* текст наррации/речи — чуть мягче text-1 */
+
+  /* ---- акцент: лаванда; solid — светлый, текст на нём тёмный ---- */
+  --brand: #cbbcf6;
+  --brand-hover: #dccff9;
+  --brand-ink: #1d1633;
+  --brand-text: #b3a2f0;
+  --brand-tint: rgba(167, 139, 250, 0.11);
+  --brand-line: rgba(167, 139, 250, 0.32);
+
+  /* ---- светлая «активная пилюля» ---- */
+  --active-pill: #e9e7f2;
+  --active-ink: #17161c;
+
+  /* ---- семантика ---- */
+  --ok: #93d9ac;
+  --ok-tint: rgba(147, 217, 172, 0.10);
+  --ok-line: rgba(147, 217, 172, 0.30);
+  --warn: #ecc98f;
+  --warn-tint: rgba(236, 201, 143, 0.10);
+  --warn-line: rgba(236, 201, 143, 0.32);
+  --danger: #f294a7;
+  --danger-strong: #e0506c;
+  --danger-tint: rgba(242, 148, 167, 0.10);
+  --danger-line: rgba(242, 148, 167, 0.30);
+
+  /* ---- голоса транскрипта ---- */
+  --gm: #93d9ac;
+  --player: #92b4ee;
+  --player-tint: rgba(146, 180, 238, 0.12);
+  --player-line: rgba(146, 180, 238, 0.28);
+
+  /* ---- markdown / контентные акценты ---- */
+  --md-strong: #ecd3a0;
+  --md-em: #c8b6f5;
+  --md-code: #f0b4ac;
+  --md-quote: #97c8e8;
+  --md-link: #97c8e8;
+  --md-del: #de93ab;
+  --entity-loc: #97c8e8;
+  --entity-item: #93d9ac;
+  --entity-note: #ecd3a0;
+  --entity-unknown: #90909c;
+  --spoiler-text: var(--text-2);
+  --code-tint: rgba(240, 180, 172, 0.10);
+  --code-line: rgba(240, 180, 172, 0.22);
+  --quote-tint: rgba(151, 200, 232, 0.07);
+
+  /* ---- типографика: один гротеск ---- */
+  --font-ui: "Inter Variable", system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-book: "Inter Variable", system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", SFMono-Regular, Consolas, Menlo, monospace;
+
+  /* ---- радиусы: крупные, прямых углов нет ---- */
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --r-full: 999px;
+
+  /* ---- тени: мягкие, большие ---- */
+  --shadow-1: 0 2px 16px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 16px 48px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 32px 80px rgba(0, 0, 0, 0.55);
+
+  /* ---- движение ---- */
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ---- легаси-алиасы ---- */
+  --bg: var(--surface-0);
+  --bg2: var(--surface-1);
+  --bg3: var(--surface-2);
+  --line: var(--border-1);
+  --tx: var(--text-1);
+  --sub: var(--text-2);
+  --mut: var(--text-3);
+  --acc: var(--brand-text);
+  --redo: var(--danger);
+
+  /* ---- лейаут ---- */
+  --composer-max: 168px;
+  --drawer-w: min(520px, calc(100vw - 20px));
+  --header-h: 60px;
+}
+
+/* ============================================================================
+   База
+   ============================================================================ */
+* { box-sizing: border-box; }
+html {
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  /* холодное фиолетовое свечение сверху — глубина канваса */
+  background:
+    radial-gradient(1200px 520px at 50% -14%, rgba(167, 139, 250, 0.07), transparent 70%) no-repeat,
+    var(--surface-0);
+  color: var(--text-1);
+  font: 400 14px/1.5 var(--font-ui);
+  letter-spacing: 0.005em;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+a { color: var(--md-link); }
+::selection { background: rgba(167, 139, 250, 0.32); color: var(--text-1); }
+
+/* тонкие тихие скроллбары */
+* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.14) transparent; }
+*::-webkit-scrollbar { width: 7px; height: 7px; }
+*::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 7px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* единый клавиатурный фокус */
+:focus-visible {
+  outline: 2px solid var(--brand-text);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+b, strong, .num { font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================================
+   Примитивы
+   ============================================================================ */
+
+/* ---- kicker ---- */
+.kicker {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ---- кнопки: пилюли ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 16px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  color: var(--text-1);
+  font: 500 13px/1.2 var(--font-ui);
+  letter-spacing: 0.005em;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+.btn .ico { flex: none; }
+.btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-2); }
+.btn:active:not(:disabled) { transform: scale(0.98); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.primary {
+  background: var(--brand);
+  border-color: transparent;
+  color: var(--brand-ink);
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) { background: var(--brand-hover); border-color: transparent; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
+.btn.ghost:hover:not(:disabled) { background: var(--surface-2); border-color: transparent; color: var(--text-1); }
+.btn.danger,
+.btn.confirm-danger {
+  background: var(--danger-tint);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+.btn.danger:hover:not(:disabled),
+.btn.confirm-danger:hover:not(:disabled) { background: rgba(242, 148, 167, 0.18); border-color: var(--danger); }
+.btn.small { min-height: 28px; padding: 4px 12px; font-size: 12px; }
+
+/* ---- иконочные кнопки: скруглённые квадраты-тайлы ---- */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.icon-btn .ico { flex: none; }
+.icon-btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-1); color: var(--text-1); }
+.icon-btn:disabled { opacity: 0.45; cursor: default; }
+.icon-btn.danger { color: var(--danger); border-color: var(--danger-line); }
+.icon-btn.danger:hover { border-color: var(--danger); background: var(--danger-tint); }
+
+/* ---- контролы форм ---- */
+.control,
+.world-field input, .world-field select, .world-field textarea,
+.field select, .field input[type="number"], .field input[type="text"],
+.dbg-form input, .dbg-form select, .dbg-form textarea,
+.sheet-map-key, .sheet-map-val, .sheet-list-input, .slot-num,
+.story-picker select, .wiz-name input,
+.tok-text, .tok-keyinputs input, .tok-controls select,
+.world-architect-input-row textarea,
+.image-lab-prompt textarea {
+  min-width: 0;
+  background: var(--surface-0);
+  color: var(--text-1);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.control:focus,
+.world-field input:focus, .world-field select:focus, .world-field textarea:focus,
+.field select:focus, .field input[type="number"]:focus, .field input[type="text"]:focus,
+.dbg-form input:focus, .dbg-form select:focus, .dbg-form textarea:focus,
+.sheet-map-key:focus, .sheet-map-val:focus, .sheet-list-input:focus, .slot-num:focus,
+.story-picker select:focus, .wiz-name input:focus,
+.tok-text:focus, .tok-keyinputs input:focus, .tok-controls select:focus,
+.world-architect-input-row textarea:focus,
+.image-lab-prompt textarea:focus {
+  border-color: var(--brand-line);
+  box-shadow: 0 0 0 3px var(--brand-tint);
+}
+.control:disabled,
+.world-field input:disabled, .world-field select:disabled, .world-field textarea:disabled,
+.story-picker select:disabled,
+.world-architect-input-row textarea:disabled,
+.image-lab-prompt textarea:disabled { opacity: 0.55; cursor: default; }
+
+input[type="checkbox"] { accent-color: #a78bfa; }
+
+/* ---- chip ---- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.chip:hover { background: var(--surface-2); }
+
+/* ---- поповер-меню ---- */
+.menu-pop {
+  position: absolute;
+  z-index: 30;
+  min-width: 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-2);
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-1);
+  font: 400 13px/1.3 var(--font-ui);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.menu-item:hover:not(:disabled) { background: var(--surface-3); }
+.menu-item.danger { color: var(--danger); }
+.menu-item.danger:hover { background: var(--danger-tint); }
+.menu-item:disabled { opacity: 0.5; cursor: default; }
+.menu-sep { height: 1px; background: var(--border-0); margin: 4px 6px; }
+
+/* ---- notices ---- */
+.notice {
+  padding: 9px 13px;
+  border: 1px solid var(--ok-line);
+  border-radius: var(--r-md);
+  background: var(--ok-tint);
+  color: var(--ok);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.notice--error { border-color: var(--danger-line); background: var(--danger-tint); color: var(--danger); }
+
+/* ---- цветная точка ---- */
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--c, var(--entity-unknown));
+  flex: none;
+}
+
+/* ---- пустое состояние ---- */
+.empty-note {
+  padding: 11px 13px;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.45;
+  border: 1px dashed var(--border-1);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.02);
+}

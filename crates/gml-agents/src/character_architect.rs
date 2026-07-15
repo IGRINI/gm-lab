@@ -7,9 +7,18 @@
 //! reply), same streaming, same stats — it only swaps the prompt, the tools, and
 //! the draft-folding for the character-sheet shape.
 //!
-//! Unlike the story architect a character is ORTHOGONAL/standalone: there is no
-//! bound world, so this config injects NO extra system block (the default
-//! [`ArchitectConfig::extra_system_blocks`]) and the turn fn takes no lore block.
+//! A character MAY be based on a world and/or a story (or stand alone): the
+//! caller passes optional read-only context blocks (built by
+//! [`character_architect_world_block`] / [`character_architect_story_block`])
+//! that ride as extra system messages, exactly like the story architect's bound
+//! world bible. The blocks are PUBLIC-ONLY: the character architect talks to the
+//! PLAYER, so GM secrets (`hidden_premise`/`hidden_secrets`/`hidden_truth`) are
+//! stripped — basing a hero on a story must not spoil it. The system prompt has
+//! two variants sharing one body ([`CHARACTER_ARCHITECT_SYSTEM`] /
+//! [`CHARACTER_ARCHITECT_SYSTEM_BASED`]), picked by whether blocks are present:
+//! a standalone conversation spends no tokens on base-block instructions, and a
+//! based one doesn't carry the contradictory "standalone" rule. The binding is
+//! fixed at creation, so the pick is stable across a conversation's turns.
 //!
 //! The draft is the `.gmchar` payload's `player_character` object — a FLAT sheet
 //! (`gml-world/src/model.rs::PlayerCharacter`): name/pronouns/class_role/level/
@@ -24,7 +33,7 @@ use serde_json::{json, Map, Value};
 use gml_llm::{Backend, BackendError};
 
 use crate::architect_runner::{
-    architect_messages_with_user, architect_turn, ArchitectConfig, ArchitectOutput,
+    architect_messages_with_system_blocks, architect_turn, ArchitectConfig, ArchitectOutput,
     ArchitectStream, ToolApplication,
 };
 
@@ -32,19 +41,28 @@ use crate::architect_runner::{
 /// the domain name (mirrors `StoryArchitectOutput`).
 pub type CharacterArchitectOutput = ArchitectOutput;
 
-/// Canon-authoring rules for the CHARACTER architect. Russian content like the
-/// other architects; authors a standalone hero sheet; questions go in the chat
-/// reply, not a tool field; same agent-loop discipline.
-pub const CHARACTER_ARCHITECT_SYSTEM: &str = r#"You are the GM-Lab character architect. You help the user author a reusable
+/// The character-architect system prompt in two variants sharing one body: the
+/// mode paragraph is the ONLY difference. STANDALONE (no base) never mentions
+/// base blocks — no tokens spent on a feature the conversation doesn't use;
+/// BASED replaces the "do NOT tie them" rule (which would contradict the base)
+/// with grounding guidance. The variant is picked per conversation from the
+/// resolved context blocks; a character's binding is fixed at creation, so the
+/// prompt — and with it the cache prefix — stays stable across its turns.
+macro_rules! character_architect_system {
+    ($mode_rules:expr) => {
+        concat!(
+            r#"You are the GM-Lab character architect. You help the user author a reusable
 PLAYER CHARACTER — a portable hero card that can be launched into any story or
 world. Write all character text in Russian; keep it concrete and playable.
 
 You author ONE protagonist: name, pronouns, class/role, level, background, look
 and personality, D&D 5e stats (ability scores, skills, saving throws, AC, HP),
 speed/senses/languages, starting inventory, equipment, features, and — if the
-concept is a caster — known spells and spell slots. The hero is standalone: do
-NOT tie them to a specific world's secret canon or a single story's plot; write
-them so they read sensibly dropped into different adventures.
+concept is a caster — known spells and spell slots.
+
+"#,
+            $mode_rules,
+            r#"
 
 Build the sheet with draft_player_character. Make the first draft a complete,
 launchable hero: a real name (not a placeholder), a class_role and background
@@ -80,7 +98,33 @@ sheet with a tool (draft_player_character to build, edit_player_character to
 change), then finish the turn with a short chat reply about what you built or
 changed. You may call tools more than once per turn. Each tool result comes back
 to you, so you can keep going or wrap up — but always end the turn with a reply,
-never on a bare tool call."#;
+never on a bare tool call."#
+        )
+    };
+}
+
+/// Canon-authoring rules for a STANDALONE hero (no base world/story). Russian
+/// content like the other architects; questions go in the chat reply, not a
+/// tool field; same agent-loop discipline.
+pub const CHARACTER_ARCHITECT_SYSTEM: &str = character_architect_system!(
+    "The hero is standalone: do NOT tie them to a specific world's secret canon \
+or a single story's plot; write them so they read sensibly dropped into \
+different adventures."
+);
+
+/// The BASED variant: the conversation carries base reference system blocks
+/// (world and/or story — any combination), so the standalone rule is replaced
+/// by grounding guidance. Deliberately GENERIC and MINIMAL: everything world-
+/// or story-specific — including the grounding directive itself — lives in the
+/// block (see the builders below), so a world-only base never pays for story
+/// instructions and nothing is said twice. This paragraph keeps only the two
+/// rules no block carries for every shape: secrecy and no-invention. Same body
+/// otherwise.
+pub const CHARACTER_ARCHITECT_SYSTEM_BASED: &str = character_architect_system!(
+    "The hero is built on the base reference given in the system block(s) that \
+follow — public, read-only: never reveal or guess at anything it does not \
+show, and do not invent canon beyond it."
+);
 
 // The character sheet field families the tool schema targets (documented in each
 // tool description rather than looked up here — the ops route by key, not by a
@@ -106,15 +150,55 @@ const PC_OBJECT_FIELDS: [&str; 6] = [
 // public message / tool builders (mirror the story architect surface)
 // =========================================================================
 
-/// Assemble the character-architect request messages: system + filtered history
-/// + the user message. No extra system block (a character has no bound world).
+/// The system-prompt variant for a conversation: BASED only when at least one
+/// real (non-blank) context block rides along, else the standalone prompt that
+/// never mentions base blocks (no tokens for an unused feature).
+///
+/// The standalone paragraph is an ACTIVE anti-tie instruction, so a character
+/// whose refs exist but whose base material is unavailable (packages deleted /
+/// bible empty) must NOT fall through to it — the sheet is already tied. The
+/// server keeps such a conversation BASED by substituting
+/// [`character_architect_base_unavailable_block`] for the missing material.
+fn character_architect_prompt(context_blocks: &[String]) -> &'static str {
+    if context_blocks.iter().any(|b| !b.trim().is_empty()) {
+        CHARACTER_ARCHITECT_SYSTEM_BASED
+    } else {
+        CHARACTER_ARCHITECT_SYSTEM
+    }
+}
+
+/// The fallback base block for a character whose `world_ref`/`story_ref` are
+/// recorded but whose base material is UNAVAILABLE (packages deleted, or
+/// nothing public survives the whitelists). Static text (byte-stable → the
+/// cache prefix holds) that keeps the conversation on the BASED prompt and
+/// tells the model to PRESERVE the sheet's existing ties instead of the
+/// standalone prompt's "do NOT tie" — which would contradict the sheet.
+pub fn character_architect_base_unavailable_block() -> String {
+    "## BASE (reference unavailable)\n\
+    This hero was authored FOR a base world/story recorded in the package, but \
+    its reference material is not available right now (deleted or empty). \
+    Preserve the hero's existing ties, names and background exactly as the \
+    sheet has them; do not invent new canon for that base."
+        .to_string()
+}
+
+/// Assemble the character-architect request messages: system (variant picked by
+/// the blocks) + the optional read-only base world/story blocks + filtered
+/// history + the user message. The blocks (possibly empty — a standalone hero)
+/// ride as STABLE system messages so the cache prefix holds across turns,
+/// mirroring the story architect's bound world bible.
 ///
 /// CACHE INVARIANT: the tail user message is the RAW user text — byte-equal to
 /// the history entry the server stores for this turn. State never rides in
 /// messages; the model reads it via read_player_character.
-pub fn character_architect_messages(history: &[Value], user_text: &str) -> Vec<Value> {
-    architect_messages_with_user(
-        CHARACTER_ARCHITECT_SYSTEM,
+pub fn character_architect_messages(
+    history: &[Value],
+    context_blocks: &[String],
+    user_text: &str,
+) -> Vec<Value> {
+    architect_messages_with_system_blocks(
+        character_architect_prompt(context_blocks),
+        context_blocks,
         history,
         json!({"role": "user", "content": user_text.trim()}),
     )
@@ -126,6 +210,129 @@ pub fn character_architect_tools() -> Vec<Value> {
         edit_player_character_schema(),
         read_player_character_schema(),
     ]
+}
+
+/// The PUBLIC `world_lore` fields allowed into the BASE WORLD block — a
+/// WHITELIST (mirrors the story block below): unlike the GM-trusted story
+/// architect, the character architect converses with the PLAYER, so basing a
+/// hero on a world must not spoil its mysteries. The canonical GM-only fields
+/// (`hidden_premise`/`hidden_secrets`), the image prompt/URL fields (token
+/// bloat), and ANY ad-hoc key the world architect may have folded into the
+/// bible (its draft/edit tools accept arbitrary keys — e.g. a user-requested
+/// `dm_notes`) stay private until deliberately added here.
+const CHARACTER_WORLD_PUBLIC_FIELDS: [&str; 26] = [
+    "name",
+    "genre",
+    "tone",
+    "scale",
+    "public_premise",
+    "dogmas",
+    "world_laws",
+    "inhabitants",
+    "creatures",
+    "power_sources",
+    "technologies",
+    "taboos",
+    "conflicts",
+    "inspirations",
+    "regions",
+    "power_centers",
+    "religions",
+    "gods",
+    "cultures",
+    "history",
+    "economy",
+    "daily_life",
+    "story_hooks",
+    "location_rules",
+    "prohibited_elements",
+    "open_questions",
+];
+
+/// Build the read-only BASE WORLD context block from a world's `world_lore`
+/// object — the PUBLIC bible the hero is grounded in. Only
+/// [`CHARACTER_WORLD_PUBLIC_FIELDS`] pass (whitelist; empty values dropped).
+/// When NOTHING public survives (blank/non-object lore) the block is an EMPTY
+/// STRING, not a heading over `{}` — the runner drops blank blocks, so no
+/// tokens are spent on instructions with no material (the server substitutes
+/// [`character_architect_base_unavailable_block`] when refs exist, keeping the
+/// conversation on the BASED prompt).
+pub fn character_architect_world_block(world_lore: &Value) -> String {
+    let source = match world_lore {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    };
+    let mut lore = Map::new();
+    for key in CHARACTER_WORLD_PUBLIC_FIELDS {
+        if let Some(v) = source.get(key) {
+            let keep = match v {
+                Value::String(s) => !s.trim().is_empty(),
+                Value::Array(a) => !a.is_empty(),
+                Value::Null => false,
+                _ => true,
+            };
+            if keep {
+                lore.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    if lore.is_empty() {
+        return String::new();
+    }
+    let json =
+        serde_json::to_string_pretty(&Value::Object(lore)).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "## BASE WORLD (public bible, read-only reference)\n\
+        The user is building this hero FOR this world. Ground the character in it — match its \
+        genre, tone and naming, reuse its proper nouns where natural, and give the hero a \
+        background that plausibly belongs here — but do NOT edit the world and do NOT invent \
+        world-level canon.\n\n\
+        {json}"
+    )
+}
+
+/// The PUBLIC story fields allowed into the BASE STORY block — a WHITELIST, so a
+/// new seed field is private until deliberately added here. `hidden_truth`,
+/// NPCs (they carry secrets) and state records never pass.
+const CHARACTER_STORY_PUBLIC_FIELDS: [&str; 4] =
+    ["title", "description", "story_brief", "public_intro"];
+
+/// Build the read-only BASE STORY context block from a story envelope's public
+/// fields (`title`/`description` from the envelope, `story_brief`/`public_intro`
+/// from its seed — the same fields the player-facing catalog exposes). The
+/// caller passes a combined object; only [`CHARACTER_STORY_PUBLIC_FIELDS`] pass
+/// through. When nothing public survives the block is an EMPTY STRING (dropped
+/// by the runner) — never a heading over `{}`.
+pub fn character_architect_story_block(story_public: &Value) -> String {
+    let source = match story_public {
+        Value::Object(map) => map.clone(),
+        _ => Map::new(),
+    };
+    let mut public = Map::new();
+    for key in CHARACTER_STORY_PUBLIC_FIELDS {
+        if let Some(v) = source.get(key) {
+            let keep = match v {
+                Value::String(s) => !s.trim().is_empty(),
+                Value::Null => false,
+                _ => true,
+            };
+            if keep {
+                public.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    if public.is_empty() {
+        return String::new();
+    }
+    let json =
+        serde_json::to_string_pretty(&Value::Object(public)).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "## BASE STORY (public premise, read-only reference)\n\
+        The user is building this hero as a protagonist FOR this story. Shape the character to fit \
+        its public premise. This is only the PLAYER-VISIBLE part of the story: its hidden answers \
+        are not shown to you — never guess at them or hint that you know more.\n\n\
+        {json}"
+    )
 }
 
 /// The `read_player_character` tool: return the FULL current text of the named
@@ -417,13 +624,24 @@ fn entry_name(entry: &Value) -> Option<&str> {
 // config + public turn entrypoint
 // =========================================================================
 
-/// The character-architect [`ArchitectConfig`]. Standalone — no bound world, so
-/// no extra system block.
-struct CharacterArchitectConfig;
+/// The character-architect [`ArchitectConfig`]. `context_blocks` are the
+/// optional read-only base world/story blocks (empty = a standalone hero); they
+/// ride as extra STABLE system messages like the story architect's world bible.
+struct CharacterArchitectConfig {
+    context_blocks: Vec<String>,
+}
 
 impl ArchitectConfig for CharacterArchitectConfig {
     fn system_prompt(&self) -> &str {
-        CHARACTER_ARCHITECT_SYSTEM
+        character_architect_prompt(&self.context_blocks)
+    }
+
+    fn extra_system_blocks(&self) -> Vec<String> {
+        self.context_blocks
+            .iter()
+            .filter(|b| !b.trim().is_empty())
+            .cloned()
+            .collect()
     }
 
     fn tools(&self) -> Vec<Value> {
@@ -773,16 +991,20 @@ fn pc_entry_text(value: &Value) -> String {
     }
 }
 
-/// Run one character-architect turn. Mirrors [`crate::story_architect::story_architect_turn`]
-/// but takes no bound-world lore block — a character is standalone.
+/// Run one character-architect turn. Mirrors [`crate::story_architect::story_architect_turn`];
+/// `context_blocks` are the optional read-only base world/story blocks (pass an
+/// empty slice for a standalone hero).
 pub async fn character_architect_turn(
     client: &dyn Backend,
     history: &[Value],
+    context_blocks: &[String],
     draft: &Value,
     user_text: &str,
     stream: &mut (dyn ArchitectStream + Send),
 ) -> Result<CharacterArchitectOutput, BackendError> {
-    let config = CharacterArchitectConfig;
+    let config = CharacterArchitectConfig {
+        context_blocks: context_blocks.to_vec(),
+    };
     architect_turn(&config, client, history, draft, user_text, stream).await
 }
 
@@ -920,7 +1142,7 @@ mod tests {
 
     #[test]
     fn edit_facts_report_hits_and_misses() {
-        let config = CharacterArchitectConfig;
+        let config = CharacterArchitectConfig { context_blocks: Vec::new() };
         let mut working = json!({
             "spells": [{"name": "Свет", "level": 0}],
             "inventory": ["меч", "щит"]
@@ -944,7 +1166,7 @@ mod tests {
     #[test]
     fn user_tail_is_raw_text_matching_stored_history() {
         // CACHE INVARIANT: sent tail == stored history entry, byte for byte.
-        let messages = character_architect_messages(&[], "  Сделай мага.  ");
+        let messages = character_architect_messages(&[], &[], "  Сделай мага.  ");
         let tail = messages.last().unwrap();
         assert_eq!(tail["role"], "user");
         assert_eq!(tail["content"], "Сделай мага.");
@@ -958,7 +1180,7 @@ mod tests {
 
     #[test]
     fn read_player_character_renders_plain_text_not_json() {
-        let config = CharacterArchitectConfig;
+        let config = CharacterArchitectConfig { context_blocks: Vec::new() };
         let mut working = json!({
             "name": "Ариан",
             "abilities": {"STR": 16, "DEX": 12},
@@ -987,7 +1209,7 @@ mod tests {
         // section — including gm_notes / life_status / life_status_note /
         // condition, which the model can author and read by name. Dropping them
         // here would let the architect contradict notes it cannot see.
-        let config = CharacterArchitectConfig;
+        let config = CharacterArchitectConfig { context_blocks: Vec::new() };
         let mut working = json!({
             "name": "Ариан",
             "gm_notes": "Тайно служит культу.",
@@ -1007,15 +1229,147 @@ mod tests {
     }
 
     #[test]
-    fn messages_have_no_extra_system_block() {
-        // A character is standalone — unlike the story architect there is no
-        // bound-world lore block, so there is exactly ONE system message.
-        let msgs = character_architect_messages(&[], "Собери героя.");
+    fn messages_have_no_extra_system_block_when_standalone() {
+        // A standalone hero (no base world/story) keeps the old shape: exactly
+        // ONE system message — and the STANDALONE prompt variant, which spends
+        // zero tokens on the base-block feature it is not using.
+        let msgs = character_architect_messages(&[], &[], "Собери героя.");
         let system_count = msgs
             .iter()
             .filter(|m| m["role"] == "system")
             .count();
         assert_eq!(system_count, 1);
+        let prompt = msgs[0]["content"].as_str().unwrap();
+        assert!(!prompt.contains("BASE WORLD"), "standalone prompt must not mention bases");
+        assert!(!prompt.contains("BASE STORY"), "standalone prompt must not mention bases");
+        assert!(prompt.contains("standalone"));
         assert_eq!(msgs.last().unwrap()["role"], "user");
+        // All-blank blocks degrade to the same standalone prompt.
+        let blank = character_architect_messages(&[], &["  ".to_string()], "Собери героя.");
+        assert_eq!(blank[0]["content"], msgs[0]["content"]);
+    }
+
+    #[test]
+    fn base_blocks_ride_as_second_and_third_system_messages() {
+        // A based hero: the BASED prompt variant (grounding guidance instead of
+        // the contradictory standalone rule), with the world/story blocks
+        // spliced right after it (part of the stable cache prefix), before
+        // history and the user tail. Blank blocks are dropped.
+        let world_block =
+            character_architect_world_block(&json!({"name": "Эмберфолл", "genre": "fantasy"}));
+        let story_block = character_architect_story_block(&json!({"title": "Пепел у дороги"}));
+        let msgs = character_architect_messages(
+            &[],
+            &[world_block.clone(), story_block.clone(), "  ".to_string()],
+            "Собери героя.",
+        );
+        assert_eq!(msgs[0]["role"], "system");
+        let prompt = msgs[0]["content"].as_str().unwrap();
+        assert!(prompt.contains("base reference"), "based prompt variant expected");
+        assert!(
+            !prompt.contains("do NOT tie them"),
+            "the standalone rule would contradict the base blocks"
+        );
+        // The based prompt is GENERIC: all world-/story-specific guidance lives
+        // in the blocks, so a world-only base never carries story instructions.
+        assert!(!prompt.contains("public premise"), "story guidance belongs in the story block");
+        assert!(!prompt.contains("hidden answers"), "story guidance belongs in the story block");
+        assert!(!prompt.contains("proper nouns"), "world guidance belongs in the world block");
+        assert_eq!(msgs[1]["role"], "system");
+        assert_eq!(msgs[1]["content"], json!(world_block));
+        assert_eq!(msgs[2]["role"], "system");
+        assert_eq!(msgs[2]["content"], json!(story_block));
+        let system_count = msgs.iter().filter(|m| m["role"] == "system").count();
+        assert_eq!(system_count, 3, "the blank block must be dropped");
+        assert_eq!(msgs.last().unwrap()["role"], "user");
+    }
+
+    #[test]
+    fn world_block_is_a_public_whitelist() {
+        let lore = json!({
+            "name": "Эмберфолл",
+            "genre": "fantasy",
+            "public_premise": "Долина у вулкана.",
+            "dogmas": ["огонь свят"],
+            "hidden_premise": "СЕКРЕТ-ПРЕМИСА",
+            "hidden_secrets": ["СЕКРЕТ-1"],
+            "world_image_prompt_en": "an image prompt",
+            "world_image_url": "/world-assets/x.png",
+            // An ad-hoc key the world architect can fold into the bible — the
+            // whitelist must keep it private without knowing its name.
+            "dm_notes": "АДХОК-СЕКРЕТ",
+        });
+        let block = character_architect_world_block(&lore);
+        assert!(block.contains("## BASE WORLD"));
+        assert!(block.contains("Эмберфолл"));
+        assert!(block.contains("Долина у вулкана."));
+        assert!(block.contains("огонь свят"));
+        assert!(!block.contains("СЕКРЕТ-ПРЕМИСА"), "{block}");
+        assert!(!block.contains("СЕКРЕТ-1"), "{block}");
+        assert!(!block.contains("an image prompt"), "{block}");
+        assert!(!block.contains("/world-assets/"), "{block}");
+        assert!(!block.contains("АДХОК-СЕКРЕТ"), "{block}");
+    }
+
+    #[test]
+    fn blocks_with_no_public_material_are_empty_strings() {
+        // No heading over `{}`: an empty block is dropped by the runner and the
+        // prompt picker falls back to the standalone variant.
+        assert_eq!(character_architect_world_block(&json!({})), "");
+        assert_eq!(character_architect_world_block(&Value::Null), "");
+        assert_eq!(
+            character_architect_world_block(&json!({"hidden_premise": "СЕКРЕТ", "name": "  "})),
+            ""
+        );
+        assert_eq!(character_architect_story_block(&json!({})), "");
+        assert_eq!(
+            character_architect_story_block(&json!({"hidden_truth": "СЕКРЕТ", "title": ""})),
+            ""
+        );
+        // And the message assembly degrades to the standalone shape.
+        let msgs = character_architect_messages(
+            &[],
+            &[character_architect_world_block(&json!({}))],
+            "Собери героя.",
+        );
+        assert_eq!(msgs.iter().filter(|m| m["role"] == "system").count(), 1);
+        assert!(msgs[0]["content"].as_str().unwrap().contains("standalone"));
+    }
+
+    #[test]
+    fn base_unavailable_block_keeps_the_based_prompt() {
+        // A hero with recorded refs whose base material is gone must NOT fall
+        // through to the standalone prompt (its "do NOT tie" would contradict
+        // the already-grounded sheet) — the server substitutes this note.
+        let note = character_architect_base_unavailable_block();
+        assert!(note.contains("## BASE (reference unavailable)"));
+        assert!(note.contains("Preserve the hero's existing ties"));
+        let msgs = character_architect_messages(&[], &[note.clone()], "Поправь лук.");
+        assert_eq!(msgs.iter().filter(|m| m["role"] == "system").count(), 2);
+        let prompt = msgs[0]["content"].as_str().unwrap();
+        assert!(prompt.contains("base reference"), "based prompt expected");
+        assert!(!prompt.contains("do NOT tie them"));
+        assert_eq!(msgs[1]["content"], json!(note));
+    }
+
+    #[test]
+    fn story_block_is_a_public_whitelist() {
+        let story = json!({
+            "title": "Пепел у дороги",
+            "description": "Каравану нужен проводник.",
+            "story_brief": "Довести караван живым.",
+            "public_intro": "Вы стоите у ворот.",
+            "hidden_truth": "СКРЫТАЯ-ПРАВДА",
+            "npcs": [{"name": "Викар", "secret": "предатель"}],
+            "player_character": {"name": "Авторский герой"},
+        });
+        let block = character_architect_story_block(&story);
+        assert!(block.contains("## BASE STORY"));
+        assert!(block.contains("Пепел у дороги"));
+        assert!(block.contains("Довести караван живым."));
+        assert!(block.contains("Вы стоите у ворот."));
+        assert!(!block.contains("СКРЫТАЯ-ПРАВДА"), "{block}");
+        assert!(!block.contains("предатель"), "{block}");
+        assert!(!block.contains("Авторский герой"), "{block}");
     }
 }

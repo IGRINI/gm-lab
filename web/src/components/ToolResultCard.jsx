@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip from "./Tooltip.jsx";
@@ -87,7 +88,7 @@ export function resultView(name, p) {
       const sources = Array.isArray(payload.sources) ? payload.sources : [];
       const delivered = Number(payload.already_delivered || 0);
       return {
-        icon: "📖",
+        icon: <Icon name="book" size={14} />,
         accent: "var(--md-link)",
         title: "Память мира — ответ",
         body: (
@@ -138,7 +139,7 @@ export function resultView(name, p) {
           ? "нового нет"
           : "ничего не найдено";
       return {
-        icon: "🔍",
+        icon: <Icon name="search" size={14} />,
         accent: "var(--md-link)",
         title: "Память мира — найдено",
         body: (
@@ -178,7 +179,7 @@ export function resultView(name, p) {
       const applied = Array.isArray(payload.applied) ? payload.applied : [];
       const errors = Array.isArray(payload.errors) ? payload.errors : [];
       return {
-        icon: "🧠",
+        icon: <Icon name="sparkles" size={14} />,
         accent: "var(--entity-note)",
         title: "Память мира — записано",
         body: (
@@ -226,8 +227,8 @@ export function resultView(name, p) {
       const profile = (payload.profile && typeof payload.profile === "object") ? payload.profile : {};
       const keys = Object.keys(profile);
       return {
-        icon: "🪪",
-        accent: "var(--acc)",
+        icon: <Icon name="user" size={14} />,
+        accent: "var(--brand-text)",
         title: (
           <>
             Карточка — <NpcRef id={payload.npc_id} />
@@ -261,7 +262,7 @@ export function resultView(name, p) {
       const current = (payload.current && typeof payload.current === "object") ? payload.current : {};
       const now = [current.current_date_label, current.time_of_day].filter(nonEmpty).join(" · ");
       return {
-        icon: "⏳",
+        icon: <Icon name="clock" size={14} />,
         accent: "var(--md-em)",
         title: "Время мира",
         body: (
@@ -280,7 +281,7 @@ export function resultView(name, p) {
     case "update_player_character": {
       const updated = Array.isArray(payload.updated) ? payload.updated : [];
       return {
-        icon: "🛡",
+        icon: <Icon name="shield" size={14} />,
         accent: "var(--player)",
         title: "Лист персонажа — обновлён",
         body: (
@@ -300,8 +301,8 @@ export function resultView(name, p) {
 
     case "tool_search": {
       return {
-        icon: "🧰",
-        accent: "var(--mut)",
+        icon: <Icon name="sliders" size={14} />,
+        accent: "var(--text-3)",
         title: "Инструменты ГМ",
         body: nonEmpty(payload.text) ? (
           <TextBlock>{payload.text}</TextBlock>
@@ -313,7 +314,7 @@ export function resultView(name, p) {
 
     default:
       return {
-        icon: "✅",
+        icon: <Icon name="check" size={14} />,
         accent: "var(--entity-unknown)",
         title: <>Результат <code>{name}</code></>,
         body: (

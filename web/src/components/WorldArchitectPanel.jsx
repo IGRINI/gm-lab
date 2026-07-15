@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import ImageThumbnail from "./ImagePreview.jsx";
@@ -696,7 +697,7 @@ export default function WorldArchitectPanel({
     <form className={`world-studio${className ? ` ${className}` : ""}`} onSubmit={submitWorld}>
       <header className="world-studio-head">
         <div className="world-studio-id">
-          <span className="world-studio-emblem" aria-hidden="true">✦</span>
+          <span className="world-studio-emblem" aria-hidden="true"><Icon name="globe" size={18} /></span>
           <div className="world-studio-title">
             <span className="world-studio-kicker">создание мира</span>
             <b>Студия миров</b>
@@ -873,7 +874,7 @@ export default function WorldArchitectPanel({
                   <b>Библия мира</b>
                   <small>{loreFilled ? "заполнена — можно править" : "вручную или через архитектора"}</small>
                 </span>
-                <span className="world-bible-caret" aria-hidden="true">{bibleOpen ? "▾" : "▸"}</span>
+                <span className="world-bible-caret" aria-hidden="true"><Icon name={bibleOpen ? "chevron-down" : "chevron-right"} size={12} /></span>
               </button>
               {bibleOpen && (
                 <div className="world-bible-fields">

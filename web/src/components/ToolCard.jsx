@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useContext } from "react";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
@@ -12,8 +13,8 @@ import { StatusLabelsContext } from "../statusContext.js";
 const ACCENT = {
   ask_npc: "var(--player)",
   ask_npc_redo: "var(--md-del)",
-  move_npc: "var(--acc)",
-  set_npc_presence: "var(--acc)",
+  move_npc: "var(--brand-text)",
+  set_npc_presence: "var(--brand-text)",
   set_npc_whereabouts: "var(--md-em)",
   set_scene: "var(--gm)",
   roll_dice: "var(--md-strong)",
@@ -25,8 +26,8 @@ const ACCENT = {
   update_world_state: "var(--entity-note)",
   update_player_character: "var(--player)",
   advance_time: "var(--md-em)",
-  get_npc_profile: "var(--acc)",
-  tool_search: "var(--mut)",
+  get_npc_profile: "var(--brand-text)",
+  tool_search: "var(--text-3)",
   _: "var(--entity-unknown)",
 };
 
@@ -261,7 +262,7 @@ function toolView(name, args, statusLabels) {
     case "ask_npc": {
       const redo = nonEmpty(args.correction);
       return {
-        icon: redo ? "♻" : "💬",
+        icon: redo ? <Icon name="refresh" size={14} /> : <Icon name="message" size={14} />,
         accent: redo ? ACCENT.ask_npc_redo : ACCENT.ask_npc,
         title: (
           <>
@@ -290,7 +291,7 @@ function toolView(name, args, statusLabels) {
     case "set_npc_presence": {
       const present = args.present;
       return {
-        icon: "🚶",
+        icon: <Icon name="walk" size={14} />,
         accent: ACCENT.move_npc,
         title: (
           <>
@@ -323,7 +324,7 @@ function toolView(name, args, statusLabels) {
     case "set_npc_whereabouts": {
       const place = args.location_name || args.location_id;
       return {
-        icon: "📍",
+        icon: <Icon name="pin" size={14} />,
         accent: ACCENT.set_npc_whereabouts,
         title: (
           <>
@@ -355,7 +356,7 @@ function toolView(name, args, statusLabels) {
       const items = args.items || [];
       const constraints = args.constraints || [];
       return {
-        icon: "🎬",
+        icon: <Icon name="map" size={14} />,
         accent: ACCENT.set_scene,
         title: "Смена сцены",
         body: (
@@ -453,7 +454,7 @@ function toolView(name, args, statusLabels) {
     case "roll_dice": {
       const target = diceTarget(args);
       return {
-        icon: "🎲",
+        icon: <Icon name="d20" size={14} />,
         accent: ACCENT.roll_dice,
         title: "Бросок кубика",
         body: (
@@ -490,7 +491,7 @@ function toolView(name, args, statusLabels) {
 
     case "get_world_fact": {
       return {
-        icon: "📖",
+        icon: <Icon name="book" size={14} />,
         accent: ACCENT.get_world_fact,
         title: "Запрос к памяти мира",
         body: (
@@ -504,7 +505,7 @@ function toolView(name, args, statusLabels) {
     case "ask_player": {
       const options = Array.isArray(args.options) ? args.options : [];
       return {
-        icon: "🎯",
+        icon: <Icon name="target" size={14} />,
         accent: ACCENT.ask_player,
         title: "Варианты для игрока",
         body: (
@@ -534,7 +535,7 @@ function toolView(name, args, statusLabels) {
     case "update_world_state": {
       const items = Array.isArray(args.items) ? args.items : [];
       return {
-        icon: "🧠",
+        icon: <Icon name="sparkles" size={14} />,
         accent: ACCENT.update_world_state,
         title: "Запись в память мира",
         body: items.length ? (
@@ -569,7 +570,7 @@ function toolView(name, args, statusLabels) {
 
     case "query_world_state": {
       return {
-        icon: "🔍",
+        icon: <Icon name="search" size={14} />,
         accent: ACCENT.query_world_state,
         title: "Поиск в памяти мира",
         body: (
@@ -590,7 +591,7 @@ function toolView(name, args, statusLabels) {
       const fields = (args.fields && typeof args.fields === "object") ? args.fields : {};
       const keys = Object.keys(fields);
       return {
-        icon: "🛡",
+        icon: <Icon name="shield" size={14} />,
         accent: ACCENT.update_player_character,
         title: "Лист персонажа игрока",
         body: (
@@ -614,7 +615,7 @@ function toolView(name, args, statusLabels) {
 
     case "advance_time": {
       return {
-        icon: "⏳",
+        icon: <Icon name="clock" size={14} />,
         accent: ACCENT.advance_time,
         title: "Сдвиг времени",
         body: (
@@ -631,7 +632,7 @@ function toolView(name, args, statusLabels) {
     case "get_npc_profile": {
       const fields = Array.isArray(args.fields) ? args.fields : [];
       return {
-        icon: "🪪",
+        icon: <Icon name="user" size={14} />,
         accent: ACCENT.get_npc_profile,
         title: (
           <>
@@ -649,7 +650,7 @@ function toolView(name, args, statusLabels) {
 
     case "tool_search": {
       return {
-        icon: "🧰",
+        icon: <Icon name="sliders" size={14} />,
         accent: ACCENT.tool_search,
         title: "Поиск инструмента ГМ",
         body: (
@@ -671,7 +672,7 @@ function toolView(name, args, statusLabels) {
         ])
         .filter(([, items]) => items.length > 0);
       return {
-        icon: "📜",
+        icon: <Icon name="scroll" size={14} />,
         accent: ACCENT.draft_world_bible,
         title: "Черновик мира",
         body: (
@@ -731,7 +732,7 @@ function toolView(name, args, statusLabels) {
       ]);
       const empty = setKeys.length === 0 && ops.every(([, entries]) => entries.length === 0);
       return {
-        icon: "✏️",
+        icon: <Icon name="pen" size={14} />,
         accent: ACCENT.edit_world_bible,
         title: "Правка мира",
         body: (
@@ -763,7 +764,7 @@ function toolView(name, args, statusLabels) {
     default: {
       const entries = Object.entries(args || {});
       return {
-        icon: "🔧",
+        icon: <Icon name="sliders" size={14} />,
         accent: ACCENT._,
         title: <>ГМ вызвал инструмент <code>{name}</code></>,
         body: entries.length ? (
@@ -801,7 +802,7 @@ function PlayerTimeCard({ payload }) {
   const now = [current.current_date_label, current.time_of_day].filter(nonEmpty).join(" · ");
   return (
     <div className="play-card time" style={{ "--tc": "var(--md-em)" }}>
-      <span className="play-ico" aria-hidden="true">⏳</span>
+      <span className="play-ico" aria-hidden="true"><Icon name="clock" size={16} /></span>
       <span className="play-main">
         <b>Прошло {prettyElapsed(p.elapsed_minutes)}</b>
         {nonEmpty(now) && <span className="play-sub">{now}</span>}
@@ -816,7 +817,7 @@ function PlayerSheetCard({ payload }) {
   const updated = Array.isArray(p.updated) ? p.updated : [];
   return (
     <div className="play-card sheet" style={{ "--tc": "var(--player)" }}>
-      <span className="play-ico" aria-hidden="true">🛡</span>
+      <span className="play-ico" aria-hidden="true"><Icon name="shield" size={16} /></span>
       <span className="play-main">
         <b>Лист персонажа обновлён</b>
         {updated.length > 0 && <span className="play-sub">{updated.join(", ")}</span>}

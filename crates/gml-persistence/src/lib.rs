@@ -25,7 +25,7 @@ use gml_orchestrator::{ClientFactory, CompactionThresholds, Session};
 
 pub mod character_store;
 pub mod world_store;
-pub use character_store::{CharacterStore, CHARACTER_FORMAT};
+pub use character_store::{CharacterBaseRef, CharacterStore, CHARACTER_FORMAT};
 pub use world_store::{WorldStore, ASSETS_DIR as ASSETS_DIR_NAME};
 
 /// `SCHEMA_VERSION = 1` — hard-checked on load (no migrations exist).

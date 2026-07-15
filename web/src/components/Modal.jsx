@@ -1,6 +1,8 @@
+import Icon from "./Icon.jsx";
 // Lightweight stacked-modal. A modal manager (DebugPanel) owns the stack and
 // closes only the TOP layer on ESC / backdrop-click, so layering stays sane.
 // Each deeper layer sits at a higher z-index and dims the one below it.
+
 export default function Modal({ title, subtitle, onClose, depth = 0, wide = false, className = "", children, footer }) {
   return (
     <div
@@ -21,7 +23,7 @@ export default function Modal({ title, subtitle, onClose, depth = 0, wide = fals
             {subtitle && <span>{subtitle}</span>}
           </div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть">
-            x
+            <Icon name="x" size={15} />
           </button>
         </div>
         <div className="dbg-modal-body">{children}</div>

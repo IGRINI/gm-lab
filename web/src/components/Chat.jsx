@@ -1,3 +1,4 @@
+import Icon from "./Icon.jsx";
 import { useRef, useState, useEffect, useCallback, forwardRef, useMemo } from "react";
 import { Virtuoso } from "react-virtuoso";
 import Message from "./Message.jsx";
@@ -147,7 +148,7 @@ export default function Chat({ messages, storyBrief, scene, npcs, entities, stat
             onClick={() => { pausedRef.current = false; scrollToBottom("smooth"); }}
             aria-label="Вниз"
           >
-            ↓
+            <Icon name="arrow-down" size={16} />
             {newCount > 0 && <span className="badge">{newCount > 99 ? "99+" : newCount}</span>}
           </button>
         </Tooltip>
