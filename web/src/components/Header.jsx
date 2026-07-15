@@ -629,6 +629,7 @@ export default function Header({
   onNavGame,
   onNavLibrary,
   onNavImage,
+  onOpenSearch,
   imageLabEnabled = false,
   srv,
   sidecarStatus,
@@ -674,6 +675,7 @@ export default function Header({
           className="tooltip-wrap"
           tipClassName="ui-tip-wrap"
           focusable={false}
+          disabled={chatsOpen}
           content={
             <TipContent
               title={chatsOpen ? "Скрыть чаты и миры" : "Показать чаты и миры"}
@@ -698,7 +700,9 @@ export default function Header({
         </Tooltip>
       )}
       <h1>
-        <Icon name="d20" size={18} className="logo-mark" />
+        <span className="logo-tile" aria-hidden="true">
+          <Icon name="d20" size={16} className="logo-mark" />
+        </span>
         <span>GM-<b>Lab</b></span>
       </h1>
       </div>
@@ -709,7 +713,8 @@ export default function Header({
           onClick={onNavGame}
           aria-current={isGame ? "page" : undefined}
         >
-          Игра
+          <Icon name="d20" size={14} />
+          <span>Игра</span>
         </button>
         <button
           type="button"
@@ -717,7 +722,8 @@ export default function Header({
           onClick={onNavLibrary}
           aria-current={isLibrary ? "page" : undefined}
         >
-          Библиотека
+          <Icon name="book" size={14} />
+          <span>Библиотека</span>
         </button>
         {imageLabEnabled && (
           <button
@@ -726,11 +732,25 @@ export default function Header({
             onClick={onNavImage}
             aria-current={isImage ? "page" : undefined}
           >
-            Image Lab
+            <Icon name="image" size={14} />
+            <span>Image Lab</span>
           </button>
         )}
       </nav>
       <div className="header-right">
+      {onOpenSearch && (
+        <button
+          type="button"
+          className="header-search-trigger"
+          onClick={onOpenSearch}
+          aria-label="Открыть общий поиск"
+          aria-keyshortcuts="Control+K Meta+K"
+        >
+          <Icon name="search" size={15} />
+          <span>Поиск</span>
+          <kbd>Ctrl K</kbd>
+        </button>
+      )}
       {conn ? (
         <Tooltip
           content={<ConnTooltip status={conn} />}
@@ -783,6 +803,7 @@ export default function Header({
           className="tooltip-wrap"
           tipClassName="ui-tip-wrap"
           focusable={false}
+          disabled={settingsOpen}
           content={<TipContent title="Настройки" note="Модель, интерфейс, озвучка и подключения." />}
         >
           <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Настройки">

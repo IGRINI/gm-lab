@@ -500,6 +500,115 @@ async fn get_chats_shape() {
 }
 
 #[tokio::test]
+async fn search_returns_unified_library_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    state
+        .world_store
+        .create_world(json!({
+            "title": "Cobalt Atlas",
+            "public_premise": "Skyships cross a chain of quiet islands.",
+        }))
+        .expect("create searchable world");
+
+    let (status, body) = get(&state, "/search?scope=library&q=skyships").await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["total"], 1);
+    assert_eq!(got["has_more"], false);
+    assert_eq!(got["items"][0]["type"], "world");
+    assert_eq!(got["items"][0]["title"], "Cobalt Atlas");
+    assert_eq!(got["items"][0]["matched_fields"], json!(["world"]));
+    assert!(got["items"][0]["world_id"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn search_finds_only_player_facing_chat_messages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let chat_id = state
+        .store
+        .create_chat(
+            "shared",
+            None,
+            None,
+            0,
+            Some("Quiet Camp"),
+            None,
+            true,
+        )
+        .expect("create chat");
+    state
+        .store
+        .with_runtime("shared", &chat_id, |runtime| {
+            runtime.turn_count = 1;
+            runtime.transcript.push(json!({
+                "turn": 1,
+                "event": {
+                    "kind": "player",
+                    "agent": "Игрок",
+                    "data": "amber signal by the old bridge",
+                    "sid": null,
+                },
+            }));
+            runtime.transcript.push(json!({
+                "turn": 1,
+                "event": {
+                    "kind": "gm_thinking",
+                    "agent": "ГМ",
+                    "data": "private-thought-sentinel",
+                    "sid": "hidden",
+                },
+            }));
+            state.store.save(runtime).expect("save indexed chat");
+        })
+        .expect("mutate chat")
+        .expect("chat exists");
+
+    let (status, body) = get(
+        &state,
+        "/search?scope=chats&field=messages&q=amber%20signal",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["total"], 1);
+    assert_eq!(got["items"][0]["type"], "chat");
+    assert_eq!(got["items"][0]["id"], chat_id);
+    assert_eq!(got["items"][0]["turn_count"], 1);
+    assert_eq!(got["items"][0]["matched_fields"], json!(["messages"]));
+    assert!(got["items"][0]["snippet"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("amber signal"));
+
+    let (status, body) = get(
+        &state,
+        "/search?scope=chats&field=messages&q=private-thought-sentinel",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["total"], 0, "GM thinking must not enter message search");
+}
+
+#[tokio::test]
+async fn search_rejects_an_oversized_query() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let query = "a".repeat(161);
+    let (status, body) = get(&state, &format!("/search?q={query}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let got: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(got["ok"], false);
+    assert!(got["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("160"));
+}
+
+#[tokio::test]
 async fn worlds_route_is_separate_from_chats() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);

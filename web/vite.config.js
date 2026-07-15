@@ -13,6 +13,7 @@ const API_PATHS = [
   "/export",
   "/models",
   "/settings",
+  "/search",
   "/turn",
   "/tts",
   "/transcribe",

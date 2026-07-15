@@ -1,6 +1,10 @@
 import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
+import SearchField from "./SearchField.jsx";
+import SearchSkeleton from "./SearchSkeleton.jsx";
+import ChatSearchFilters from "./ChatSearchFilters.jsx";
+import useAsyncSearch from "../useAsyncSearch.js";
 
 // Games-only sidebar for the redesigned shell (§Игра in the TZ). The old omnibus
 // (Чаты/Миры/Персонажи tabs + story/character pickers + import/export) is gone:
@@ -20,7 +24,14 @@ function chatTitle(chat) {
 }
 
 function chatPreview(chat) {
-  return chat?.preview?.trim() || "Пустая игра";
+  return chat?.snippet?.trim() || chat?.preview?.trim() || chat?.subtitle?.trim() || "Пустая игра";
+}
+
+function chatContext(chat) {
+  const values = [chat?.world_title, chat?.story_title, chat?.character_title || chat?.character_name]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+  return [...new Set(values)].join(" · ");
 }
 
 function chatDate(chat) {
@@ -42,7 +53,7 @@ function pluralRu(n, one, few, many) {
 }
 
 function turnCount(chat) {
-  const count = Number(chat?.turn_count || 0);
+  const count = Number(chat?.turn_count ?? chat?.turn ?? 0);
   return `${count} ${pluralRu(count, "ход", "хода", "ходов")}`;
 }
 
@@ -71,11 +82,61 @@ export default function ChatHistorySidebar({
 }) {
   const closeRef = useRef(null);
   const newGameRef = useRef(null);
+  const filterButtonRef = useRef(null);
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [searchFilters, setSearchFilters] = useState({
+    field: "all",
+    world_id: "",
+    story_id: "",
+    character_id: "",
+    period: "",
+    has_messages: false,
+    sort: "relevance",
+  });
 
   const sortedChats = useMemo(() => (Array.isArray(chats) ? chats : []), [chats]);
-  const locked = busy || loading;
+  const locked = busy;
+  const filterCount = Object.entries(searchFilters).filter(([key, value]) => {
+    if (key === "field") return value !== "all";
+    if (key === "sort") return value !== "relevance";
+    return Boolean(value);
+  }).length;
+  const searchActive = searchQuery.trim().length > 0 || filterCount > 0;
+  const searchRefresh = useMemo(
+    () => sortedChats.map((chat) => `${chat?.id || ""}:${chat?.updated_at || ""}`).join("|"),
+    [sortedChats]
+  );
+  const chatSearch = useAsyncSearch(
+    {
+      q: searchQuery,
+      scope: "chats",
+      ...searchFilters,
+      limit: 50,
+      _refresh: searchRefresh,
+    },
+    { enabled: searchActive, delay: 240 }
+  );
+  const visibleChats = searchActive ? chatSearch.items : sortedChats;
+  const searchOptions = useMemo(() => {
+    const unique = (idKey, titleKey, fallbackTitleKey = "") => {
+      const map = new Map();
+      for (const chat of sortedChats) {
+        const id = chat?.[idKey] == null ? "" : String(chat[idKey]).trim();
+        const rawLabel = chat?.[titleKey] || (fallbackTitleKey ? chat?.[fallbackTitleKey] : "");
+        const label = typeof rawLabel === "string" ? rawLabel.trim() : "";
+        if (id && !map.has(id)) map.set(id, label || id);
+      }
+      return [...map].map(([value, label]) => ({ value, label }));
+    };
+    return {
+      worlds: unique("world_id", "world_title"),
+      stories: unique("story_id", "story_title"),
+      characters: unique("character_id", "character_title", "character_name"),
+    };
+  }, [sortedChats]);
   const isGameView = mainView === "chat";
   const isImageView = mainView === "image";
   const isLibraryView = !isGameView && !isImageView;
@@ -214,16 +275,70 @@ export default function ChatHistorySidebar({
           {loading && <span className="chat-sidebar-status">Обновляю…</span>}
         </div>
 
+        <div className="chat-search-block">
+          <div className="chat-search-controls">
+            <SearchField
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder="Найти игру или сообщение"
+              ariaLabel="Поиск по сохранённым играм"
+              compact
+              loading={chatSearch.revalidating}
+            />
+            <button
+              ref={filterButtonRef}
+              type="button"
+              className={"chat-filter-trigger" + (filterCount > 0 ? " active" : "")}
+              onClick={() => setFiltersOpen((value) => !value)}
+              aria-label="Фильтры поиска"
+              aria-expanded={filtersOpen}
+            >
+              <Icon name="sliders" size={15} />
+              {filterCount > 0 && <span>{filterCount}</span>}
+            </button>
+          </div>
+          <ChatSearchFilters
+            open={filtersOpen}
+            filters={searchFilters}
+            options={searchOptions}
+            anchorRef={filterButtonRef}
+            onChange={setSearchFilters}
+            onClose={() => setFiltersOpen(false)}
+            onReset={() => setSearchFilters({
+              field: "all",
+              world_id: "",
+              story_id: "",
+              character_id: "",
+              period: "",
+              has_messages: false,
+              sort: "relevance",
+            })}
+          />
+          {searchActive && !chatSearch.initialLoading && !chatSearch.error && (
+            <span className="chat-search-summary">{chatSearch.total} найдено</span>
+          )}
+        </div>
+
         {error && <div className="chat-sidebar-error">{error}</div>}
 
+        {searchActive && chatSearch.error && chatSearch.items.length === 0 && (
+          <div className="chat-sidebar-error">{chatSearch.error}</div>
+        )}
+
         <nav className="chat-list" aria-label="Сохранённые игры">
-          {sortedChats.length === 0 && !loading ? (
+          {searchActive && chatSearch.initialLoading ? (
+            <SearchSkeleton variant="rows" count={5} />
+          ) : null}
+          {!chatSearch.initialLoading && visibleChats.length === 0 && !loading ? (
             <div className="chat-sidebar-empty">
-              Сохранённых игр пока нет. Нажмите «+ Новая игра», чтобы начать.
+              {searchActive
+                ? "По этому запросу ничего не найдено. Попробуйте убрать часть фильтров."
+                : "Сохранённых игр пока нет. Нажмите «+ Новая игра», чтобы начать."}
             </div>
           ) : null}
-          {sortedChats.map((chat) => {
+          {!chatSearch.initialLoading && visibleChats.map((chat) => {
             const active = chat.active || sameChatId(chat.id, activeChatId);
+            const context = chatContext(chat);
             return (
               <div key={chat.id} className={"chat-history-item" + (active ? " active" : "")}>
                 <button
@@ -238,6 +353,7 @@ export default function ChatHistorySidebar({
                     <span className="chat-row-date">{chatDate(chat)}</span>
                   </span>
                   <span className="chat-row-preview">{chatPreview(chat)}</span>
+                  {context && <span className="chat-row-context">{context}</span>}
                   <span className="chat-row-meta">
                     <span>{turnCount(chat)}</span>
                     {active && <span>активная</span>}

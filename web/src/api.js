@@ -13,6 +13,18 @@ function _post(url, body) {
   });
 }
 
+function withQuery(path, params) {
+  const query = new URLSearchParams();
+  for (const [key, raw] of Object.entries(params || {})) {
+    // Keys prefixed with `_` are client-only cache/revalidation markers.
+    if (key.startsWith("_") || raw == null || raw === "" || raw === false) continue;
+    const value = Array.isArray(raw) ? raw.join(",") : String(raw);
+    if (value) query.set(key, value);
+  }
+  const suffix = query.toString();
+  return suffix ? `${path}?${suffix}` : path;
+}
+
 export const api = {
   state: () => getJSON("/state"),
 
@@ -81,6 +93,12 @@ export const api = {
     _post(`/stories/${encodeURIComponent(storyId)}/save-protagonist`),
 
   chats: () => getJSON("/chats"),
+
+  // Unified, cancellable search used by the global palette, Library and the
+  // saved-games sidebar. `_refresh` may be supplied by a caller to invalidate
+  // the hook after local mutations; it is intentionally not sent to the server.
+  search: (params = {}, { signal } = {}) =>
+    getJSON(withQuery("/search", params), { signal }),
 
   worlds: () => getJSON("/worlds"),
 

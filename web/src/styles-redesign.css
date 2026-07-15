@@ -3,20 +3,27 @@
    Токены и примитивы — theme.css.
    ============================================================================ */
 
-/* ===== Header nav — плавающий остров-пилюля, активный таб светлый ===== */
+/* ===== Header nav — компактная workbench-группа с акцентным маркером ===== */
 .header-nav {
-  display: inline-flex; align-items: center; gap: 3px; padding: 4px;
-  border: 1px solid var(--border-0); border-radius: var(--r-full); background: var(--surface-1);
-  box-shadow: var(--shadow-1);
+  display: inline-flex; align-items: center; gap: 2px; padding: 3px;
+  border: 1px solid var(--border-1); border-radius: var(--r-lg); background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.08);
 }
 .header-nav-btn {
-  cursor: pointer; border: 0; border-radius: var(--r-full);
-  background: transparent; color: var(--text-3); font: 500 13px/1.2 var(--font-ui);
-  padding: 8px 18px; white-space: nowrap;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  position: relative; cursor: pointer; border: 0; border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; gap: 7px;
+  background: transparent; color: var(--text-3); font: 500 12.5px/1.2 var(--font-ui);
+  padding: 7px 13px; white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
 }
-.header-nav-btn:hover { color: var(--text-1); }
+.header-nav-btn:hover { background: var(--surface-2); color: var(--text-1); }
+.header-nav-btn:active { transform: scale(0.98); }
 .header-nav-btn.active { background: var(--active-pill); color: var(--active-ink); font-weight: 600; }
+.header-nav-btn.active::after {
+  content: ""; position: absolute; left: 12px; right: 12px; bottom: 2px; height: 2px;
+  border-radius: var(--r-full); background: var(--brand);
+}
+.header-nav-btn .ico { flex: none; }
 /* телефон: нав-пилюля прячется — разделы живут в бургер-меню хедера */
 @media (max-width: 700px) {
   .header-nav { display: none; }
@@ -53,20 +60,20 @@
   gap: 14px; flex-wrap: wrap; padding: 4px 2px;
 }
 
-/* filter pills — остров как у header-nav, активный светлый */
-.lib-filters { display: flex; gap: 3px; flex-wrap: wrap; min-width: 0; padding: 4px; border: 1px solid var(--border-0); border-radius: var(--r-full); background: var(--surface-1); }
+/* Компактная группа фильтров в том же языке, что и верхняя навигация. */
+.lib-filters { display: flex; gap: 2px; flex-wrap: wrap; min-width: 0; padding: 3px; border: 1px solid var(--border-1); border-radius: var(--r-lg); background: var(--surface-1); }
 .lib-pill {
   cursor: pointer; display: inline-flex; align-items: center; gap: 7px; min-width: 0;
-  border: 0; border-radius: var(--r-full); background: transparent; color: var(--text-3);
-  padding: 7px 16px; font: 500 13px/1.2 var(--font-ui);
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-3);
+  padding: 7px 13px; font: 500 12.5px/1.2 var(--font-ui);
   transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
 }
-.lib-pill:hover { color: var(--text-1); }
-.lib-pill.active { background: var(--active-pill); color: var(--active-ink); font-weight: 600; }
-.lib-pill.active .lib-pill-count { background: rgba(0, 0, 0, 0.1); }
+.lib-pill:hover { background: var(--surface-2); color: var(--text-1); }
+.lib-pill.active { background: var(--active-pill); color: var(--active-ink); box-shadow: inset 0 -2px var(--brand); font-weight: 600; }
+.lib-pill.active .lib-pill-count { background: var(--surface-1); }
 .lib-pill-count {
   font-size: 11px; font-weight: 600; color: inherit; opacity: 0.75;
-  padding: 1px 6px; border-radius: var(--r-full); background: rgba(0, 0, 0, 0.25);
+  padding: 1px 6px; border-radius: var(--r-full); background: var(--surface-2);
   font-variant-numeric: tabular-nums;
 }
 .lib-pill.active .lib-pill-count { opacity: 0.9; }
@@ -106,10 +113,10 @@
 
 .lib-card {
   display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px;
-  border: 1px solid var(--border-0); border-radius: var(--r-xl); background: var(--surface-1);
-  transition: border-color var(--dur-2) var(--ease), transform var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
+  border: 1px solid var(--border-1); border-radius: var(--r-xl); background: var(--surface-1);
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
 }
-.lib-card:hover { border-color: var(--border-1); transform: translateY(-2px); box-shadow: var(--shadow-2); }
+.lib-card:hover { border-color: var(--brand-line); background: color-mix(in srgb, var(--surface-1) 88%, var(--brand-tint)); transform: translateY(-1px); }
 .lib-card-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
 .lib-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
 .lib-card-title {
@@ -136,9 +143,15 @@
 .lib-empty {
   display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;
   margin: 6px auto; padding: 44px 24px; max-width: 520px;
-  border: 1px dashed var(--border-1); border-radius: var(--r-xl); background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-1); border-radius: var(--r-xl); background: var(--surface-1);
 }
-.lib-empty-text { margin: 0; color: var(--text-3); font-size: 14px; line-height: 1.5; }
+.lib-empty-icon {
+  width: 46px; height: 46px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--brand-line); border-radius: var(--r-lg);
+  background: var(--brand-tint); color: var(--brand-text);
+}
+.lib-empty-title { margin: 0; color: var(--text-1); font: 650 20px/1.2 var(--font-ui); letter-spacing: -0.015em; }
+.lib-empty-text { max-width: 360px; margin: -5px 0 0; color: var(--text-3); font-size: 13.5px; line-height: 1.5; }
 .lib-status { padding: 26px 16px; color: var(--text-3); font-size: 13.5px; text-align: center; }
 .lib-status--error { color: var(--danger); }
 

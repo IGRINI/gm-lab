@@ -31,6 +31,7 @@ import GameContextBar from "./components/GameContextBar.jsx";
 import ScenePanel from "./components/ScenePanel.jsx";
 import Toasts, { useToasts } from "./components/Toasts.jsx";
 import ImageLabPanel from "./components/ImageLabPanel.jsx";
+import GlobalSearchPalette from "./components/GlobalSearchPalette.jsx";
 import { normalizeEntities } from "./entityContext.js";
 import { useDevSettings, computeVisibility, VisibilityContext, isMessageVisible } from "./devSettings.js";
 
@@ -247,18 +248,18 @@ export default function App() {
     }
     return window.matchMedia("(min-width: 701px)").matches;
   });
-  const [chatsLoading, setChatsLoading] = useState(false);
+  const [chatsLoading, setChatsLoading] = useState(true);
   const [chatsError, setChatsError] = useState("");
   const [worlds, setWorlds] = useState([]);
-  const [worldsLoading, setWorldsLoading] = useState(false);
+  const [worldsLoading, setWorldsLoading] = useState(true);
   const [worldsError, setWorldsError] = useState("");
   const [selectedWorldId, setSelectedWorldId] = useState("");
   const [chatActionBusy, setChatActionBusy] = useState(false);
   const [stories, setStories] = useState([]);
-  const [storiesLoading, setStoriesLoading] = useState(false);
+  const [storiesLoading, setStoriesLoading] = useState(true);
   const [storiesError, setStoriesError] = useState("");
   const [characters, setCharacters] = useState([]);
-  const [charactersLoading, setCharactersLoading] = useState(false);
+  const [charactersLoading, setCharactersLoading] = useState(true);
   const [charactersError, setCharactersError] = useState("");
   // Studio targets: the world the story architect plots over, the story it edits,
   // and the character package the character architect edits ("" = a fresh draft).
@@ -282,6 +283,7 @@ export default function App() {
   const [wizardPreselect, setWizardPreselect] = useState(null);
   const [playerOptions, setPlayerOptions] = useState(null);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   // Router: chat | library | world-studio | story-studio | character-studio | image
   const [mainView, setMainView] = useState("chat");
   const selectedWorld = useMemo(
@@ -626,6 +628,8 @@ export default function App() {
     setStatus("");
     setMainView("image");
   }, [imageLabEnabled]);
+  const openGlobalSearch = useCallback(() => setGlobalSearchOpen(true), []);
+  const closeGlobalSearch = useCallback(() => setGlobalSearchOpen(false), []);
 
   // Remember the collapse/expand choice across reloads.
   useEffect(() => {
@@ -944,6 +948,24 @@ export default function App() {
       }
     },
     [activeChatId, busy, chatActionBusy, restoreChatSession, refreshChats, closeChatsOnMobile, notify, notifyApiError]
+  );
+
+  const onGlobalSearchSelect = useCallback(
+    (item) => {
+      const type = textValue(item?.type);
+      const id = textValue(item?.id);
+      if (!type || !id) return;
+      setGlobalSearchOpen(false);
+      if (type === "chat") {
+        onActivateChat(id);
+        return;
+      }
+      const source = type === "world" ? worlds : type === "story" ? stories : characters;
+      const entity = (Array.isArray(source) ? source : []).find((entry) => sameChatId(entry?.id, id));
+      if (entity) onOpenStudio(entity, type);
+      else showLibrary();
+    },
+    [onActivateChat, worlds, stories, characters, onOpenStudio, showLibrary]
   );
 
   const onDeleteChat = useCallback(
@@ -1343,6 +1365,7 @@ export default function App() {
         onNavGame={showGame}
         onNavLibrary={showLibrary}
         onNavImage={showImage}
+        onOpenSearch={openGlobalSearch}
         imageLabEnabled={imageLabEnabled}
         srv={srv}
         sidecarStatus={sidecarStatus}
@@ -1353,6 +1376,12 @@ export default function App() {
         onSettingsChange={onSettingsChange}
         onCodex={onCodex}
         onLogout={onLogout}
+      />
+      <GlobalSearchPalette
+        open={globalSearchOpen}
+        onOpen={openGlobalSearch}
+        onClose={closeGlobalSearch}
+        onSelect={onGlobalSearchSelect}
       />
       <div className={"app-body" + (debugOpen ? " debug-open" : "") + (chatsOpen ? "" : " chats-collapsed")}>
         <ChatHistorySidebar

@@ -16,6 +16,7 @@
 
 pub mod openai_key;
 pub mod payload;
+pub mod search;
 pub mod share;
 pub mod sys_tokens;
 pub mod tls;
@@ -123,6 +124,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/debug", get(get_debug))
         .route("/models", get(get_models))
         .route("/settings", get(get_settings).post(post_settings))
+        .route("/search", get(search::get_search))
         .route("/transcript", get(get_transcript))
         .route("/stories", get(get_stories).post(post_create_story))
         .route("/stories/{id}/draft", get(get_story_draft))

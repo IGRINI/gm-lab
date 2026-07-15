@@ -24,8 +24,12 @@ use gml_llm::Backend;
 use gml_orchestrator::{ClientFactory, CompactionThresholds, Session};
 
 pub mod character_store;
+pub mod chat_search;
 pub mod world_store;
 pub use character_store::{CharacterBaseRef, CharacterStore, CHARACTER_FORMAT};
+pub use chat_search::{
+    ChatSearchHit, ChatSearchPage, ChatSearchQuery, ChatSearchScope, ChatSearchSort,
+};
 pub use world_store::{WorldStore, ASSETS_DIR as ASSETS_DIR_NAME};
 
 /// `SCHEMA_VERSION = 1` — hard-checked on load (no migrations exist).
@@ -191,6 +195,7 @@ impl DialogStore {
             );
             "#,
         )?;
+        chat_search::initialize(&con)?;
         Ok(())
     }
 
@@ -349,7 +354,7 @@ impl DialogStore {
             .into_iter()
             .map(|(id, title, preview, turn_count, payload, created_at, updated_at)| {
                 let active = id == active_id;
-                let meta = chat_list_meta_from_payload(&payload);
+                let meta = chat_search::metadata_from_payload(&payload);
                 json!({
                     "id": id,
                     "title": if title.is_empty() { DEFAULT_CHAT_TITLE.to_string() } else { title },
@@ -357,6 +362,10 @@ impl DialogStore {
                     "turn_count": turn_count,
                     "story_id": meta.story_id,
                     "story_title": meta.story_title,
+                    "world_id": meta.world_id,
+                    "world_title": meta.world_title,
+                    "character_id": meta.character_id,
+                    "character_name": meta.character_name,
                     "kind": meta.kind,
                     "created_at": created_at,
                     "updated_at": updated_at,
@@ -364,6 +373,20 @@ impl DialogStore {
                 })
             })
             .collect())
+    }
+
+    /// Search chat metadata and player-facing transcript text for one guest.
+    ///
+    /// The FTS index is derived from `dialog_chats`, guest-scoped, and excludes
+    /// hidden reasoning/tool payloads by construction. HTTP handlers should run
+    /// this synchronous SQLite method in `spawn_blocking`.
+    pub fn search_chats(
+        &self,
+        guest_id: &str,
+        query: &ChatSearchQuery,
+    ) -> Result<ChatSearchPage, StoreError> {
+        let con = self.connect()?;
+        chat_search::search(&con, guest_id, query)
     }
 
     /// `active_chat_id(guest_id)` — with self-heal to latest.
@@ -440,7 +463,8 @@ impl DialogStore {
         let payload = runtime.payload_json();
 
         let con = self.connect()?;
-        con.execute(
+        let tx = con.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO dialog_chats (
                 guest_id, chat_id, title, preview, turn_count,
                 payload, created_at, updated_at
@@ -461,7 +485,7 @@ impl DialogStore {
                 payload,
             ],
         )?;
-        let saved: Option<(Option<String>, Option<String>)> = con
+        let saved: Option<(Option<String>, Option<String>)> = tx
             .query_row(
                 "SELECT created_at, updated_at FROM dialog_chats
                  WHERE guest_id = ?1 AND chat_id = ?2",
@@ -469,7 +493,6 @@ impl DialogStore {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        con.commit_implicit()?;
         if let Some((created, updated)) = saved {
             if let Some(c) = created {
                 runtime.created_at = c;
@@ -478,6 +501,18 @@ impl DialogStore {
                 runtime.updated_at = u;
             }
         }
+        let document = chat_search::ChatSearchDocument::from_payload(
+            &runtime.guest_id,
+            &runtime.chat_id,
+            &runtime.title,
+            &runtime.preview,
+            runtime.turn_count,
+            &payload,
+            &runtime.created_at,
+            &runtime.updated_at,
+        );
+        chat_search::upsert_document(&tx, &document)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -628,6 +663,7 @@ impl DialogStore {
         if removed == 0 {
             return Ok(json!({"deleted": false, "reason": "chat not found"}));
         }
+        chat_search::delete_document(&tx, guest_id, &chat_id)?;
         let active = active_chat_id(&tx, guest_id)?;
         let mut new_active = active.clone();
         if active.as_deref().map(|a| a.is_empty()).unwrap_or(true)
@@ -715,6 +751,18 @@ impl DialogStore {
                     updated_at,
                 ],
             )?;
+            let document = chat_search::ChatSearchDocument::from_payload(
+                &target,
+                &target_chat_id,
+                &title,
+                &preview,
+                turn_count,
+                &payload,
+                &created_at,
+                &updated_at,
+            );
+            chat_search::upsert_document(&tx, &document)?;
+            chat_search::delete_document(&tx, &src_guest, &chat_id)?;
             tx.execute(
                 "DELETE FROM dialog_chats WHERE guest_id = ?1 AND chat_id = ?2",
                 rusqlite::params![src_guest, chat_id],
@@ -868,43 +916,6 @@ fn latest_chat_id(con: &Connection, guest_id: &str) -> Result<Option<String>, St
         )
         .optional()?;
     Ok(row.filter(|s| !s.is_empty()))
-}
-
-struct ChatListMeta {
-    story_id: String,
-    story_title: String,
-    kind: &'static str,
-}
-
-fn chat_list_meta_from_payload(payload: &str) -> ChatListMeta {
-    let data: Value = match serde_json::from_str(payload) {
-        Ok(value) => value,
-        Err(_) => Value::Null,
-    };
-    let world = data
-        .get("session")
-        .and_then(|session| session.get("world"))
-        .unwrap_or(&Value::Null);
-    let story_id = world
-        .get("story_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let story_title = world
-        .get("story_title")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let kind = if story_id == "procedural" {
-        "world"
-    } else {
-        "chat"
-    };
-    ChatListMeta {
-        story_id,
-        story_title,
-        kind,
-    }
 }
 
 fn chat_exists(con: &Connection, guest_id: &str, chat_id: &str) -> Result<bool, StoreError> {

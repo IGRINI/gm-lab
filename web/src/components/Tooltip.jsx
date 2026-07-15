@@ -43,6 +43,7 @@ export default function Tooltip({
   as = "span",
   style,
   focusable = true,
+  disabled = false,
 }) {
   const [open, setOpen] = useState(false);
   const refEl = useRef(null);
@@ -77,7 +78,11 @@ export default function Tooltip({
     return stop;
   }, [open]);
 
-  if (content == null || content === "") return children;
+  useLayoutEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  if (disabled || content == null || content === "") return children;
 
   const show = () => setOpen(true);
   const hide = () => setOpen(false);

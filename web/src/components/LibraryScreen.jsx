@@ -1,5 +1,8 @@
 import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
+import SearchField from "./SearchField.jsx";
+import SearchSkeleton from "./SearchSkeleton.jsx";
+import useAsyncSearch from "../useAsyncSearch.js";
 
 // Full-screen Библиотека view (§Библиотека in the TZ). Toolbar with filter pills
 // + a «+ Создать ▾» / Импорт / Открыть папку cluster, then a card grid for the
@@ -20,10 +23,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 //   onReveal()                    open the library folder on disk
 
 const FILTERS = [
+  { key: "all", label: "Все" },
   { key: "worlds", label: "Миры" },
   { key: "stories", label: "Истории" },
   { key: "characters", label: "Персонажи" },
 ];
+
+const FILTER_TYPES = {
+  all: ["world", "story", "character"],
+  worlds: ["world"],
+  stories: ["story"],
+  characters: ["character"],
+};
+
+const KIND_LABELS = { world: "Мир", story: "История", character: "Персонаж" };
 
 function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -159,9 +172,13 @@ function LibraryCard({ kind, title, badge, meta, preview, playLabel, studioLabel
   );
 }
 
-function EmptyState({ text, ctaLabel, onCta, locked }) {
+function EmptyState({ icon, title, text, ctaLabel, onCta, locked }) {
   return (
     <div className="lib-empty">
+      <span className="lib-empty-icon" aria-hidden="true">
+        <Icon name={icon} size={22} />
+      </span>
+      <h2 className="lib-empty-title">{title}</h2>
       <p className="lib-empty-text">{text}</p>
       {ctaLabel && (
         <button type="button" className="btn primary" onClick={onCta} disabled={locked}>
@@ -192,7 +209,8 @@ export default function LibraryScreen({
   onImport,
   onReveal,
 }) {
-  const [filter, setFilter] = useState("worlds");
+  const [filter, setFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
   const [confirmTarget, setConfirmTarget] = useState(null); // { entity, kind }
   const [deleting, setDeleting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -203,6 +221,24 @@ export default function LibraryScreen({
   const worldList = useMemo(() => (Array.isArray(worlds) ? worlds : []), [worlds]);
   const storyList = useMemo(() => (Array.isArray(stories) ? stories : []), [stories]);
   const characterList = useMemo(() => (Array.isArray(characters) ? characters : []), [characters]);
+  const searchActive = searchQuery.trim().length > 0;
+  const searchRefresh = useMemo(
+    () => [worldList, storyList, characterList]
+      .flat()
+      .map((entity) => `${entity?.id || ""}:${entity?.updated_at || entity?.version || ""}`)
+      .join("|"),
+    [worldList, storyList, characterList]
+  );
+  const librarySearch = useAsyncSearch(
+    {
+      q: searchQuery,
+      scope: "library",
+      types: FILTER_TYPES[filter] || FILTER_TYPES.all,
+      limit: 50,
+      _refresh: searchRefresh,
+    },
+    { enabled: searchActive, delay: 200 }
+  );
   const worldsById = useMemo(() => {
     const map = new Map();
     for (const world of worldList) if (world?.id != null) map.set(String(world.id), world);
@@ -210,12 +246,29 @@ export default function LibraryScreen({
   }, [worldList]);
 
   const locked = Boolean(busy);
-  const counts = { worlds: worldList.length, stories: storyList.length, characters: characterList.length };
+  const counts = {
+    all: worldList.length + storyList.length + characterList.length,
+    worlds: worldList.length,
+    stories: storyList.length,
+    characters: characterList.length,
+  };
 
   const activeLoading =
-    filter === "worlds" ? worldsLoading : filter === "stories" ? storiesLoading : charactersLoading;
+    filter === "all"
+      ? worldsLoading || storiesLoading || charactersLoading
+      : filter === "worlds"
+        ? worldsLoading
+        : filter === "stories"
+          ? storiesLoading
+          : charactersLoading;
   const activeError =
-    filter === "worlds" ? worldsError : filter === "stories" ? storiesError : charactersError;
+    filter === "all"
+      ? [worldsError, storiesError, charactersError].filter(Boolean).join(" · ")
+      : filter === "worlds"
+        ? worldsError
+        : filter === "stories"
+          ? storiesError
+          : charactersError;
 
   const storyWorldLabel = (story) => {
     const refId = story?.world_ref?.id;
@@ -344,14 +397,139 @@ export default function LibraryScreen({
         ? storyTitle(confirmTarget?.entity)
         : characterTitle(confirmTarget?.entity);
 
+  const renderCard = (entity, kind, match = null) => {
+    const badge = filter === "all" ? KIND_LABELS[kind] : "";
+    if (kind === "world") {
+      return (
+        <LibraryCard
+          key={`world:${entity.id}`}
+          kind="world"
+          title={worldTitle(entity)}
+          badge={badge}
+          meta={worldMeta(entity)}
+          preview={textValue(match?.snippet) || worldPreview(entity)}
+          playLabel="Играть"
+          studioLabel="Студия"
+          locked={locked}
+          onPlay={() => onPlay?.(entity, "world")}
+          onOpenStudio={() => onOpenStudio?.(entity, "world")}
+          menuItems={[
+            { key: "export", label: "Экспорт", onClick: () => onExport?.(entity, "world") },
+            { key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(entity, "world") },
+          ]}
+        />
+      );
+    }
+    if (kind === "story") {
+      return (
+        <LibraryCard
+          key={`story:${entity.id}`}
+          kind="story"
+          title={storyTitle(entity)}
+          badge={badge}
+          meta={storyWorldLabel(entity)}
+          preview={textValue(match?.snippet) || storyPreview(entity)}
+          playLabel="Играть"
+          studioLabel="Студия"
+          locked={locked}
+          onPlay={() => onPlay?.(entity, "story")}
+          onOpenStudio={() => onOpenStudio?.(entity, "story")}
+          menuItems={[
+            { key: "export", label: "Экспорт", onClick: () => onExport?.(entity, "story") },
+            { key: "export-world", label: "Экспорт с миром", onClick: () => onExport?.(entity, "story", { bake: true }) },
+            { key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(entity, "story") },
+          ]}
+        />
+      );
+    }
+
+    const menuItems = [
+      { key: "export", label: "Экспорт", onClick: () => onExport?.(entity, "character") },
+    ];
+    if (onRename) {
+      menuItems.push({ key: "rename", label: "Переименовать", onClick: () => onRename?.(entity, "character") });
+    }
+    menuItems.push({ key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(entity, "character") });
+    const meta = [characterMeta(entity), characterBaseLabel(entity)].filter(Boolean).join(" · ");
+    return (
+      <LibraryCard
+        key={`character:${entity.id}`}
+        kind="character"
+        title={characterTitle(entity)}
+        badge={badge}
+        meta={meta}
+        preview={textValue(match?.snippet) || characterPreview(entity)}
+        playLabel="Играть"
+        studioLabel="Студия"
+        locked={locked}
+        onPlay={() => onPlay?.(entity, "character")}
+        onOpenStudio={() => onOpenStudio?.(entity, "character")}
+        menuItems={menuItems}
+      />
+    );
+  };
+
+  const entityForSearchResult = (result) => {
+    const id = result?.id == null ? "" : String(result.id);
+    const source = result?.type === "world" ? worldList : result?.type === "story" ? storyList : characterList;
+    return source.find((entity) => String(entity?.id) === id) || null;
+  };
+
   const renderGrid = () => {
-    if (activeLoading) return <div className="lib-status">Загрузка…</div>;
+    if (activeLoading) return <SearchSkeleton variant="cards" count={6} />;
     if (activeError) return <div className="lib-status lib-status--error">{activeError}</div>;
+
+    if (searchActive) {
+      if (librarySearch.initialLoading) return <SearchSkeleton variant="cards" count={6} />;
+      if (librarySearch.error && librarySearch.items.length === 0) {
+        return <div className="lib-status lib-status--error">{librarySearch.error}</div>;
+      }
+      const results = librarySearch.items
+        .map((match) => ({ match, entity: entityForSearchResult(match) }))
+        .filter((entry) => entry.entity && (FILTER_TYPES[filter] || FILTER_TYPES.all).includes(entry.match.type));
+      if (results.length === 0) {
+        return (
+          <EmptyState
+            icon="search"
+            title="Ничего не найдено"
+            text={`В ${filter === "all" ? "библиотеке" : "этой вкладке"} нет совпадений. Попробуйте другое слово.`}
+          />
+        );
+      }
+      return (
+        <div className="lib-grid">
+          {results.map(({ match, entity }) => renderCard(entity, match.type, match))}
+        </div>
+      );
+    }
+
+    if (filter === "all") {
+      const entries = [
+        ...worldList.map((entity) => ({ kind: "world", entity })),
+        ...storyList.map((entity) => ({ kind: "story", entity })),
+        ...characterList.map((entity) => ({ kind: "character", entity })),
+      ];
+      if (entries.length === 0) {
+        return (
+          <EmptyState
+            icon="book"
+            title="Библиотека пока пуста"
+            text="Создайте первый мир — затем на его основе можно собрать историю и персонажей."
+            ctaLabel="+ Создать мир"
+            onCta={() => onCreate?.("world")}
+            locked={locked}
+          />
+        );
+      }
+      return <div className="lib-grid">{entries.map(({ entity, kind }) => renderCard(entity, kind))}</div>;
+    }
 
     if (filter === "worlds") {
       if (worldList.length === 0) {
         return (
           <EmptyState
+            icon="globe"
+            title="Создайте первый мир"
             text="Миров пока нет — создайте в студии или импортируйте пакет."
             ctaLabel="+ Создать мир"
             onCta={() => onCreate?.("world")}
@@ -359,34 +537,15 @@ export default function LibraryScreen({
           />
         );
       }
-      return (
-        <div className="lib-grid">
-          {worldList.map((world) => (
-            <LibraryCard
-              key={world.id}
-              kind="world"
-              title={worldTitle(world)}
-              meta={worldMeta(world)}
-              preview={worldPreview(world)}
-              playLabel="Играть"
-              studioLabel="Студия"
-              locked={locked}
-              onPlay={() => onPlay?.(world, "world")}
-              onOpenStudio={() => onOpenStudio?.(world, "world")}
-              menuItems={[
-                { key: "export", label: "Экспорт", onClick: () => onExport?.(world, "world") },
-                { key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(world, "world") },
-              ]}
-            />
-          ))}
-        </div>
-      );
+      return <div className="lib-grid">{worldList.map((world) => renderCard(world, "world"))}</div>;
     }
 
     if (filter === "stories") {
       if (storyList.length === 0) {
         return (
           <EmptyState
+            icon="scroll"
+            title="Создайте первую историю"
             text="Историй пока нет — создайте в студии сюжета над одним из миров."
             ctaLabel="+ Создать историю"
             onCta={() => onCreate?.("story")}
@@ -394,34 +553,14 @@ export default function LibraryScreen({
           />
         );
       }
-      return (
-        <div className="lib-grid">
-          {storyList.map((story) => (
-            <LibraryCard
-              key={story.id}
-              kind="story"
-              title={storyTitle(story)}
-              meta={storyWorldLabel(story)}
-              preview={storyPreview(story)}
-              playLabel="Играть"
-              studioLabel="Студия"
-              locked={locked}
-              onPlay={() => onPlay?.(story, "story")}
-              onOpenStudio={() => onOpenStudio?.(story, "story")}
-              menuItems={[
-                { key: "export", label: "Экспорт", onClick: () => onExport?.(story, "story") },
-                { key: "export-world", label: "Экспорт с миром", onClick: () => onExport?.(story, "story", { bake: true }) },
-                { key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(story, "story") },
-              ]}
-            />
-          ))}
-        </div>
-      );
+      return <div className="lib-grid">{storyList.map((story) => renderCard(story, "story"))}</div>;
     }
 
     if (characterList.length === 0) {
       return (
         <EmptyState
+          icon="user"
+          title="Создайте первого персонажа"
           text="Персонажей пока нет — создайте в студии или импортируйте .gmchar."
           ctaLabel="+ Создать персонажа"
           onCta={() => onCreate?.("character")}
@@ -429,36 +568,7 @@ export default function LibraryScreen({
         />
       );
     }
-    return (
-      <div className="lib-grid">
-        {characterList.map((character) => {
-          const items = [
-            { key: "export", label: "Экспорт", onClick: () => onExport?.(character, "character") },
-          ];
-          if (onRename) {
-            items.push({ key: "rename", label: "Переименовать", onClick: () => onRename?.(character, "character") });
-          }
-          items.push({ key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(character, "character") });
-          const baseLabel = characterBaseLabel(character);
-          const meta = [characterMeta(character), baseLabel].filter(Boolean).join(" · ");
-          return (
-            <LibraryCard
-              key={character.id}
-              kind="character"
-              title={characterTitle(character)}
-              meta={meta}
-              preview={characterPreview(character)}
-              playLabel="Играть"
-              studioLabel="Студия"
-              locked={locked}
-              onPlay={() => onPlay?.(character, "character")}
-              onOpenStudio={() => onOpenStudio?.(character, "character")}
-              menuItems={items}
-            />
-          );
-        })}
-      </div>
-    );
+    return <div className="lib-grid">{characterList.map((character) => renderCard(character, "character"))}</div>;
   };
 
   return (
@@ -503,6 +613,21 @@ export default function LibraryScreen({
             tabIndex={-1}
           />
         </div>
+      </div>
+
+      <div className="library-search-row">
+        <SearchField
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder={filter === "all" ? "Искать по всей библиотеке" : `Искать: ${FILTERS.find((tab) => tab.key === filter)?.label.toLowerCase() || "вкладка"}`}
+          ariaLabel="Поиск по библиотеке"
+          loading={librarySearch.revalidating}
+        />
+        {searchActive && !librarySearch.initialLoading && !librarySearch.error && (
+          <span className="library-search-count">
+            {librarySearch.total} найдено
+          </span>
+        )}
       </div>
 
       {importError && <div className="lib-notice lib-notice--error">{importError}</div>}
