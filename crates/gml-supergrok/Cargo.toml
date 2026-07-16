@@ -1,0 +1,25 @@
+[package]
+name = "gml-supergrok"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gml-llm = { workspace = true }
+gml-prompts = { workspace = true }
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+directories = { workspace = true }
+futures-util = { workspace = true }
+once_cell = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

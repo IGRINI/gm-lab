@@ -53,7 +53,10 @@ fn item_ids(w: &World) -> Vec<String> {
 fn item_convention_head_and_tail_split_on_em_dash() {
     // Head is the part before the FIRST ' — ', trimmed; tail is the rest.
     assert_eq!(item_head("кинжал — 1d4, скрыт в сапоге"), "кинжал");
-    assert_eq!(item_tail("кинжал — 1d4, скрыт в сапоге"), "1d4, скрыт в сапоге");
+    assert_eq!(
+        item_tail("кинжал — 1d4, скрыт в сапоге"),
+        "1d4, скрыт в сапоге"
+    );
     // No separator -> whole string is the head, empty tail.
     assert_eq!(item_head("верёвка"), "верёвка");
     assert_eq!(item_tail("верёвка"), "");
@@ -70,7 +73,10 @@ fn item_entry_string_composes_head_and_tail() {
     assert_eq!(item_entry_string("монета", "потёртая"), "монета — потёртая");
     // Empty details -> just the name (no trailing separator).
     assert_eq!(item_entry_string("монета", ""), "монета");
-    assert_eq!(item_entry_string("  монета  ", "  потёртая  "), "монета — потёртая");
+    assert_eq!(
+        item_entry_string("  монета  ", "  потёртая  "),
+        "монета — потёртая"
+    );
 }
 
 // --- §И3 take_item ----------------------------------------------------------
@@ -116,11 +122,7 @@ fn take_item_without_details_is_just_the_name() {
         details: String::new(),
     });
     w.take_item("rope", "", "").expect("take ok");
-    assert!(w
-        .player_character
-        .inventory
-        .iter()
-        .any(|e| e == "Верёвка"));
+    assert!(w.player_character.inventory.iter().any(|e| e == "Верёвка"));
 }
 
 #[test]
@@ -129,10 +131,15 @@ fn take_item_missing_name_returns_item_not_here_with_visible_hint() {
     let err = w.take_item("", "дракон", "").expect_err("no such item");
     assert_eq!(err["code"], json!("item_not_here"));
     // The visible-item names are surfaced as a hint (NOT the invisible key).
-    let hint = err["visible_items"].as_array().expect("visible_items array");
+    let hint = err["visible_items"]
+        .as_array()
+        .expect("visible_items array");
     let names: Vec<&str> = hint.iter().filter_map(Value::as_str).collect();
     assert!(names.contains(&"Медная монета"));
-    assert!(!names.contains(&"Ключ"), "invisible item must not leak into the hint");
+    assert!(
+        !names.contains(&"Ключ"),
+        "invisible item must not leak into the hint"
+    );
 }
 
 #[test]
@@ -153,8 +160,16 @@ fn take_item_ambiguous_name_lists_candidates_and_takes_nothing() {
     let err = w.take_item("", "Медная монета", "").expect_err("ambiguous");
     assert_eq!(err["code"], json!("ambiguous_item"));
     let cands = err["candidates"].as_array().expect("candidates");
-    assert_eq!(cands.len(), 2, "both same-named visible items are candidates");
-    assert_eq!(item_ids(&w), before, "an ambiguous take must remove nothing");
+    assert_eq!(
+        cands.len(),
+        2,
+        "both same-named visible items are candidates"
+    );
+    assert_eq!(
+        item_ids(&w),
+        before,
+        "an ambiguous take must remove nothing"
+    );
     assert_eq!(
         w.player_character.inventory, inv_before,
         "an ambiguous take must not touch the inventory"
@@ -165,11 +180,15 @@ fn take_item_ambiguous_name_lists_candidates_and_takes_nothing() {
 fn take_item_invisible_only_reachable_by_id_not_by_name() {
     let mut w = seeded_world();
     // By name: the invisible key is not a visible candidate -> item_not_here.
-    let by_name = w.take_item("", "ключ", "").expect_err("invisible not by name");
+    let by_name = w
+        .take_item("", "ключ", "")
+        .expect_err("invisible not by name");
     assert_eq!(by_name["code"], json!("item_not_here"));
     assert!(item_ids(&w).contains(&"hidden_key".to_string()));
     // By id: the GM-trusted path takes it even though it is invisible.
-    let by_id = w.take_item("hidden_key", "", "беру ключ").expect("take by id");
+    let by_id = w
+        .take_item("hidden_key", "", "беру ключ")
+        .expect("take by id");
     assert_eq!(by_id["name"], json!("Ключ"));
     assert!(!item_ids(&w).contains(&"hidden_key".to_string()));
 }
@@ -179,9 +198,15 @@ fn take_item_non_portable_is_rejected_and_scene_unchanged() {
     let mut w = seeded_world();
     let before = item_ids(&w);
     let inv_before = w.player_character.inventory.clone();
-    let err = w.take_item("mug", "", "хочу кружку").expect_err("mug is fixed");
+    let err = w
+        .take_item("mug", "", "хочу кружку")
+        .expect_err("mug is fixed");
     assert_eq!(err["code"], json!("not_portable"));
-    assert_eq!(item_ids(&w), before, "a non-portable take must remove nothing");
+    assert_eq!(
+        item_ids(&w),
+        before,
+        "a non-portable take must remove nothing"
+    );
     assert_eq!(
         w.player_character.inventory, inv_before,
         "a non-portable take must not touch the inventory"
@@ -201,7 +226,9 @@ fn take_item_dedups_by_head_when_inventory_already_has_it() {
     // Seed an inventory entry with the SAME head but a different (older) tail
     // AND different case — §И1 head matching is trim + lowercase, so the
     // lowercase entry must still dedup against the scene's «Медная монета».
-    w.player_character.inventory.push("медная монета — старая запись".to_string());
+    w.player_character
+        .inventory
+        .push("медная монета — старая запись".to_string());
     let count_before = w.player_character.inventory.len();
     w.take_item("coin", "", "").expect("take ok");
     // No duplicate head appended.
@@ -220,7 +247,9 @@ fn drop_item_by_head_moves_entry_into_scene() {
         .inventory
         .push("Факел — горит 1 час".to_string());
     let before_rev = w.player_character.card_revision;
-    let out = w.drop_item("факел", "у входа", "бросаю факел").expect("drop ok");
+    let out = w
+        .drop_item("факел", "у входа", "бросаю факел")
+        .expect("drop ok");
     assert_eq!(out["status"], json!("dropped"));
     // Removed from inventory.
     assert!(!w
@@ -354,14 +383,24 @@ fn items_restore_on_return_to_the_original_place() {
         .expect("a way back to start");
     engine::apply(
         &mut w.world_canon,
-        &ProposedAction::new(Action::MovePlayer { transition_id: back }, "gm", "back"),
+        &ProposedAction::new(
+            Action::MovePlayer {
+                transition_id: back,
+            },
+            "gm",
+            "back",
+        ),
         2,
     )
     .unwrap();
     w.refresh_scene_from_canon();
 
     assert_eq!(w.world_canon.player_place_id, start, "returned to start");
-    assert_eq!(item_ids(&w), start_items, "the start place's items are restored");
+    assert_eq!(
+        item_ids(&w),
+        start_items,
+        "the start place's items are restored"
+    );
 }
 
 #[test]
@@ -387,7 +426,11 @@ fn set_scene_overwrites_the_stored_items_for_that_place() {
         .iter()
         .filter_map(|i| i.get("name").and_then(Value::as_str))
         .collect();
-    assert_eq!(names, vec!["Лампа"], "set_scene destination shows its own items");
+    assert_eq!(
+        names,
+        vec!["Лампа"],
+        "set_scene destination shows its own items"
+    );
     assert_eq!(
         item_ids(&w),
         vec!["lamp".to_string()],
@@ -408,7 +451,13 @@ fn set_scene_overwrites_the_stored_items_for_that_place() {
         .expect("set_scene created a way back");
     engine::apply(
         &mut w.world_canon,
-        &ProposedAction::new(Action::MovePlayer { transition_id: back }, "gm", "back"),
+        &ProposedAction::new(
+            Action::MovePlayer {
+                transition_id: back,
+            },
+            "gm",
+            "back",
+        ),
         3,
     )
     .unwrap();

@@ -27,7 +27,10 @@ gml-audio = { workspace = true }
 gml-config = { workspace = true }
 gml-persistence = { workspace = true }
 gml-codex = { workspace = true }
+gml-supergrok = { workspace = true }
 gml-llm = { workspace = true }
+gml-openai-compatible = { workspace = true }
+gml-mock = { workspace = true }
 gml-stories = { workspace = true }
 gml-orchestrator = { workspace = true }
 
@@ -35,6 +38,8 @@ gml-orchestrator = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 # app-data dirs (ProjectDirs "gm-lab") — read-only-bundle-safe paths on macOS
 directories = { workspace = true }

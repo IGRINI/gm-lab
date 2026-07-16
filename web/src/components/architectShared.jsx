@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
+import ConnectorModelPicker from "./ConnectorModelPicker.jsx";
 import Modal from "./Modal.jsx";
 import ToolCard from "./ToolCard.jsx";
 import Spoiler from "./Spoiler.jsx";
@@ -174,6 +175,19 @@ export function ArchitectChatPane({
   onSend,
   onRetry,
   locked,
+  connectors,
+  models,
+  connectorModelsLoadingIds,
+  onEnsureConnectorModels,
+  modelBinding,
+  onModelBindingChange,
+  connectorLocked,
+  modelPickerDisabled,
+  connectorAuthBusyIds,
+  connectorAuthCancellingIds,
+  connectorAuthPrompts,
+  onConnectorAuthStart,
+  onConnectorAuthCancel,
 }) {
   const vis = useContext(VisibilityContext);
   const logRef = useRef(null);
@@ -245,6 +259,23 @@ export function ArchitectChatPane({
           </Tooltip>
         </div>
       </div>
+      <ConnectorModelPicker
+        connectors={connectors}
+        models={models}
+        connectorModelsLoadingIds={connectorModelsLoadingIds}
+        onEnsureConnectorModels={onEnsureConnectorModels}
+        value={modelBinding}
+        onChange={onModelBindingChange}
+        connectorLocked={connectorLocked}
+        disabled={modelPickerDisabled || busy}
+        compact
+        authBusyConnectorIds={connectorAuthBusyIds}
+        authCancellingConnectorIds={connectorAuthCancellingIds}
+        authPrompts={connectorAuthPrompts}
+        onAuthStart={onConnectorAuthStart}
+        onAuthCancel={onConnectorAuthCancel}
+        ariaLabel={`Коннектор и модель: ${headTitle}`}
+      />
       <div ref={logRef} className="world-architect-log" aria-live="polite">
         {messages.map((message, index) => (
           <ArchitectSegment key={`msg-${index}`} message={message} thinkLabel={thinkLabel} />

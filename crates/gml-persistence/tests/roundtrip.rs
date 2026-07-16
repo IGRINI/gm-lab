@@ -10,9 +10,13 @@ use std::sync::Arc;
 use serde_json::{json, Map, Value};
 
 use gml_config::Config;
-use gml_llm::{Backend, MockClient};
-use gml_orchestrator::{ClientFactory, Session};
-use gml_persistence::{DialogRuntime, DialogStore, WorldStore, SCHEMA_VERSION};
+use gml_llm::Backend;
+use gml_mock::MockClient;
+use gml_orchestrator::{ClientFactory, NpcClientState, Session};
+use gml_persistence::{
+    DialogRuntime, DialogStore, HistoryTurnKind, HistoryTurnReceiptKind, PreparedHistoryTurn,
+    StoreError, TurnCheckpoint, WorldStore, MAX_REWIND_TURNS, SCHEMA_VERSION,
+};
 use gml_world::World;
 
 fn factory() -> ClientFactory {
@@ -63,6 +67,7 @@ fn runtime_from_payload_value(payload: &Value) -> DialogRuntime {
         preview: String::new(),
         created_at: String::new(),
         updated_at: String::new(),
+        rewindable_turns: Vec::new(),
     }
 }
 
@@ -122,35 +127,25 @@ fn regen_chat_payload_fixture() {
 }
 
 // =========================================================================
-// 1. byte-identical golden round-trip
+// 1. legacy golden migration + stable canonical round-trip
 // =========================================================================
 
 #[test]
-fn golden_payload_roundtrip_is_byte_identical() {
+fn golden_payload_migrates_binding_then_roundtrips_byte_identically() {
     let input = read_compact();
     let parsed: Value = serde_json::from_str(&input).expect("parse compact fixture");
 
     let runtime = runtime_from_payload_value(&parsed);
     let output = runtime.payload_json();
 
-    if output != input {
-        // Find first divergence for a useful failure message.
-        let a = input.as_bytes();
-        let b = output.as_bytes();
-        let mut i = 0;
-        while i < a.len() && i < b.len() && a[i] == b[i] {
-            i += 1;
-        }
-        let lo = i.saturating_sub(80);
-        let in_ctx = &input[lo..(i + 80).min(input.len())];
-        let out_ctx = &output[lo..(i + 80).min(output.len())];
-        panic!(
-            "payload not byte-identical at byte {i}\n--- expected (input) ---\n{in_ctx}\n--- got (output) ---\n{out_ctx}\n(input len {}, output len {})",
-            input.len(),
-            output.len()
-        );
-    }
-    assert_eq!(output, input);
+    let migrated: Value = serde_json::from_str(&output).expect("parse migrated payload");
+    assert_eq!(
+        migrated.pointer("/session/model_binding"),
+        Some(&json!({"connector_id": "codex", "model_id": "mock"}))
+    );
+
+    let reloaded = runtime_from_payload_value(&migrated);
+    assert_eq!(reloaded.payload_json(), output);
 }
 
 // =========================================================================
@@ -165,6 +160,446 @@ fn temp_store() -> (DialogStore, tempfile::TempDir) {
     let store = DialogStore::new(db.to_string_lossy().into_owned(), factory(), Arc::new(cfg))
         .expect("create store");
     (store, dir)
+}
+
+fn commit_test_turn(store: &DialogStore, guest: &str, chat_id: &str, turn: i64) -> String {
+    let mut runtime = store.load_chat(guest, chat_id).expect("load before turn");
+    let pre_turn_payload = runtime.payload_json();
+    let text = format!("player action {turn}");
+    let checkpoint =
+        TurnCheckpoint::capture(&runtime, turn, format!("request-{turn}"), text.clone())
+            .expect("capture checkpoint");
+
+    runtime.turn_count = turn;
+    runtime.session.turn = turn;
+    runtime.session.last_player_action = text.clone();
+    runtime.session.world.story_title = format!("world after turn {turn}");
+    if turn == 1 {
+        runtime.session.ensure_initial_tools(false);
+    } else if turn == 2 {
+        runtime.session.mark_tool_loaded("move_npc");
+    } else if turn == 3 {
+        // Membership without either staleness signal is intentional: an exact
+        // checkpoint must not try to derive this set from the two maps.
+        runtime
+            .session
+            .loaded_gm_tools
+            .insert("world_debug".to_string());
+    }
+    runtime
+        .session
+        .gm_messages
+        .push(json!({"role": "user", "content": text}));
+    runtime.transcript.push(json!({
+        "turn": turn,
+        "request_id": format!("request-{turn}"),
+        "event": {"kind": "player", "agent": "Игрок", "data": format!("player action {turn}")}
+    }));
+    runtime.transcript.push(json!({
+        "turn": turn,
+        "event": {"kind": "gm", "agent": "ГМ", "data": format!("answer {turn}")}
+    }));
+    store
+        .save_owned_with_checkpoint(runtime, checkpoint)
+        .expect("commit turn and checkpoint");
+    pre_turn_payload
+}
+
+fn finish_prepared_history_turn(
+    store: &DialogStore,
+    prepared: PreparedHistoryTurn,
+    turn: i64,
+    request_id: &str,
+    text: &str,
+) -> String {
+    let mut runtime = prepared.runtime;
+    let destination_chat_id = runtime.chat_id.clone();
+    let checkpoint = TurnCheckpoint::capture(&runtime, turn, request_id, text)
+        .expect("capture staged checkpoint");
+    runtime.turn_count = turn;
+    runtime.session.turn = turn;
+    runtime.session.last_player_action = text.to_string();
+    runtime.session.world.story_title = format!("staged world: {text}");
+    runtime
+        .session
+        .gm_messages
+        .push(json!({"role": "user", "content": text}));
+    runtime.transcript.push(json!({
+        "turn": turn,
+        "request_id": request_id,
+        "event": {"kind": "player", "agent": "Игрок", "data": text}
+    }));
+    runtime.transcript.push(json!({
+        "turn": turn,
+        "event": {"kind": "gm", "agent": "ГМ", "data": "staged answer"}
+    }));
+    store
+        .commit_prepared_history_turn(runtime, checkpoint, prepared.commit)
+        .expect("commit staged history turn");
+    destination_chat_id
+}
+
+fn without_provider_identities(payload: &str) -> Value {
+    let mut payload: Value = serde_json::from_str(payload).expect("valid runtime payload");
+    let Some(session) = payload.get_mut("session").and_then(Value::as_object_mut) else {
+        return payload;
+    };
+    session.remove("client_session_id");
+    session.remove("client_thread_id");
+    if let Some(states) = session
+        .get_mut("npc_client_state")
+        .and_then(Value::as_object_mut)
+    {
+        for state in states.values_mut().filter_map(Value::as_object_mut) {
+            state.remove("session_id");
+            state.remove("thread_id");
+        }
+    }
+    for key in [
+        "location_generator_client_state",
+        "character_generator_client_state",
+    ] {
+        if let Some(state) = session.get_mut(key).and_then(Value::as_object_mut) {
+            state.remove("session_id");
+            state.remove("thread_id");
+        }
+    }
+    payload
+}
+
+#[test]
+fn rewind_and_branch_restore_exact_state_and_keep_only_ten_turns() {
+    let (store, _dir) = temp_store();
+    let guest = "rewind-guest";
+    let chat_id = store
+        .create_chat(guest, None, None, 0, Some("Original"), None, true)
+        .expect("create chat");
+
+    let mut source_seed = store.load_chat(guest, &chat_id).expect("load source seed");
+    source_seed.session.client_session_id = "source-conversation".to_string();
+    source_seed.session.client_thread_id = "source-cache-scope".to_string();
+    source_seed.session.npc_client_state.insert(
+        "borin".to_string(),
+        NpcClientState {
+            model: "mock".to_string(),
+            session_id: "source-npc-conversation".to_string(),
+            thread_id: "source-npc-cache-scope".to_string(),
+        },
+    );
+    source_seed.session.location_generator_client_state = NpcClientState {
+        model: "mock".to_string(),
+        session_id: "source-location-conversation".to_string(),
+        thread_id: "source-location-cache-scope".to_string(),
+    };
+    source_seed.session.character_generator_client_state = NpcClientState {
+        model: "mock".to_string(),
+        session_id: "source-character-conversation".to_string(),
+        thread_id: "source-character-cache-scope".to_string(),
+    };
+    store.save_owned(source_seed).expect("seed provider ids");
+
+    let mut pre_turn_payloads = Vec::new();
+    for turn in 1..=12 {
+        pre_turn_payloads.push(commit_test_turn(&store, guest, &chat_id, turn));
+    }
+
+    let loaded = store
+        .load_chat(guest, &chat_id)
+        .expect("load committed chat");
+    assert_eq!(loaded.rewindable_turns.len(), MAX_REWIND_TURNS);
+    assert_eq!(loaded.rewindable_turns, (3..=12).collect::<Vec<_>>());
+    assert!(matches!(
+        store.rewind_chat_to_turn(guest, &chat_id, 2),
+        Err(StoreError::TurnNotRewindable { turn: 2, .. })
+    ));
+
+    store
+        .rewind_chat_to_turn(guest, &chat_id, 5)
+        .expect("rewind to pre-turn 5");
+    let rewound = store.load_chat(guest, &chat_id).expect("load rewound chat");
+    assert_eq!(rewound.payload_json(), pre_turn_payloads[4]);
+    assert_eq!(rewound.turn_count, 4);
+    assert_eq!(rewound.rewindable_turns, vec![3, 4]);
+    assert!(rewound.session.loaded_gm_tools.contains("world_debug"));
+
+    let branch_id = store
+        .branch_chat_from_turn(guest, &chat_id, 4, None)
+        .expect("branch from pre-turn 4");
+    assert_ne!(branch_id, chat_id);
+    assert_eq!(
+        store.active_chat_id(guest).unwrap().as_deref(),
+        Some(branch_id.as_str())
+    );
+    let branch = store.load_chat(guest, &branch_id).expect("load branch");
+    assert_eq!(
+        without_provider_identities(&branch.payload_json()),
+        without_provider_identities(&pre_turn_payloads[3])
+    );
+    assert_eq!(branch.turn_count, 3);
+    assert_eq!(branch.rewindable_turns, vec![3]);
+    assert_eq!(branch.title, "Original — ветка");
+    assert_ne!(branch.session.client_session_id, "source-conversation");
+    assert_ne!(branch.session.client_thread_id, "source-cache-scope");
+    assert_ne!(
+        branch.session.npc_client_state["borin"].session_id,
+        "source-npc-conversation"
+    );
+    assert_ne!(
+        branch.session.location_generator_client_state.thread_id,
+        "source-location-cache-scope"
+    );
+    assert_ne!(
+        branch.session.character_generator_client_state.thread_id,
+        "source-character-cache-scope"
+    );
+
+    // Inherited checkpoints are rewritten too: rewinding the branch must not
+    // restore any provider identity owned by the source history.
+    store
+        .rewind_chat_to_turn(guest, &branch_id, 3)
+        .expect("rewind branch checkpoint");
+    let branch_rewound = store
+        .load_chat(guest, &branch_id)
+        .expect("load rewound branch");
+    assert_eq!(
+        without_provider_identities(&branch_rewound.payload_json()),
+        without_provider_identities(&pre_turn_payloads[2])
+    );
+    assert_ne!(
+        branch_rewound.session.client_session_id,
+        "source-conversation"
+    );
+    assert_ne!(
+        branch_rewound.session.npc_client_state["borin"].thread_id,
+        "source-npc-cache-scope"
+    );
+
+    // Branching and later edits never mutate the source chat.
+    let source = store.load_chat(guest, &chat_id).expect("source remains");
+    assert_eq!(source.payload_json(), pre_turn_payloads[4]);
+    assert_eq!(source.rewindable_turns, vec![3, 4]);
+}
+
+#[test]
+fn staged_history_is_invisible_until_success_and_commits_atomically() {
+    let (store, _dir) = temp_store();
+    let guest = "staged-history-guest";
+    let source_chat_id = store
+        .create_chat(guest, None, None, 0, Some("Source"), None, true)
+        .expect("create source");
+    for turn in 1..=3 {
+        commit_test_turn(&store, guest, &source_chat_id, turn);
+    }
+
+    let source_before = store.load_chat(guest, &source_chat_id).unwrap();
+    let source_bytes_before = source_before.payload_json();
+    let source_metadata_before = (
+        source_before.title.clone(),
+        source_before.preview.clone(),
+        source_before.created_at.clone(),
+        source_before.updated_at.clone(),
+    );
+    let chats_before = store.list_chats(guest).unwrap();
+
+    // Preparing and dropping an edit models any model error or cancellation.
+    let cancelled_edit = store
+        .prepare_history_turn(guest, &source_chat_id, 2, HistoryTurnKind::Edit)
+        .expect("prepare edit");
+    drop(cancelled_edit);
+    let source_after_cancel = store.load_chat(guest, &source_chat_id).unwrap();
+    assert_eq!(source_after_cancel.payload_json(), source_bytes_before);
+    assert_eq!(
+        (
+            source_after_cancel.title,
+            source_after_cancel.preview,
+            source_after_cancel.created_at,
+            source_after_cancel.updated_at,
+        ),
+        source_metadata_before
+    );
+    assert_eq!(store.list_chats(guest).unwrap(), chats_before);
+    assert!(store
+        .history_turn_receipt(guest, &source_chat_id, "edit-replacement")
+        .unwrap()
+        .is_none());
+
+    let prepared_edit = store
+        .prepare_history_turn(guest, &source_chat_id, 2, HistoryTurnKind::Edit)
+        .expect("prepare successful edit");
+    let edited_chat_id = finish_prepared_history_turn(
+        &store,
+        prepared_edit,
+        2,
+        "edit-replacement",
+        "replacement action",
+    );
+    assert_eq!(edited_chat_id, source_chat_id);
+    let edited = store.load_chat(guest, &source_chat_id).unwrap();
+    assert_eq!(edited.turn_count, 2);
+    assert_eq!(edited.rewindable_turns, vec![1, 2]);
+    assert_eq!(
+        edited.session.world.story_title,
+        "staged world: replacement action"
+    );
+    let edit_receipt = store
+        .history_turn_receipt(guest, &source_chat_id, "edit-replacement")
+        .unwrap()
+        .expect("edit receipt");
+    assert_eq!(edit_receipt.kind, HistoryTurnReceiptKind::Edit);
+    assert_eq!(edit_receipt.source_turn, 2);
+    assert_eq!(edit_receipt.destination_chat_id, source_chat_id);
+    assert_eq!(edit_receipt.player_text, "replacement action");
+
+    let source_before_branch = edited.payload_json();
+    let active_before_branch = store.active_chat_id(guest).unwrap();
+    let cancelled_branch = store
+        .prepare_history_turn(
+            guest,
+            &source_chat_id,
+            1,
+            HistoryTurnKind::Branch {
+                title: Some("Cancelled branch".to_string()),
+            },
+        )
+        .expect("prepare cancelled branch");
+    let absent_branch_id = cancelled_branch.runtime.chat_id.clone();
+    drop(cancelled_branch);
+    assert!(!store.chat_exists(guest, &absent_branch_id).unwrap());
+    assert_eq!(store.active_chat_id(guest).unwrap(), active_before_branch);
+    assert_eq!(
+        store
+            .load_chat(guest, &source_chat_id)
+            .unwrap()
+            .payload_json(),
+        source_before_branch
+    );
+
+    let prepared_branch = store
+        .prepare_history_turn(
+            guest,
+            &source_chat_id,
+            1,
+            HistoryTurnKind::Branch {
+                title: Some("Committed branch".to_string()),
+            },
+        )
+        .expect("prepare successful branch");
+    let branch_id = finish_prepared_history_turn(
+        &store,
+        prepared_branch,
+        1,
+        "branch-first-turn",
+        "branch action",
+    );
+    assert_ne!(branch_id, source_chat_id);
+    assert!(store.chat_exists(guest, &branch_id).unwrap());
+    assert_eq!(
+        store.active_chat_id(guest).unwrap().as_deref(),
+        Some(branch_id.as_str())
+    );
+    assert_eq!(
+        store
+            .load_chat(guest, &source_chat_id)
+            .unwrap()
+            .payload_json(),
+        source_before_branch
+    );
+    let branch = store.load_chat(guest, &branch_id).unwrap();
+    assert_eq!(branch.turn_count, 1);
+    assert_eq!(branch.title, "Committed branch");
+    assert_eq!(branch.rewindable_turns, vec![1]);
+    let branch_receipt = store
+        .history_turn_receipt(guest, &source_chat_id, "branch-first-turn")
+        .unwrap()
+        .expect("branch receipt");
+    assert_eq!(branch_receipt.kind, HistoryTurnReceiptKind::Branch);
+    assert_eq!(branch_receipt.source_turn, 1);
+    assert_eq!(branch_receipt.destination_chat_id, branch_id);
+    assert_eq!(branch_receipt.player_text, "branch action");
+}
+
+#[test]
+fn stale_staged_branch_fails_without_creating_or_overwriting_any_chat() {
+    let (store, _dir) = temp_store();
+    let guest = "stale-staged-history-guest";
+    let source_chat_id = store
+        .create_chat(guest, None, None, 0, Some("Source"), None, true)
+        .expect("create source");
+    commit_test_turn(&store, guest, &source_chat_id, 1);
+    commit_test_turn(&store, guest, &source_chat_id, 2);
+
+    let prepared = store
+        .prepare_history_turn(
+            guest,
+            &source_chat_id,
+            1,
+            HistoryTurnKind::Branch { title: None },
+        )
+        .expect("prepare branch");
+    let destination_chat_id = prepared.runtime.chat_id.clone();
+
+    // Simulate a competing writer after model execution began. The optimistic
+    // source-byte check must reject the staged commit before its first write.
+    commit_test_turn(&store, guest, &source_chat_id, 3);
+    let canonical_source = store
+        .load_chat(guest, &source_chat_id)
+        .unwrap()
+        .payload_json();
+
+    let mut runtime = prepared.runtime;
+    let checkpoint = TurnCheckpoint::capture(&runtime, 1, "stale-branch", "stale action").unwrap();
+    runtime.turn_count = 1;
+    runtime.session.turn = 1;
+    runtime.session.world.story_title = "must never commit".to_string();
+    let error = store
+        .commit_prepared_history_turn(runtime, checkpoint, prepared.commit)
+        .expect_err("stale source must reject commit");
+    assert!(matches!(error, StoreError::HistoryChanged { .. }));
+    assert!(!store.chat_exists(guest, &destination_chat_id).unwrap());
+    assert_eq!(
+        store
+            .load_chat(guest, &source_chat_id)
+            .unwrap()
+            .payload_json(),
+        canonical_source
+    );
+    assert!(store
+        .history_turn_receipt(guest, &source_chat_id, "stale-branch")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn concurrent_first_access_creates_exactly_one_active_chat() {
+    let (store, _dir) = temp_store();
+    let store = Arc::new(store);
+    let workers = 16;
+    let start = Arc::new(std::sync::Barrier::new(workers));
+    let mut handles = Vec::with_capacity(workers);
+
+    for _ in 0..workers {
+        let store = store.clone();
+        let start = start.clone();
+        handles.push(std::thread::spawn(move || {
+            start.wait();
+            store
+                .get_active("parallel-first-access")
+                .expect("get active")
+        }));
+    }
+
+    let ids = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("worker did not panic"))
+        .collect::<Vec<_>>();
+    assert!(ids.iter().all(|id| id == &ids[0]));
+    assert_eq!(
+        store
+            .list_chats("parallel-first-access")
+            .expect("list chats")
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -331,7 +766,10 @@ fn world_store_create_update_list_get_delete_roundtrip() {
         .update_world(&world_id, json!({"genre": "dark fantasy"}))
         .expect("update world");
     assert_eq!(updated["genre"], json!("dark fantasy"));
-    assert_eq!(updated["world_size"], json!("Континент с несколькими королевствами"));
+    assert_eq!(
+        updated["world_size"],
+        json!("Континент с несколькими королевствами")
+    );
 
     let deleted = store.delete_world(&world_id).expect("delete world");
     assert_eq!(deleted["deleted"], json!(true));
@@ -420,10 +858,8 @@ fn world_store_architect_state_splits_from_content() {
         "architect purge never bumps the content version"
     );
     assert!(!store.world_dir(&world_id).join("architect.json").is_file());
-    let raw = std::fs::read_to_string(
-        store.world_dir(&world_id).join("world.json"),
-    )
-    .expect("read world.json");
+    let raw = std::fs::read_to_string(store.world_dir(&world_id).join("world.json"))
+        .expect("read world.json");
     assert!(!raw.contains("architect_messages"));
     // With every artifact gone the fallback reader has nothing left.
     assert!(store
@@ -449,7 +885,11 @@ fn dialog_store_architect_chats_round_trip() {
         )
         .expect("set");
     store
-        .set_architect_chat("world", "w1", &json!({"messages": [], "cache_session_id": "s2"}))
+        .set_architect_chat(
+            "world",
+            "w1",
+            &json!({"messages": [], "cache_session_id": "s2"}),
+        )
         .expect("upsert");
     let got = store
         .get_architect_chat("world", "w1")

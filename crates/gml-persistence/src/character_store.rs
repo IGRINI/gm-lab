@@ -237,7 +237,10 @@ impl CharacterStore {
         }
         validate_character_payload(&payload)?;
 
-        let _guard = self.write_lock.lock().expect("character write lock poisoned");
+        let _guard = self
+            .write_lock
+            .lock()
+            .expect("character write lock poisoned");
         let id = self.allocate_character_id()?;
         let now = now_timestamp()?;
         let env = CharacterEnvelope {
@@ -283,7 +286,10 @@ impl CharacterStore {
     /// non-empty (a blank/whitespace title patch is rejected).
     pub fn update_metadata(&mut self, id: &str, patch: Value) -> Result<Value, StoreError> {
         let id = id.trim().to_string();
-        let _guard = self.write_lock.lock().expect("character write lock poisoned");
+        let _guard = self
+            .write_lock
+            .lock()
+            .expect("character write lock poisoned");
         let idx = self
             .characters
             .iter()
@@ -353,7 +359,10 @@ impl CharacterStore {
             ));
         }
         let id = id.trim().to_string();
-        let _guard = self.write_lock.lock().expect("character write lock poisoned");
+        let _guard = self
+            .write_lock
+            .lock()
+            .expect("character write lock poisoned");
         let idx = self
             .characters
             .iter()
@@ -394,7 +403,10 @@ impl CharacterStore {
         if id.is_empty() {
             return Ok(false);
         }
-        let _guard = self.write_lock.lock().expect("character write lock poisoned");
+        let _guard = self
+            .write_lock
+            .lock()
+            .expect("character write lock poisoned");
         let dir = self.character_dir(id);
         if !dir.join(CHARACTER_FILE).is_file() {
             return Ok(false);
@@ -437,7 +449,8 @@ impl CharacterStore {
         };
         let mut names: Vec<String> = Vec::new();
         for entry in entries {
-            let entry = entry.map_err(|e| StoreError::Other(format!("read characters dir: {e}")))?;
+            let entry =
+                entry.map_err(|e| StoreError::Other(format!("read characters dir: {e}")))?;
             if !entry.path().join(CHARACTER_FILE).is_file() {
                 continue;
             }
@@ -477,7 +490,10 @@ impl CharacterStore {
             .map_err(|e| StoreError::Other(format!("write temp character {}: {e}", env.id)))?;
         if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
             let _ = std::fs::remove_file(&tmp_path);
-            return Err(StoreError::Other(format!("rename character {}: {e}", env.id)));
+            return Err(StoreError::Other(format!(
+                "rename character {}: {e}",
+                env.id
+            )));
         }
         Ok(())
     }
@@ -697,7 +713,10 @@ mod tests {
 
         // A fresh store over the SAME root re-scans the package from disk.
         let reopened = CharacterStore::new(dir.path()).expect("reopen");
-        assert_eq!(reopened.get_character(&id).unwrap()["title"], json!("Герой"));
+        assert_eq!(
+            reopened.get_character(&id).unwrap()["title"],
+            json!("Герой")
+        );
     }
 
     #[test]
@@ -717,8 +736,14 @@ mod tests {
             .create_character(
                 "Основанный",
                 pc_payload("Ариан", 1),
-                Some(CharacterBaseRef { id: "w1".into(), version: 3 }),
-                Some(CharacterBaseRef { id: "s1".into(), version: 7 }),
+                Some(CharacterBaseRef {
+                    id: "w1".into(),
+                    version: 3,
+                }),
+                Some(CharacterBaseRef {
+                    id: "s1".into(),
+                    version: 7,
+                }),
             )
             .expect("create based");
         assert_eq!(based["world_ref"], json!({"id": "w1", "version": 3}));
@@ -740,13 +765,22 @@ mod tests {
         let (world_ref, story_ref) = reopened.base_refs(&based_id).expect("refs");
         assert_eq!(
             world_ref,
-            Some(CharacterBaseRef { id: "w1".into(), version: 3 })
+            Some(CharacterBaseRef {
+                id: "w1".into(),
+                version: 3
+            })
         );
         assert_eq!(
             story_ref,
-            Some(CharacterBaseRef { id: "s1".into(), version: 7 })
+            Some(CharacterBaseRef {
+                id: "s1".into(),
+                version: 7
+            })
         );
-        assert_eq!(reopened.base_refs(&plain_id).expect("plain refs"), (None, None));
+        assert_eq!(
+            reopened.base_refs(&plain_id).expect("plain refs"),
+            (None, None)
+        );
         assert!(matches!(
             reopened.base_refs("nope"),
             Err(StoreError::CharacterNotFound(_))
@@ -756,11 +790,20 @@ mod tests {
     #[test]
     fn create_rejects_bad_input() {
         let (_dir, mut store) = temp_store();
-        assert!(store.create_character("  ", pc_payload("x", 0), None, None).is_err());
         assert!(store
-            .create_character("t", json!({"player_character": "not-an-object"}), None, None)
+            .create_character("  ", pc_payload("x", 0), None, None)
             .is_err());
-        assert!(store.create_character("t", json!("not-an-object"), None, None).is_err());
+        assert!(store
+            .create_character(
+                "t",
+                json!({"player_character": "not-an-object"}),
+                None,
+                None
+            )
+            .is_err());
+        assert!(store
+            .create_character("t", json!("not-an-object"), None, None)
+            .is_err());
         assert!(store.create_character("t", json!({}), None, None).is_err());
     }
 

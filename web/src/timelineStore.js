@@ -13,6 +13,7 @@ export function createTimeline() {
   let liveIdx = new Map(); // "sid|type" -> index in arr (streaming targets)
   let nextId = 1;
   let live = false; // true while folding a live streamed event (vs restoring history)
+  let turnCheckpoint = null;
   const listeners = new Set();
   let scheduled = false;
 
@@ -73,7 +74,12 @@ export function createTimeline() {
     const sid = ev.sid;
 
     if (k === "player") {
-      push({ type: "player", text: d });
+      push({
+        type: "player",
+        text: d,
+        turn: Number.isInteger(ev.turn) ? ev.turn : null,
+        rewindable: ev.rewindable === true,
+      });
     } else if (k === "delta") {
       if (d.channel === "gm_thinking") {
         const i = ensureIdx(sid, "gm_think", () => ({ type: "gm_think", sid, text: "" }));
@@ -219,19 +225,77 @@ export function createTimeline() {
     },
     // batch (restore transcript) -> one render (historical dice snap, never re-tumble)
     dispatchMany(events) {
+      // A canonical restore supersedes any optimistic streamed attempt.
+      turnCheckpoint = null;
       live = false;
       events.forEach(applyEvent);
       notify();
     },
-    // start of a new turn: keep messages, drop streaming targets
+    // Start an optimistic turn. Its streamed rows remain visible on a retryable
+    // failure, then rollbackTurn removes the whole attempt before retrying.
     beginTurn() {
+      if (turnCheckpoint) {
+        throw new Error("timeline turn already active");
+      }
+      turnCheckpoint = {
+        arr: arr.slice(),
+        liveIdx: new Map(liveIdx),
+        nextId,
+      };
       liveIdx = new Map();
+    },
+    commitTurn() {
+      if (!turnCheckpoint) return false;
+      turnCheckpoint = null;
+      return true;
+    },
+    // A successful live turn can be marked from the terminal receipt without
+    // reloading the whole transcript. Canonical restores still carry these
+    // fields directly on the replayed player event.
+    markLatestPlayerRewindable(turn) {
+      if (!Number.isInteger(turn) || turn <= 0) return false;
+      for (let index = arr.length - 1; index >= 0; index--) {
+        if (arr[index].type !== "player") continue;
+        update(index, { turn, rewindable: true });
+        notify();
+        return true;
+      }
+      return false;
+    },
+    rollbackTurn() {
+      if (!turnCheckpoint) return false;
+      arr = turnCheckpoint.arr;
+      liveIdx = turnCheckpoint.liveIdx;
+      nextId = turnCheckpoint.nextId;
+      turnCheckpoint = null;
+      notify();
+      return true;
+    },
+    // Temporarily show the prefix before an edited/branched player turn. The
+    // server keeps the canonical chat untouched until the replacement turn is
+    // committed; callers reload it if that staged operation fails or stops.
+    truncateFromPlayerTurn(turn) {
+      if (turnCheckpoint || !Number.isInteger(turn) || turn <= 0) return false;
+      const index = arr.findIndex(
+        (message) => message.type === "player" && message.turn === turn
+      );
+      if (index < 0) return false;
+      arr = arr.slice(0, index);
+      liveIdx = new Map();
+      notify();
+      return true;
+    },
+    // Publish any rAF-coalesced rows before UI state (for example a retry
+    // action) starts referring to the latest streamed message.
+    flush() {
+      notify();
     },
     // full wipe (reset / new / before restore)
     clear() {
       arr = [];
       liveIdx = new Map();
       nextId = 1;
+      turnCheckpoint = null;
       notify();
     },
     // append a synthetic local message (e.g. "Новая партия")

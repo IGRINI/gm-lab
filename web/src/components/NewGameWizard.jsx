@@ -1,12 +1,31 @@
-import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal.jsx";
+import ConnectorModelPicker from "./ConnectorModelPicker.jsx";
+import WizCard, {
+  characterMeta,
+  characterTip,
+  characterTitle,
+  pcMeta,
+  protagonistTip,
+  storyDescription,
+  storyPc,
+  storyTip,
+  storyTitle,
+  worldMeta,
+  worldPreview,
+  worldTip,
+  worldTitle,
+} from "./WizCard.jsx";
+import {
+  bindingReady,
+  normalizeModelBinding,
+  resolveModelBinding,
+} from "../connectorCatalog.js";
 
 // NewGameWizard — the ONLY path to start a game (§Мастер «Новая игра»). Three
 // steps in the approved order: Мир → История → Персонаж, then a name + «Начать».
-// It launches through the EXISTING chat-create endpoints (no backend change):
-//   authored / builtin story → onLaunch({ storyId, characterId?, title })
-//   procedural campaign       → onLaunch({ storyId:"procedural", worldId, characterId, title })
+// Connector/model selection sits above those content steps and becomes the
+// immutable provider binding of the new chat (the model may change later).
 // State lives entirely here; the integrator just mounts it and reacts to onLaunch
 // / onOpenStudio / onClose.
 
@@ -20,39 +39,6 @@ function idOf(value) {
 
 function sameId(a, b) {
   return a != null && b != null && String(a) === String(b);
-}
-
-function worldTitle(world) {
-  return textValue(world?.title) || textValue(world?.world_lore?.name) || "Без названия";
-}
-
-function worldMeta(world) {
-  return [world?.genre, world?.tone].map((v) => textValue(v)).filter(Boolean).join(" · ");
-}
-
-function worldPreview(world) {
-  return textValue(world?.preview) || textValue(world?.public_premise) || "";
-}
-
-function storyTitle(story) {
-  return textValue(story?.title) || "Без названия";
-}
-
-function storyDescription(story) {
-  return textValue(story?.story_brief) || textValue(story?.description) || "";
-}
-
-function characterTitle(character) {
-  return textValue(character?.title) || "Персонаж";
-}
-
-function characterMeta(character) {
-  const pc = character?.payload?.player_character || {};
-  const parts = [];
-  const role = textValue(pc.class_role);
-  if (role) parts.push(role);
-  if (pc.level != null && `${pc.level}`.trim() !== "") parts.push(`ур. ${pc.level}`);
-  return parts.join(" · ") || textValue(character?.preview) || "персонаж";
 }
 
 // A self-contained "builtin bundle": a story that ships its own world (no
@@ -137,48 +123,20 @@ function deriveInitial(preselect, worlds, stories, characters) {
   return { step: 1, worldChoice: null, storyId: "", characterChoice: preChar };
 }
 
-function WizCard({ selected, disabled, onClick, kicker, title, badge, meta, desc, add }) {
-  const className =
-    "wiz-card" + (add ? " wiz-card-add" : "") + (selected ? " is-selected" : "");
-  return (
-    <button
-      type="button"
-      className={className}
-      onClick={onClick}
-      disabled={disabled}
-      aria-pressed={add ? undefined : selected}
-    >
-      {add ? (
-        <>
-          <span className="wiz-card-add-icon" aria-hidden="true"><Icon name="plus" size={20} /></span>
-          <span className="wiz-card-add-label">{title}</span>
-        </>
-      ) : (
-        <>
-          {(kicker || badge) && (
-            <span className="wiz-card-top">
-              {kicker && <span className="wiz-card-kicker">{kicker}</span>}
-              {badge && <span className="wiz-badge">{badge}</span>}
-            </span>
-          )}
-          <span className="wiz-card-title">{title}</span>
-          {meta && <span className="wiz-card-meta">{meta}</span>}
-          {desc && <span className="wiz-card-desc">{desc}</span>}
-          {selected && (
-            <span className="wiz-card-check" aria-hidden="true">
-              <Icon name="check" size={13} strokeWidth={2.4} />
-            </span>
-          )}
-        </>
-      )}
-    </button>
-  );
-}
-
 export default function NewGameWizard({
   worlds = [],
   stories = [],
   characters = [],
+  connectors = [],
+  models = [],
+  connectorModelsLoadingIds = [],
+  onEnsureConnectorModels,
+  initialModelBinding = null,
+  connectorAuthBusyIds = [],
+  connectorAuthCancellingIds = [],
+  connectorAuthPrompts = {},
+  onConnectorAuthStart,
+  onConnectorAuthCancel,
   preselect = null,
   onLaunch,
   onOpenStudio,
@@ -194,6 +152,15 @@ export default function NewGameWizard({
   const [characterChoice, setCharacterChoice] = useState(init.characterChoice);
   const [title, setTitle] = useState("");
   const [titleDirty, setTitleDirty] = useState(false);
+  const [modelBinding, setModelBinding] = useState(() => normalizeModelBinding(initialModelBinding));
+
+  useEffect(() => {
+    setModelBinding((current) => resolveModelBinding(
+      current.connector_id ? current : initialModelBinding,
+      connectors,
+      models
+    ));
+  }, [initialModelBinding, connectors, models]);
 
   const locked = !!busy;
 
@@ -235,6 +202,17 @@ export default function NewGameWizard({
   const isSyntheticProcedural = storyId === "procedural";
   const isProcedural = isSyntheticProcedural || selectedStoryRow?.kind === "procedural";
   const hasProtagonist = storyHasProtagonist(selectedStoryRow, isProcedural);
+  // The selected story's PUBLIC protagonist summary (catalog `pc`, whitelisted
+  // server-side) — names the «Протагонист истории» card after the actual hero.
+  const protagonistPc = storyPc(selectedStoryRow);
+  const protagonistName = textValue(protagonistPc?.name);
+
+  // The synthetic procedural card is hardcoded, but the catalog ships a real
+  // "procedural" row whose story_brief makes a fuller hover tip.
+  const proceduralRow = useMemo(
+    () => (stories || []).find((s) => idOf(s.id) === "procedural") || null,
+    [stories],
+  );
 
   const selectedCharacter = useMemo(
     () =>
@@ -280,7 +258,7 @@ export default function NewGameWizard({
     : storyTitle(selectedStoryRow);
   const characterNameForTitle =
     characterChoice === "protagonist"
-      ? ""
+      ? protagonistName
       : selectedCharacter
         ? characterTitle(selectedCharacter)
         : "";
@@ -313,7 +291,12 @@ export default function NewGameWizard({
       characterChoice.length > 0 &&
       !!selectedCharacter);
   const canAdvance = step === 1 ? !!worldChoice : step === 2 ? !!storyId : true;
-  const canLaunch = !locked && step === 3 && !!storyId && characterOk;
+  const canLaunch =
+    !locked &&
+    step === 3 &&
+    !!storyId &&
+    characterOk &&
+    bindingReady(modelBinding, connectors, models);
 
   const chooseWorld = (choice) => {
     if (locked) return;
@@ -355,7 +338,11 @@ export default function NewGameWizard({
   const launch = () => {
     if (!canLaunch || !onLaunch) return;
     const resolvedCharacterId = characterChoice === "protagonist" ? "" : idOf(characterChoice);
-    const body = { title: textValue(title) || defaultTitle };
+    const body = {
+      title: textValue(title) || defaultTitle,
+      connectorId: modelBinding.connector_id,
+      modelId: modelBinding.model_id,
+    };
     if (isSyntheticProcedural) {
       body.storyId = "procedural";
       body.worldId = idOf(worldChoice?.id);
@@ -378,7 +365,7 @@ export default function NewGameWizard({
     : "";
   const characterLabel =
     characterChoice === "protagonist"
-      ? "Протагонист истории"
+      ? protagonistName || "Протагонист истории"
       : selectedCharacter
         ? characterTitle(selectedCharacter)
         : "";
@@ -446,6 +433,22 @@ export default function NewGameWizard({
       footer={footer}
     >
       <div className="wiz">
+        <ConnectorModelPicker
+          connectors={connectors}
+          models={models}
+          connectorModelsLoadingIds={connectorModelsLoadingIds}
+          onEnsureConnectorModels={onEnsureConnectorModels}
+          value={modelBinding}
+          onChange={setModelBinding}
+          disabled={locked}
+          compact
+          authBusyConnectorIds={connectorAuthBusyIds}
+          authCancellingConnectorIds={connectorAuthCancellingIds}
+          authPrompts={connectorAuthPrompts}
+          onAuthStart={onConnectorAuthStart}
+          onAuthCancel={onConnectorAuthCancel}
+          ariaLabel="Коннектор и модель новой игры"
+        />
         <ol className="wiz-steps">
           {steps.map((s) => (
             <li
@@ -486,6 +489,7 @@ export default function NewGameWizard({
                   title={worldTitle(w)}
                   meta={worldMeta(w)}
                   desc={worldPreview(w)}
+                  tip={worldTip(w)}
                 />
               ))}
               {builtinBundles.map((s) => (
@@ -500,6 +504,7 @@ export default function NewGameWizard({
                   badge="встроенная классика"
                   title={storyTitle(s)}
                   desc={storyDescription(s)}
+                  tip={storyTip(s, { kicker: "встроенная классика" })}
                 />
               ))}
               <WizCard
@@ -527,6 +532,7 @@ export default function NewGameWizard({
                   kicker="история"
                   title={storyTitle(bundleStory)}
                   desc={storyDescription(bundleStory)}
+                  tip={storyTip(bundleStory)}
                 />
               </div>
             </div>
@@ -544,6 +550,7 @@ export default function NewGameWizard({
                     meta={s.kind === "procedural" ? "процедурная" : undefined}
                     title={storyTitle(s)}
                     desc={storyDescription(s)}
+                    tip={storyTip(s)}
                   />
                 ))}
                 <WizCard
@@ -554,6 +561,7 @@ export default function NewGameWizard({
                   badge="процедурная"
                   title="Процедурная кампания"
                   desc="Живой мир генерируется из библии мира при запуске."
+                  tip={storyTip(proceduralRow)}
                 />
                 <WizCard
                   add
@@ -582,8 +590,14 @@ export default function NewGameWizard({
                   onClick={() => chooseCharacter("protagonist")}
                   kicker="персонаж"
                   badge="из истории"
-                  title="Протагонист истории"
-                  desc="Готовый герой, заданный автором истории."
+                  title={protagonistName || "Протагонист истории"}
+                  meta={pcMeta(protagonistPc)}
+                  desc={
+                    textValue(protagonistPc?.background) ||
+                    textValue(protagonistPc?.physical_type) ||
+                    "Готовый герой, заданный автором истории."
+                  }
+                  tip={protagonistTip(selectedStoryRow)}
                 />
               )}
               {sortedCharacters.map((c) => {
@@ -599,6 +613,7 @@ export default function NewGameWizard({
                     title={characterTitle(c)}
                     meta={characterMeta(c)}
                     desc={preview && preview !== characterTitle(c) ? preview : ""}
+                    tip={characterTip(c)}
                   />
                 );
               })}

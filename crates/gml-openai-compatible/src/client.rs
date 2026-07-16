@@ -18,11 +18,11 @@ use serde_json::{Map, Value};
 
 use gml_config::{Config, RuntimeSettings, SamplingPreset};
 
-use crate::backend::{
-    channel, Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
+use gml_llm::{
+    assistant_msg, channel, clean, loads_map, parse_tool_calls, proper_nouns_line, stats, think,
+    Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
+    SessionIdentity,
 };
-use crate::json_helpers::{loads_map, parse_tool_calls};
-use crate::parsing::{assistant_msg, clean, proper_nouns_line, stats, think};
 
 /// The OpenAI-compatible chat client.
 ///
@@ -34,6 +34,7 @@ pub struct OpenAICompatClient {
     models_url: String,
     http: reqwest::Client,
     model: Mutex<String>,
+    identity: SessionIdentity,
     /// `self.call_log` — appended on every call via `_remember`.
     call_log: Mutex<Vec<Map<String, Value>>>,
     /// `self._last_stream_elapsed_ms` — set after each stream completes.
@@ -55,6 +56,28 @@ impl OpenAICompatClient {
     /// The model detect performs a blocking GET, so construction is async to
     /// match (Python did this synchronously in `__init__`).
     pub async fn new(cfg: Arc<Config>, settings: Arc<RuntimeSettings>) -> Self {
+        let (chat_url, models_url, http) = Self::transport(&cfg);
+        let model = if !cfg.model.is_empty() {
+            cfg.model.clone()
+        } else {
+            detect_model(&http, &models_url).await
+        };
+        Self::from_parts(cfg, settings, chat_url, models_url, http, model)
+    }
+
+    /// Build synchronously with an already-resolved model. Connector startup
+    /// performs discovery once; lazy child clients then reuse that model and
+    /// avoid blocking the runtime on repeated `/models` probes.
+    pub fn with_model(
+        cfg: Arc<Config>,
+        settings: Arc<RuntimeSettings>,
+        model: impl Into<String>,
+    ) -> Self {
+        let (chat_url, models_url, http) = Self::transport(&cfg);
+        Self::from_parts(cfg, settings, chat_url, models_url, http, model.into())
+    }
+
+    fn transport(cfg: &Config) -> (String, String, reqwest::Client) {
         let base = {
             let b = if !cfg.api_base.is_empty() {
                 cfg.api_base.clone()
@@ -88,18 +111,23 @@ impl OpenAICompatClient {
             builder = builder.default_headers(headers);
         }
         let http = builder.build().unwrap_or_else(|_| reqwest::Client::new());
+        (chat_url, models_url, http)
+    }
 
-        let model = if !cfg.model.is_empty() {
-            cfg.model.clone()
-        } else {
-            detect_model(&http, &models_url).await
-        };
-
-        OpenAICompatClient {
+    fn from_parts(
+        cfg: Arc<Config>,
+        settings: Arc<RuntimeSettings>,
+        chat_url: String,
+        models_url: String,
+        http: reqwest::Client,
+        model: String,
+    ) -> Self {
+        Self {
             chat_url,
             models_url,
             http,
             model: Mutex::new(model),
+            identity: SessionIdentity::new(),
             call_log: Mutex::new(Vec::new()),
             last_stream_elapsed_ms: Mutex::new(None),
             cfg,
@@ -124,7 +152,7 @@ impl OpenAICompatClient {
         reasoning_role: &str,
     ) -> Value {
         let model = self.model_for_role(reasoning_role);
-        build_payload(
+        let mut payload = build_payload(
             &self.cfg,
             &self.settings,
             &model,
@@ -134,7 +162,20 @@ impl OpenAICompatClient {
             response_format,
             stream,
             reasoning_role,
-        )
+        );
+        if !self.cfg.prompt_cache_key.trim().is_empty() {
+            payload
+                .as_object_mut()
+                .expect("OpenAI-compatible payload is always an object")
+                .insert(
+                    "prompt_cache_key".to_string(),
+                    Value::String(
+                        self.identity
+                            .prompt_cache_key(self.cfg.prompt_cache_key.trim()),
+                    ),
+                );
+        }
+        payload
     }
 
     fn model_for_role(&self, reasoning_role: &str) -> String {
@@ -497,14 +538,51 @@ fn is_truthy_opt(v: Option<&Value>) -> bool {
 
 #[async_trait]
 impl Backend for OpenAICompatClient {
+    fn connector_id(&self) -> &str {
+        "openai-compatible"
+    }
+
     fn model(&self) -> String {
         self.model.lock().expect("model lock").clone()
     }
 
     fn set_model(&self, model: &str) {
         let m = model.trim();
-        if !m.is_empty() {
-            *self.model.lock().expect("model lock") = m.to_string();
+        if m.is_empty() {
+            return;
+        }
+        let changed = {
+            let mut current = self.model.lock().expect("model lock");
+            if *current == m {
+                false
+            } else {
+                *current = m.to_string();
+                true
+            }
+        };
+        if changed {
+            self.identity.reset_cache_scope();
+        }
+    }
+
+    fn set_session_identity(&self, session_id: Option<&str>, thread_id: Option<&str>) {
+        self.identity.set(session_id, thread_id);
+    }
+
+    fn session_id(&self) -> String {
+        self.identity.session_id()
+    }
+
+    fn thread_id(&self) -> String {
+        self.identity.thread_id()
+    }
+
+    fn prompt_cache_key(&self) -> String {
+        if self.cfg.prompt_cache_key.trim().is_empty() {
+            String::new()
+        } else {
+            self.identity
+                .prompt_cache_key(self.cfg.prompt_cache_key.trim())
         }
     }
 

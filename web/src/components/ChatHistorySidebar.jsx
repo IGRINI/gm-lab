@@ -13,10 +13,8 @@ import useAsyncSearch from "../useAsyncSearch.js";
 // lists the saved games and lets the player open or delete one.
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
-  day: "2-digit",
+  day: "numeric",
   month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
 });
 
 function chatTitle(chat) {
@@ -25,6 +23,16 @@ function chatTitle(chat) {
 
 function chatPreview(chat) {
   return chat?.snippet?.trim() || chat?.preview?.trim() || chat?.subtitle?.trim() || "Пустая игра";
+}
+
+function chatSecondary(chat, searchActive) {
+  if (searchActive) {
+    const snippet = chat?.snippet?.trim();
+    if (snippet) return snippet;
+    const context = chatContext(chat);
+    if (context) return context;
+  }
+  return chat?.preview?.trim() || chat?.subtitle?.trim() || chatPreview(chat);
 }
 
 function chatContext(chat) {
@@ -40,21 +48,6 @@ function chatDate(chat) {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return "";
   return DATE_FORMATTER.format(date).replace(".", "");
-}
-
-// Russian plural: 1 ход, 2–4 хода, 0/5–20 ходов (11–14 always "many").
-function pluralRu(n, one, few, many) {
-  const mod100 = n % 100;
-  const mod10 = n % 10;
-  if (mod100 >= 11 && mod100 <= 14) return many;
-  if (mod10 === 1) return one;
-  if (mod10 >= 2 && mod10 <= 4) return few;
-  return many;
-}
-
-function turnCount(chat) {
-  const count = Number(chat?.turn_count ?? chat?.turn ?? 0);
-  return `${count} ${pluralRu(count, "ход", "хода", "ходов")}`;
 }
 
 function sameChatId(a, b) {
@@ -248,31 +241,32 @@ export default function ChatHistorySidebar({
           )}
         </nav>
         <div className="chat-sidebar-head">
-          <div>
-            <h2>Мои игры</h2>
+          <h2>Игры</h2>
+          <div className="chat-sidebar-head-actions">
+            {loading && (
+              <span className="chat-sidebar-status" aria-live="polite">Обновляю…</span>
+            )}
+            <button
+              ref={newGameRef}
+              type="button"
+              className="chat-new"
+              onClick={onNewGame}
+              disabled={busy}
+              aria-label="Новая игра"
+            >
+              <Icon name="plus" size={14} />
+              <span>Новая</span>
+            </button>
+            <button
+              ref={closeRef}
+              type="button"
+              className="icon-btn chat-sidebar-close"
+              onClick={onClose}
+              aria-label="Закрыть боковую панель"
+            >
+              <Icon name="x" size={15} />
+            </button>
           </div>
-          <button
-            ref={closeRef}
-            type="button"
-            className="icon-btn chat-sidebar-close"
-            onClick={onClose}
-            aria-label="Закрыть боковую панель"
-          >
-            <Icon name="x" size={15} />
-          </button>
-        </div>
-
-        <div className="chat-sidebar-actions">
-          <button
-            ref={newGameRef}
-            type="button"
-            className="btn primary chat-new"
-            onClick={onNewGame}
-            disabled={busy}
-          >
-            <Icon name="plus" size={15} /> Новая игра
-          </button>
-          {loading && <span className="chat-sidebar-status">Обновляю…</span>}
         </div>
 
         <div className="chat-search-block">
@@ -333,12 +327,11 @@ export default function ChatHistorySidebar({
             <div className="chat-sidebar-empty">
               {searchActive
                 ? "По этому запросу ничего не найдено. Попробуйте убрать часть фильтров."
-                : "Сохранённых игр пока нет. Нажмите «+ Новая игра», чтобы начать."}
+                : "Сохранённых игр пока нет. Нажмите «Новая», чтобы начать."}
             </div>
           ) : null}
           {!chatSearch.initialLoading && visibleChats.map((chat) => {
             const active = chat.active || sameChatId(chat.id, activeChatId);
-            const context = chatContext(chat);
             return (
               <div key={chat.id} className={"chat-history-item" + (active ? " active" : "")}>
                 <button
@@ -349,15 +342,13 @@ export default function ChatHistorySidebar({
                   aria-current={active ? "page" : undefined}
                 >
                   <span className="chat-row-head">
-                    <span className="chat-row-title">{chatTitle(chat)}</span>
+                    <span className="chat-row-title-wrap">
+                      {active && <span className="chat-row-active-dot" aria-hidden="true" />}
+                      <span className="chat-row-title">{chatTitle(chat)}</span>
+                    </span>
                     <span className="chat-row-date">{chatDate(chat)}</span>
                   </span>
-                  <span className="chat-row-preview">{chatPreview(chat)}</span>
-                  {context && <span className="chat-row-context">{context}</span>}
-                  <span className="chat-row-meta">
-                    <span>{turnCount(chat)}</span>
-                    {active && <span>активная</span>}
-                  </span>
+                  <span className="chat-row-preview">{chatSecondary(chat, searchActive)}</span>
                 </button>
                 <Tooltip
                   className="tooltip-wrap"

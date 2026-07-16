@@ -1,12 +1,14 @@
 import { useMemo, useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
 import {
   api,
+  createTurnRequestId,
   streamTurn,
   streamArchitect,
   streamStoryArchitect,
   streamCharacterArchitect,
 } from "./api.js";
 import { createTimeline } from "./timelineStore.js";
+import { historicalFailedTurn } from "./turnRetry.js";
 import {
   ttsPrime,
   ttsAutoEnqueue,
@@ -34,10 +36,64 @@ import ImageLabPanel from "./components/ImageLabPanel.jsx";
 import GlobalSearchPalette from "./components/GlobalSearchPalette.jsx";
 import { normalizeEntities } from "./entityContext.js";
 import { useDevSettings, computeVisibility, VisibilityContext, isMessageVisible } from "./devSettings.js";
+import {
+  connectorAuthState,
+  connectorAuthUrl,
+  connectorById,
+  connectorIdOf,
+  connectorName,
+  modelConnectorId,
+  modelIdOf,
+  modelsForConnector,
+  normalizeModelBinding,
+  normalizeModels,
+} from "./connectorCatalog.js";
+
+const CONNECTOR_AUTH_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const CONNECTOR_AUTH_CANCEL_TIMEOUT_MS = 15 * 1000;
+
+function connectorAuthPollInterval(start) {
+  const seconds = Number(start?.interval_seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 2000;
+  return Math.min(10, Math.max(1, seconds)) * 1000;
+}
+
+function connectorAuthTimeout(start) {
+  const seconds = Number(start?.expires_in_seconds);
+  return Number.isFinite(seconds) && seconds >= 0
+    ? Math.max(1, seconds) * 1000
+    : CONNECTOR_AUTH_DEFAULT_TIMEOUT_MS;
+}
+
+function waitForAbortable(milliseconds, signal) {
+  if (signal?.aborted) {
+    const error = new Error("Операция отменена");
+    error.name = "AbortError";
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      const error = new Error("Операция отменена");
+      error.name = "AbortError";
+      reject(error);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
 
 const EMPTY_SRV = {
   backend: "",
   model: "",
+  modelBinding: { connector_id: "", model_id: "" },
   stream_gm_content: false,
   storyId: "",
   storyTitle: "",
@@ -50,7 +106,6 @@ const EMPTY_SRV = {
   npcs: [],
   entities: { byKey: {} },
   statusLabels: {},
-  codex_auth: null,
 };
 
 // Settings values and option enums are owned by the backend and delivered through
@@ -229,10 +284,24 @@ export default function App() {
   const [settingsOptions, setSettingsOptions] = useState(EMPTY_SETTINGS_OPTIONS);
   const [runUsage, setRunUsage] = useState(EMPTY_RUN_USAGE);
   const [contextUsage, setContextUsage] = useState(EMPTY_CONTEXT_USAGE);
+  const [connectors, setConnectors] = useState([]);
   const [models, setModels] = useState([]);
+  const [connectorModelsLoadingIds, setConnectorModelsLoadingIds] = useState([]);
+  const connectorModelsLoadedRef = useRef(new Set());
+  const connectorModelsRequestsRef = useRef(new Map());
+  const [connectorAuthBusyIds, setConnectorAuthBusyIds] = useState([]);
+  const [connectorAuthCancellingIds, setConnectorAuthCancellingIds] = useState([]);
+  const [connectorAuthPrompts, setConnectorAuthPrompts] = useState({});
+  const connectorAuthOperationsRef = useRef(new Map());
   const [sidecarStatus, setSidecarStatus] = useState(EMPTY_SIDECAR_STATUS);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const [turnGenerating, setTurnGenerating] = useState(false);
+  const [failedTurn, setFailedTurn] = useState(null);
+  const turnInFlightRef = useRef(false);
+  const turnAbortRef = useRef(null);
+  const activeTurnRef = useRef(null);
+  useEffect(() => () => turnAbortRef.current?.abort(), []);
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState("");
   const [chatsOpen, setChatsOpen] = useState(() => {
@@ -306,10 +375,26 @@ export default function App() {
     npcsRef.current = srv.npcs || [];
   }, [srv.npcs]);
 
+  useEffect(() => () => {
+    for (const operation of connectorAuthOperationsRef.current.values()) {
+      operation.disposed = true;
+      if (operation.timeoutId) window.clearTimeout(operation.timeoutId);
+      if (operation.cancelTimeoutId) window.clearTimeout(operation.cancelTimeoutId);
+      operation.controller?.abort();
+      operation.cancelController?.abort();
+    }
+    connectorAuthOperationsRef.current.clear();
+  }, []);
+
   const setStateFromServer = useCallback((s) => {
+    const binding = normalizeModelBinding(s.model_binding || {
+      connector_id: s.backend,
+      model_id: s.model,
+    });
     setSrv({
-      backend: s.backend,
-      model: s.model,
+      backend: binding.connector_id || s.backend,
+      model: binding.model_id || s.model,
+      modelBinding: binding,
       stream_gm_content: s.stream_gm_content,
       storyId: s.story_id || "",
       storyTitle: s.story_title || "",
@@ -325,7 +410,6 @@ export default function App() {
       npcs: s.npcs || [],
       entities: normalizeEntities(s.entities),
       statusLabels: s.status_labels || {},
-      codex_auth: s.codex_auth || null,
     });
     if (s.settings) setSettings((prev) => ({ ...prev, ...s.settings }));
     if (s.settings_options) {
@@ -455,32 +539,106 @@ export default function App() {
         requireChatSessionPayload(payload);
 
       store.clear();
+      setFailedTurn(null);
       setStateFromServer(nextState);
       const events = nextTranscript?.events || [];
       store.dispatchMany(events);
       setPlayerOptions(playerOptionsFromEvents(events));
       setActiveChatId(nextChatId || "");
-      if (payload?.chat || nextChatId) {
+      if (Array.isArray(payload?.chats)) {
+        setChats(payload.chats);
+      } else if (payload?.chat || nextChatId) {
         setChats((prev) => mergeChatList(prev, payload?.chat, nextChatId));
       }
+      return nextChatId;
     },
     [store, setStateFromServer]
   );
 
-  const loadModels = useCallback(async () => {
+  const loadConnectorModels = useCallback((rawConnectorId, { force = false } = {}) => {
+    const connectorId = textValue(rawConnectorId);
+    if (!connectorId) return Promise.resolve([]);
+
+    const pending = connectorModelsRequestsRef.current.get(connectorId);
+    if (pending) {
+      return force
+        ? pending.then(() => loadConnectorModels(connectorId, { force: true }))
+        : pending;
+    }
+    if (!force && connectorModelsLoadedRef.current.has(connectorId)) {
+      return Promise.resolve([]);
+    }
+
+    setConnectorModelsLoadingIds((current) => (
+      current.includes(connectorId) ? current : [...current, connectorId]
+    ));
+
+    const request = (async () => {
+      try {
+        const data = await api.connectorModels(connectorId);
+        if (!data.ok) throw new Error(data.error || "модели коннектора не загружены");
+        if (data.connector_id && data.connector_id !== connectorId) {
+          throw new Error("сервер вернул модели другого коннектора");
+        }
+        const nextModels = normalizeModels([], data.models, connectorId);
+        setModels((current) => [
+          ...current.filter((model) => modelConnectorId(model) !== connectorId),
+          ...nextModels,
+        ]);
+        connectorModelsLoadedRef.current.add(connectorId);
+        return nextModels;
+      } catch (error) {
+        notify(error.message || "модели коннектора не загружены");
+        return [];
+      } finally {
+        connectorModelsRequestsRef.current.delete(connectorId);
+        setConnectorModelsLoadingIds((current) => current.filter((id) => id !== connectorId));
+      }
+    })();
+
+    connectorModelsRequestsRef.current.set(connectorId, request);
+    return request;
+  }, [notify]);
+
+  const loadConnectors = useCallback(async () => {
     try {
-      const data = await api.models();
-      if (!data.ok) throw new Error(data.error || "модели не загружены");
-      setModels(data.models || []);
-      if (data.model) setSrv((p) => ({ ...p, model: data.model }));
-      if (data.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
-      if (data.settings_options) {
-        setSettingsOptions((prev) => ({ ...prev, ...data.settings_options }));
+      const data = await api.connectors();
+      if (!data.ok) throw new Error(data.error || "коннекторы не загружены");
+      const nextConnectors = Array.isArray(data.connectors) ? data.connectors : [];
+      const binding = normalizeModelBinding(data.model_binding);
+      const catalogModels = normalizeModels(nextConnectors, data.models, binding.connector_id);
+      setConnectors(nextConnectors);
+      if (catalogModels.length > 0) {
+        const connectorIds = new Set(catalogModels.map(modelConnectorId).filter(Boolean));
+        setModels((current) => [
+          ...current.filter((model) => !connectorIds.has(modelConnectorId(model))),
+          ...catalogModels,
+        ]);
+      }
+      if (binding.connector_id || binding.model_id) {
+        setSrv((current) => ({
+          ...current,
+          backend: binding.connector_id || current.backend,
+          model: binding.model_id || current.model,
+          modelBinding: {
+            connector_id: binding.connector_id || current.modelBinding.connector_id,
+            model_id: binding.model_id || current.modelBinding.model_id,
+          },
+        }));
       }
     } catch {
-      setModels([]); // Header falls back to the current model as the only option
+      connectorModelsLoadedRef.current.clear();
+      setConnectors([]);
+      setModels([]);
     }
   }, []);
+
+  useEffect(() => {
+    const connectorId = srv.modelBinding.connector_id;
+    if (connectorId && connectorById(connectors, connectorId)) {
+      loadConnectorModels(connectorId);
+    }
+  }, [connectors, loadConnectorModels, srv.modelBinding.connector_id]);
 
   // initial load
   useEffect(() => {
@@ -492,7 +650,7 @@ export default function App() {
       } catch (e) {
         notify(e.message || "состояние не загружено");
       }
-      await loadModels();
+      await loadConnectors();
       try {
         const t = await api.transcript();
         store.clear();
@@ -509,65 +667,334 @@ export default function App() {
   }, []);
 
   const sendTurn = useCallback(
-    async (text) => {
-      ttsUnlock(); // unlock audio inside the send gesture so auto-play can sound
+    async (rawText, previousRequestId = "", retryOptions = {}) => {
+      const text = textValue(rawText);
+      const historyMutation = retryOptions?.historyMutation === true;
+      if (
+        !text ||
+        turnInFlightRef.current ||
+        busy ||
+        (!historyMutation && chatActionBusy)
+      ) return;
+      const legacyResume = retryOptions?.legacyResume === true;
+
+      let requestId = textValue(previousRequestId);
+      try {
+        if (!requestId) requestId = createTurnRequestId();
+      } catch (error) {
+        notify(error?.message || "ход не выполнен");
+        return;
+      }
+
+      turnInFlightRef.current = true;
+      // A retryable attempt is deliberately left visible. Remove its optimistic
+      // rows before either retrying it or starting a different player action.
+      store.rollbackTurn();
       store.beginTurn();
+      setFailedTurn(null);
+      const controller = new AbortController();
+      turnAbortRef.current = controller;
+
+      const attemptChatId = textValue(retryOptions?.chatId) || activeChatId;
+      const history = retryOptions?.history || null;
+      const failedAttempt = {
+        chatId: attemptChatId,
+        text,
+        requestId,
+        legacyResume,
+        history,
+      };
+      const activeTurn = {
+        chatId: attemptChatId,
+        requestId,
+        controller,
+        canonicalRestored: false,
+        cancelling: false,
+        cancelPromise: null,
+      };
+      activeTurnRef.current = activeTurn;
+      const previousPlayerOptions = playerOptions;
+      const previousRunUsage = runUsage;
+      const previousContextUsage = contextUsage;
+      const restoreAttemptUi = () => {
+        setPlayerOptions(previousPlayerOptions);
+        setRunUsage(previousRunUsage);
+        setContextUsage(previousContextUsage);
+      };
+
+      ttsUnlock(); // unlock audio inside the send gesture so auto-play can sound
       ttsAutoReset(); // each turn's auto-play chain starts fresh
       setPlayerOptions(null);
       setBusy(true);
+      setTurnGenerating(true);
       setStatus("ГМ думает…");
+      let streamError = null;
+      let playerEventSeen = false;
+      let terminal = null;
       try {
-        await streamTurn(text, (ev) => {
-          store.dispatch(ev);
-          const auto = ttsAutoplayRef.current;
-          if (auto || ttsEnabledRef.current) {
-            const emit = (key, segs) => (auto ? ttsAutoEnqueue(key, segs) : ttsPrime(key, segs));
-            if (ev.kind === "gm_narration" && typeof ev.data === "string" && ev.data.trim())
-              emit(`${ev.sid}:narration`, gmSegments(ev.data));
-            else if (ev.kind === "npc_speech" && (ev.data?.response || ev.data?.speech || ev.data?.action)) {
-              const npc = (npcsRef.current || []).find(
-                (n) => (ev.data.npc_id && n.id === ev.data.npc_id) || n.name === ev.agent
-              );
-              emit(
-                `${ev.sid}:npc`,
-                npcSegments({
-                  name: ev.agent,
-                  response: ev.data.response,
-                  beats: ev.data.beats,
-                  speech: ev.data.speech,
-                  action: ev.data.action,
-                  voice: genderVoice(npc?.pronouns ?? npc?.gender),
-                })
-              );
+        try {
+          terminal = await streamTurn(text, requestId, (ev) => {
+            store.dispatch(ev);
+            if (ev.kind === "error") {
+              streamError = {
+                agent: textValue(ev.agent) || "ГМ",
+                text: textValue(ev.data) || "Ход не выполнен",
+              };
             }
+            const auto = ttsAutoplayRef.current;
+            if (auto || ttsEnabledRef.current) {
+              const emit = (key, segs) => (auto ? ttsAutoEnqueue(key, segs) : ttsPrime(key, segs));
+              if (ev.kind === "gm_narration" && typeof ev.data === "string" && ev.data.trim())
+                emit(`${ev.sid}:narration`, gmSegments(ev.data));
+              else if (ev.kind === "npc_speech" && (ev.data?.response || ev.data?.speech || ev.data?.action)) {
+                const npc = (npcsRef.current || []).find(
+                  (n) => (ev.data.npc_id && n.id === ev.data.npc_id) || n.name === ev.agent
+                );
+                emit(
+                  `${ev.sid}:npc`,
+                  npcSegments({
+                    name: ev.agent,
+                    response: ev.data.response,
+                    beats: ev.data.beats,
+                    speech: ev.data.speech,
+                    action: ev.data.action,
+                    voice: genderVoice(npc?.pronouns ?? npc?.gender),
+                  })
+                );
+              }
+            }
+            if (ev.kind === "player_options") setPlayerOptions(normalizePlayerOptions(ev.data));
+            if (ev.kind === "player") {
+              playerEventSeen = true;
+              setPlayerOptions(null);
+            }
+            if (ev.kind === "meta_total") {
+              if (ev.data?.run) setRunUsage(ev.data.run);
+              if (ev.data?.context) setContextUsage(ev.data.context);
+            }
+            if (ev.kind === "gm_tool_call") setStatus("ГМ: " + ev.data.name + "…");
+            else if (ev.kind === "npc_start") setStatus(ev.agent + " печатает…");
+            else if (ev.kind === "npc_speech") setStatus("");
+          }, {
+            signal: controller.signal,
+            legacyResume,
+            chatId: attemptChatId,
+            history,
+          });
+          setTurnGenerating(false);
+        } catch (e) {
+          if (controller.signal.aborted || isAbortError(e)) {
+            if (!activeTurn.canonicalRestored) {
+              restoreAttemptUi();
+              store.rollbackTurn();
+            }
+            setFailedTurn(null);
+            return {
+              ok: false,
+              cancelled: true,
+              retryable: false,
+              request_id: requestId,
+              chat_id: attemptChatId,
+            };
           }
-          if (ev.kind === "player_options") setPlayerOptions(normalizePlayerOptions(ev.data));
-          if (ev.kind === "player") setPlayerOptions(null);
-          if (ev.kind === "meta_total") {
-            if (ev.data?.run) setRunUsage(ev.data.run);
-            if (ev.data?.context) setContextUsage(ev.data.context);
+          restoreAttemptUi();
+          const errorRow = streamError || {
+            agent: "ГМ",
+            text: e?.message || "Ход не выполнен",
+          };
+          if (e?.retryable === false) {
+            store.rollbackTurn();
+            store.pushLocal({ type: "error", ...errorRow });
+            setFailedTurn(null);
+          } else if (legacyResume) {
+            // The persisted player/error/meta tail is the retry checkpoint.
+            // Resume attempts must never add another local player or error row.
+            store.rollbackTurn();
+            setFailedTurn(failedAttempt);
+          } else {
+            if (!playerEventSeen) store.pushLocal({ type: "player", text });
+            if (!streamError) store.pushLocal({ type: "error", ...errorRow });
+            else store.flush();
+            setFailedTurn(failedAttempt);
           }
-          if (ev.kind === "gm_tool_call") setStatus("ГМ: " + ev.data.name + "…");
-          else if (ev.kind === "npc_start") setStatus(ev.agent + " печатает…");
-          else if (ev.kind === "npc_speech") setStatus("");
-        });
-        setStateFromServer(await api.state());
-        await refreshChats();
-      } catch (e) {
-        notify(e.message || "ход не выполнен");
+          return {
+            ok: false,
+            cancelled: false,
+            retryable: e?.retryable !== false,
+            error: errorRow.text,
+            request_id: requestId,
+            chat_id: attemptChatId,
+          };
+        }
+
+        if (terminal.cancelled === true) {
+          if (!activeTurn.canonicalRestored) {
+            restoreAttemptUi();
+            store.rollbackTurn();
+          }
+          setFailedTurn(null);
+          return terminal;
+        }
+
+        if (!terminal.ok) {
+          restoreAttemptUi();
+          const errorRow = streamError || {
+            agent: "ГМ",
+            text: textValue(terminal.error) || "Ход не выполнен",
+          };
+          if (!legacyResume && !playerEventSeen) store.pushLocal({ type: "player", text });
+          if (!legacyResume && !streamError) {
+            streamError = errorRow;
+            store.pushLocal({ type: "error", ...errorRow });
+          }
+          if (terminal.retryable) {
+            if (legacyResume) store.rollbackTurn();
+            else store.flush();
+            setFailedTurn(failedAttempt);
+          } else {
+            // The server did not commit this attempt and explicitly forbids a
+            // replay. Drop partial rows, retaining only an explanatory error.
+            store.rollbackTurn();
+            store.pushLocal({ type: "error", ...errorRow });
+            setFailedTurn(null);
+          }
+          return { ...terminal, error: errorRow.text, chat_id: attemptChatId };
+        }
+
+        const committedChatId = textValue(terminal.chat_id) || attemptChatId;
+        if (!sameChatId(committedChatId, activeChatId)) {
+          setActiveChatId(committedChatId);
+        }
+
+        if (terminal.replayed || legacyResume) {
+          try {
+            // Replayed requests stream no duplicate events, and a legacy resume
+            // replaces its persisted error tail. In both cases only the server's
+            // committed transcript is canonical.
+            const [nextState, transcript] = await Promise.all([api.state(), api.transcript()]);
+            const events = Array.isArray(transcript) ? transcript : transcript?.events || [];
+            store.clear();
+            store.dispatchMany(events);
+            setPlayerOptions(playerOptionsFromEvents(events));
+            setStateFromServer(nextState);
+          } catch (error) {
+            restoreAttemptUi();
+            if (legacyResume) {
+              store.rollbackTurn();
+              notify(error?.message || "Ход завершён, но история не обновилась");
+            } else {
+              if (!playerEventSeen) store.pushLocal({ type: "player", text });
+              store.pushLocal({
+                type: "error",
+                agent: "ГМ",
+                text: error?.message || "Ход завершён, но история не обновилась",
+              });
+            }
+            // Retain the current checkpoint. Repeating the same id is safe and
+            // gives the client another chance to fetch the committed transcript.
+            setFailedTurn({
+              ...failedAttempt,
+              chatId: committedChatId,
+              history: null,
+            });
+            return terminal;
+          }
+        } else {
+          store.commitTurn();
+          try {
+            // Reload the canonical transcript after every committed turn. Besides
+            // exact state, it carries the rolling rewind window, so the 11th-oldest
+            // player action loses its edit/branch controls immediately.
+            const [nextState, transcript] = await Promise.all([api.state(), api.transcript()]);
+            const events = Array.isArray(transcript) ? transcript : transcript?.events || [];
+            store.clear();
+            store.dispatchMany(events);
+            setPlayerOptions(playerOptionsFromEvents(events));
+            setStateFromServer(nextState);
+          } catch (error) {
+            notify(error?.message || "Ход выполнен, но история не обновилась");
+          }
+        }
+
+        setFailedTurn(null);
+        try {
+          await refreshChats();
+        } catch (error) {
+          notify(error?.message || "Ход выполнен, но список игр не обновился");
+        }
+        return terminal;
       } finally {
+        if (activeTurn.cancelPromise) {
+          await activeTurn.cancelPromise;
+        }
+        if (turnAbortRef.current === controller) turnAbortRef.current = null;
+        if (activeTurnRef.current === activeTurn) activeTurnRef.current = null;
+        turnInFlightRef.current = false;
+        setTurnGenerating(false);
         setBusy(false);
         setStatus("");
       }
     },
-    [store, setStateFromServer, refreshChats, notify]
+    [
+      activeChatId,
+      busy,
+      chatActionBusy,
+      contextUsage,
+      notify,
+      playerOptions,
+      refreshChats,
+      runUsage,
+      setStateFromServer,
+      store,
+    ]
   );
+
+  const stopTurn = useCallback(async () => {
+    const activeTurn = activeTurnRef.current;
+    if (
+      !activeTurn ||
+      activeTurn.cancelling ||
+      activeTurn.controller.signal.aborted
+    ) return;
+    activeTurn.cancelling = true;
+    ttsAutoReset();
+    setStatus("Останавливаю…");
+    const cancelPromise = (async () => {
+      try {
+        const data = await api.cancelTurn(activeTurn.chatId, activeTurn.requestId);
+        if (
+          !data?.ok ||
+          (data.status !== "cancelled" && data.status !== "committed")
+        ) {
+          throw new Error(data?.error || "Сервер не подтвердил остановку");
+        }
+
+        // The cancel endpoint crosses the same commit fence as SQLite and returns
+        // the only canonical outcome: either the pre-turn snapshot or a turn that
+        // had already committed. Apply it before closing the SSE stream.
+        restoreChatSession(data);
+        activeTurn.canonicalRestored = true;
+        activeTurn.controller.abort();
+        if (data.status === "committed") {
+          notify("Ход уже успел сохраниться — показан его итог");
+        }
+      } catch (error) {
+        activeTurn.cancelling = false;
+        setStatus("ГМ думает…");
+        notify(error?.message || "Не удалось остановить генерацию");
+      }
+    })();
+    activeTurn.cancelPromise = cancelPromise;
+    await cancelPromise;
+  }, [notify, restoreChatSession]);
 
   const sendCommand = useCallback(
     async (text) => {
       const [rawCmd, ...rest] = text.slice(1).split(" ");
       const cmd = rawCmd.trim().toLowerCase();
       const arg = rest.join(" ").trim();
+      store.rollbackTurn();
+      setFailedTurn(null);
       // No client-side allow-list: the backend /cmd handler validates the command set
       // and returns a structured {ok:false,error} for unknown/incomplete commands.
       setBusy(true);
@@ -614,6 +1041,108 @@ export default function App() {
       setChatsOpen(false);
     }
   }, []);
+
+  const regenerateFromTurn = useCallback(
+    async (mode, turn, rawText, previousRequestId = "") => {
+      const text = textValue(rawText);
+      if (!text || !Number.isInteger(turn) || turn < 1) {
+        throw new Error("Некорректное сообщение для отката");
+      }
+      if (!activeChatId) throw new Error("Сначала откройте игру");
+      if (turnInFlightRef.current || busy || chatActionBusy) {
+        throw new Error("Дождитесь завершения текущего действия");
+      }
+
+      // Only the view is rewound here. The server loads the same checkpoint
+      // into a staged runtime and leaves the durable source chat untouched
+      // until the replacement turn completes successfully.
+      store.rollbackTurn();
+      if (!store.truncateFromPlayerTurn(turn)) {
+        throw new Error("Этот ход уже нельзя изменить");
+      }
+
+      setChatActionBusy(true);
+      ttsAutoReset();
+      setPlayerOptions(null);
+      setMainView("chat");
+      closeChatsOnMobile();
+      try {
+        const history = { kind: mode, turn };
+        const result = await sendTurn(text, previousRequestId, {
+          chatId: activeChatId,
+          historyMutation: true,
+          history,
+        });
+        if (result?.ok || result?.cancelled) return;
+
+        // A failed staged mutation did not touch persistence. Restore the
+        // canonical chat, but keep one local retry affordance using the same
+        // idempotency key. If a lost terminal receipt hid a successful commit,
+        // the request id in the canonical transcript proves it and no error is
+        // added.
+        const [nextState, transcript, chatList] = await Promise.all([
+          api.state(),
+          api.transcript(),
+          api.chats(),
+        ]);
+        const events = Array.isArray(transcript) ? transcript : transcript?.events || [];
+        const nextChatId = textValue(chatList?.active_chat_id) || activeChatId;
+        const nextChats = Array.isArray(chatList?.chats) ? chatList.chats : chats;
+        const nextChat =
+          nextChats.find((chat) => sameChatId(chat?.id, nextChatId)) || { id: nextChatId };
+        restoreChatSession({
+          ok: true,
+          active_chat_id: nextChatId,
+          chat: nextChat,
+          chats: nextChats,
+          state: nextState,
+          transcript: Array.isArray(transcript) ? { events } : transcript,
+        });
+
+        const committed = events.some(
+          (event) =>
+            event?.kind === "player" &&
+            textValue(event?.request_id) === textValue(result?.request_id)
+        );
+        if (!committed) {
+          const errorText = textValue(result?.error) || "Изменение истории не применено";
+          store.beginTurn();
+          store.pushLocal({ type: "error", agent: "ГМ", text: errorText });
+          if (result?.retryable !== false && result?.request_id) {
+            setFailedTurn({
+              chatId: activeChatId,
+              text,
+              requestId: result.request_id,
+              legacyResume: false,
+              history,
+            });
+          }
+        }
+      } finally {
+        setChatActionBusy(false);
+        setStatus("");
+      }
+    },
+    [
+      activeChatId,
+      busy,
+      chats,
+      chatActionBusy,
+      closeChatsOnMobile,
+      restoreChatSession,
+      sendTurn,
+      store,
+    ]
+  );
+
+  const editFromTurn = useCallback(
+    (turn, text) => regenerateFromTurn("edit", turn, text),
+    [regenerateFromTurn]
+  );
+  const branchFromTurn = useCallback(
+    (turn, text) => regenerateFromTurn("branch", turn, text),
+    [regenerateFromTurn]
+  );
 
   // ---- top-level navigation (header) ----
   const showGame = useCallback(() => {
@@ -757,12 +1286,17 @@ export default function App() {
   // The single launch seam: story → POST /chats {story_id, character_id?};
   // procedural → POST /chats {story_id:"procedural", world_id, character_id}.
   const onWizardLaunch = useCallback(
-    async ({ storyId, worldId, characterId, title }) => {
+    async ({ connectorId, modelId, storyId, worldId, characterId, title }) => {
       if (chatActionBusy) return;
       setChatActionBusy(true);
       setStatus("Запускаю игру...");
       try {
-        const body = { activate: true, story_id: storyId };
+        const body = {
+          activate: true,
+          connector_id: connectorId,
+          model_id: modelId,
+          story_id: storyId,
+        };
         if (worldId) body.world_id = worldId;
         if (characterId) body.character_id = characterId;
         if (title) body.title = title;
@@ -1265,12 +1799,41 @@ export default function App() {
   }, [worlds, srv.worldRef]);
 
   const send = useCallback(
-    (text) => {
+    (rawText) => {
+      const text = textValue(rawText);
+      if (!text || turnInFlightRef.current || busy || chatActionBusy) return;
       if (text.startsWith("/")) sendCommand(text);
       else sendTurn(text);
     },
-    [sendCommand, sendTurn]
+    [busy, chatActionBusy, sendCommand, sendTurn]
   );
+
+  const retryableTurn = useMemo(() => {
+    if (failedTurn && sameChatId(failedTurn.chatId, activeChatId)) {
+      const latestError = [...messages].reverse().find((message) => message?.type === "error");
+      return { ...failedTurn, errorId: latestError?.id };
+    }
+    return historicalFailedTurn(messages, activeChatId);
+  }, [activeChatId, failedTurn, messages]);
+
+  const retryFailedTurn = useCallback(() => {
+    if (!retryableTurn) return;
+    if (retryableTurn.history) {
+      void regenerateFromTurn(
+        retryableTurn.history.kind,
+        retryableTurn.history.turn,
+        retryableTurn.text,
+        retryableTurn.requestId
+      );
+      return;
+    }
+    void sendTurn(retryableTurn.text, retryableTurn.requestId, {
+      legacyResume: retryableTurn.legacyResume === true,
+      history: retryableTurn.history || null,
+      chatId: retryableTurn.chatId,
+      historyMutation: Boolean(retryableTurn.history),
+    });
+  }, [regenerateFromTurn, retryableTurn, sendTurn]);
 
   const onModelChange = useCallback(
     async (model) => {
@@ -1305,29 +1868,209 @@ export default function App() {
     [settings, setStateFromServer, notify]
   );
 
-  const onCodex = useCallback(async () => {
-    setStatus("Жду авторизацию Codex в браузере…");
-    try {
-      const data = await api.codexLogin();
-      if (!data.ok) throw new Error(data.error || "Codex OAuth не выполнен");
-      setStateFromServer(await api.state());
-      await loadModels();
-    } catch (e) {
-      notify(e.message || "Codex OAuth не выполнен");
-    } finally {
-      setStatus("");
-    }
-  }, [setStateFromServer, loadModels, notify]);
+  const updateConnectorAuth = useCallback((connectorId, auth) => {
+    if (!connectorId || !auth) return;
+    setConnectors((current) => current.map((connector) => (
+      connectorIdOf(connector) === connectorId ? { ...connector, auth } : connector
+    )));
+  }, []);
 
-  const onLogout = useCallback(async () => {
-    try {
-      const data = await api.codexLogout();
-      if (!data.ok) throw new Error(data.error || "не вышло отключить Codex");
-      setStateFromServer(await api.state());
-    } catch (e) {
-      notify(e.message || "не вышло отключить Codex");
+  const setConnectorAuthBusy = useCallback((connectorId, busy) => {
+    setConnectorAuthBusyIds((current) => {
+      if (busy) return current.includes(connectorId) ? current : [...current, connectorId];
+      return current.filter((id) => id !== connectorId);
+    });
+  }, []);
+
+  const setConnectorAuthCancelling = useCallback((connectorId, cancelling) => {
+    setConnectorAuthCancellingIds((current) => {
+      if (cancelling) return current.includes(connectorId) ? current : [...current, connectorId];
+      return current.filter((id) => id !== connectorId);
+    });
+  }, []);
+
+  const setConnectorAuthPromptFor = useCallback((connectorId, prompt) => {
+    setConnectorAuthPrompts((current) => {
+      if (prompt) return { ...current, [connectorId]: prompt };
+      if (!(connectorId in current)) return current;
+      const next = { ...current };
+      delete next[connectorId];
+      return next;
+    });
+  }, []);
+
+  const finishConnectorAuthOperation = useCallback((connectorId, operation) => {
+    if (connectorAuthOperationsRef.current.get(connectorId) !== operation) return false;
+    if (operation.timeoutId) window.clearTimeout(operation.timeoutId);
+    if (operation.cancelTimeoutId) window.clearTimeout(operation.cancelTimeoutId);
+    connectorAuthOperationsRef.current.delete(connectorId);
+    setConnectorAuthBusy(connectorId, false);
+    setConnectorAuthCancelling(connectorId, false);
+    setConnectorAuthPromptFor(connectorId, null);
+    return true;
+  }, [setConnectorAuthBusy, setConnectorAuthCancelling, setConnectorAuthPromptFor]);
+
+  const waitForConnectorAuth = useCallback(async (connectorId, start, initialAuth, operation) => {
+    const deadline = Date.now() + connectorAuthTimeout(start);
+    const interval = connectorAuthPollInterval(start);
+    let auth = initialAuth || {};
+    let lastStatusError = null;
+    let consecutiveStatusFailures = 0;
+
+    while (!operation.controller.signal.aborted) {
+      const authState = connectorAuthState(auth);
+      if (authState === "signed_in" || authState === "not_required") return auth;
+      if (authState === "expired") {
+        throw new Error(auth.message || "Срок авторизации истёк");
+      }
+      if (Date.now() >= deadline) {
+        throw lastStatusError || new Error("Срок авторизации истёк");
+      }
+
+      await waitForAbortable(
+        Math.min(
+          Math.min(10_000, interval * Math.max(1, consecutiveStatusFailures + 1)),
+          Math.max(0, deadline - Date.now())
+        ),
+        operation.controller.signal
+      );
+      try {
+        const data = await api.connectorAuthStatus(connectorId, {
+          signal: operation.controller.signal,
+        });
+        if (!data.ok) throw new Error(data.error || "Статус авторизации недоступен");
+        auth = data.auth || {};
+        lastStatusError = null;
+        consecutiveStatusFailures = 0;
+        updateConnectorAuth(connectorId, auth);
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        lastStatusError = error;
+        consecutiveStatusFailures += 1;
+      }
     }
-  }, [setStateFromServer, notify]);
+    const error = new Error("Операция отменена");
+    error.name = "AbortError";
+    throw error;
+  }, [updateConnectorAuth]);
+
+  const onConnectorAuthStart = useCallback(async (connectorId, methodId) => {
+    if (!connectorId || !methodId || connectorAuthOperationsRef.current.has(connectorId)) return;
+    const connector = connectorById(connectors, connectorId);
+    const name = connectorName(connector);
+    const operation = {
+      kind: "login",
+      controller: new AbortController(),
+      cancelController: null,
+      cancelRequested: false,
+      disposed: false,
+      timedOut: false,
+      timeoutId: null,
+      cancelTimeoutId: null,
+    };
+    connectorAuthOperationsRef.current.set(connectorId, operation);
+    setConnectorAuthBusy(connectorId, true);
+    try {
+      const data = await api.connectorAuthStart(connectorId, methodId, {
+        signal: operation.controller.signal,
+      });
+      if (!data.ok) throw new Error(data.error || `${name} не подключён`);
+      updateConnectorAuth(connectorId, data.auth);
+
+      const start = data.start || { kind: "complete" };
+      const authUrl = connectorAuthUrl(start);
+      if (start.kind === "device_code" || start.kind === "browser") {
+        setConnectorAuthPromptFor(connectorId, { ...start, connector_id: connectorId });
+        if (authUrl) window.open(authUrl, "_blank", "noopener,noreferrer");
+      }
+      operation.timeoutId = window.setTimeout(() => {
+        operation.timedOut = true;
+        operation.controller.abort();
+      }, connectorAuthTimeout(start));
+
+      const auth = await waitForConnectorAuth(connectorId, start, data.auth, operation);
+      if (!auth || operation.cancelRequested) return;
+      void loadConnectorModels(connectorId, { force: true });
+    } catch (e) {
+      if (operation.cancelRequested || operation.disposed) return;
+      if (operation.timedOut) notify("Срок авторизации истёк");
+      else if (!isAbortError(e)) notify(e.message || `${name} не подключён`);
+    } finally {
+      if (!operation.cancelRequested && finishConnectorAuthOperation(connectorId, operation)) {
+        await loadConnectors();
+      }
+    }
+  }, [connectors, finishConnectorAuthOperation, loadConnectors, loadConnectorModels, notify, setConnectorAuthBusy, setConnectorAuthPromptFor, updateConnectorAuth, waitForConnectorAuth]);
+
+  const onConnectorAuthCancel = useCallback(async (connectorId) => {
+    const operation = connectorAuthOperationsRef.current.get(connectorId);
+    if (!operation || operation.kind !== "login" || operation.cancelRequested) return;
+    const connector = connectorById(connectors, connectorId);
+    const name = connectorName(connector);
+    operation.cancelRequested = true;
+    setConnectorAuthCancelling(connectorId, true);
+    setConnectorAuthPromptFor(connectorId, null);
+    if (operation.timeoutId) window.clearTimeout(operation.timeoutId);
+    operation.controller.abort();
+
+    const cancelController = new AbortController();
+    operation.cancelController = cancelController;
+    operation.cancelTimeoutId = window.setTimeout(
+      () => cancelController.abort(),
+      CONNECTOR_AUTH_CANCEL_TIMEOUT_MS
+    );
+    try {
+      const data = await api.connectorAuthLogout(connectorId, {
+        signal: cancelController.signal,
+      });
+      if (!data.ok) throw new Error(data.error || `не вышло отменить подключение ${name}`);
+      updateConnectorAuth(connectorId, { state: "signed_out" });
+      void loadConnectorModels(connectorId, { force: true });
+    } catch (error) {
+      if (operation.disposed) return;
+      const message = isAbortError(error)
+        ? `отмена подключения ${name} не подтверждена`
+        : error.message || `не вышло отменить подключение ${name}`;
+      notify(message);
+    } finally {
+      if (finishConnectorAuthOperation(connectorId, operation)) await loadConnectors();
+    }
+  }, [connectors, finishConnectorAuthOperation, loadConnectors, loadConnectorModels, notify, setConnectorAuthCancelling, setConnectorAuthPromptFor, updateConnectorAuth]);
+
+  const onConnectorLogout = useCallback(async (connectorId) => {
+    if (!connectorId || connectorAuthOperationsRef.current.has(connectorId)) return;
+    const connector = connectorById(connectors, connectorId);
+    const name = connectorName(connector);
+    const operation = {
+      kind: "logout",
+      controller: new AbortController(),
+      disposed: false,
+      timeoutId: null,
+      cancelTimeoutId: null,
+    };
+    connectorAuthOperationsRef.current.set(connectorId, operation);
+    setConnectorAuthBusy(connectorId, true);
+    operation.timeoutId = window.setTimeout(
+      () => operation.controller.abort(),
+      CONNECTOR_AUTH_CANCEL_TIMEOUT_MS
+    );
+    try {
+      const data = await api.connectorAuthLogout(connectorId, {
+        signal: operation.controller.signal,
+      });
+      if (!data.ok) throw new Error(data.error || `не вышло отключить ${name}`);
+      updateConnectorAuth(connectorId, { state: "signed_out" });
+      void loadConnectorModels(connectorId, { force: true });
+    } catch (e) {
+      if (operation.disposed) return;
+      const message = isAbortError(e)
+        ? `отключение ${name} не подтверждено`
+        : e.message || `не вышло отключить ${name}`;
+      notify(message);
+    } finally {
+      if (finishConnectorAuthOperation(connectorId, operation)) await loadConnectors();
+    }
+  }, [connectors, finishConnectorAuthOperation, loadConnectors, loadConnectorModels, notify, setConnectorAuthBusy, updateConnectorAuth]);
 
   // «Сброс партии» from the game-context ⋯ menu (its own confirm dialog).
   const onReset = useCallback(async () => {
@@ -1338,6 +2081,7 @@ export default function App() {
         return;
       }
       store.clear();
+      setFailedTurn(null);
       setPlayerOptions(null);
       setStateFromServer(data.state);
       await refreshChats();
@@ -1349,11 +2093,17 @@ export default function App() {
   const onExportJson = useCallback(() => api.export(), []);
 
   const currentModel = useMemo(
-    () => (models || []).find((m) => m.id === srv.model || m.slug === srv.model) || null,
-    [models, srv.model]
+    () => modelsForConnector(models, srv.modelBinding.connector_id)
+      .find((model) => modelIdOf(model) === srv.modelBinding.model_id) || null,
+    [models, srv.modelBinding]
   );
   const interactionBusy = busy || chatActionBusy;
   const isGame = mainView === "chat";
+  const speechToTextEnabled = Boolean(
+    connectorById(connectors, srv.modelBinding.connector_id)?.capabilities?.includes(
+      "speech_to_text"
+    )
+  );
 
   return (
     <VisibilityContext.Provider value={visibility}>
@@ -1369,13 +2119,21 @@ export default function App() {
         imageLabEnabled={imageLabEnabled}
         srv={srv}
         sidecarStatus={sidecarStatus}
+        connectors={connectors}
         models={models}
+        connectorModelsLoadingIds={connectorModelsLoadingIds}
+        onEnsureConnectorModels={loadConnectorModels}
+        modelBinding={srv.modelBinding}
         settings={settings}
         settingsOptions={settingsOptions}
         onModelChange={onModelChange}
         onSettingsChange={onSettingsChange}
-        onCodex={onCodex}
-        onLogout={onLogout}
+        connectorAuthBusyIds={connectorAuthBusyIds}
+        connectorAuthCancellingIds={connectorAuthCancellingIds}
+        connectorAuthPrompts={connectorAuthPrompts}
+        onConnectorAuthStart={onConnectorAuthStart}
+        onConnectorAuthCancel={onConnectorAuthCancel}
+        onConnectorLogout={onConnectorLogout}
       />
       <GlobalSearchPalette
         open={globalSearchOpen}
@@ -1435,6 +2193,16 @@ export default function App() {
               <WorldArchitectPanel
                 world={selectedWorld}
                 locked={interactionBusy}
+                connectors={connectors}
+                models={models}
+                connectorModelsLoadingIds={connectorModelsLoadingIds}
+                onEnsureConnectorModels={loadConnectorModels}
+                initialModelBinding={srv.modelBinding}
+                connectorAuthBusyIds={connectorAuthBusyIds}
+                connectorAuthCancellingIds={connectorAuthCancellingIds}
+                connectorAuthPrompts={connectorAuthPrompts}
+                onConnectorAuthStart={onConnectorAuthStart}
+                onConnectorAuthCancel={onConnectorAuthCancel}
                 onCreateWorld={onCreateWorld}
                 onArchitectStream={onWorldArchitectStream}
                 onGenerateImage={onGenerateImage}
@@ -1458,6 +2226,16 @@ export default function App() {
                   textValue(storyArchitectWorld?.world_lore?.name)
                 }
                 locked={interactionBusy}
+                connectors={connectors}
+                models={models}
+                connectorModelsLoadingIds={connectorModelsLoadingIds}
+                onEnsureConnectorModels={loadConnectorModels}
+                initialModelBinding={srv.modelBinding}
+                connectorAuthBusyIds={connectorAuthBusyIds}
+                connectorAuthCancellingIds={connectorAuthCancellingIds}
+                connectorAuthPrompts={connectorAuthPrompts}
+                onConnectorAuthStart={onConnectorAuthStart}
+                onConnectorAuthCancel={onConnectorAuthCancel}
                 onArchitectStream={onStoryArchitectStream}
                 onPlayStory={onPlayStory}
                 onSaveProtagonist={onSaveProtagonist}
@@ -1480,6 +2258,16 @@ export default function App() {
                 worldMissing={characterStudioRefs.worldMissing}
                 storyMissing={characterStudioRefs.storyMissing}
                 locked={interactionBusy}
+                connectors={connectors}
+                models={models}
+                connectorModelsLoadingIds={connectorModelsLoadingIds}
+                onEnsureConnectorModels={loadConnectorModels}
+                initialModelBinding={srv.modelBinding}
+                connectorAuthBusyIds={connectorAuthBusyIds}
+                connectorAuthCancellingIds={connectorAuthCancellingIds}
+                connectorAuthPrompts={connectorAuthPrompts}
+                onConnectorAuthStart={onConnectorAuthStart}
+                onConnectorAuthCancel={onConnectorAuthCancel}
                 onArchitectStream={onCharacterArchitectStream}
                 onPlayCharacter={onPlayCharacter}
                 onCharacterPersisted={onCharacterPersisted}
@@ -1529,15 +2317,24 @@ export default function App() {
                 npcs={srv.npcs}
                 entities={srv.entities}
                 statusLabels={srv.statusLabels}
+                onRetry={retryableTurn ? retryFailedTurn : undefined}
+                retryErrorId={retryableTurn?.errorId}
+                retryBusy={interactionBusy}
+                onEditFrom={editFromTurn}
+                onBranchFrom={branchFromTurn}
+                historyBusy={interactionBusy}
               />
               <Composer
                 onSend={send}
+                onStop={stopTurn}
                 busy={interactionBusy}
+                generating={turnGenerating}
                 status={status}
                 playerOptions={playerOptions}
                 runUsage={runUsage}
                 contextUsage={contextUsage}
                 modelWindow={currentModel?.context_window || currentModel?.max_context_window || 0}
+                speechToTextEnabled={speechToTextEnabled}
               />
             </div>
           </main>
@@ -1548,6 +2345,16 @@ export default function App() {
           worlds={worlds}
           stories={stories}
           characters={characters}
+          connectors={connectors}
+          models={models}
+          connectorModelsLoadingIds={connectorModelsLoadingIds}
+          onEnsureConnectorModels={loadConnectorModels}
+          initialModelBinding={srv.modelBinding}
+          connectorAuthBusyIds={connectorAuthBusyIds}
+          connectorAuthCancellingIds={connectorAuthCancellingIds}
+          connectorAuthPrompts={connectorAuthPrompts}
+          onConnectorAuthStart={onConnectorAuthStart}
+          onConnectorAuthCancel={onConnectorAuthCancel}
           preselect={wizardPreselect}
           busy={interactionBusy}
           onLaunch={onWizardLaunch}

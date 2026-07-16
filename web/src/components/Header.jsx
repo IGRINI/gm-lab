@@ -3,12 +3,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
 import TokenCounter from "./TokenCounter.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
+import { ConnectorAuthPrompt } from "./ConnectorModelPicker.jsx";
+import {
+  authMethods,
+  connectorAuthenticated,
+  connectorById,
+  connectorIdOf,
+  connectorName,
+  modelIdOf,
+  modelLabel,
+  modelsForConnector,
+  normalizeModelBinding,
+} from "../connectorCatalog.js";
 
-// Mirror of REFRESH_MARGIN_MS in crates/gml-codex/src/oauth.rs: the backend
-// auto-refreshes a Codex token once it's within 5 minutes of expiry.
-const REFRESH_MARGIN_MS = 5 * 60 * 1000;
-
-function fmtExpiry(ms) {
+function fmtExpiry(raw) {
+  const ms = raw > 0 && raw < 1_000_000_000_000 ? raw * 1000 : raw;
   const left = ms - Date.now();
   const when = new Date(ms).toLocaleString("ru-RU", {
     day: "2-digit",
@@ -24,38 +33,37 @@ function fmtExpiry(ms) {
   return `${when} (${rel})`;
 }
 
-// Map the backend codex_auth blob onto a four-state connection indicator.
-// Returns null for non-Codex backends (no indicator at all).
-function codexStatus(srv) {
-  if (srv?.backend !== "codex") return null;
-  const auth = srv.codex_auth;
-  if (!auth) {
-    return { level: "off", title: "Codex: загрузка…", rows: [], note: "Получаю состояние подключения…" };
+function connectorStatus(connector) {
+  if (!connector) return null;
+  const name = connectorName(connector);
+  const methods = authMethods(connector);
+  const auth = connector.auth || {};
+  if (methods.length === 0) {
+    return { level: "ok", title: `${name} доступен`, rows: [], note: "Авторизация не требуется." };
   }
   const msg = auth.message || "";
   const exp = typeof auth.expires_at === "number" ? auth.expires_at : null;
   const rows = [];
   if (auth.account_id) rows.push({ k: "Аккаунт", v: String(auth.account_id) });
+  if (auth.account_label) rows.push({ k: "Аккаунт", v: String(auth.account_label) });
+  if (auth.email) rows.push({ k: "Почта", v: String(auth.email) });
 
-  if (auth.authenticated) {
-    if (exp != null) {
-      rows.push({ k: "Токен", v: fmtExpiry(exp) });
-      if (exp - Date.now() <= REFRESH_MARGIN_MS) {
-        return {
-          level: "warn",
-          title: "Codex: токен скоро истечёт",
-          rows,
-          note: "Обновится автоматически при следующем запросе.",
-        };
-      }
-    }
-    return { level: "ok", title: "Codex подключён", rows };
+  if (connectorAuthenticated(connector)) {
+    if (exp != null) rows.push({ k: "Токен", v: fmtExpiry(exp) });
+    return { level: "ok", title: `${name} подключён`, rows, note: msg };
   }
 
+  const status = String(auth.state || auth.status || "").toLowerCase();
+  if (status === "pending" || status === "authorizing") {
+    return { level: "warn", title: `${name}: подключение…`, rows, note: msg };
+  }
+  if (status === "expired") {
+    return { level: "error", title: `${name}: вход не завершён`, rows, note: msg || "Срок авторизации истёк." };
+  }
   if (/invalid|ошиб|error/i.test(msg)) {
-    return { level: "error", title: "Codex: ошибка авторизации", rows, note: msg };
+    return { level: "error", title: `${name}: ошибка авторизации`, rows, note: msg };
   }
-  return { level: "off", title: "Codex не подключён", rows, note: msg || "Codex OAuth не авторизован" };
+  return { level: "off", title: `${name} не подключён`, rows, note: msg || "Требуется подключение." };
 }
 
 function ConnTooltip({ status }) {
@@ -171,11 +179,6 @@ function SidecarTooltip({ status, ui }) {
       <small className="conn-tip-note">{note}</small>
     </div>
   );
-}
-
-function modelLabel(m) {
-  const base = m.name && m.name !== m.id ? `${m.name} · ${m.id}` : m.id;
-  return m.supported === false ? `${base} · экспериментальная` : base;
 }
 
 const ROLE_CONFIG = [
@@ -316,14 +319,87 @@ function ToggleField({ label, hint, checked, onChange }) {
   );
 }
 
-function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, onClose, onOpenTokenCounter, onCodex, onLogout }) {
+function ConnectorSettingsCard({
+  connector,
+  busy,
+  cancelling,
+  authPrompt,
+  onAuthStart,
+  onAuthCancel,
+  onLogout,
+}) {
+  const methods = authMethods(connector);
+  const authenticated = connectorAuthenticated(connector);
+  const status = connectorStatus(connector);
+  return (
+    <article className="connector-settings-card">
+      <div className="connector-settings-head">
+        <div>
+          <h3>{connectorName(connector)}</h3>
+          {connector.description && <p>{connector.description}</p>}
+        </div>
+        <span className="conn-status-line">
+          <span className={`conn-dot ${status?.level || "off"}`} />
+          <span className={`conn-status ${status?.level || "off"}`}>
+            {status?.title || "Состояние неизвестно"}
+          </span>
+        </span>
+      </div>
+      {status?.note && <p className="settings-note conn-tab-note">{status.note}</p>}
+      <ConnectorAuthPrompt prompt={authPrompt} connectorId={connectorIdOf(connector)} />
+      <div className="connector-settings-actions">
+        {!authenticated && busy ? (
+          <button
+            type="button"
+            className="btn"
+            disabled={cancelling || typeof onAuthCancel !== "function"}
+            onClick={() => onAuthCancel?.(connectorIdOf(connector))}
+          >
+            {cancelling ? "Отменяю…" : "Отменить подключение"}
+          </button>
+        ) : !authenticated && methods.map((method) => (
+          <button
+            key={method.id}
+            type="button"
+            className="btn primary"
+            onClick={() => onAuthStart?.(connectorIdOf(connector), method.id)}
+          >
+            {methods.length === 1 ? "Подключить" : `Подключить · ${method.name}`}
+          </button>
+        ))}
+        {authenticated && methods.length > 0 && (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => onLogout?.(connectorIdOf(connector))}
+          >
+            {busy ? "Отключение…" : "Выйти"}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function SettingsModal({
+  settings,
+  settingsOptions,
+  currentModel,
+  connectors,
+  connectorAuthBusyIds,
+  connectorAuthCancellingIds,
+  connectorAuthPrompts,
+  onApply,
+  onClose,
+  onOpenTokenCounter,
+  onConnectorAuthStart,
+  onConnectorAuthCancel,
+  onConnectorLogout,
+}) {
   const [draft, setDraft] = useState(settings);
   const dev = useDevSettings();
   const [tab, setTab] = useState("model");
-
-  const isCodex = srv?.backend === "codex";
-  const codexOk = !!(srv?.codex_auth && srv.codex_auth.authenticated);
-  const status = codexStatus(srv);
 
   useEffect(() => {
     setDraft(settings);
@@ -334,10 +410,10 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
     if (!dev.developerMode && tab === "debug") setTab("view");
   }, [dev.developerMode, tab]);
 
-  // The connection tab only exists for the Codex backend; bounce off it otherwise.
+  // The connection tab follows the generic connector catalog.
   useEffect(() => {
-    if (!isCodex && tab === "connection") setTab("model");
-  }, [isCodex, tab]);
+    if ((!connectors || connectors.length === 0) && tab === "connection") setTab("model");
+  }, [connectors, tab]);
 
   const set = (patch) => setDraft((prev) => ({ ...prev, ...patch }));
   const setRole = (role, patch) => {
@@ -355,7 +431,7 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
   const tabs = [
     { id: "model", label: "Модель" },
     { id: "view", label: "Интерфейс" },
-    ...(isCodex ? [{ id: "connection", label: "Подключение" }] : []),
+    ...((connectors || []).length > 0 ? [{ id: "connection", label: "Подключения" }] : []),
     ...(dev.developerMode ? [{ id: "debug", label: "Дебаг-вид" }] : []),
   ];
 
@@ -438,33 +514,23 @@ function SettingsModal({ settings, settingsOptions, currentModel, srv, onApply, 
           </>
         )}
 
-        {tab === "connection" && isCodex && (
+        {tab === "connection" && (
           <section className="settings-section">
-            <h3>Codex</h3>
-            <p>
-              Подключение к Codex через OAuth в браузере. Нужно для доступа к
-              моделям этого бэкенда.
-            </p>
-            <div className="field check-field">
-              <span>Статус</span>
-              <span className="conn-status-line">
-                <span className={"conn-dot " + (status?.level || "off")} />
-                <span className={"conn-status " + (status?.level || "off")}>
-                  {status?.title || (codexOk ? "Подключён" : "Не подключён")}
-                </span>
-              </span>
+            <p>Каждый коннектор сам управляет способом входа и своими моделями.</p>
+            <div className="connector-settings-list">
+              {(connectors || []).map((connector) => (
+                <ConnectorSettingsCard
+                  key={connectorIdOf(connector)}
+                  connector={connector}
+                  busy={connectorAuthBusyIds.includes(connectorIdOf(connector))}
+                  cancelling={connectorAuthCancellingIds.includes(connectorIdOf(connector))}
+                  authPrompt={connectorAuthPrompts[connectorIdOf(connector)] || null}
+                  onAuthStart={onConnectorAuthStart}
+                  onAuthCancel={onConnectorAuthCancel}
+                  onLogout={onConnectorLogout}
+                />
+              ))}
             </div>
-            {status?.note && <p className="settings-note conn-tab-note">{status.note}</p>}
-            {!codexOk && (
-              <button type="button" className="btn primary" onClick={onCodex}>
-                Подключить Codex
-              </button>
-            )}
-            {codexOk && (
-              <button type="button" className="btn" onClick={onLogout}>
-                Выйти
-              </button>
-            )}
           </section>
         )}
 
@@ -633,33 +699,49 @@ export default function Header({
   imageLabEnabled = false,
   srv,
   sidecarStatus,
+  connectors,
   models,
+  connectorModelsLoadingIds = [],
+  onEnsureConnectorModels,
+  modelBinding,
   settings,
   settingsOptions,
   onModelChange,
   onSettingsChange,
-  onCodex,
-  onLogout,
+  connectorAuthBusyIds = [],
+  connectorAuthCancellingIds = [],
+  connectorAuthPrompts = {},
+  onConnectorAuthStart,
+  onConnectorAuthCancel,
+  onConnectorLogout,
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tokenCounterOpen, setTokenCounterOpen] = useState(false);
 
+  const binding = normalizeModelBinding(modelBinding || {
+    connector_id: srv.backend,
+    model_id: srv.model,
+  });
+  const activeConnector = connectorById(connectors, binding.connector_id);
+  const connectorModels = modelsForConnector(models, binding.connector_id);
+  const connectorModelsLoading = connectorModelsLoadingIds.includes(binding.connector_id);
+
   // Ensure the current model is always selectable, even if not in the catalog.
   const options = useMemo(() => {
-    const list = (models || []).map((m) => ({ id: m.id, label: modelLabel(m) }));
-    if (srv.model && !list.some((o) => o.id === srv.model)) {
-      list.unshift({ id: srv.model, label: srv.model });
+    const list = connectorModels.map((model) => ({ id: modelIdOf(model), label: modelLabel(model) }));
+    if (binding.model_id && !list.some((option) => option.id === binding.model_id)) {
+      list.unshift({ id: binding.model_id, label: binding.model_id });
     }
     return list;
-  }, [models, srv.model]);
+  }, [connectorModels, binding.model_id]);
 
   const currentModel = useMemo(
-    () => (models || []).find((m) => m.id === srv.model || m.slug === srv.model) || null,
-    [models, srv.model]
+    () => connectorModels.find((model) => modelIdOf(model) === binding.model_id) || null,
+    [connectorModels, binding.model_id]
   );
 
-  const chip = srv.backend || "…";
-  const conn = codexStatus(srv);
+  const chip = activeConnector ? connectorName(activeConnector) : binding.connector_id || "…";
+  const conn = connectorStatus(activeConnector);
   const sidecar = sidecarUiStatus(sidecarStatus);
 
   // Nav highlight: the studios (world/story/character) live inside Библиотека.
@@ -787,9 +869,10 @@ export default function Header({
       >
         <select
           className="model-select"
-          value={srv.model || ""}
+          value={binding.model_id}
           onChange={(e) => onModelChange(e.target.value)}
           aria-label="Модель"
+          disabled={!binding.connector_id || options.length === 0}
         >
           {options.map((o) => (
             <option key={o.id} value={o.id}>
@@ -798,6 +881,24 @@ export default function Header({
           ))}
         </select>
       </Tooltip>
+      {binding.connector_id && connectorModels.length === 0 && (
+        <Tooltip
+          className="tooltip-wrap"
+          tipClassName="ui-tip-wrap"
+          focusable={false}
+          content={<TipContent title="Обновить модели" note="Повторно запросит список у текущего коннектора." />}
+        >
+          <button
+            type="button"
+            className="icon-btn"
+            disabled={connectorModelsLoading || typeof onEnsureConnectorModels !== "function"}
+            onClick={() => onEnsureConnectorModels?.(binding.connector_id, { force: true })}
+            aria-label="Обновить модели"
+          >
+            <Icon name="refresh" size={15} />
+          </button>
+        </Tooltip>
+      )}
       <div className="header-actions">
         <Tooltip
           className="tooltip-wrap"
@@ -817,18 +918,22 @@ export default function Header({
           settings={settings}
           settingsOptions={settingsOptions}
           currentModel={currentModel}
-          srv={srv}
+          connectors={connectors}
+          connectorAuthBusyIds={connectorAuthBusyIds}
+          connectorAuthCancellingIds={connectorAuthCancellingIds}
+          connectorAuthPrompts={connectorAuthPrompts}
           onApply={onSettingsChange}
           onClose={() => setSettingsOpen(false)}
           onOpenTokenCounter={() => setTokenCounterOpen(true)}
-          onCodex={onCodex}
-          onLogout={onLogout}
+          onConnectorAuthStart={onConnectorAuthStart}
+          onConnectorAuthCancel={onConnectorAuthCancel}
+          onConnectorLogout={onConnectorLogout}
         />
       )}
       {tokenCounterOpen && (
         <TokenCounter
-          models={models}
-          currentModel={srv.model || ""}
+          models={connectorModels}
+          currentModel={binding.model_id}
           onClose={() => setTokenCounterOpen(false)}
         />
       )}

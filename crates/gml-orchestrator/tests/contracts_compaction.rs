@@ -26,7 +26,7 @@ use serde_json::{json, Map, Value};
 use gml_llm::backend::{
     Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
 };
-use gml_llm::{mock_stats, MockClient};
+use gml_mock::{mock_stats, MockClient};
 use gml_orchestrator::compact::{maybe_compact, maybe_compact_npc, msg_text, msg_text_for_summary};
 use gml_orchestrator::worldstate::{apply_world_state_batch, query_world_state};
 use gml_orchestrator::Session;
@@ -190,7 +190,11 @@ fn gm_compaction_resets_world_query_cache_and_keeps_records() {
     // Summary applied; retained history STARTS with a FRESH snapshot (snapshot-
     // once, GM_CONTEXT_TZ §2) followed by the last GM_KEEP_TURNS=1 user boundary.
     assert_eq!(s.gm_summary, "compact summary");
-    assert_eq!(s.gm_messages.len(), 2, "fresh snapshot + keep-last-1 verbatim");
+    assert_eq!(
+        s.gm_messages.len(),
+        2,
+        "fresh snapshot + keep-last-1 verbatim"
+    );
     assert!(
         s.gm_messages[0]["content"]
             .as_str()

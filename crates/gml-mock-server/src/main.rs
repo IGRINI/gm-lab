@@ -15,10 +15,11 @@
 //! (listens on 127.0.0.1:8000; honors `PORT` / `GM_PORT` like the Python file).
 //! The Vite dev proxy (`web/vite.config.js`) targets `http://127.0.0.1:8000`.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_stream::stream;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -75,6 +76,7 @@ struct MockState {
     debug: Value,
     chats: Vec<Value>,
     active_chat_id: String,
+    completed_turn_requests: HashMap<(String, String), String>,
 }
 
 type Shared = Arc<Mutex<MockState>>;
@@ -86,6 +88,7 @@ impl MockState {
             debug: debug_payload(),
             chats: initial_chats(),
             active_chat_id: "chat_ice".to_string(),
+            completed_turn_requests: HashMap::new(),
         }
     }
 }
@@ -838,9 +841,91 @@ fn truthy(v: &Value) -> bool {
 
 // --- SSE /turn --------------------------------------------------------------
 
+fn turn_sse_response(body: Body) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    (headers, body).into_response()
+}
+
+fn turn_done(request_id: &str, ok: bool, retryable: bool, replayed: bool) -> Value {
+    json!({
+        "kind": "done",
+        "ok": ok,
+        "retryable": retryable,
+        "replayed": replayed,
+        "request_id": request_id,
+    })
+}
+
 /// `_stream_turn()` — the scripted live turn. Each event is wrapped as a
-/// `data: {json}\n\n` frame; the stream ends with `data: {"kind": "done"}\n\n`.
-async fn post_turn() -> Response {
+/// `data: {json}\n\n` frame and ends with the real server's structured `done`.
+async fn post_turn(State(state): State<Shared>, body: Bytes) -> Response {
+    let data: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+    let text = data
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("Иду к пустой шлюпке и осматриваю её изнутри.")
+        .to_string();
+    let request_id = match data.get("request_id") {
+        None | Some(Value::Null) => uuid::Uuid::new_v4().to_string(),
+        Some(Value::String(value)) if value.trim().is_empty() => uuid::Uuid::new_v4().to_string(),
+        Some(Value::String(value))
+            if value.trim().len() <= 128 && !value.trim().chars().any(char::is_control) =>
+        {
+            value.trim().to_string()
+        }
+        _ => {
+            return json_response(
+                json!({"ok": false, "error": "request_id is invalid"}),
+                StatusCode::BAD_REQUEST,
+            );
+        }
+    };
+
+    let saved_text = {
+        let mut state = state.lock().expect("mock state lock");
+        let key = (state.active_chat_id.clone(), request_id.clone());
+        match state.completed_turn_requests.get(&key) {
+            Some(saved) => Some(saved.clone()),
+            None => {
+                state.completed_turn_requests.insert(key, text.clone());
+                None
+            }
+        }
+    };
+    if let Some(saved_text) = saved_text {
+        let (ok, retryable, replayed, error) = if saved_text == text {
+            (true, false, true, None)
+        } else {
+            (
+                false,
+                false,
+                false,
+                Some("request_id has already been used for another turn"),
+            )
+        };
+        let mut frames = String::new();
+        if let Some(error) = error {
+            frames.push_str(&format!(
+                "data: {}\n\n",
+                serde_json::to_string(
+                    &json!({"kind": "error", "agent": "ГМ", "data": error, "sid": null})
+                )
+                .unwrap_or_default()
+            ));
+        }
+        frames.push_str(&format!(
+            "data: {}\n\n",
+            serde_json::to_string(&turn_done(&request_id, ok, retryable, replayed))
+                .unwrap_or_default()
+        ));
+        return turn_sse_response(Body::from(frames));
+    }
+
     let body = Body::from_stream(stream! {
         // helper closures can't yield, so inline frame builders.
         macro_rules! frame {
@@ -852,7 +937,7 @@ async fn post_turn() -> Response {
             };
         }
 
-        yield frame!(json!({"kind": "player", "data": "Иду к пустой шлюпке и осматриваю её изнутри."}));
+        yield frame!(json!({"kind": "player", "data": text}));
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // _stream("gm_thinking", "live", ...): one delta per word.
@@ -905,16 +990,9 @@ async fn post_turn() -> Response {
             "present_npcs": ["Борин", "Капитан Марет"]}}));
         yield frame!(json!({"kind": "meta", "data": meta("GM ход", 2.4, 44, 1200, 320, 900)}));
         yield frame!(json!({"kind": "meta_total", "data": meta_total()}));
-        yield Ok(axum::body::Bytes::from("data: {\"kind\": \"done\"}\n\n"));
+        yield frame!(turn_done(&request_id, true, false, false));
     });
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream; charset=utf-8"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    (headers, body).into_response()
+    turn_sse_response(body)
 }
 
 // --- router + main ----------------------------------------------------------
@@ -1054,18 +1132,18 @@ mod tests {
 
     #[tokio::test]
     async fn turn_sse_frames() {
-        let resp = app()
-            .into_service()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/turn")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{\"text\":\"hi\"}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let app = app();
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/turn")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    "{\"text\":\"hi\",\"request_id\":\"mock-idempotency\"}",
+                ))
+                .unwrap()
+        };
+        let resp = app.clone().into_service().oneshot(request()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let ct = resp
             .headers()
@@ -1078,7 +1156,7 @@ mod tests {
         let text = String::from_utf8(bytes.to_vec()).unwrap();
         // every frame is `data: {...}\n\n`; stream ends with the done frame.
         assert!(text.contains("data: "));
-        assert!(text.contains("\"kind\": \"done\""));
+        assert!(text.contains("\"kind\":\"done\"") || text.contains("\"kind\": \"done\""));
         assert!(
             text.contains("\"channel\":\"gm_narration\"")
                 || text.contains("\"channel\": \"gm_narration\"")
@@ -1086,6 +1164,20 @@ mod tests {
         for chunk in text.split("\n\n").filter(|c| !c.trim().is_empty()) {
             assert!(chunk.starts_with("data: "), "bad SSE frame: {chunk}");
         }
+
+        let replay = app.into_service().oneshot(request()).await.unwrap();
+        let replay_bytes = to_bytes(replay.into_body(), usize::MAX).await.unwrap();
+        let replay_text = String::from_utf8(replay_bytes.to_vec()).unwrap();
+        let replay_frames: Vec<Value> = replay_text
+            .split("\n\n")
+            .filter_map(|frame| frame.trim().strip_prefix("data: "))
+            .map(|payload| serde_json::from_str(payload).unwrap())
+            .collect();
+        assert_eq!(replay_frames.len(), 1);
+        assert_eq!(replay_frames[0]["kind"], "done");
+        assert_eq!(replay_frames[0]["ok"], true);
+        assert_eq!(replay_frames[0]["replayed"], true);
+        assert_eq!(replay_frames[0]["request_id"], "mock-idempotency");
     }
 
     #[tokio::test]

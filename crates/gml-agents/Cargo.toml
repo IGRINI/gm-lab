@@ -16,5 +16,7 @@ indexmap = { workspace = true }
 
 [dev-dependencies]
 gml-stories = { path = "../gml-stories" }
+async-trait = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true }

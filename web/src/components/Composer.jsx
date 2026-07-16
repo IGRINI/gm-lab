@@ -285,12 +285,15 @@ function QuickReplies({ playerOptions, busy, onPick }) {
 
 export default function Composer({
   onSend,
+  onStop,
   busy,
+  generating = false,
   status,
   playerOptions,
   runUsage,
   contextUsage,
   modelWindow,
+  speechToTextEnabled = false,
 }) {
   const [value, setValue] = useState("");
   const ref = useRef(null);
@@ -311,7 +314,7 @@ export default function Composer({
     resize();
   }, [value, resize]);
 
-  // --- voice input (Codex OAuth speech-to-text) ---------------------------
+  // --- voice input (speech-to-text of the active chat connector) ----------
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState("");
@@ -329,7 +332,7 @@ export default function Composer({
   // button silently vanishing on phones/tablets.
   const insecureContext =
     typeof window !== "undefined" && window.isSecureContext === false;
-  const micSupported = micApi || insecureContext;
+  const micSupported = speechToTextEnabled && (micApi || insecureContext);
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -596,23 +599,33 @@ export default function Composer({
                   className="tooltip-wrap"
                   tipClassName="ui-tip-wrap"
                   focusable={false}
-                  content={
-                    <TipContent
-                      title="Отправить"
-                      subtitle="Передать действие игрока ГМ."
-                      note={softKeyboard ? "На телефоне отправка только этой кнопкой." : "На клавиатуре также работает Enter; Shift+Enter добавляет новую строку."}
-                    />
-                  }
-                >
-                  <button
-                    id="send"
-                    className="send-btn"
-                    onClick={submit}
-                    disabled={busy || !value.trim()}
-                    aria-label="Отправить"
+                    content={
+                      <TipContent
+                        title={generating ? "Остановить" : "Отправить"}
+                        subtitle={generating ? "Прервать текущую генерацию." : "Передать действие игрока ГМ."}
+                        note={
+                          generating
+                            ? "Незавершённый ход и его изменения будут отменены."
+                            : softKeyboard
+                            ? "На телефоне отправка только этой кнопкой."
+                            : "На клавиатуре также работает Enter; Shift+Enter добавляет новую строку."
+                        }
+                      />
+                    }
                   >
-                    <span className="send-ico" aria-hidden="true"><Icon name="arrow-up" size={17} strokeWidth={2} /></span>
-                  </button>
+                    <button
+                      type="button"
+                      id="send"
+                      className="send-btn"
+                      data-mode={generating ? "stop" : "send"}
+                      onClick={generating ? onStop : submit}
+                      disabled={generating ? typeof onStop !== "function" : busy || !value.trim()}
+                      aria-label={generating ? "Остановить генерацию" : "Отправить"}
+                    >
+                      <span className="send-ico" aria-hidden="true">
+                        <Icon name={generating ? "square" : "arrow-up"} size={generating ? 13 : 17} strokeWidth={2} />
+                      </span>
+                    </button>
                 </Tooltip>
               </div>
             </div>

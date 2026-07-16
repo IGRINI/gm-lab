@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use gml_llm::Backend;
+use gml_llm::{Backend, ConnectorId, ModelBinding};
 use gml_world::{
-    FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem, SpellEntry,
-    SceneState, StateRecord, World, WorldEvent, WorldTime,
+    FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem,
+    SceneState, SpellEntry, StateRecord, World, WorldEvent, WorldTime,
 };
 use gml_world::{MersenneTwister, RngState};
 
@@ -101,6 +101,28 @@ fn str_list(v: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
+/// Migrate the legacy `client_backend`/`client_model` keys when a payload has no
+/// canonical `model_binding`. Canonical values are parsed strictly by callers.
+pub fn model_binding_from_payload(data: &Value, fallback: &ModelBinding) -> ModelBinding {
+    let data = match data {
+        Value::Object(map) => map,
+        _ => return fallback.clone(),
+    };
+    let legacy_connector = s(data, "client_backend");
+    let connector = if legacy_connector.is_empty() {
+        fallback.connector_id().clone()
+    } else {
+        ConnectorId::new(legacy_connector).unwrap_or_else(|_| fallback.connector_id().clone())
+    };
+    let legacy_model = s(data, "client_model");
+    let model = if legacy_model.is_empty() {
+        fallback.model_id().to_string()
+    } else {
+        legacy_model
+    };
+    ModelBinding::new(connector, model).unwrap_or_else(|_| fallback.clone())
+}
+
 // =========================================================================
 // Session::to_payload / from_payload
 // =========================================================================
@@ -109,14 +131,20 @@ impl Session {
     /// `_session_to_payload(session)` — the `"session"` object of the snapshot.
     pub fn to_payload(&self) -> Value {
         let mut m = Map::new();
-        // client_model: getattr(session, "client_model") or client.model or ""
-        let client_model = if !self.client_model.is_empty() {
-            self.client_model.clone()
-        } else {
-            self.client.model()
-        };
-        m.insert("client_model".into(), json!(client_model));
-        m.insert("client_backend".into(), json!(self.client_backend));
+        // `model_binding` is the canonical additive field. The legacy scalar
+        // keys stay in the payload so older builds can still open new saves.
+        m.insert(
+            "model_binding".into(),
+            serde_json::to_value(self.model_binding()).unwrap_or(Value::Null),
+        );
+        m.insert(
+            "client_model".into(),
+            json!(self.model_binding().model_id()),
+        );
+        m.insert(
+            "client_backend".into(),
+            json!(self.model_binding().connector_id().as_str()),
+        );
         let session_id = if !self.client_session_id.is_empty() {
             self.client_session_id.clone()
         } else {
@@ -271,15 +299,20 @@ impl Session {
             for (npc_id, rev) in &self.npc_injected_card_revision {
                 injected.insert(npc_id.clone(), json!(*rev));
             }
-            m.insert(
-                "npc_injected_card_revision".into(),
-                Value::Object(injected),
-            );
+            m.insert("npc_injected_card_revision".into(), Value::Object(injected));
         }
 
-        // Compaction-prune staleness signals for SEARCHED/loaded tools. Trailing +
-        // emitted only when non-empty, so pre-prune saves stay byte-identical (a
-        // fresh session never populates them until a searched tool runs / loads).
+        // This is runtime state, not a derivable view: a searched schema can be
+        // loaded without ever being invoked. Always emitting the field also
+        // distinguishes an exact empty set from a legacy payload that predates
+        // persistence of the set.
+        m.insert(
+            "loaded_gm_tools".into(),
+            json!(self.loaded_gm_tools.iter().collect::<Vec<_>>()),
+        );
+
+        // Compaction-prune staleness signals for SEARCHED/loaded tools. Trailing
+        // and emitted only when non-empty, so old saves stay compact.
         if !self.tool_last_used.is_empty() {
             let mut used = Map::new();
             for (name, turn) in &self.tool_last_used {
@@ -312,15 +345,31 @@ impl Session {
         client: Arc<dyn Backend>,
         npc_client_factory: ClientFactory,
     ) -> Result<Session, String> {
+        let fallback = Session::inferred_model_binding(client.as_ref());
+        let binding = match data.get("model_binding") {
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|error| format!("invalid model_binding: {error}"))?,
+            None => model_binding_from_payload(data, &fallback),
+        };
+        Self::from_payload_bound(data, client, npc_client_factory, binding)
+    }
+
+    /// Restore with a binding already validated and normalized by the
+    /// persistence layer. The connector assignment enters through the
+    /// constructor and has no public mutation path afterwards.
+    pub fn from_payload_bound(
+        data: &Value,
+        client: Arc<dyn Backend>,
+        npc_client_factory: ClientFactory,
+        model_binding: ModelBinding,
+    ) -> Result<Session, String> {
         let data = match data {
             Value::Object(m) => m.clone(),
             _ => Map::new(),
         };
         let world = world_from_payload(data.get("world"))?;
-        let mut session = Session::with_world(client, world, npc_client_factory);
-
-        session.client_model = s(&data, "client_model");
-        session.client_backend = s(&data, "client_backend");
+        let mut session =
+            Session::with_world_binding(client, world, npc_client_factory, model_binding);
         session.client_session_id = s(&data, "client_session_id");
         session.client_thread_id = s(&data, "client_thread_id");
 
@@ -454,6 +503,37 @@ impl Session {
             tool_loaded_turn.insert(k, v.as_i64().unwrap_or(0));
         }
         session.tool_loaded_turn = tool_loaded_turn;
+
+        let catalog_names = gml_agents::gm_tool_catalog()
+            .into_keys()
+            .collect::<BTreeSet<_>>();
+        session.loaded_gm_tools = match data.get("loaded_gm_tools") {
+            Some(Value::Array(names)) => names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty() && catalog_names.contains(*name))
+                .map(str::to_string)
+                .collect(),
+            Some(_) => BTreeSet::new(),
+            None => {
+                // Legacy payloads cannot tell whether a schema was loaded but
+                // never used. Rebuild the smallest deterministic safe set: the
+                // canonical initial tools plus valid names evidenced by either
+                // persisted staleness map. Unknown/removed names fail closed.
+                let mut loaded =
+                    gml_agents::initial_gm_tool_names(session.snapshot_options_state == Some(true));
+                loaded.extend(
+                    session
+                        .tool_last_used
+                        .keys()
+                        .chain(session.tool_loaded_turn.keys())
+                        .filter(|name| catalog_names.contains(*name))
+                        .cloned(),
+                );
+                loaded
+            }
+        };
 
         Ok(session)
     }
@@ -1657,7 +1737,10 @@ mod package_ref_tests {
     #[test]
     fn absent_place_items_emits_no_key() {
         let world = worldgen_world();
-        assert!(world.place_items.is_empty(), "fresh world has no parked items");
+        assert!(
+            world.place_items.is_empty(),
+            "fresh world has no parked items"
+        );
 
         let payload = world_to_payload(&world);
         let obj = payload.as_object().expect("payload object");

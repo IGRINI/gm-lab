@@ -18,7 +18,8 @@
 //! C/C++ toolchain to build. To keep `gml-audio` ALWAYS buildable, the real
 //! implementation is behind the default-on `stt` cargo feature; with the
 //! feature off, [`transcribe`] is a stub returning
-//! [`TranscribeError::Unavailable`]. STT is gated to `BACKEND==codex` anyway.
+//! [`TranscribeError::Unavailable`]. STT uses the Codex OAuth resource when it
+//! is available, independently of the model connector bound to the chat.
 
 use gml_config::Config;
 

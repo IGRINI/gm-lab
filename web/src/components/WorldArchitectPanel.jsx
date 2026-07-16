@@ -2,6 +2,8 @@ import Icon from "./Icon.jsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import ImageThumbnail from "./ImagePreview.jsx";
+import useConnectorModelBinding from "../useConnectorModelBinding.js";
+import { bindingReady } from "../connectorCatalog.js";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
@@ -313,6 +315,16 @@ function visualJobLabel(job, prompt, imageUrl) {
 export default function WorldArchitectPanel({
   world,
   locked,
+  connectors = [],
+  models = [],
+  connectorModelsLoadingIds = [],
+  onEnsureConnectorModels,
+  initialModelBinding = null,
+  connectorAuthBusyIds = [],
+  connectorAuthCancellingIds = [],
+  connectorAuthPrompts = {},
+  onConnectorAuthStart,
+  onConnectorAuthCancel,
   onCreateWorld,
   onArchitectStream,
   onGenerateImage,
@@ -347,6 +359,18 @@ export default function WorldArchitectPanel({
   // Start as `null` (not the mount id) so the load effect ALWAYS runs on mount —
   // for an existing world that means fetching its architect conversation on open.
   const loadedWorldIdRef = useRef(null);
+  const {
+    modelBinding,
+    setModelBinding,
+    connectorLocked,
+    bindingLoading,
+    setBindingLoading,
+    bindingLoadFailed,
+    setBindingLoadFailed,
+    lockConnector,
+    resetModelBinding,
+  } = useConnectorModelBinding(initialModelBinding, connectors, models);
+  const bindingContextPending = (world?.id ?? null) !== loadedWorldIdRef.current;
   const worldPayload = useMemo(() => cleanWorldDraft(worldDraft), [worldDraft]);
   // "Filled" for the bible label / auto-open = real DETAIL (hidden premise or any
   // list field), not just a public premise mirrored from the top-level field —
@@ -367,7 +391,9 @@ export default function WorldArchitectPanel({
     !worldPayload.worldSize ||
     !worldPayload.population ||
     !loreReady;
-  const architectLocked = locked || architectBusy;
+  const architectLocked =
+    locked || architectBusy || bindingContextPending || bindingLoading || bindingLoadFailed
+    || !bindingReady(modelBinding, connectors, models);
 
   useEffect(() => {
     const id = world?.id ?? null;
@@ -386,6 +412,7 @@ export default function WorldArchitectPanel({
     setArchitectUsage(EMPTY_ARCHITECT_USAGE);
     setArchitectDebug(null);
     setDebugOpen(false);
+    resetModelBinding(null);
     setImageJobs({});
     imageScopeRef.current += 1;
     imageAutoRequestsRef.current = {};
@@ -393,6 +420,7 @@ export default function WorldArchitectPanel({
     imageQueueRef.current = [];
     setBibleOpen(loreHasContent(nextDraft.worldLore));
     if (!id) return undefined;
+    setBindingLoading(true);
     // Restore the conversation from the server. A failed fetch is a VISIBLE
     // error (a silently-default intro would look like the chat never existed).
     // `cancelled` guards a stale response when the user switches worlds
@@ -406,9 +434,12 @@ export default function WorldArchitectPanel({
           throw new Error(data?.error || "не удалось загрузить переписку архитектора");
         }
         setMessages(architectMessagesFromChat(data.architect));
+        resetModelBinding(data.architect?.model_binding);
       })
       .catch((error) => {
         if (cancelled || loadedWorldIdRef.current !== id) return;
+        setBindingLoading(false);
+        setBindingLoadFailed(true);
         setArchitectError(error?.message || "не удалось загрузить переписку архитектора");
       });
     return () => {
@@ -602,6 +633,7 @@ export default function WorldArchitectPanel({
     setMessages(visibleMessages);
     let adopted = false;
     let failure = "";
+    lockConnector();
     try {
       // The server owns the conversation (model history + cache ids live in the
       // package's architect.json). The body carries only the message and the
@@ -612,6 +644,8 @@ export default function WorldArchitectPanel({
         {
           message: text,
           draft: worldPayload,
+          connector_id: modelBinding.connector_id,
+          model_id: modelBinding.model_id,
         },
         (ev) => {
           if (ev.kind === "architect_delta") {
@@ -634,9 +668,11 @@ export default function WorldArchitectPanel({
             }
           } else if (ev.kind === "architect_error") {
             failure = textValue(ev.data) || "Архитектор не ответил";
+            if (ev.model_binding) resetModelBinding(ev.model_binding);
           } else if (ev.kind === "architect_done") {
             adopted = true;
             const data = ev.data || {};
+            if (data.model_binding) resetModelBinding(data.model_binding);
             const usage = data.usage && typeof data.usage === "object" ? data.usage : null;
             if (usage) setArchitectUsage((current) => accumulateUsage(current, usage));
             setArchitectDebug(debugFromDone(data, usage));
@@ -733,6 +769,21 @@ export default function WorldArchitectPanel({
           onSend={sendArchitectMessage}
           onRetry={retryText ? retryArchitectTurn : undefined}
           locked={architectLocked}
+          connectors={connectors}
+          models={models}
+          connectorModelsLoadingIds={connectorModelsLoadingIds}
+          onEnsureConnectorModels={onEnsureConnectorModels}
+          modelBinding={modelBinding}
+          onModelBindingChange={setModelBinding}
+          connectorLocked={connectorLocked}
+          modelPickerDisabled={
+            locked || architectBusy || bindingContextPending || bindingLoading || bindingLoadFailed
+          }
+          connectorAuthBusyIds={connectorAuthBusyIds}
+          connectorAuthCancellingIds={connectorAuthCancellingIds}
+          connectorAuthPrompts={connectorAuthPrompts}
+          onConnectorAuthStart={onConnectorAuthStart}
+          onConnectorAuthCancel={onConnectorAuthCancel}
         />
 
         <section

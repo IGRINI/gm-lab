@@ -1,18 +1,15 @@
 //! gml-server — the GM-Lab HTTP/SSE server (axum).
 //!
-//! Faithful port of `gm-lab/server.py` (PORT_PLAN §3 cross-platform, §5 HTTP/SSE
-//! contract, §6 persistence). The existing React frontend (`web/src`) runs
-//! UNCHANGED against this server: every URL / method / body / response and the
-//! exact SSE frame format (`data: {json}\n\n`, terminal `data: {"kind":"done"}`)
-//! matches `web/src/api.js` + the timeline/tts/devSettings stores.
+//! Port of `gm-lab/server.py` (PORT_PLAN §3 cross-platform, §5 HTTP/SSE
+//! contract, §6 persistence). The exact SSE frame format
+//! (`data: {json}\n\n`, terminal `data: {"kind":"done"}`) matches the React
+//! frontend in `web/src`.
 //!
 //! The crate is a LIBRARY exposing [`build_router`] + [`run_http`] /
 //! [`run_https`] so both `gml-app` modes (Tauri loopback + headless `--server`)
-//! call in. [`AppState`] owns the [`DialogStore`], the GM-client factory (wired
-//! through [`gml_llm::make_client`] with a `gml-codex` hook), the shared
-//! [`RuntimeSettings`] + [`Config`], the TTS HTTP client, and a per-chat
-//! `tokio::sync::Mutex` (held across a streamed `/turn`, replacing Python's
-//! per-runtime `RLock`).
+//! call in. [`AppState`] owns the connector-aware [`DialogStore`], shared
+//! [`RuntimeSettings`] + [`Config`], the sidecar HTTP client, and a per-chat
+//! `tokio::sync::Mutex` held across a streamed `/turn`.
 
 pub mod openai_key;
 pub mod payload;
@@ -22,7 +19,8 @@ pub mod sys_tokens;
 pub mod tls;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use axum::body::Body;
 use axum::extract::{Path as AxPath, State};
@@ -36,9 +34,12 @@ use tokio::sync::Mutex;
 
 use gml_audio::{cache_lookup, cache_store, compress_audio, tts_format, tts_synth, Sidecar};
 use gml_config::{Config, RuntimeSettings};
-use gml_llm::Backend;
-use gml_orchestrator::{run_turn_into, CompactionThresholds, Session};
-use gml_persistence::{CharacterStore, DialogRuntime, DialogStore, WorldStore};
+use gml_llm::{Backend, ConnectorAuthStatus, ConnectorId, ModelBinding};
+use gml_orchestrator::{resume_turn_into, run_turn_into, CompactionThresholds, Session};
+use gml_persistence::{
+    CharacterStore, DialogRuntime, DialogStore, HistoryTurnKind, HistoryTurnReceiptKind,
+    TurnCheckpoint, WorldStore,
+};
 use gml_stories::{StoryStore, StoryStoreError, StoryWorldRef};
 use gml_world::{PackageRef, World, WorldLore, WorldSpec};
 
@@ -57,13 +58,6 @@ pub fn chat_scope_id() -> String {
     }
 }
 
-/// A synchronous factory that builds a fresh GM/NPC [`Backend`] (the Rust
-/// stand-in for Python's module-level `make_client`). The server builds this
-/// once (selecting codex / llamacpp / openai / mock by config, wiring the
-/// `gml-codex` hook) and shares it into the [`DialogStore`] and every
-/// [`Session`].
-pub type MakeClient = Arc<dyn Fn() -> Arc<dyn Backend> + Send + Sync>;
-
 /// Shared application state, cloned into every handler.
 #[derive(Clone)]
 pub struct AppState {
@@ -80,8 +74,6 @@ pub struct AppState {
     /// list; reads (`list_characters`/`get_character`/`version`) take the lock
     /// briefly. Mirrors `story_store`.
     pub character_store: Arc<std::sync::Mutex<CharacterStore>>,
-    /// Builds fresh GM/NPC clients (codex/llamacpp/openai/mock by config).
-    pub make_client: MakeClient,
     /// Immutable startup config.
     pub config: Arc<Config>,
     /// Dynamic, atomic-persisted UI settings.
@@ -90,24 +82,214 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// Unified inference sidecar manager (RAG embeddings + rerank + optional TTS).
     pub sidecar: Option<Arc<Sidecar>>,
-    /// Per-chat async locks — held across a streamed `/turn` (Python RLock).
+    /// Per-resource async locks — held across streamed turns and architect edits.
     /// The outer map guard is a plain `std::sync::Mutex` (held briefly to
-    /// get-or-create the per-chat lock); the per-chat locks are `tokio::Mutex`
-    /// (held `.await`-ed across a streamed turn).
-    pub locks: Arc<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// get-or-create a lock). Weak values let completed resource ids disappear
+    /// from the registry instead of accumulating for the process lifetime.
+    pub locks: Arc<std::sync::Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+    /// In-flight player turns, keyed by scope/chat/request. This registry is
+    /// separate from the per-chat serialization locks: cancellation must be
+    /// able to reach a model call while that call owns the chat lock.
+    pub turn_registry: Arc<TurnRegistry>,
     /// Resolved path to the built SPA `index.html` (`web/dist/index.html`).
     pub index_html: Arc<Option<std::path::PathBuf>>,
 }
 
+/// Process-local registry for cancellation of in-flight turns.
+///
+/// Values are weak so completed request ids do not accumulate. Durable
+/// idempotency is provided by the transcript receipt, not by this registry.
+#[derive(Default)]
+pub struct TurnRegistry {
+    controls: std::sync::Mutex<HashMap<TurnRequestKey, Weak<TurnControl>>>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct TurnRequestKey {
+    scope: String,
+    chat_id: String,
+    request_id: String,
+}
+
+impl TurnRequestKey {
+    fn new(scope: &str, chat_id: &str, request_id: &str) -> Self {
+        Self {
+            scope: scope.to_string(),
+            chat_id: chat_id.to_string(),
+            request_id: request_id.to_string(),
+        }
+    }
+}
+
+/// Coordinates model cancellation with the non-cancellable blocking SQLite
+/// commit. A cancel request sets the flag before waiting on `commit_fence`.
+/// Therefore a save that has not started observes cancellation and is skipped;
+/// a save already holding the fence finishes first and wins deterministically.
+struct TurnControl {
+    cancel_requested: AtomicBool,
+    model_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    commit_target: std::sync::Mutex<Option<String>>,
+    commit_fence: std::sync::Mutex<()>,
+}
+
+impl TurnControl {
+    fn new() -> Self {
+        Self {
+            cancel_requested: AtomicBool::new(false),
+            model_abort: std::sync::Mutex::new(None),
+            commit_target: std::sync::Mutex::new(None),
+            commit_fence: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn cancellation_requested(&self) -> bool {
+        self.cancel_requested.load(Ordering::Acquire)
+    }
+
+    fn attach_model_task(&self, handle: tokio::task::AbortHandle) {
+        let mut current = self
+            .model_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.cancellation_requested() {
+            handle.abort();
+        } else {
+            *current = Some(handle);
+            // Close the flag-vs-handle installation race. A concurrent
+            // canceller either obtains this mutex next or is observed here.
+            if self.cancellation_requested() {
+                if let Some(handle) = current.take() {
+                    handle.abort();
+                }
+            }
+        }
+    }
+
+    fn detach_model_task(&self) {
+        self.model_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
+    fn request_cancellation(&self) {
+        self.cancel_requested.store(true, Ordering::Release);
+        if let Some(handle) = self
+            .model_abort
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            handle.abort();
+        }
+    }
+
+    fn set_commit_target(&self, chat_id: &str) {
+        *self
+            .commit_target
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(chat_id.to_string());
+    }
+
+    fn commit_target(&self) -> Option<String> {
+        self.commit_target
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Run the only durable turn commit behind the cancellation fence.
+    fn commit<T>(&self, save: impl FnOnce() -> T) -> Result<T, TurnCommitCancelled> {
+        let _fence = self
+            .commit_fence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.cancellation_requested() {
+            return Err(TurnCommitCancelled);
+        }
+        Ok(save())
+    }
+
+    fn wait_for_commit(&self) {
+        drop(
+            self.commit_fence
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+}
+
+#[derive(Debug)]
+struct TurnCommitCancelled;
+
+impl TurnRegistry {
+    fn register(&self, key: TurnRequestKey) -> Result<Arc<TurnControl>, ()> {
+        const STALE_CONTROL_CLEANUP_INTERVAL: usize = 64;
+
+        let mut controls = self
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if controls.get(&key).and_then(Weak::upgrade).is_some() {
+            return Err(());
+        }
+        if controls.len() >= STALE_CONTROL_CLEANUP_INTERVAL
+            && controls
+                .len()
+                .is_multiple_of(STALE_CONTROL_CLEANUP_INTERVAL)
+        {
+            controls.retain(|_, control| control.strong_count() > 0);
+        }
+        let control = Arc::new(TurnControl::new());
+        controls.insert(key, Arc::downgrade(&control));
+        Ok(control)
+    }
+
+    fn get(&self, key: &TurnRequestKey) -> Option<Arc<TurnControl>> {
+        let mut controls = self
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let control = controls.get(key).and_then(Weak::upgrade);
+        if control.is_none() {
+            controls.remove(key);
+        }
+        control
+    }
+}
+
 impl AppState {
+    fn resource_lock(&self, key: String) -> Arc<Mutex<()>> {
+        const STALE_LOCK_CLEANUP_INTERVAL: usize = 64;
+
+        let mut locks = self.locks.lock().expect("locks mutex poisoned");
+        if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+            return lock;
+        }
+
+        // Prune in batches so lookup stays O(1) in the common case while the
+        // registry remains bounded by live resources plus one small batch.
+        if locks.len() >= STALE_LOCK_CLEANUP_INTERVAL
+            && locks.len().is_multiple_of(STALE_LOCK_CLEANUP_INTERVAL)
+        {
+            locks.retain(|_, lock| lock.strong_count() > 0);
+        }
+
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        lock
+    }
+
     /// Get-or-create the per-chat lock for `chat_id`. The outer map mutex is
     /// held only for the brief get-or-create.
     fn chat_lock(&self, chat_id: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.locks.lock().expect("locks mutex poisoned");
-        locks
-            .entry(chat_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        self.resource_lock(format!("chat:{chat_id}"))
+    }
+
+    /// Serialize one architect history, including its package draft and
+    /// connector binding, for the complete model turn.
+    fn architect_lock(&self, kind: &str, package_id: &str) -> Arc<Mutex<()>> {
+        self.resource_lock(format!("architect:{kind}:{package_id}"))
     }
 }
 
@@ -123,17 +305,32 @@ pub fn build_router(state: AppState) -> Router {
         .route("/state", get(get_state))
         .route("/debug", get(get_debug))
         .route("/models", get(get_models))
+        .route("/connectors", get(get_connectors))
+        .route("/connectors/{id}/models", get(get_connector_models))
+        .route(
+            "/connectors/{id}/auth/status",
+            get(get_connector_auth_status),
+        )
         .route("/settings", get(get_settings).post(post_settings))
         .route("/search", get(search::get_search))
         .route("/transcript", get(get_transcript))
         .route("/stories", get(get_stories).post(post_create_story))
         .route("/stories/{id}/draft", get(get_story_draft))
         .route("/stories/{id}/delete", post(post_delete_story))
-        .route("/stories/{id}/save-protagonist", post(post_save_protagonist))
+        .route(
+            "/stories/{id}/save-protagonist",
+            post(post_save_protagonist),
+        )
         .route("/story-architect/chat", post(post_story_architect_chat))
-        .route("/character-architect/chat", post(post_character_architect_chat))
+        .route(
+            "/character-architect/chat",
+            post(post_character_architect_chat),
+        )
         .route("/chats", get(get_chats).post(post_create_chat))
-        .route("/characters", get(get_characters).post(post_create_character))
+        .route(
+            "/characters",
+            get(get_characters).post(post_create_character),
+        )
         .route("/characters/{id}/architect", get(get_character_architect))
         .route("/worlds", get(get_worlds).post(post_create_world))
         .route("/worlds/{id}/architect", get(get_world_architect))
@@ -157,7 +354,9 @@ pub fn build_router(state: AppState) -> Router {
                 // Ceiling on the COMPRESSED upload (axum's default is 2 MiB,
                 // too small for legit packages with images). The uncompressed
                 // zip-bomb caps live in `share::Archive::from_zip_bytes`.
-                .layer(axum::extract::DefaultBodyLimit::max(LIBRARY_IMPORT_BODY_LIMIT)),
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    LIBRARY_IMPORT_BODY_LIMIT,
+                )),
         )
         .route("/worlds/{id}/export", get(get_world_export))
         .route("/stories/{id}/export", get(get_story_export))
@@ -175,10 +374,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/model", post(post_model))
         .route("/cmd", post(post_cmd))
         .route("/turn", post(post_turn))
-        .route("/transcribe", post(post_transcribe))
+        .route("/turn/{request_id}/cancel", post(post_cancel_turn))
+        .route(
+            "/transcribe",
+            post(post_transcribe)
+                .layer(axum::extract::DefaultBodyLimit::max(TRANSCRIBE_BODY_LIMIT)),
+        )
         .route("/tts", post(post_tts))
         .route("/codex/login", post(post_codex_login))
         .route("/codex/logout", post(post_codex_logout))
+        .route(
+            "/connectors/{id}/auth/start",
+            post(post_connector_auth_start),
+        )
+        .route(
+            "/connectors/{id}/auth/logout",
+            post(post_connector_auth_logout),
+        )
         .route("/debug/roll", post(post_debug_roll))
         .route("/debug/fact", post(post_debug_fact))
         .route("/debug/fact_delete", post(post_debug_fact_delete))
@@ -256,6 +468,118 @@ fn body_str(map: &Map<String, Value>, key: &str) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
+}
+
+fn requested_binding(
+    state: &AppState,
+    body: &Map<String, Value>,
+    fallback: &ModelBinding,
+) -> Result<ModelBinding, String> {
+    let connector_raw = body_str(body, "connector_id");
+    let connector_id = if connector_raw.is_empty() {
+        fallback.connector_id().clone()
+    } else {
+        ConnectorId::new(connector_raw).map_err(|e| e.to_string())?
+    };
+    let model_raw = body_str(body, "model_id");
+    let model_id = if model_raw.is_empty() {
+        if connector_id == *fallback.connector_id() {
+            fallback.model_id().to_string()
+        } else {
+            return Err("model_id is required when selecting another connector".to_string());
+        }
+    } else {
+        model_raw
+    };
+    let binding = ModelBinding::new(connector_id, model_id).map_err(|e| e.to_string())?;
+    if let Some(registry) = state.store.connector_registry() {
+        if registry.connector(binding.connector_id()).is_none() {
+            return Err(format!(
+                "unknown connector: {}",
+                binding.connector_id().as_str()
+            ));
+        }
+    } else if binding.connector_id() != state.store.default_binding().connector_id() {
+        return Err(format!(
+            "unknown connector: {}",
+            binding.connector_id().as_str()
+        ));
+    }
+    Ok(binding)
+}
+
+fn active_model_binding(state: &AppState) -> ModelBinding {
+    let scope = chat_scope_id();
+    let store = state.store.clone();
+    match store.active_chat_id(&scope) {
+        Ok(Some(chat_id)) => store
+            .with_runtime(&scope, &chat_id, |rt| rt.session.model_binding().clone())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| store.default_binding().clone()),
+        _ => store.default_binding().clone(),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn checked_requested_binding(
+    state: &AppState,
+    body: &Map<String, Value>,
+    fallback: &ModelBinding,
+) -> Result<ModelBinding, Response> {
+    let binding = requested_binding(state, body, fallback).map_err(|error| {
+        json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error}),
+        )
+    })?;
+    validate_binding_for_use(state, &binding)
+        .await
+        .map_err(|error| {
+            json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            )
+        })?;
+    Ok(binding)
+}
+
+async fn validate_binding_for_use(state: &AppState, binding: &ModelBinding) -> Result<(), String> {
+    let Some(registry) = state.store.connector_registry() else {
+        return Ok(());
+    };
+    match registry
+        .auth_status(binding.connector_id())
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        ConnectorAuthStatus::NotRequired | ConnectorAuthStatus::SignedIn { .. } => {}
+        ConnectorAuthStatus::SignedOut => {
+            return Err(format!(
+                "connector '{}' is not connected",
+                binding.connector_id().as_str()
+            ))
+        }
+        ConnectorAuthStatus::Pending { .. } => {
+            return Err(format!(
+                "connector '{}' authorization is still pending",
+                binding.connector_id().as_str()
+            ))
+        }
+        ConnectorAuthStatus::Expired { message } => {
+            return Err(message.unwrap_or_else(|| {
+                format!(
+                    "connector '{}' authorization expired",
+                    binding.connector_id().as_str()
+                )
+            }))
+        }
+    }
+    registry
+        .validate_binding(binding)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn normalize_cache_id(value: &str) -> Option<String> {
@@ -550,6 +874,42 @@ fn clean_architect_model_history(value: Option<&Value>) -> Option<Vec<Value>> {
     Some(out)
 }
 
+fn persisted_architect_model_history(messages: &[Value]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for message in messages {
+        let Some(object) = message.as_object() else {
+            continue;
+        };
+        let role = object
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let content = object
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        match role {
+            "user" if !content.is_empty() => {
+                out.push(json!({"role": "user", "content": content}));
+            }
+            "assistant" => {
+                let has_connector_state = object
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "role" | "content"));
+                if !content.is_empty() || has_connector_state {
+                    // This history is produced by a trusted backend, not by the
+                    // public payload sanitizer above. Connector-owned fields
+                    // must remain opaque and byte-stable across persistence.
+                    out.push(message.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn value_has_text(value: &Value) -> bool {
     match value {
         Value::String(text) => !text.trim().is_empty(),
@@ -580,8 +940,18 @@ where
     T: Send + 'static,
     F: FnOnce(&mut DialogRuntime) -> T + Send + 'static,
 {
-    let scope = chat_scope_id();
     let chat_id = active_chat(state)?;
+    with_chat(state, chat_id, f).await
+}
+
+/// Run `f` against one specific chat. Keeping the id explicit prevents a
+/// concurrent active-chat switch from redirecting a validated mutation.
+async fn with_chat<T, F>(state: &AppState, chat_id: String, f: F) -> Result<T, Response>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut DialogRuntime) -> T + Send + 'static,
+{
+    let scope = chat_scope_id();
     let lock = state.chat_lock(&chat_id);
     let _guard = lock.lock().await;
     let store = state.store.clone();
@@ -606,41 +976,56 @@ where
     }
 }
 
-/// `ensure_client(dialog)` — lazily attach a live client to the session.
-fn ensure_client(runtime: &mut DialogRuntime, state: &AppState) {
-    let session = &mut runtime.session;
-    let cfg = &state.config;
-    let matches = session.client_backend.is_empty() || session.client_backend == cfg.backend;
-    let placeholder_client = cfg.backend != "mock"
-        && (session.client.model() == "mock" || session.client_model == "mock");
-    // Replace the client only if it is the default placeholder (model "mock"
-    // with a non-mock backend) OR the backend changed. The default Session
-    // always holds a live client, so for fidelity we re-key identity when the
-    // backend mismatches (Python: client is None -> rebuild).
-    if !matches || placeholder_client {
-        if !matches {
-            session.client_model = String::new();
-        } else if session.client_model == "mock" {
-            session.client_model.clear();
-        }
-        session.client_session_id = String::new();
-        session.client_thread_id = String::new();
-        session.npc_client_state.clear();
-        session.client = (state.make_client)();
-        session.client_backend = cfg.backend.clone();
+/// Mutate one explicit chat and persist the resulting runtime before releasing
+/// its per-chat lock. `/turn` loads from SQLite, so separating mutation from
+/// save would let a concurrent turn observe and later overwrite stale state.
+async fn with_chat_saved<T, F>(state: &AppState, chat_id: String, f: F) -> Result<T, Response>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut DialogRuntime) -> T + Send + 'static,
+{
+    let scope = chat_scope_id();
+    let lock = state.chat_lock(&chat_id);
+    let _guard = lock.lock().await;
+    let store = state.store.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        store.with_runtime(&scope, &chat_id, |runtime| {
+            let value = f(runtime);
+            store.save(runtime).map(|()| value)
+        })
+    })
+    .await
+    .map_err(|error| {
+        json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {error}")}),
+        )
+    })?;
+
+    match res {
+        Ok(Some(Ok(value))) => Ok(value),
+        Ok(Some(Err(error))) | Err(error) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": error.to_string()}),
+        )),
+        Ok(None) => Err(json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": "chat not found"}),
+        )),
     }
+}
+
+/// `ensure_client(dialog)` — lazily attach a live client to the session.
+fn ensure_client(runtime: &mut DialogRuntime, _state: &AppState) {
+    let session = &mut runtime.session;
     let client = session.client.clone();
+    client.set_model(session.model_binding().model_id());
     client.set_session_identity(
         Some(session.client_session_id.as_str()),
         Some(session.client_thread_id.as_str()),
     );
     session.client_session_id = client.session_id();
     session.client_thread_id = client.thread_id();
-    if !session.client_model.is_empty() {
-        client.set_model(&session.client_model);
-    } else {
-        session.client_model = client.model();
-    }
 }
 
 // =========================================================================
@@ -747,7 +1132,10 @@ async fn get_stories(State(state): State<AppState>) -> Response {
 /// self-contained builtin (no `world_ref`) or a non-`authored` (procedural) story
 /// -> 400 (only world-bound authored stories are draftable).
 async fn get_story_draft(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let default_binding = state.store.default_binding().clone();
     let result = {
         let store = state.story_store.lock().expect("story store lock poisoned");
         store.draft_row(&id).and_then(|row| {
@@ -764,26 +1152,24 @@ async fn get_story_draft(State(state): State<AppState>, AxPath(id): AxPath<Strin
                     )))
                 }
             };
-            let messages = chat
-                .and_then(|s| s.get("messages").cloned())
-                .unwrap_or_else(|| Value::Array(Vec::new()));
-            Ok((row, messages))
+            let (messages, model_binding) = architect_public_state(chat, &default_binding)
+                .map_err(|error| StoryStoreError::Io(format!("read architect state: {error}")))?;
+            Ok((row, messages, model_binding))
         })
     };
     match result {
-        Ok((row, messages)) => ok_json(&json!({
+        Ok((row, messages, model_binding)) => ok_json(&json!({
             "ok": true,
             "story": Value::Object(row),
-            "architect": {"messages": messages},
+            "architect": {"messages": messages, "model_binding": model_binding},
         })),
         Err(StoryStoreError::StoryNotFound(_)) => json_response(
             StatusCode::NOT_FOUND,
             &json!({"ok": false, "error": format!("story not found: {id}")}),
         ),
-        Err(StoryStoreError::Invalid(msg)) => json_response(
-            StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": msg}),
-        ),
+        Err(StoryStoreError::Invalid(msg)) => {
+            json_response(StatusCode::BAD_REQUEST, &json!({"ok": false, "error": msg}))
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &json!({"ok": false, "error": e.to_string()}),
@@ -876,13 +1262,11 @@ async fn post_create_story(State(state): State<AppState>, body: Bytes) -> Respon
 
 /// `POST /stories/{id}/delete` — remove a story package. Returns
 /// `{ok, deleted:bool}` (`deleted:false` when no such story existed).
-async fn post_delete_story(
-    State(state): State<AppState>,
-    AxPath(id): AxPath<String>,
-) -> Response {
+async fn post_delete_story(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
     let story_id = urlencoding::decode(&id)
         .map(|c| c.into_owned())
         .unwrap_or(id);
+    let _architect_guard = state.architect_lock("story", &story_id).lock_owned().await;
     let result = {
         let mut store = state.story_store.lock().expect("story store lock poisoned");
         store.delete_story(&story_id)
@@ -914,7 +1298,10 @@ async fn post_update_story(
     AxPath(id): AxPath<String>,
     body: Bytes,
 ) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let _architect_guard = state.architect_lock("story", &id).lock_owned().await;
     let patch = match serde_json::from_slice::<Value>(&body) {
         Ok(v @ Value::Object(_)) => v,
         _ => Value::Object(Map::new()),
@@ -929,10 +1316,9 @@ async fn post_update_story(
             StatusCode::BAD_REQUEST,
             &json!({"ok": false, "error": format!("story not found: {id}")}),
         ),
-        Err(StoryStoreError::Invalid(msg)) => json_response(
-            StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": msg}),
-        ),
+        Err(StoryStoreError::Invalid(msg)) => {
+            json_response(StatusCode::BAD_REQUEST, &json!({"ok": false, "error": msg}))
+        }
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &json!({"ok": false, "error": e.to_string()}),
@@ -1000,8 +1386,16 @@ async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Re
     let base = match resolve_character_architect_base(
         &state,
         None,
-        if world_id.is_empty() { None } else { Some(&world_id) },
-        if story_id.is_empty() { None } else { Some(&story_id) },
+        if world_id.is_empty() {
+            None
+        } else {
+            Some(&world_id)
+        },
+        if story_id.is_empty() {
+            None
+        } else {
+            Some(&story_id)
+        },
     ) {
         Ok(base) => base,
         Err(resp) => return resp,
@@ -1031,7 +1425,10 @@ async fn post_update_character(
     AxPath(id): AxPath<String>,
     body: Bytes,
 ) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let _architect_guard = state.architect_lock("character", &id).lock_owned().await;
     let patch = match serde_json::from_slice::<Value>(&body) {
         Ok(v @ Value::Object(_)) => v,
         _ => Value::Object(Map::new()),
@@ -1063,7 +1460,10 @@ async fn post_delete_character(
     State(state): State<AppState>,
     AxPath(id): AxPath<String>,
 ) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let _architect_guard = state.architect_lock("character", &id).lock_owned().await;
     let result = {
         let mut store = state
             .character_store
@@ -1112,8 +1512,7 @@ async fn get_character_export(
         );
     }
     let id_for_file = id.clone();
-    let zipped =
-        tokio::task::spawn_blocking(move || share::zip_dir(&dir, "")).await;
+    let zipped = tokio::task::spawn_blocking(move || share::zip_dir(&dir, "")).await;
     match zipped {
         Ok(Ok(bytes)) => zip_attachment_response(bytes, &format!("{id_for_file}.gmchar.zip")),
         Ok(Err(e)) => json_response(
@@ -1137,6 +1536,12 @@ async fn get_character_export(
 /// under the per-chat lock — a bare `load_chat` of the ACTIVE chat would return
 /// the stale DB row. The snapshot's `card_revision` travels into the package
 /// verbatim (the canonical serializer preserves it).
+struct LiveCharacterSnapshot {
+    player_character: Value,
+    world_ref: Option<gml_persistence::CharacterBaseRef>,
+    story_ref: Option<gml_persistence::CharacterBaseRef>,
+}
+
 async fn post_save_character(
     State(state): State<AppState>,
     AxPath(chat_id): AxPath<String>,
@@ -1156,27 +1561,35 @@ async fn post_save_character(
     let store = state.store.clone();
     let scope2 = scope.clone();
     let chat_id2 = chat_id.clone();
-    let read = tokio::task::spawn_blocking(move || -> Result<Option<(Value, Option<gml_persistence::CharacterBaseRef>, Option<gml_persistence::CharacterBaseRef>)>, gml_persistence::StoreError> {
-        store.with_runtime(&scope2, &chat_id2, |rt| {
-            let pc = gml_orchestrator::session_payload::player_character_payload(&rt.session.world.player_character);
-            // The session's launch provenance becomes the saved character's base
-            // refs: the world/story this hero was actually played in.
-            let to_base = |r: &Option<gml_world::PackageRef>| {
-                r.as_ref().map(|r| gml_persistence::CharacterBaseRef {
-                    id: r.id.clone(),
-                    version: r.version,
-                })
-            };
-            (
-                pc,
-                to_base(&rt.session.world.world_ref),
-                to_base(&rt.session.world.story_ref),
-            )
-        })
-    })
+    let read = tokio::task::spawn_blocking(
+        move || -> Result<Option<LiveCharacterSnapshot>, gml_persistence::StoreError> {
+            store.with_runtime(&scope2, &chat_id2, |rt| {
+                let pc = gml_orchestrator::session_payload::player_character_payload(
+                    &rt.session.world.player_character,
+                );
+                // The session's launch provenance becomes the saved character's base
+                // refs: the world/story this hero was actually played in.
+                let to_base = |r: &Option<gml_world::PackageRef>| {
+                    r.as_ref().map(|r| gml_persistence::CharacterBaseRef {
+                        id: r.id.clone(),
+                        version: r.version,
+                    })
+                };
+                LiveCharacterSnapshot {
+                    player_character: pc,
+                    world_ref: to_base(&rt.session.world.world_ref),
+                    story_ref: to_base(&rt.session.world.story_ref),
+                }
+            })
+        },
+    )
     .await;
-    let (pc, world_ref, story_ref) = match read {
-        Ok(Ok(Some(tuple))) => tuple,
+    let LiveCharacterSnapshot {
+        player_character: pc,
+        world_ref,
+        story_ref,
+    } = match read {
+        Ok(Ok(Some(snapshot))) => snapshot,
         Ok(Ok(None)) => {
             return json_response(
                 StatusCode::NOT_FOUND,
@@ -1206,19 +1619,21 @@ async fn post_save_character(
         version: state.world_store.world_version(&r.id).unwrap_or(r.version),
         id: r.id,
     });
-    let story_ref = story_ref.filter(|r| r.id != PROCEDURAL_STORY_ID).and_then(|r| {
-        let store = state.story_store.lock().expect("story store lock poisoned");
-        match store.kind(&r.id) {
-            Ok(kind) if kind == "procedural" => None,
-            Ok(_) => Some(gml_persistence::CharacterBaseRef {
-                version: store.version(&r.id).unwrap_or(r.version),
-                id: r.id,
-            }),
-            // Story deleted since launch: keep the launch-time pin (refs may
-            // dangle; kind unknown, so give it the benefit of the doubt).
-            Err(_) => Some(r),
-        }
-    });
+    let story_ref = story_ref
+        .filter(|r| r.id != PROCEDURAL_STORY_ID)
+        .and_then(|r| {
+            let store = state.story_store.lock().expect("story store lock poisoned");
+            match store.kind(&r.id) {
+                Ok(kind) if kind == "procedural" => None,
+                Ok(_) => Some(gml_persistence::CharacterBaseRef {
+                    version: store.version(&r.id).unwrap_or(r.version),
+                    id: r.id,
+                }),
+                // Story deleted since launch: keep the launch-time pin (refs may
+                // dangle; kind unknown, so give it the benefit of the doubt).
+                Err(_) => Some(r),
+            }
+        });
 
     let result = {
         let mut cstore = state
@@ -1228,12 +1643,12 @@ async fn post_save_character(
         if target_id.is_empty() {
             // Create a new character. title = the hero's name, fallback "Персонаж".
             // The session's world/story refs ride along as base provenance.
-            let name = pc
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim();
-            let title = if name.is_empty() { "Персонаж" } else { name };
+            let name = pc.get("name").and_then(Value::as_str).unwrap_or("").trim();
+            let title = if name.is_empty() {
+                "Персонаж"
+            } else {
+                name
+            };
             cstore.create_character(
                 title,
                 json!({ "player_character": pc }),
@@ -1333,6 +1748,13 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let app = state.clone();
     tokio::spawn(async move {
+        // Existing packages are locked before any content/chat mutation. A new
+        // package has no shared id yet, so it is locked immediately after its
+        // unique id is allocated and before the architect state is loaded.
+        let mut _architect_guard = match world_id.as_deref() {
+            Some(id) => Some(app.architect_lock("world", id).lock_owned().await),
+            None => None,
+        };
         // Content first: create the package (applying any client draft) on the
         // first turn; apply the client draft as a plain update otherwise. With
         // no client draft and an existing world, the content is NOT rewritten.
@@ -1358,6 +1780,13 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        if _architect_guard.is_none() {
+            _architect_guard = Some(
+                app.architect_lock("world", &persisted_world_id)
+                    .lock_owned()
+                    .await,
+            );
+        }
 
         // Conversation state is server-side (the dialogs SQLite). Any load
         // error aborts the turn LOUDLY — running on a silently-empty history
@@ -1375,6 +1804,21 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                 return;
             }
         };
+        let binding = match resolve_architect_binding(&app, &data, &stored).await {
+            Ok(binding) => binding,
+            Err(error) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": error,
+                    "world": world,
+                    "worlds": worlds,
+                    "world_id": persisted_world_id,
+                    "model_binding": stored.model_binding,
+                }));
+                return;
+            }
+        };
+        let (cache_session_id, cache_thread_id) = architect_cache_ids(&stored, &binding);
         let history = stored.model_history.clone();
         let visible_with_user = visible_with_user_message(stored.messages.clone(), &message);
         // Draft-first for the CHAT: persist the user message now so a failed
@@ -1385,8 +1829,9 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
             &persisted_world_id,
             visible_with_user.clone(),
             history.clone(),
-            stored.cache_session_id.as_deref(),
-            stored.cache_thread_id.as_deref(),
+            cache_session_id.as_deref(),
+            cache_thread_id.as_deref(),
+            &binding,
         )
         .await
         {
@@ -1404,11 +1849,21 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
         // carries the payload fields flattened — exactly the architect draft shape).
         let draft = world.clone();
 
-        let client = (app.make_client)();
-        client.set_session_identity(
-            stored.cache_session_id.as_deref(),
-            stored.cache_thread_id.as_deref(),
-        );
+        let (client, _, _) = match app.store.clients_for_binding(&binding) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": error.to_string(),
+                    "world": world,
+                    "worlds": worlds,
+                    "world_id": persisted_world_id,
+                    "model_binding": binding,
+                }));
+                return;
+            }
+        };
+        client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
         let mut sink = ArchitectStreamSink { tx: tx.clone() };
         let architect_options = gml_agents::WorldArchitectOptions {
             image_prompts: image_generation_enabled(&app),
@@ -1466,6 +1921,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                     model_history_after,
                     Some(client.session_id().as_str()),
                     Some(client.thread_id().as_str()),
+                    &binding,
                 )
                 .await
                 {
@@ -1478,6 +1934,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                         "world": world,
                         "worlds": worlds,
                         "world_id": persisted_world_id,
+                        "model_binding": binding,
                     }));
                     return;
                 }
@@ -1488,7 +1945,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                         "reply": output.reply,
                         "draft": output.draft,
                         "user_message": output.user_msg,
-                        "assistant_history_message": output.assistant_history_msg,
+                        "assistant_history_message": output.assistant_msg.clone(),
                         "assistant_message": output.assistant_msg,
                         "calls": output.calls,
                         "cache_session_id": client.session_id(),
@@ -1500,6 +1957,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                         "world_id": persisted_world_id,
                         "world": world,
                         "worlds": worlds,
+                        "model_binding": binding,
                     }
                 }));
             }
@@ -1510,6 +1968,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                     "world": world,
                     "worlds": worlds,
                     "world_id": persisted_world_id,
+                    "model_binding": binding,
                 }));
             }
         }
@@ -1544,7 +2003,9 @@ async fn get_world_architect(
     State(state): State<AppState>,
     AxPath(id): AxPath<String>,
 ) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
     let db = state.store.clone();
     let store = state.world_store.clone();
     let world_id = id.clone();
@@ -1568,10 +2029,20 @@ async fn get_world_architect(
     .await;
     match result {
         Ok(Ok(loaded)) => {
-            let messages = loaded
-                .and_then(|s| s.get("messages").cloned())
-                .unwrap_or_else(|| Value::Array(Vec::new()));
-            ok_json(&json!({"ok": true, "architect": {"messages": messages}}))
+            let (messages, model_binding) =
+                match architect_public_state(loaded, state.store.default_binding()) {
+                    Ok(public) => public,
+                    Err(error) => {
+                        return json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &json!({"ok": false, "error": error}),
+                        )
+                    }
+                };
+            ok_json(&json!({"ok": true, "architect": {
+                "messages": messages,
+                "model_binding": model_binding,
+            }}))
         }
         Ok(Err(gml_persistence::StoreError::WorldNotFound(_))) => json_response(
             StatusCode::NOT_FOUND,
@@ -1662,14 +2133,19 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
     // (a) build the read-only lore block for the model and (b) pin the live world
     // version into world_ref for a create. A create with no/unknown world_id is a
     // hard error — no-fallback (`§С1.2`).
-    let resolved = match resolve_story_architect_world(&state, story_id.as_deref(), world_id.as_deref()) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let resolved =
+        match resolve_story_architect_world(&state, story_id.as_deref(), world_id.as_deref()) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let app = state.clone();
     tokio::spawn(async move {
+        let mut _architect_guard = match story_id.as_deref() {
+            Some(id) => Some(app.architect_lock("story", id).lock_owned().await),
+            None => None,
+        };
         // Content first: create-on-first-turn (applying any client draft), or
         // apply the client draft as a plain plot update. With no client draft and
         // an existing story, the content is NOT rewritten.
@@ -1691,6 +2167,13 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                 return;
             }
         };
+        if _architect_guard.is_none() {
+            _architect_guard = Some(
+                app.architect_lock("story", &persisted_story_id)
+                    .lock_owned()
+                    .await,
+            );
+        }
 
         // Conversation state is server-side (the dialogs SQLite). Any load
         // error aborts the turn LOUDLY — running on a silently-empty history
@@ -1708,6 +2191,21 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                 return;
             }
         };
+        let binding = match resolve_architect_binding(&app, &data, &stored).await {
+            Ok(binding) => binding,
+            Err(error) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": error,
+                    "story": story,
+                    "stories": stories,
+                    "story_id": persisted_story_id,
+                    "model_binding": stored.model_binding,
+                }));
+                return;
+            }
+        };
+        let (cache_session_id, cache_thread_id) = architect_cache_ids(&stored, &binding);
         let history = stored.model_history.clone();
         let visible_with_user = visible_with_user_message(stored.messages.clone(), &message);
         // Draft-first for the CHAT: a failed write aborts BEFORE the model call.
@@ -1716,8 +2214,9 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             &persisted_story_id,
             visible_with_user.clone(),
             history.clone(),
-            stored.cache_session_id.as_deref(),
-            stored.cache_thread_id.as_deref(),
+            cache_session_id.as_deref(),
+            cache_thread_id.as_deref(),
+            &binding,
         )
         .await
         {
@@ -1737,11 +2236,21 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             .cloned()
             .unwrap_or(Value::Object(Map::new()));
 
-        let client = (app.make_client)();
-        client.set_session_identity(
-            stored.cache_session_id.as_deref(),
-            stored.cache_thread_id.as_deref(),
-        );
+        let (client, _, _) = match app.store.clients_for_binding(&binding) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": error.to_string(),
+                    "story": story,
+                    "stories": stories,
+                    "story_id": persisted_story_id,
+                    "model_binding": binding,
+                }));
+                return;
+            }
+        };
+        client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
         let mut sink = ArchitectStreamSink { tx: tx.clone() };
         match gml_agents::story_architect_turn(
             client.as_ref(),
@@ -1795,6 +2304,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                     model_history_after,
                     Some(client.session_id().as_str()),
                     Some(client.thread_id().as_str()),
+                    &binding,
                 )
                 .await
                 {
@@ -1804,6 +2314,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                         "story": story,
                         "stories": stories,
                         "story_id": persisted_story_id,
+                        "model_binding": binding,
                     }));
                     return;
                 }
@@ -1814,7 +2325,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                         "reply": output.reply,
                         "draft": output.draft,
                         "user_message": output.user_msg,
-                        "assistant_history_message": output.assistant_history_msg,
+                        "assistant_history_message": output.assistant_msg.clone(),
                         "assistant_message": output.assistant_msg,
                         "calls": output.calls,
                         "cache_session_id": client.session_id(),
@@ -1826,6 +2337,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                         "story_id": persisted_story_id,
                         "story": story,
                         "stories": stories,
+                        "model_binding": binding,
                     }
                 }));
             }
@@ -1836,6 +2348,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                     "story": story,
                     "stories": stories,
                     "story_id": persisted_story_id,
+                    "model_binding": binding,
                 }));
             }
         }
@@ -1935,13 +2448,12 @@ fn resolve_story_architect_world(
 
     // The world package must exist: read its lore (for the model block) and its
     // live version (to pin into world_ref on a create).
-    let world = state
-        .world_store
-        .get_world(&world_id)
-        .map_err(|_| json_response(
+    let world = state.world_store.get_world(&world_id).map_err(|_| {
+        json_response(
             StatusCode::BAD_REQUEST,
             &json!({"ok": false, "error": format!("world not found: {world_id}")}),
-        ))?;
+        )
+    })?;
     let world_version = state.world_store.world_version(&world_id).map_err(|_| {
         json_response(
             StatusCode::BAD_REQUEST,
@@ -2115,16 +2627,24 @@ fn architect_world_payload(draft: &Value) -> Value {
 /// Parsed architect-chat state loaded from a package's `architect.json`.
 #[derive(Default, Clone)]
 struct ArchitectStateParts {
+    state_exists: bool,
     messages: Vec<Value>,
     model_history: Vec<Value>,
     cache_session_id: Option<String>,
     cache_thread_id: Option<String>,
+    model_binding: Option<ModelBinding>,
 }
 
-fn architect_state_parts(state: Option<Value>) -> ArchitectStateParts {
+fn architect_state_parts(state: Option<Value>) -> Result<ArchitectStateParts, String> {
     let map = match state {
         Some(Value::Object(m)) => m,
-        _ => return ArchitectStateParts::default(),
+        None => return Ok(ArchitectStateParts::default()),
+        Some(value) => {
+            return Err(format!(
+                "architect state must be an object, got {}",
+                json_type_name(&value)
+            ));
+        }
     };
     let arr = |key: &str| -> Vec<Value> {
         map.get(key)
@@ -2137,11 +2657,75 @@ fn architect_state_parts(state: Option<Value>) -> ArchitectStateParts {
             .and_then(Value::as_str)
             .and_then(normalize_cache_id)
     };
-    ArchitectStateParts {
+    let model_binding = map
+        .get("model_binding")
+        .map(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|error| format!("invalid architect model_binding: {error}"))
+        })
+        .transpose()?;
+    Ok(ArchitectStateParts {
+        state_exists: true,
         messages: arr("messages"),
         model_history: arr("model_history"),
         cache_session_id: id("cache_session_id"),
         cache_thread_id: id("cache_thread_id"),
+        model_binding,
+    })
+}
+
+/// Public restore projection. An existing legacy state without a canonical
+/// binding is locked to the application default; a package with no architect
+/// state remains unbound so the user can choose a connector for its first turn.
+fn architect_public_state(
+    state: Option<Value>,
+    default_binding: &ModelBinding,
+) -> Result<(Value, Option<ModelBinding>), String> {
+    let parts = architect_state_parts(state)?;
+    let binding = parts
+        .model_binding
+        .or_else(|| parts.state_exists.then(|| default_binding.clone()));
+    Ok((Value::Array(parts.messages), binding))
+}
+
+async fn resolve_architect_binding(
+    state: &AppState,
+    request: &Map<String, Value>,
+    stored: &ArchitectStateParts,
+) -> Result<ModelBinding, String> {
+    let stored_binding = stored
+        .model_binding
+        .as_ref()
+        .or_else(|| stored.state_exists.then(|| state.store.default_binding()));
+    let fallback = stored_binding.unwrap_or_else(|| state.store.default_binding());
+    let requested = requested_binding(state, request, fallback)?;
+    if let Some(bound) = stored_binding {
+        if requested.connector_id() != bound.connector_id() {
+            return Err(
+                "connector is fixed for this architect history; start a new architect to change it"
+                    .to_string(),
+            );
+        }
+    }
+    validate_binding_for_use(state, &requested).await?;
+    Ok(requested)
+}
+
+fn architect_cache_ids(
+    stored: &ArchitectStateParts,
+    binding: &ModelBinding,
+) -> (Option<String>, Option<String>) {
+    let model_changed = stored
+        .model_binding
+        .as_ref()
+        .is_some_and(|previous| previous.model_id() != binding.model_id());
+    if model_changed {
+        (None, None)
+    } else {
+        (
+            stored.cache_session_id.clone(),
+            stored.cache_thread_id.clone(),
+        )
     }
 }
 
@@ -2151,6 +2735,7 @@ fn architect_state_value(
     model_history: Vec<Value>,
     cache_session_id: Option<&str>,
     cache_thread_id: Option<&str>,
+    model_binding: &ModelBinding,
 ) -> Value {
     let mut state = Map::new();
     state.insert(
@@ -2161,9 +2746,7 @@ fn architect_state_value(
     );
     state.insert(
         "model_history".into(),
-        Value::Array(
-            clean_architect_model_history(Some(&Value::Array(model_history))).unwrap_or_default(),
-        ),
+        Value::Array(persisted_architect_model_history(&model_history)),
     );
     if let Some(id) = cache_session_id.and_then(normalize_cache_id) {
         state.insert("cache_session_id".into(), Value::String(id));
@@ -2171,6 +2754,10 @@ fn architect_state_value(
     if let Some(id) = cache_thread_id.and_then(normalize_cache_id) {
         state.insert("cache_thread_id".into(), Value::String(id));
     }
+    state.insert(
+        "model_binding".into(),
+        serde_json::to_value(model_binding).unwrap_or(Value::Null),
+    );
     Value::Object(state)
 }
 
@@ -2227,7 +2814,7 @@ async fn load_world_architect_state(
     })
     .await
     .map_err(|e| format!("join error: {e}"))??;
-    Ok(architect_state_parts(loaded))
+    architect_state_parts(loaded)
 }
 
 /// Persist the world architect chat into the dialogs SQLite. A failed DB write
@@ -2242,11 +2829,18 @@ async fn save_world_architect_state(
     model_history: Vec<Value>,
     cache_session_id: Option<&str>,
     cache_thread_id: Option<&str>,
+    model_binding: &ModelBinding,
 ) -> Result<(), String> {
     let db = state.store.clone();
     let store = state.world_store.clone();
     let id = world_id.to_string();
-    let value = architect_state_value(messages, model_history, cache_session_id, cache_thread_id);
+    let value = architect_state_value(
+        messages,
+        model_history,
+        cache_session_id,
+        cache_thread_id,
+        model_binding,
+    );
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         db.set_architect_chat("world", &id, &value)
             .map_err(|e| format!("save architect chat: {e}"))?;
@@ -2279,7 +2873,7 @@ async fn load_story_architect_state(
     })
     .await
     .map_err(|e| format!("join error: {e}"))??;
-    Ok(architect_state_parts(loaded))
+    architect_state_parts(loaded)
 }
 
 async fn save_story_architect_state(
@@ -2289,11 +2883,18 @@ async fn save_story_architect_state(
     model_history: Vec<Value>,
     cache_session_id: Option<&str>,
     cache_thread_id: Option<&str>,
+    model_binding: &ModelBinding,
 ) -> Result<(), String> {
     let db = state.store.clone();
     let store = state.story_store.clone();
     let id = story_id.to_string();
-    let value = architect_state_value(messages, model_history, cache_session_id, cache_thread_id);
+    let value = architect_state_value(
+        messages,
+        model_history,
+        cache_session_id,
+        cache_thread_id,
+        model_binding,
+    );
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         db.set_architect_chat("story", &id, &value)
             .map_err(|e| format!("save architect chat: {e}"))?;
@@ -2381,6 +2982,10 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let app = state.clone();
     tokio::spawn(async move {
+        let mut _architect_guard = match character_id.as_deref() {
+            Some(id) => Some(app.architect_lock("character", id).lock_owned().await),
+            None => None,
+        };
         // Content first: create-on-first-turn (applying any client draft), or
         // snapshot the client draft into an existing package. With no client
         // draft and an existing character the content is NOT rewritten.
@@ -2403,6 +3008,13 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                 return;
             }
         };
+        if _architect_guard.is_none() {
+            _architect_guard = Some(
+                app.architect_lock("character", &persisted_id)
+                    .lock_owned()
+                    .await,
+            );
+        }
 
         // Conversation state is server-side. A load error aborts LOUDLY —
         // running on a silently-empty history would erase the conversation.
@@ -2419,6 +3031,21 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                 return;
             }
         };
+        let binding = match resolve_architect_binding(&app, &data, &stored).await {
+            Ok(binding) => binding,
+            Err(error) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": error,
+                    "character": character,
+                    "characters": characters,
+                    "character_id": persisted_id,
+                    "model_binding": stored.model_binding,
+                }));
+                return;
+            }
+        };
+        let (cache_session_id, cache_thread_id) = architect_cache_ids(&stored, &binding);
         let history = stored.model_history.clone();
         let visible_with_user = visible_with_user_message(stored.messages.clone(), &message);
         // Draft-first for the CHAT: a failed write aborts BEFORE the model call.
@@ -2427,8 +3054,9 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
             &persisted_id,
             visible_with_user.clone(),
             history.clone(),
-            stored.cache_session_id.as_deref(),
-            stored.cache_thread_id.as_deref(),
+            cache_session_id.as_deref(),
+            cache_thread_id.as_deref(),
+            &binding,
         )
         .await
         {
@@ -2449,11 +3077,21 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
             .cloned()
             .unwrap_or(Value::Object(Map::new()));
 
-        let client = (app.make_client)();
-        client.set_session_identity(
-            stored.cache_session_id.as_deref(),
-            stored.cache_thread_id.as_deref(),
-        );
+        let (client, _, _) = match app.store.clients_for_binding(&binding) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                let _ = tx.send(json!({
+                    "kind": "architect_error",
+                    "data": error.to_string(),
+                    "character": character,
+                    "characters": characters,
+                    "character_id": persisted_id,
+                    "model_binding": binding,
+                }));
+                return;
+            }
+        };
+        client.set_session_identity(cache_session_id.as_deref(), cache_thread_id.as_deref());
         let mut sink = ArchitectStreamSink { tx: tx.clone() };
         match gml_agents::character_architect_turn(
             client.as_ref(),
@@ -2508,6 +3146,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                     model_history_after,
                     Some(client.session_id().as_str()),
                     Some(client.thread_id().as_str()),
+                    &binding,
                 )
                 .await
                 {
@@ -2517,6 +3156,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                         "character": character,
                         "characters": characters,
                         "character_id": persisted_id,
+                        "model_binding": binding,
                     }));
                     return;
                 }
@@ -2527,7 +3167,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                         "reply": output.reply,
                         "draft": output.draft,
                         "user_message": output.user_msg,
-                        "assistant_history_message": output.assistant_history_msg,
+                        "assistant_history_message": output.assistant_msg.clone(),
                         "assistant_message": output.assistant_msg,
                         "calls": output.calls,
                         "cache_session_id": client.session_id(),
@@ -2539,6 +3179,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                         "character_id": persisted_id,
                         "character": character,
                         "characters": characters,
+                        "model_binding": binding,
                     }
                 }));
             }
@@ -2549,6 +3190,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                     "character": character,
                     "characters": characters,
                     "character_id": persisted_id,
+                    "model_binding": binding,
                 }));
             }
         }
@@ -2585,7 +3227,9 @@ async fn get_character_architect(
     State(state): State<AppState>,
     AxPath(id): AxPath<String>,
 ) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
     let db = state.store.clone();
     let store = state.character_store.clone();
     let cid = id.clone();
@@ -2604,10 +3248,20 @@ async fn get_character_architect(
     .await;
     match result {
         Ok(Ok(loaded)) => {
-            let messages = loaded
-                .and_then(|s| s.get("messages").cloned())
-                .unwrap_or_else(|| Value::Array(Vec::new()));
-            ok_json(&json!({"ok": true, "architect": {"messages": messages}}))
+            let (messages, model_binding) =
+                match architect_public_state(loaded, state.store.default_binding()) {
+                    Ok(public) => public,
+                    Err(error) => {
+                        return json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &json!({"ok": false, "error": error}),
+                        )
+                    }
+                };
+            ok_json(&json!({"ok": true, "architect": {
+                "messages": messages,
+                "model_binding": model_binding,
+            }}))
         }
         Ok(Err(gml_persistence::StoreError::CharacterNotFound(_))) => json_response(
             StatusCode::NOT_FOUND,
@@ -2871,7 +3525,10 @@ async fn post_character_draft(
     AxPath(id): AxPath<String>,
     body: Bytes,
 ) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
+    let _architect_guard = state.architect_lock("character", &id).lock_owned().await;
     let data = parse_body(&body);
     // The sheet to store IS the player_character. A missing/non-object value is a
     // 400 (never a silent no-op — a manual save with no sheet is a client bug).
@@ -3005,7 +3662,7 @@ async fn load_character_architect_state(
     })
     .await
     .map_err(|e| format!("join error: {e}"))??;
-    Ok(architect_state_parts(loaded))
+    architect_state_parts(loaded)
 }
 
 /// Persist the character architect chat into the dialogs SQLite. A failed write
@@ -3017,10 +3674,17 @@ async fn save_character_architect_state(
     model_history: Vec<Value>,
     cache_session_id: Option<&str>,
     cache_thread_id: Option<&str>,
+    model_binding: &ModelBinding,
 ) -> Result<(), String> {
     let db = state.store.clone();
     let id = character_id.to_string();
-    let value = architect_state_value(messages, model_history, cache_session_id, cache_thread_id);
+    let value = architect_state_value(
+        messages,
+        model_history,
+        cache_session_id,
+        cache_thread_id,
+        model_binding,
+    );
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         db.set_architect_chat("character", &id, &value)
             .map_err(|e| format!("save architect chat: {e}"))
@@ -3041,7 +3705,9 @@ async fn post_save_protagonist(
     State(state): State<AppState>,
     AxPath(id): AxPath<String>,
 ) -> Response {
-    let id = urlencoding::decode(&id).map(|c| c.into_owned()).unwrap_or(id);
+    let id = urlencoding::decode(&id)
+        .map(|c| c.into_owned())
+        .unwrap_or(id);
     // Read the story draft (draft_row enforces world-bound-authored) and pull the
     // suggested protagonist out of its seed, plus the provenance to pin: the
     // story itself (live version) and the story's own bound world.
@@ -3074,10 +3740,7 @@ async fn post_save_protagonist(
                 )
             }
             Err(StoryStoreError::Invalid(msg)) => {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    &json!({"ok": false, "error": msg}),
-                )
+                return json_response(StatusCode::BAD_REQUEST, &json!({"ok": false, "error": msg}))
             }
             Err(e) => {
                 return json_response(
@@ -3103,7 +3766,11 @@ async fn post_save_protagonist(
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    let title = if name.is_empty() { "Персонаж" } else { name };
+    let title = if name.is_empty() {
+        "Персонаж"
+    } else {
+        name
+    };
 
     let result = {
         let mut cstore = state
@@ -3339,8 +4006,45 @@ async fn get_settings(State(state): State<AppState>) -> Response {
 }
 
 async fn get_codex_status(State(state): State<AppState>) -> Response {
-    let _ = active_chat(&state);
-    ok_json(&Value::Object(gml_codex::auth_status()))
+    let Some(registry) = state.store.connector_registry() else {
+        return not_found();
+    };
+    let id = ConnectorId::new("codex").expect("codex connector id is valid");
+    match registry.auth_status(&id).await {
+        Ok(status) => ok_json(&legacy_codex_auth_payload(&status)),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error.to_string()}),
+        ),
+    }
+}
+
+fn legacy_codex_auth_payload(status: &ConnectorAuthStatus) -> Value {
+    match status {
+        ConnectorAuthStatus::SignedIn { account_label } => json!({
+            "authenticated": true,
+            "account_id": account_label,
+            "state": "signed_in",
+        }),
+        ConnectorAuthStatus::NotRequired => json!({
+            "authenticated": true,
+            "state": "not_required",
+        }),
+        ConnectorAuthStatus::Pending { message } => json!({
+            "authenticated": false,
+            "state": "pending",
+            "message": message,
+        }),
+        ConnectorAuthStatus::Expired { message } => json!({
+            "authenticated": false,
+            "state": "expired",
+            "message": message,
+        }),
+        ConnectorAuthStatus::SignedOut => json!({
+            "authenticated": false,
+            "state": "signed_out",
+        }),
+    }
 }
 
 async fn get_sidecar_status(State(state): State<AppState>) -> Response {
@@ -3728,6 +4432,7 @@ async fn post_update_world(
     let world_id = urlencoding::decode(&id)
         .map(|c| c.into_owned())
         .unwrap_or(id);
+    let _architect_guard = state.architect_lock("world", &world_id).lock_owned().await;
     let data = parse_body(&body);
     let payload = match reusable_world_payload_from_body(&data) {
         Ok(payload) => payload,
@@ -3745,72 +4450,210 @@ async fn post_update_world(
 }
 
 async fn get_models(State(state): State<AppState>) -> Response {
-    let cfg = state.config.clone();
     let settings = state.settings.clone();
-    // Build/ensure the client, then list models. Errors -> {ok:false, models:[]}.
-    let scope = chat_scope_id();
-    let chat_id = match active_chat(&state) {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
-    let lock = state.chat_lock(&chat_id);
-    let _guard = lock.lock().await;
-    let store = state.store.clone();
-    let make_client = state.make_client.clone();
-    let app = state.clone();
-
-    // ensure_client mutates the runtime; do it under the lock then snapshot the
-    // live client (Arc) so list_models() can run async outside spawn_blocking.
-    let client: Result<Arc<dyn Backend>, Response> = {
-        let scope = scope.clone();
-        let chat_id = chat_id.clone();
-        let store = store.clone();
-        tokio::task::spawn_blocking(move || {
-            store.with_runtime(&scope, &chat_id, |rt| {
-                ensure_client(rt, &app);
-                let _ = make_client; // factory already wired via app
-                rt.session.client.clone()
-            })
-        })
-        .await
-        .map_err(|e| {
-            json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &json!({"ok": false, "error": format!("join error: {e}"), "models": []}),
-            )
-        })
-        .and_then(|r| match r {
-            Ok(Some(c)) => Ok(c),
-            Ok(None) => Err(json_response(
-                StatusCode::NOT_FOUND,
-                &json!({"ok": false, "error": "chat not found", "models": []}),
-            )),
-            Err(e) => Err(json_response(
-                StatusCode::BAD_REQUEST,
-                &json!({"ok": false, "error": e.to_string(), "models": []}),
-            )),
-        })
-    };
-    let client = match client {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
-    let models = list_models(client.as_ref(), &cfg).await;
-    let current = {
-        let m = client.model();
-        if m.is_empty() {
-            cfg.model.clone()
-        } else {
-            m
+    let binding = active_model_binding(&state);
+    let models = if let Some(registry) = state.store.connector_registry() {
+        match registry.list_models(binding.connector_id()).await {
+            Ok(models) => serde_json::to_value(models)
+                .ok()
+                .and_then(|value| value.as_array().cloned())
+                .unwrap_or_default(),
+            Err(error) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": error.to_string(), "models": []}),
+                )
+            }
         }
+    } else {
+        let (client, _, _) = match state.store.clients_for_binding(&binding) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": error.to_string(), "models": []}),
+                )
+            }
+        };
+        list_models(client.as_ref(), &state.config).await
     };
     ok_json(&json!({
         "ok": true,
-        "model": current,
+        "model": binding.model_id(),
+        "connector_id": binding.connector_id().as_str(),
+        "model_binding": binding,
         "models": models,
         "settings": settings.get(),
         "settings_options": settings.options(),
     }))
+}
+
+async fn get_connectors(State(state): State<AppState>) -> Response {
+    let Some(registry) = state.store.connector_registry() else {
+        return ok_json(&json!({
+            "ok": true,
+            "connectors": [],
+            "model_binding": state.store.default_binding(),
+            "models": [],
+        }));
+    };
+    let active = active_model_binding(&state);
+    let mut connectors = Vec::new();
+    for descriptor in registry.descriptors() {
+        let id = descriptor.id.clone();
+        let auth = registry
+            .auth_status(&id)
+            .await
+            .map(|status| serde_json::to_value(status).unwrap_or(Value::Null));
+        let mut value = serde_json::to_value(&descriptor)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        value.insert(
+            "auth".to_string(),
+            auth.unwrap_or_else(|error| {
+                json!({
+                    "state": "error",
+                    "message": error.to_string(),
+                })
+            }),
+        );
+        if let Ok(default_binding) = registry.default_binding(&id) {
+            value.insert(
+                "default_model_id".to_string(),
+                Value::String(default_binding.model_id().to_string()),
+            );
+        }
+        value.insert("models".to_string(), Value::Array(Vec::new()));
+        connectors.push(Value::Object(value));
+    }
+    ok_json(&json!({
+        "ok": true,
+        "connectors": connectors,
+        "model_binding": active,
+        "models": [],
+    }))
+}
+
+fn connector_id_from_path(id: String) -> Result<ConnectorId, String> {
+    let decoded = urlencoding::decode(&id)
+        .map(|value| value.into_owned())
+        .unwrap_or(id);
+    ConnectorId::new(decoded).map_err(|error| error.to_string())
+}
+
+fn invalid_connector_id_response(error: String) -> Response {
+    json_response(
+        StatusCode::BAD_REQUEST,
+        &json!({"ok": false, "error": error}),
+    )
+}
+
+async fn get_connector_models(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let id = match connector_id_from_path(id) {
+        Ok(id) => id,
+        Err(error) => return invalid_connector_id_response(error),
+    };
+    let Some(registry) = state.store.connector_registry() else {
+        return not_found();
+    };
+    match registry.list_models(&id).await {
+        Ok(models) => ok_json(&json!({
+            "ok": true,
+            "connector_id": id,
+            "models": models,
+        })),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error.to_string(), "models": []}),
+        ),
+    }
+}
+
+async fn get_connector_auth_status(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let id = match connector_id_from_path(id) {
+        Ok(id) => id,
+        Err(error) => return invalid_connector_id_response(error),
+    };
+    let Some(registry) = state.store.connector_registry() else {
+        return not_found();
+    };
+    match registry.auth_status(&id).await {
+        Ok(auth) => ok_json(&json!({"ok": true, "connector_id": id, "auth": auth})),
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error.to_string()}),
+        ),
+    }
+}
+
+async fn post_connector_auth_start(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    body: Bytes,
+) -> Response {
+    let id = match connector_id_from_path(id) {
+        Ok(id) => id,
+        Err(error) => return invalid_connector_id_response(error),
+    };
+    let Some(registry) = state.store.connector_registry() else {
+        return not_found();
+    };
+    let data = parse_body(&body);
+    let mut method_id = body_str(&data, "method_id");
+    if method_id.is_empty() {
+        method_id = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == id)
+            .and_then(|descriptor| descriptor.auth_methods.into_iter().next())
+            .map(|method| method.id)
+            .unwrap_or_default();
+    }
+    match registry.start_auth(&id, &method_id).await {
+        Ok(start) => {
+            let auth = registry.auth_status(&id).await.ok();
+            ok_json(&json!({
+                "ok": true,
+                "connector_id": id,
+                "start": start,
+                "auth": auth,
+            }))
+        }
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error.to_string()}),
+        ),
+    }
+}
+
+async fn post_connector_auth_logout(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+) -> Response {
+    let id = match connector_id_from_path(id) {
+        Ok(id) => id,
+        Err(error) => return invalid_connector_id_response(error),
+    };
+    let Some(registry) = state.store.connector_registry() else {
+        return not_found();
+    };
+    match registry.logout_auth(&id).await {
+        Ok(()) => {
+            let auth = registry.auth_status(&id).await.ok();
+            ok_json(&json!({"ok": true, "connector_id": id, "auth": auth}))
+        }
+        Err(error) => json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error.to_string()}),
+        ),
+    }
 }
 
 async fn get_export(State(state): State<AppState>) -> Response {
@@ -3877,10 +4720,7 @@ fn resolve_story_launch(store: &StoryStore, story_id: &str) -> Result<StoryLaunc
 /// the launch records the authored pin on the world and emits one warning; the
 /// launch still succeeds. An unpinned story ref (`version == 0`) records no pin
 /// and never warns. Self-contained stories (no `world_ref`) never warn.
-fn build_story_world(
-    state: &AppState,
-    launch: StoryLaunch,
-) -> Result<(World, Vec<Value>), String> {
+fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<(World, Vec<Value>), String> {
     let story_ref = Some(PackageRef {
         id: launch.story_id.clone(),
         version: launch.story_version,
@@ -3901,8 +4741,7 @@ fn build_story_world(
                 seed: World::new_dice_seed().to_string(),
                 ..WorldSpec::default()
             };
-            let (lore, world_version) =
-                resolve_saved_world_lore(state, &world_ref.id, &spec)?;
+            let (lore, world_version) = resolve_saved_world_lore(state, &world_ref.id, &spec)?;
             let world_provenance = PackageRef {
                 id: world_ref.id.clone(),
                 version: world_version,
@@ -3975,9 +4814,7 @@ fn attach_story_ref(mut world: World, story_ref: Option<PackageRef>) -> World {
 /// either key counts. This is the trigger for the `story_pc_override` warning
 /// when the launch ALSO selects a character package.
 fn story_plot_has_pc(plot: &Value) -> bool {
-    let pc = plot
-        .get("player_character")
-        .or_else(|| plot.get("player"));
+    let pc = plot.get("player_character").or_else(|| plot.get("player"));
     matches!(pc, Some(Value::Object(m)) if !m.is_empty())
 }
 
@@ -4136,17 +4973,20 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     let scope = chat_scope_id();
     let cfg = state.config.clone();
     let settings = state.settings.clone();
-    let make_client = state.make_client.clone();
     let store = state.store.clone();
-
-    // Build the session (brief -> seeded world via the model; story -> catalog).
-    let model_hint = match store.active_chat_id(&scope) {
-        Ok(Some(active_id)) => store
-            .with_runtime(&scope, &active_id, |rt| model_hint_for_new_chat(rt, &cfg))
-            .ok()
-            .flatten()
-            .unwrap_or_default(),
-        _ => String::new(),
+    let fallback_binding = active_model_binding(&state);
+    let binding = match checked_requested_binding(&state, &data, &fallback_binding).await {
+        Ok(binding) => binding,
+        Err(response) => return response,
+    };
+    let (bound_client, bound_factory, binding) = match store.clients_for_binding(&binding) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error.to_string()}),
+            )
+        }
     };
 
     // Structured launch warnings: seeded by `build_story_world`
@@ -4172,10 +5012,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         if selected_character.is_none() {
             return protagonist_required_response(true);
         }
-        let client = (make_client)();
-        if !model_hint.is_empty() {
-            client.set_model(&model_hint);
-        }
+        let client = bound_client.clone();
         match gml_agents::build_world_seed(client.as_ref(), &brief).await {
             // A brief-seeded world never carries an authored PC of its own.
             Ok(seed) => (World::from_seed(&seed), client, false),
@@ -4228,7 +5065,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         if selected_character.is_none() {
             return protagonist_required_response(true);
         }
-        let client = (make_client)();
+        let client = bound_client.clone();
         let mut world = World::from_worldgen_with_lore(&spec, world_lore);
         world.world_ref = world_ref;
         let story_title = body_str(&data, "story_title");
@@ -4267,10 +5104,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         let launch = match launch {
             Ok(l) => l,
             Err(e) => {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    &json!({"ok": false, "error": e}),
-                )
+                return json_response(StatusCode::BAD_REQUEST, &json!({"ok": false, "error": e}))
             }
         };
         // The override warning fires when the STORY's plot/seed carries its own
@@ -4284,17 +5118,14 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         if selected_character.is_none() && !story_carries_pc {
             return protagonist_required_response(launch.kind == "procedural");
         }
-        let client = (make_client)();
+        let client = bound_client.clone();
         let world = match build_story_world(&state, launch) {
             Ok((w, warnings)) => {
                 launch_warnings = warnings;
                 w
             }
             Err(e) => {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    &json!({"ok": false, "error": e}),
-                )
+                return json_response(StatusCode::BAD_REQUEST, &json!({"ok": false, "error": e}))
             }
         };
         (world, client, story_carries_pc)
@@ -4375,9 +5206,9 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
 
     // Build the session ONCE, choosing the builder by launch shape.
     let session = if is_brief {
-        build_session(client, world, &make_client, &cfg, &model_hint)
+        build_session(client, world, &bound_factory, &cfg, binding.clone())
     } else {
-        story_session(client, world, &cfg, &model_hint)
+        story_session(client, world, &bound_factory, &cfg, binding.clone())
     };
 
     let derived_title = if !title.is_empty() {
@@ -4391,7 +5222,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     let cfg2 = cfg.clone();
     let settings2 = settings.clone();
     let res = tokio::task::spawn_blocking(move || {
-        let chat_id = store.create_chat(
+        let chat_id = store.create_chat_with_binding(
             &scope,
             Some(session),
             None,
@@ -4399,6 +5230,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             Some(&derived_title),
             None,
             activate,
+            Some(binding),
         )?;
         let active = store.active_chat_id(&scope)?.unwrap_or_default();
         let is_active = chat_id == active;
@@ -4466,6 +5298,73 @@ async fn post_activate_chat(State(state): State<AppState>, AxPath(id): AxPath<St
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &json!({"ok": false, "error": format!("join error: {e}")}),
+        ),
+    }
+}
+
+fn canonical_chat_bundle(
+    store: &DialogStore,
+    scope: &str,
+    chat_id: &str,
+    config: &Config,
+    settings: &RuntimeSettings,
+) -> Result<Value, gml_persistence::StoreError> {
+    let chats = store.list_chats(scope)?;
+    let active_chat_id = store.active_chat_id(scope)?.unwrap_or_default();
+    let mut out = Map::new();
+    store
+        .with_runtime(scope, chat_id, |runtime| {
+            out.insert("ok".to_string(), Value::Bool(true));
+            out.insert(
+                "active_chat_id".to_string(),
+                Value::String(active_chat_id.clone()),
+            );
+            out.insert("chats".to_string(), Value::Array(chats));
+            out.insert(
+                "chat".to_string(),
+                payload::chat_response(runtime, active_chat_id == chat_id),
+            );
+            out.insert(
+                "state".to_string(),
+                payload::state(runtime, config, settings),
+            );
+            out.insert(
+                "transcript".to_string(),
+                json!({"events": payload::replay_events(runtime)}),
+            );
+        })?
+        .ok_or_else(|| gml_persistence::StoreError::ChatNotFound(chat_id.to_string()))?;
+    Ok(Value::Object(out))
+}
+
+fn history_mutation_error(error: gml_persistence::StoreError) -> Response {
+    match error {
+        gml_persistence::StoreError::ChatNotFound(chat_id) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "code": "chat_not_found", "error": format!("chat not found: {chat_id}")}),
+        ),
+        gml_persistence::StoreError::TurnNotRewindable { chat_id, turn } => json_response(
+            StatusCode::CONFLICT,
+            &json!({
+                "ok": false,
+                "code": "turn_not_rewindable",
+                "chat_id": chat_id,
+                "turn": turn,
+                "error": "Этот ход уже недоступен для редактирования",
+            }),
+        ),
+        gml_persistence::StoreError::HistoryChanged { chat_id } => json_response(
+            StatusCode::CONFLICT,
+            &json!({
+                "ok": false,
+                "code": "history_changed",
+                "chat_id": chat_id,
+                "error": "История изменилась во время генерации. Повторите действие.",
+            }),
+        ),
+        other => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": other.to_string()}),
         ),
     }
 }
@@ -4539,6 +5438,7 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
     let world_id = urlencoding::decode(&id)
         .map(|c| c.into_owned())
         .unwrap_or(id);
+    let _architect_guard = state.architect_lock("world", &world_id).lock_owned().await;
     let store = state.world_store.clone();
     let config = state.config.clone();
     let db = state.store.clone();
@@ -4594,39 +5494,82 @@ async fn post_delete_world(State(state): State<AppState>, AxPath(id): AxPath<Str
 
 async fn post_model(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
-    let model = body_str(&data, "model");
+    let model = {
+        let value = body_str(&data, "model_id");
+        if value.is_empty() {
+            body_str(&data, "model")
+        } else {
+            value
+        }
+    };
     if model.is_empty() {
         return json_response(
             StatusCode::BAD_REQUEST,
             &json!({"ok": false, "error": "model is required"}),
         );
     }
+    let chat_id = match active_chat(&state) {
+        Ok(chat_id) => chat_id,
+        Err(response) => return response,
+    };
+    let current_binding = match with_chat(&state, chat_id.clone(), |rt| {
+        rt.session.model_binding().clone()
+    })
+    .await
+    {
+        Ok(binding) => binding,
+        Err(response) => return response,
+    };
+    let requested_connector = body_str(&data, "connector_id");
+    if !requested_connector.is_empty()
+        && requested_connector != current_binding.connector_id().as_str()
+    {
+        return json_response(
+            StatusCode::CONFLICT,
+            &json!({
+                "ok": false,
+                "error": "connector is fixed for this chat; create a new chat to change it",
+            }),
+        );
+    }
+    let next_binding = match current_binding.with_model(&model) {
+        Ok(binding) => binding,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error.to_string()}),
+            )
+        }
+    };
+    if let Err(error) = validate_binding_for_use(&state, &next_binding).await {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error}),
+        );
+    }
     let cfg = state.config.clone();
     let settings = state.settings.clone();
     let app = state.clone();
-    let model2 = model.clone();
-    match with_active(&state, move |rt| {
+    let model2 = next_binding.model_id().to_string();
+    let connector_id = next_binding.connector_id().clone();
+    match with_chat_saved(&state, chat_id, move |rt| {
+        if rt.session.model_binding().connector_id() != &connector_id {
+            return Err(
+                "connector binding changed while the model update was being validated".to_string(),
+            );
+        }
         ensure_client(rt, &app);
-        let client = rt.session.client.clone();
-        client.set_model(&model2);
         rt.session.set_model_for_all_clients(&model2);
         // reconcile_for_model best-effort (model meta lookup omitted for the
         // sync path — settings reconcile uses None which is a safe no-op clamp).
         let _ = settings.reconcile_for_model(None);
-        rt.session.client_session_id = client.session_id();
-        rt.session.client_thread_id = client.thread_id();
-        let npc_ids: Vec<String> = rt.session.npc_clients.keys().cloned().collect();
-        for npc_id in npc_ids {
-            rt.session.remember_npc_client(&npc_id);
-        }
-        payload::state(rt, &cfg, &settings)
+        Ok(payload::state(rt, &cfg, &settings))
     })
     .await
     {
-        Ok(state_payload) => {
-            // Persist after the mutation.
-            persist_active(&state).await;
-            ok_json(&json!({"ok": true, "state": state_payload}))
+        Ok(Ok(state_payload)) => ok_json(&json!({"ok": true, "state": state_payload})),
+        Ok(Err(error)) => {
+            json_response(StatusCode::CONFLICT, &json!({"ok": false, "error": error}))
         }
         Err(resp) => resp,
     }
@@ -4657,15 +5600,12 @@ async fn post_settings(State(state): State<AppState>, body: Bytes) -> Response {
     let cfg = state.config.clone();
     let settings = state.settings.clone();
     match with_active(&state, move |rt| payload::state(rt, &cfg, &settings)).await {
-        Ok(state_payload) => {
-            persist_active(&state).await;
-            ok_json(&json!({
-                "ok": true,
-                "settings": settings_map,
-                "settings_options": state.settings.options(),
-                "state": state_payload,
-            }))
-        }
+        Ok(state_payload) => ok_json(&json!({
+            "ok": true,
+            "settings": settings_map,
+            "settings_options": state.settings.options(),
+            "state": state_payload,
+        })),
         Err(resp) => resp,
     }
 }
@@ -4680,24 +5620,21 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
     if cmd == "new" && !arg.is_empty() {
         // Create a new seeded chat (mirrors /chats with brief).
         let scope = chat_scope_id();
-        let make_client = state.make_client.clone();
         let store = state.store.clone();
-        let model_hint = match store.active_chat_id(&scope) {
-            Ok(Some(active_id)) => store
-                .with_runtime(&scope, &active_id, |rt| model_hint_for_new_chat(rt, &cfg))
-                .ok()
-                .flatten()
-                .unwrap_or_default(),
-            _ => String::new(),
+        let binding = active_model_binding(&state);
+        let (client, client_factory, binding) = match store.clients_for_binding(&binding) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                return json_response(
+                    StatusCode::BAD_REQUEST,
+                    &json!({"ok": false, "error": error.to_string()}),
+                )
+            }
         };
-        let client = (make_client)();
-        if !model_hint.is_empty() {
-            client.set_model(&model_hint);
-        }
         let session = match gml_agents::build_world_seed(client.as_ref(), &arg).await {
             Ok(seed) => {
                 let world = World::from_seed(&seed);
-                build_session(client, world, &make_client, &cfg, &model_hint)
+                build_session(client, world, &client_factory, &cfg, binding.clone())
             }
             Err(e) => {
                 return json_response(
@@ -4708,8 +5645,16 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
         };
         let arg2 = arg.clone();
         let res = tokio::task::spawn_blocking(move || {
-            let chat_id =
-                store.create_chat(&scope, Some(session), None, 0, Some(&arg2), None, true)?;
+            let chat_id = store.create_chat_with_binding(
+                &scope,
+                Some(session),
+                None,
+                0,
+                Some(&arg2),
+                None,
+                true,
+                Some(binding),
+            )?;
             let mut out = Map::new();
             store.with_runtime(&scope, &chat_id, |rt| {
                 out.insert("ok".to_string(), Value::Bool(true));
@@ -4726,84 +5671,68 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
     let app = state.clone();
     let cmd2 = cmd.clone();
     let arg2 = arg.clone();
-    let result = with_active(&state, move |rt| -> Result<Value, (StatusCode, String)> {
-        match cmd2.as_str() {
-            "reset" => {
-                let session = &mut rt.session;
-                let matches = session.client_backend.is_empty()
-                    || session.client_backend == app.config.backend;
-                let (mut model, mut session_id, mut thread_id) =
-                    (String::new(), String::new(), String::new());
-                if matches {
-                    model = if !session.client_model.is_empty() {
-                        session.client_model.clone()
-                    } else {
-                        session.client.model()
-                    };
-                    session_id = if !session.client_session_id.is_empty() {
-                        session.client_session_id.clone()
-                    } else {
-                        session.client.session_id()
-                    };
-                    thread_id = if !session.client_thread_id.is_empty() {
-                        session.client_thread_id.clone()
-                    } else {
-                        session.client.thread_id()
-                    };
+    let chat_id = match active_chat(&state) {
+        Ok(chat_id) => chat_id,
+        Err(response) => return response,
+    };
+    let result = with_chat_saved(
+        &state,
+        chat_id.clone(),
+        move |rt| -> Result<Value, (StatusCode, String)> {
+            match cmd2.as_str() {
+                "reset" => {
+                    let session = &mut rt.session;
+                    let binding = session.model_binding().clone();
+                    let story_id = session.world.story_id.clone();
+                    // Route reset through the INJECTED story store (the single live
+                    // store) — there is no global store to fall back to.
+                    let store = app.story_store.lock().expect("story store lock poisoned");
+                    if !store.story_ids().contains(&story_id) {
+                        let label = if story_id.is_empty() {
+                            "unknown".to_string()
+                        } else {
+                            story_id
+                        };
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            format!("cannot reset non-catalog story: {label}"),
+                        ));
+                    }
+                    let seed = store
+                        .seed(&story_id)
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+                    drop(store);
+                    let world = World::from_seed(&seed);
+                    let factory = session.npc_client_factory.clone();
+                    let client = factory();
+                    client.set_model(binding.model_id());
+                    let mut new_session =
+                        Session::with_world_binding(client, world, factory, binding);
+                    new_session.compaction = CompactionThresholds::from_config(&app.config);
+                    rt.session = new_session;
+                    rt.transcript.clear();
+                    rt.turn_count = 0;
                 }
-                let story_id = session.world.story_id.clone();
-                // Route reset through the INJECTED story store (the single live
-                // store) — there is no global store to fall back to.
-                let store = app.story_store.lock().expect("story store lock poisoned");
-                if !store.story_ids().contains(&story_id) {
-                    let label = if story_id.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        story_id
-                    };
+                "constraint" if !arg2.is_empty() => {
+                    rt.session.world.constraints.push(arg2.clone());
+                }
+                "event" if !arg2.is_empty() => {
+                    rt.session.world.hidden_events.push(arg2.clone());
+                }
+                _ => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        format!("cannot reset non-catalog story: {label}"),
+                        format!("unknown or incomplete command: {cmd2}"),
                     ));
                 }
-                let seed = store
-                    .seed(&story_id)
-                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-                drop(store);
-                let world = World::from_seed(&seed);
-                let factory = session.npc_client_factory.clone();
-                let mut new_session = Session::with_world((app.make_client)(), world, factory);
-                new_session.compaction = CompactionThresholds::from_config(&app.config);
-                new_session.client_backend = app.config.backend.clone();
-                new_session.client_model = model;
-                new_session.client_session_id = session_id;
-                new_session.client_thread_id = thread_id;
-                rt.session = new_session;
-                rt.transcript.clear();
-                rt.turn_count = 0;
             }
-            "constraint" if !arg2.is_empty() => {
-                rt.session.world.constraints.push(arg2.clone());
-            }
-            "event" if !arg2.is_empty() => {
-                rt.session.world.hidden_events.push(arg2.clone());
-            }
-            _ => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("unknown or incomplete command: {cmd2}"),
-                ));
-            }
-        }
-        Ok(payload::state(rt, &app.config, &app.settings))
-    })
+            Ok(payload::state(rt, &app.config, &app.settings))
+        },
+    )
     .await;
 
     match result {
-        Ok(Ok(state_payload)) => {
-            persist_active(&state).await;
-            ok_json(&json!({"ok": true, "state": state_payload}))
-        }
+        Ok(Ok(state_payload)) => ok_json(&json!({"ok": true, "state": state_payload})),
         Ok(Err((code, msg))) => json_response(code, &json!({"ok": false, "error": msg})),
         Err(resp) => resp,
     }
@@ -4813,106 +5742,858 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
 // /turn (SSE)
 // =========================================================================
 
+const MAX_TURN_REQUEST_ID_BYTES: usize = 128;
+const LEGACY_MODEL_ERROR_PREFIX: &str = "Ошибка вызова модели:";
+const LEGACY_RESUME_REJECTED: &str =
+    "Сохранённый ход нельзя безопасно повторить. Отправьте новое действие.";
+
+#[derive(Debug)]
+struct TurnDone {
+    ok: bool,
+    cancelled: bool,
+    retryable: bool,
+    replayed: bool,
+    request_id: String,
+    chat_id: Option<String>,
+    turn: Option<i64>,
+    rewindable: bool,
+}
+
+impl TurnDone {
+    fn completed(
+        request_id: String,
+        chat_id: String,
+        replayed: bool,
+        turn: i64,
+        rewindable: bool,
+    ) -> Self {
+        Self {
+            ok: true,
+            cancelled: false,
+            retryable: false,
+            replayed,
+            request_id,
+            chat_id: Some(chat_id),
+            turn: Some(turn),
+            rewindable,
+        }
+    }
+
+    fn failed(request_id: String, retryable: bool) -> Self {
+        Self {
+            ok: false,
+            cancelled: false,
+            retryable,
+            replayed: false,
+            request_id,
+            chat_id: None,
+            turn: None,
+            rewindable: false,
+        }
+    }
+
+    fn cancelled(request_id: String) -> Self {
+        Self {
+            ok: false,
+            cancelled: true,
+            retryable: false,
+            replayed: false,
+            request_id,
+            chat_id: None,
+            turn: None,
+            rewindable: false,
+        }
+    }
+
+    fn as_value(&self, fallback_chat_id: &str) -> Value {
+        json!({
+            "kind": "done",
+            "ok": self.ok,
+            "cancelled": self.cancelled,
+            "retryable": self.retryable,
+            "replayed": self.replayed,
+            "request_id": self.request_id,
+            "chat_id": self.chat_id.as_deref().unwrap_or(fallback_chat_id),
+            "turn": self.turn,
+            "rewindable": self.rewindable,
+        })
+    }
+}
+
+/// Aborts a spawned task when the owner future is dropped.
+///
+/// Tokio detaches a task when its [`tokio::task::JoinHandle`] is dropped. A
+/// streamed turn must do the opposite: dropping the HTTP body (for example,
+/// after the browser aborts `fetch`) cancels both the server turn and the
+/// orchestrator task it spawned.
+struct AbortTaskOnDrop(tokio::task::AbortHandle);
+
+impl AbortTaskOnDrop {
+    fn new<T>(handle: &tokio::task::JoinHandle<T>) -> Self {
+        Self(handle.abort_handle())
+    }
+}
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Cancels an in-flight turn when its SSE response is dropped before the
+/// terminal receipt is produced. Unlike a bare task abort, this also closes the
+/// blocking-save race through [`TurnControl::commit`].
+struct CancelTurnOnDrop {
+    task_abort: Option<tokio::task::AbortHandle>,
+    control: Arc<TurnControl>,
+}
+
+impl CancelTurnOnDrop {
+    fn new<T>(handle: &tokio::task::JoinHandle<T>, control: Arc<TurnControl>) -> Self {
+        Self {
+            task_abort: Some(handle.abort_handle()),
+            control,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.task_abort = None;
+    }
+}
+
+impl Drop for CancelTurnOnDrop {
+    fn drop(&mut self) {
+        if let Some(task_abort) = self.task_abort.take() {
+            self.control.request_cancellation();
+            task_abort.abort();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SavedTurnRequest {
+    NotFound,
+    SameText(i64),
+    DifferentText,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TurnHistoryMutation {
+    Edit { turn: i64 },
+    Branch { turn: i64, title: Option<String> },
+}
+
+struct TurnExecutionRequest {
+    scope: String,
+    chat_id: String,
+    text: String,
+    request_id: String,
+    legacy_resume: bool,
+    history: Option<TurnHistoryMutation>,
+}
+
+impl TurnHistoryMutation {
+    fn into_persistence(self) -> (i64, HistoryTurnKind) {
+        match self {
+            Self::Edit { turn } => (turn, HistoryTurnKind::Edit),
+            Self::Branch { turn, title } => (turn, HistoryTurnKind::Branch { title }),
+        }
+    }
+
+    fn matches_receipt(
+        &self,
+        kind: HistoryTurnReceiptKind,
+        source_turn: i64,
+        player_text: &str,
+        expected_text: &str,
+    ) -> bool {
+        let same_operation = matches!(
+            (self, kind),
+            (Self::Edit { .. }, HistoryTurnReceiptKind::Edit)
+                | (Self::Branch { .. }, HistoryTurnReceiptKind::Branch)
+        );
+        let requested_turn = match self {
+            Self::Edit { turn } | Self::Branch { turn, .. } => *turn,
+        };
+        same_operation && requested_turn == source_turn && player_text == expected_text
+    }
+}
+
+fn resolve_turn_history(
+    data: &Map<String, Value>,
+) -> Result<Option<TurnHistoryMutation>, &'static str> {
+    let history = match data.get("history") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(history)) => history,
+        Some(_) => return Err("history must be an object"),
+    };
+    let kind = history
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or("history.kind must be edit or branch")?;
+    let turn = history
+        .get("turn")
+        .and_then(Value::as_i64)
+        .filter(|turn| *turn > 0)
+        .ok_or("history.turn must be a positive integer")?;
+    let title = match history.get("title") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(title)) => {
+            let title = title.trim();
+            (!title.is_empty()).then(|| title.to_string())
+        }
+        Some(_) => return Err("history.title must be a string"),
+    };
+    match kind {
+        "edit" if title.is_none() => Ok(Some(TurnHistoryMutation::Edit { turn })),
+        "edit" => Err("history.title is only valid for a branch"),
+        "branch" => Ok(Some(TurnHistoryMutation::Branch { turn, title })),
+        _ => Err("history.kind must be edit or branch"),
+    }
+}
+
+fn resolve_turn_request_id(data: &Map<String, Value>) -> Result<String, &'static str> {
+    match data.get("request_id") {
+        None | Some(Value::Null) => Ok(uuid::Uuid::new_v4().to_string()),
+        Some(Value::String(value)) if value.trim().is_empty() => {
+            Ok(uuid::Uuid::new_v4().to_string())
+        }
+        Some(Value::String(value)) => validate_turn_request_id(value),
+        Some(_) => Err("request_id must be a string"),
+    }
+}
+
+fn validate_turn_request_id(request_id: &str) -> Result<String, &'static str> {
+    let request_id = request_id.trim();
+    if request_id.is_empty() {
+        return Err("request_id is required");
+    }
+    if request_id.len() > MAX_TURN_REQUEST_ID_BYTES || request_id.chars().any(char::is_control) {
+        return Err("request_id is invalid");
+    }
+    Ok(request_id.to_string())
+}
+
+fn explicit_turn_chat_id(data: &Map<String, Value>) -> Result<Option<String>, &'static str> {
+    match data.get("chat_id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Ok(Some(value.trim().to_string()))
+        }
+        Some(Value::String(_)) => Err("chat_id must not be empty"),
+        Some(_) => Err("chat_id must be a string"),
+    }
+}
+
+async fn resolve_owned_turn_chat(
+    state: &AppState,
+    scope: &str,
+    explicit_chat_id: Option<String>,
+) -> Result<String, Response> {
+    let Some(chat_id) = explicit_chat_id else {
+        return active_chat(state);
+    };
+
+    let store = state.store.clone();
+    let owned_scope = scope.to_string();
+    let checked_chat_id = chat_id.clone();
+    match tokio::task::spawn_blocking(move || store.chat_exists(&owned_scope, &checked_chat_id))
+        .await
+    {
+        Ok(Ok(true)) => Ok(chat_id),
+        Ok(Ok(false)) => Err(json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "code": "chat_not_found", "error": "chat not found"}),
+        )),
+        Ok(Err(error)) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": error.to_string()}),
+        )),
+        Err(error) => Err(json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("chat ownership task failed: {error}")}),
+        )),
+    }
+}
+
+fn resolve_legacy_resume(data: &Map<String, Value>) -> Result<bool, &'static str> {
+    match data.get("legacy_resume") {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err("legacy_resume must be a boolean"),
+    }
+}
+
+fn saved_turn_request(
+    transcript: &[Value],
+    request_id: &str,
+    current_text: &str,
+) -> SavedTurnRequest {
+    let mut seen = false;
+    for row in transcript.iter().rev() {
+        if row.get("request_id").and_then(Value::as_str) != Some(request_id) {
+            continue;
+        }
+        seen = true;
+        let event = match row.get("event") {
+            Some(Value::Object(event)) => event,
+            _ => continue,
+        };
+        if event.get("kind").and_then(Value::as_str) != Some("player") {
+            continue;
+        }
+        return if event.get("data").and_then(Value::as_str) == Some(current_text) {
+            SavedTurnRequest::SameText(row.get("turn").and_then(Value::as_i64).unwrap_or(0))
+        } else {
+            SavedTurnRequest::DifferentText
+        };
+    }
+    if seen {
+        // A successfully saved request always contains its player echo. Refuse
+        // to execute an ambiguous/corrupt receipt rather than risk duplication.
+        SavedTurnRequest::DifferentText
+    } else {
+        SavedTurnRequest::NotFound
+    }
+}
+
+fn committed_turn_for_request(transcript: &[Value], request_id: &str) -> Option<i64> {
+    transcript.iter().rev().find_map(|row| {
+        if row.get("request_id").and_then(Value::as_str) != Some(request_id)
+            || row
+                .get("event")
+                .and_then(Value::as_object)
+                .and_then(|event| event.get("kind"))
+                .and_then(Value::as_str)
+                != Some("player")
+        {
+            return None;
+        }
+        row.get("turn").and_then(Value::as_i64)
+    })
+}
+
+fn send_turn_error(tx: &tokio::sync::mpsc::UnboundedSender<gml_types::Event>, message: String) {
+    let _ = tx.send(gml_types::Event::new(
+        "error",
+        Some("ГМ".to_string()),
+        Value::String(message),
+        None,
+    ));
+}
+
+#[derive(Debug)]
+struct LegacyResumeCheckpoint {
+    player_row_index: usize,
+    player_event_index: usize,
+    turn_no: i64,
+    meta_total: Value,
+}
+
+fn transcript_event(row: &Value) -> Option<&Map<String, Value>> {
+    row.get("event")?.as_object()
+}
+
+fn event_has_kind_and_agent(event: &Map<String, Value>, kind: &str, agent: &str) -> bool {
+    event.get("kind").and_then(Value::as_str) == Some(kind)
+        && event.get("agent").and_then(Value::as_str) == Some(agent)
+}
+
+fn is_zero_number(data: &Map<String, Value>, key: &str) -> bool {
+    data.get(key).and_then(Value::as_f64) == Some(0.0)
+}
+
+/// Recognize the one legacy failure shape that is safe to continue in place.
+///
+/// Older servers persisted the player prelude before a model connection error.
+/// Retrying that text as a new turn duplicates durable world state, so this path
+/// is deliberately fail-closed: any extra event or mutated per-turn state makes
+/// the caller start a new action instead.
+fn legacy_resume_checkpoint(rt: &DialogRuntime, text: &str) -> Option<LegacyResumeCheckpoint> {
+    let player_row_index = rt.transcript.len().checked_sub(3)?;
+    let player_row = rt.transcript.get(player_row_index)?;
+    let error_row = rt.transcript.get(player_row_index + 1)?;
+    let meta_row = rt.transcript.get(player_row_index + 2)?;
+
+    if [player_row, error_row, meta_row]
+        .iter()
+        .any(|row| row.get("request_id").is_some())
+    {
+        return None;
+    }
+
+    let turn_no = player_row.get("turn")?.as_i64()?;
+    if turn_no <= 0
+        || error_row.get("turn").and_then(Value::as_i64) != Some(turn_no)
+        || meta_row.get("turn").and_then(Value::as_i64) != Some(turn_no)
+        || rt.turn_count != turn_no
+        || rt.session.turn != turn_no
+    {
+        return None;
+    }
+
+    let rows_for_turn = rt
+        .transcript
+        .iter()
+        .filter(|row| row.get("turn").and_then(Value::as_i64) == Some(turn_no))
+        .count();
+    if rows_for_turn != 3 {
+        return None;
+    }
+
+    let player_event = transcript_event(player_row)?;
+    if !event_has_kind_and_agent(player_event, "player", "Игрок")
+        || player_event.get("data").and_then(Value::as_str) != Some(text)
+    {
+        return None;
+    }
+
+    let error_event = transcript_event(error_row)?;
+    if !event_has_kind_and_agent(error_event, "error", "ГМ")
+        || !error_event
+            .get("data")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with(LEGACY_MODEL_ERROR_PREFIX))
+    {
+        return None;
+    }
+
+    let meta_event = transcript_event(meta_row)?;
+    if meta_event.get("kind").and_then(Value::as_str) != Some("meta_total") {
+        return None;
+    }
+    let meta_total = meta_event.get("data")?.as_object()?;
+    if !meta_total
+        .get("calls")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+        || ["in", "out", "cached", "tokens", "peak_context"]
+            .iter()
+            .any(|key| !is_zero_number(meta_total, key))
+        || meta_total.get("run") != Some(&Value::Object(rt.session.run_usage.clone()))
+    {
+        return None;
+    }
+
+    if !rt.session.pending.is_empty()
+        || !rt.session.turn_time_advances.is_empty()
+        || rt.session.last_player_action != text
+        || rt.session.gm_messages.last() != Some(&gml_agents::gm_user_message(text))
+    {
+        return None;
+    }
+
+    let mut matching_player_events = rt.session.events.iter().enumerate().filter(|(_, event)| {
+        event.turn == turn_no
+            && event.actor == "player"
+            && event.kind == "speech"
+            && event.speech == text
+    });
+    let player_event_index = matching_player_events.next()?.0;
+    if matching_player_events.next().is_some() {
+        return None;
+    }
+
+    Some(LegacyResumeCheckpoint {
+        player_row_index,
+        player_event_index,
+        turn_no,
+        meta_total: Value::Object(meta_total.clone()),
+    })
+}
+
+async fn execute_turn(
+    state: AppState,
+    request: TurnExecutionRequest,
+    control: Arc<TurnControl>,
+    tx: tokio::sync::mpsc::UnboundedSender<gml_types::Event>,
+) -> TurnDone {
+    let TurnExecutionRequest {
+        scope,
+        chat_id,
+        text,
+        request_id,
+        legacy_resume,
+        history,
+    } = request;
+    control.set_commit_target(&chat_id);
+    let lock = state.chat_lock(&chat_id);
+    let _guard = lock.lock().await;
+
+    if control.cancellation_requested() {
+        return TurnDone::cancelled(request_id);
+    }
+
+    // The database row is the pre-turn checkpoint. The owned runtime below is
+    // staged until both orchestration and persistence succeed.
+    let history_request_id = request_id.clone();
+    let history_text = text.clone();
+    let loaded = {
+        let store = state.store.clone();
+        let scope = scope.clone();
+        let chat_id = chat_id.clone();
+        tokio::task::spawn_blocking(move || match history {
+            Some(history) => {
+                if let Some(receipt) =
+                    store.history_turn_receipt(&scope, &chat_id, &history_request_id)?
+                {
+                    if !history.matches_receipt(
+                        receipt.kind,
+                        receipt.source_turn,
+                        &receipt.player_text,
+                        &history_text,
+                    ) {
+                        return Err(gml_persistence::StoreError::Other(
+                            "request_id has already been used for another history turn".to_string(),
+                        ));
+                    }
+                    return store
+                        .load_chat(&scope, &receipt.destination_chat_id)
+                        .map(|runtime| (runtime, None));
+                }
+                let source = store.load_chat(&scope, &chat_id)?;
+                if committed_turn_for_request(&source.transcript, &history_request_id).is_some() {
+                    return Err(gml_persistence::StoreError::Other(
+                        "request_id has already been used for another turn".to_string(),
+                    ));
+                }
+                let (turn, kind) = history.into_persistence();
+                let prepared = store.prepare_history_turn(&scope, &chat_id, turn, kind)?;
+                Ok((prepared.runtime, Some(prepared.commit)))
+            }
+            None => {
+                if store
+                    .history_turn_receipt(&scope, &chat_id, &history_request_id)?
+                    .is_some()
+                {
+                    return Err(gml_persistence::StoreError::Other(
+                        "request_id has already been used for a history turn".to_string(),
+                    ));
+                }
+                store
+                    .load_chat(&scope, &chat_id)
+                    .map(|runtime| (runtime, None))
+            }
+        })
+        .await
+    };
+    let (mut rt, prepared_history) = match loaded {
+        Ok(Ok(runtime)) => runtime,
+        Ok(Err(error)) => {
+            send_turn_error(&tx, error.to_string());
+            return TurnDone::failed(request_id, false);
+        }
+        Err(error) => {
+            send_turn_error(&tx, format!("turn load task failed: {error}"));
+            return TurnDone::failed(request_id, true);
+        }
+    };
+    let destination_chat_id = rt.chat_id.clone();
+    control.set_commit_target(&destination_chat_id);
+
+    match saved_turn_request(&rt.transcript, &request_id, &text) {
+        SavedTurnRequest::SameText(turn) => {
+            let rewindable = rt.rewindable_turns.contains(&turn);
+            return TurnDone::completed(request_id, destination_chat_id, true, turn, rewindable);
+        }
+        SavedTurnRequest::DifferentText => {
+            send_turn_error(
+                &tx,
+                "request_id has already been used for another turn".to_string(),
+            );
+            return TurnDone::failed(request_id, false);
+        }
+        SavedTurnRequest::NotFound => {}
+    }
+
+    // Capture before *any* turn mutation. The snapshot is written only in the
+    // same transaction as a fully completed turn, so cancellation/failure never
+    // creates a rewind point for state that was not committed.
+    let turn_checkpoint = if legacy_resume {
+        None
+    } else {
+        let next_turn = rt.turn_count.saturating_add(1);
+        match TurnCheckpoint::capture(&rt, next_turn, request_id.clone(), text.clone()) {
+            Ok(checkpoint) => Some(checkpoint),
+            Err(error) => {
+                send_turn_error(&tx, error.to_string());
+                return TurnDone::failed(request_id, false);
+            }
+        }
+    };
+
+    let resume_checkpoint = if legacy_resume {
+        let Some(checkpoint) = legacy_resume_checkpoint(&rt, &text) else {
+            send_turn_error(&tx, LEGACY_RESUME_REJECTED.to_string());
+            return TurnDone::failed(request_id, false);
+        };
+        if !rt
+            .session
+            .remove_empty_failed_turn_usage(&checkpoint.meta_total)
+        {
+            send_turn_error(&tx, LEGACY_RESUME_REJECTED.to_string());
+            return TurnDone::failed(request_id, false);
+        }
+
+        // The strict recognizer proved these are the final error + meta rows.
+        // Keep the original player echo as the durable idempotency receipt.
+        rt.transcript.truncate(checkpoint.player_row_index + 1);
+        let Some(player_row) = rt
+            .transcript
+            .get_mut(checkpoint.player_row_index)
+            .and_then(Value::as_object_mut)
+        else {
+            send_turn_error(&tx, LEGACY_RESUME_REJECTED.to_string());
+            return TurnDone::failed(request_id, false);
+        };
+        player_row.insert("request_id".to_string(), json!(&request_id));
+        Some(checkpoint)
+    } else {
+        None
+    };
+
+    ensure_client_owned(&mut rt, &state);
+    let (turn_no, player_event_index) = match resume_checkpoint.as_ref() {
+        Some(checkpoint) => (checkpoint.turn_no, Some(checkpoint.player_event_index)),
+        None => {
+            rt.turn_count += 1;
+            (rt.turn_count, None)
+        }
+    };
+
+    // Forward events from the orchestrator into the SSE channel and stage them
+    // for transcript persistence. Failed attempts are streamed but discarded.
+    let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<gml_types::Event>();
+    let settings = state.settings.clone();
+    let turn_text = text.clone();
+    let fallback_factory = rt.session.npc_client_factory.clone();
+    let fallback_binding = rt.session.model_binding().clone();
+    let placeholder = placeholder_session(&fallback_factory, &fallback_binding);
+    let mut session = std::mem::replace(&mut rt.session, placeholder);
+    let turn_handle = tokio::spawn(async move {
+        let outcome = match player_event_index {
+            Some(player_event_index) => {
+                resume_turn_into(
+                    &mut session,
+                    &settings,
+                    &turn_text,
+                    player_event_index,
+                    ev_tx,
+                )
+                .await
+            }
+            None => run_turn_into(&mut session, &settings, &turn_text, ev_tx).await,
+        };
+        (session, outcome)
+    });
+    control.attach_model_task(turn_handle.abort_handle());
+    // If `execute_turn` is cancelled because its SSE response was dropped,
+    // abort the nested orchestrator task instead of detaching it.
+    let turn_abort = AbortTaskOnDrop::new(&turn_handle);
+
+    let mut unexpected_player_event = false;
+    while let Some(event) = ev_rx.recv().await {
+        if legacy_resume && event.kind == "player" {
+            // A resumed turn must never duplicate the already persisted echo.
+            // Drain the task but suppress this invalid event and discard all
+            // staged state below.
+            unexpected_player_event = true;
+            continue;
+        }
+        let transcript_row = if event.kind == "player" {
+            // One durable receipt per logical turn is enough for idempotency;
+            // do not repeat the UUID on every token delta in the transcript.
+            json!({"turn": turn_no, "request_id": &request_id, "event": &event})
+        } else {
+            json!({"turn": turn_no, "event": &event})
+        };
+        rt.transcript.push(transcript_row);
+        let _ = tx.send(event);
+    }
+
+    let (session, outcome) = match turn_handle.await {
+        Ok(result) => result,
+        Err(error) => {
+            control.detach_model_task();
+            if control.cancellation_requested() {
+                return TurnDone::cancelled(request_id);
+            }
+            send_turn_error(&tx, format!("turn task failed: {error}"));
+            return TurnDone::failed(request_id, true);
+        }
+    };
+    control.detach_model_task();
+    drop(turn_abort);
+
+    if control.cancellation_requested() {
+        return TurnDone::cancelled(request_id);
+    }
+
+    if unexpected_player_event {
+        send_turn_error(
+            &tx,
+            "Внутренняя ошибка восстановления хода: повтор игрока".to_string(),
+        );
+        return TurnDone::failed(request_id, false);
+    }
+
+    if !outcome.is_completed() {
+        // Drop the staged session and transcript. The last saved database row
+        // remains the exact pre-turn state, so sending the same request is safe.
+        return TurnDone::failed(request_id, outcome.retryable());
+    }
+    rt.session = session;
+
+    let store = state.store.clone();
+    let save_control = control.clone();
+    match tokio::task::spawn_blocking(move || {
+        save_control.commit(|| match (prepared_history, turn_checkpoint) {
+            (Some(prepared), Some(checkpoint)) => {
+                store.commit_prepared_history_turn(rt, checkpoint, prepared)
+            }
+            (Some(_), None) => Err(gml_persistence::StoreError::Other(
+                "history turns require a pre-turn checkpoint".to_string(),
+            )),
+            (None, Some(checkpoint)) => store.save_owned_with_checkpoint(rt, checkpoint),
+            (None, None) => store.save_owned(rt),
+        })
+    })
+    .await
+    {
+        Ok(Err(TurnCommitCancelled)) => TurnDone::cancelled(request_id),
+        Ok(Ok(Ok(()))) => TurnDone::completed(
+            request_id,
+            destination_chat_id,
+            false,
+            turn_no,
+            !legacy_resume,
+        ),
+        Ok(Ok(Err(error))) => {
+            send_turn_error(&tx, format!("Не удалось сохранить ход: {error}"));
+            TurnDone::failed(request_id, true)
+        }
+        Err(error) => {
+            send_turn_error(&tx, format!("turn save task failed: {error}"));
+            TurnDone::failed(request_id, true)
+        }
+    }
+}
+
 async fn post_turn(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
     let text = body_str(&data, "text");
+    let request_id = match resolve_turn_request_id(&data) {
+        Ok(request_id) => request_id,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            );
+        }
+    };
+    let legacy_resume = match resolve_legacy_resume(&data) {
+        Ok(legacy_resume) => legacy_resume,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            );
+        }
+    };
+    let history = match resolve_turn_history(&data) {
+        Ok(history) => history,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            );
+        }
+    };
+    if legacy_resume && history.is_some() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "legacy_resume cannot mutate history"}),
+        );
+    }
+    let explicit_chat_id = match explicit_turn_chat_id(&data) {
+        Ok(chat_id) => chat_id,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            );
+        }
+    };
+    if history.is_some() && explicit_chat_id.is_none() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "history turns require chat_id"}),
+        );
+    }
 
     let scope = chat_scope_id();
-    let chat_id = match active_chat(&state) {
+    let chat_id = match resolve_owned_turn_chat(&state, &scope, explicit_chat_id).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
-
-    // The turn runs INCREMENTALLY: a tokio task drives run_turn_into, sending
-    // events into a channel; the response body streams each as a `data: ...`
-    // frame as it arrives, then appends the terminal `done` frame. The per-chat
-    // lock is held for the whole streamed turn (Python RLock).
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<gml_types::Event>();
-    let lock = state.chat_lock(&chat_id);
-    let store = state.store.clone();
-    let app = state.clone();
-    let scope2 = scope.clone();
-    let chat_id2 = chat_id.clone();
-
-    tokio::spawn(async move {
-        let _guard = lock.lock().await;
-        // Take the runtime out of the cache, run the turn against an owned
-        // Session (run_turn_into needs &mut + async), then write back + persist.
-        let loaded = {
-            let store = store.clone();
-            let scope = scope2.clone();
-            let chat_id = chat_id2.clone();
-            tokio::task::spawn_blocking(move || store.load_chat(&scope, &chat_id))
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-        };
-        let mut rt = match loaded {
-            Some(rt) => rt,
-            None => {
-                let _ = tx.send(gml_types::Event::new(
-                    "error",
-                    Some("ГМ".to_string()),
-                    Value::String("chat not found".to_string()),
-                    None,
-                ));
-                return;
-            }
-        };
-
-        ensure_client_owned(&mut rt, &app);
-        rt.turn_count += 1;
-        let turn_no = rt.turn_count;
-
-        // Forward events from the orchestrator into the SSE channel AND collect
-        // them for transcript append (non-error events go to the transcript as
-        // server.py does; the orchestrator never yields the terminal `done`).
-        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::unbounded_channel::<gml_types::Event>();
-        let settings = app.settings.clone();
-        let text2 = text.clone();
-
-        // We must both stream and append-to-transcript each event. Drive the
-        // turn, draining ev_rx into the client channel + transcript.
-        let mut session = std::mem::replace(&mut rt.session, placeholder_session(&app));
-        let turn_handle = tokio::spawn(async move {
-            run_turn_into(&mut session, &settings, &text2, ev_tx).await;
-            session
-        });
-
-        while let Some(event) = ev_rx.recv().await {
-            // Append non-delta? server.py appends EVERY event yielded by run_turn
-            // (including deltas) to the transcript, then replay filters deltas.
-            rt.transcript
-                .push(json!({"turn": turn_no, "event": &event}));
-            // Stream to the client (ignore send errors = client gone).
-            if tx.send(event).is_err() {
-                // client disconnected; keep draining so the turn finishes + saves.
-            }
+    let control_key = TurnRequestKey::new(&scope, &chat_id, &request_id);
+    let control = match state.turn_registry.register(control_key) {
+        Ok(control) => control,
+        Err(()) => {
+            return json_response(
+                StatusCode::CONFLICT,
+                &json!({
+                    "ok": false,
+                    "code": "turn_in_progress",
+                    "error": "this turn request is already in progress",
+                }),
+            );
         }
-        let session = turn_handle
-            .await
-            .unwrap_or_else(|_| placeholder_session(&app));
-        rt.session = session;
+    };
 
-        // Persist the dialog and replace the cached runtime used by /state,
-        // /debug, and /transcript.
-        let store = store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let _ = store.save_owned(rt);
-        })
-        .await;
-        // tx drops here -> the response stream sees end-of-events and appends
-        // the terminal `done` frame.
-    });
+    // The turn runs incrementally while its join handle carries the durable
+    // completion status. This lets the final `done` distinguish a committed
+    // turn, a replay, and a safely retryable staged failure.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<gml_types::Event>();
+    let fallback_request_id = request_id.clone();
+    let fallback_chat_id = chat_id.clone();
 
-    // Build the streaming body: each event -> `data: {json}\n\n`, then `done`.
+    let turn_handle = tokio::spawn(execute_turn(
+        state,
+        TurnExecutionRequest {
+            scope,
+            chat_id,
+            text,
+            request_id,
+            legacy_resume,
+            history,
+        },
+        control.clone(),
+        tx,
+    ));
+    // Moving this guard into the response body ties the server task lifetime to
+    // the HTTP stream lifetime. Client disconnect/AbortController => body drop
+    // => execute_turn abort => nested orchestrator abort.
+    let turn_cancel = CancelTurnOnDrop::new(&turn_handle, control);
+
+    // Build the streaming body: each event -> `data: {json}\n\n`, then one
+    // structured terminal `done` frame after the save result is known.
     let stream = async_stream::stream! {
+        let mut turn_cancel = turn_cancel;
         let mut rx = rx;
         while let Some(event) = rx.recv().await {
             let line = format!("data: {}\n\n", serde_json::to_string(&event).unwrap_or_default());
             yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
         }
-        yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
+        let done = turn_handle
+            .await
+            .unwrap_or_else(|_| TurnDone::failed(fallback_request_id, true));
+        turn_cancel.disarm();
+        let line = format!(
+            "data: {}\n\n",
+            serde_json::to_string(&done.as_value(&fallback_chat_id)).unwrap_or_default()
+        );
+        yield Ok(Bytes::from(line));
     };
 
     let mut headers = HeaderMap::new();
@@ -4929,6 +6610,155 @@ async fn post_turn(State(state): State<AppState>, body: Bytes) -> Response {
     (headers, body).into_response()
 }
 
+/// Stop one logical turn and resolve the commit race before acknowledging it.
+///
+/// `status=cancelled` guarantees that this request id was not persisted and can
+/// no longer be persisted by the in-flight task. `status=committed` means the
+/// SQLite commit acquired the fence first; the response includes the canonical
+/// chat bundle so the client can replace any optimistic rollback.
+async fn post_cancel_turn(
+    State(state): State<AppState>,
+    AxPath(encoded_request_id): AxPath<String>,
+    body: Bytes,
+) -> Response {
+    let decoded_request_id = urlencoding::decode(&encoded_request_id)
+        .map(|value| value.into_owned())
+        .unwrap_or(encoded_request_id);
+    let request_id = match validate_turn_request_id(&decoded_request_id) {
+        Ok(request_id) => request_id,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            );
+        }
+    };
+    let data = parse_body(&body);
+    let explicit_chat_id = match explicit_turn_chat_id(&data) {
+        Ok(chat_id) => chat_id,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            );
+        }
+    };
+
+    let scope = chat_scope_id();
+    let chat_id = match resolve_owned_turn_chat(&state, &scope, explicit_chat_id).await {
+        Ok(chat_id) => chat_id,
+        Err(response) => return response,
+    };
+    let key = TurnRequestKey::new(&scope, &chat_id, &request_id);
+    let control = state.turn_registry.get(&key);
+    let was_in_flight = control.is_some();
+    if let Some(control) = control.as_ref() {
+        control.request_cancellation();
+        let wait_control = control.clone();
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || wait_control.wait_for_commit()).await
+        {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("cancel fence task failed: {error}")}),
+            );
+        }
+    }
+    // Read after the fence: a branch sets its destination before attempting
+    // the fenced commit, so a commit winner cannot race this snapshot.
+    let commit_target = control.as_ref().and_then(|control| control.commit_target());
+
+    let store = state.store.clone();
+    let config = state.config.clone();
+    let settings = state.settings.clone();
+    let response_scope = scope.clone();
+    let source_chat_id = chat_id.clone();
+    let response_request_id = request_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let source_runtime = store.load_chat(&response_scope, &source_chat_id)?;
+        let mut committed = store
+            .history_turn_receipt(&response_scope, &source_chat_id, &response_request_id)?
+            .map(|receipt| (receipt.destination_chat_id, receipt.source_turn));
+        if committed.is_none() {
+            if let Some(target_chat_id) =
+                commit_target.filter(|target_chat_id| target_chat_id != &source_chat_id)
+            {
+                match store.load_chat(&response_scope, &target_chat_id) {
+                    Ok(runtime) => {
+                        if let Some(turn) =
+                            committed_turn_for_request(&runtime.transcript, &response_request_id)
+                        {
+                            committed = Some((target_chat_id, turn));
+                        }
+                    }
+                    Err(gml_persistence::StoreError::ChatNotFound(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if committed.is_none() {
+            committed =
+                committed_turn_for_request(&source_runtime.transcript, &response_request_id)
+                    .map(|turn| (source_chat_id.clone(), turn));
+        }
+        if committed.is_none() && !was_in_flight {
+            return Ok::<_, gml_persistence::StoreError>(None);
+        }
+
+        let canonical_chat_id = committed
+            .as_ref()
+            .map(|(chat_id, _)| chat_id.as_str())
+            .unwrap_or(&source_chat_id);
+
+        let mut bundle = canonical_chat_bundle(
+            &store,
+            &response_scope,
+            canonical_chat_id,
+            &config,
+            &settings,
+        )?;
+        if let Some(bundle) = bundle.as_object_mut() {
+            bundle.insert("request_id".to_string(), json!(response_request_id));
+            bundle.insert("chat_id".to_string(), json!(canonical_chat_id));
+            bundle.insert("source_chat_id".to_string(), json!(source_chat_id));
+            match committed {
+                Some((_, turn)) => {
+                    bundle.insert("status".to_string(), json!("committed"));
+                    bundle.insert("committed".to_string(), json!(true));
+                    bundle.insert("turn".to_string(), json!(turn));
+                }
+                None => {
+                    bundle.insert("status".to_string(), json!("cancelled"));
+                    bundle.insert("committed".to_string(), json!(false));
+                }
+            }
+        }
+        Ok(Some(bundle))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(Some(bundle))) => ok_json(&bundle),
+        Ok(Ok(None)) => json_response(
+            StatusCode::CONFLICT,
+            &json!({
+                "ok": false,
+                "code": "turn_not_running",
+                "status": "unknown",
+                "committed": false,
+                "request_id": request_id,
+                "chat_id": chat_id,
+                "error": "turn is not running and has no committed receipt",
+            }),
+        ),
+        Ok(Err(error)) => history_mutation_error(error),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("cancel resolution task failed: {error}")}),
+        ),
+    }
+}
+
 /// `ensure_client(dialog)` for an owned runtime (the `/turn` path operates on a
 /// freshly loaded runtime rather than the cache).
 fn ensure_client_owned(rt: &mut DialogRuntime, state: &AppState) {
@@ -4936,10 +6766,13 @@ fn ensure_client_owned(rt: &mut DialogRuntime, state: &AppState) {
 }
 
 /// A throwaway session used while the real one is moved out for the async turn.
-fn placeholder_session(state: &AppState) -> Session {
-    let client = (state.make_client)();
+fn placeholder_session(
+    client_factory: &gml_orchestrator::ClientFactory,
+    binding: &ModelBinding,
+) -> Session {
+    let client = client_factory();
     let world = World::from_worldgen(&WorldSpec::default());
-    Session::with_world(client, world, state.make_client.clone())
+    Session::with_world_binding(client, world, client_factory.clone(), binding.clone())
 }
 
 // =========================================================================
@@ -5203,7 +7036,11 @@ async fn ingest_world_images(
             if let Some(lore) = payload.get_mut("world_lore").and_then(Value::as_object_mut) {
                 lore.insert(
                     (*field).to_string(),
-                    Value::String(format!("{}/{}", gml_persistence::ASSETS_DIR_NAME, asset_file)),
+                    Value::String(format!(
+                        "{}/{}",
+                        gml_persistence::ASSETS_DIR_NAME,
+                        asset_file
+                    )),
                 );
             }
             continue;
@@ -5229,7 +7066,11 @@ async fn ingest_world_images(
         if let Some(lore) = payload.get_mut("world_lore").and_then(Value::as_object_mut) {
             lore.insert(
                 (*field).to_string(),
-                Value::String(format!("{}/{}", gml_persistence::ASSETS_DIR_NAME, asset_file)),
+                Value::String(format!(
+                    "{}/{}",
+                    gml_persistence::ASSETS_DIR_NAME,
+                    asset_file
+                )),
             );
         }
     }
@@ -5241,7 +7082,10 @@ async fn ingest_world_images(
 /// `/world-assets/<world_id>/<file>` route. The on-disk manifest stays relative
 /// (portable); only the response the frontend receives is rewritten.
 fn rewrite_world_asset_urls(world_id: &str, world_json: &mut Value) {
-    let Some(lore) = world_json.get_mut("world_lore").and_then(Value::as_object_mut) else {
+    let Some(lore) = world_json
+        .get_mut("world_lore")
+        .and_then(Value::as_object_mut)
+    else {
         return;
     };
     for (field, _asset_file) in WORLD_IMAGE_FIELDS {
@@ -5281,7 +7125,10 @@ fn rewrite_world_list_asset_urls(worlds: &mut [Value]) {
 /// `[A-Za-z0-9_-]` plus a single allowed image extension, with no path
 /// separators or `..`. Returns the matching `Content-Type` on success.
 fn validate_asset_filename(segment: &str) -> Option<&'static str> {
-    if segment.is_empty() || segment.contains('/') || segment.contains('\\') || segment.contains("..")
+    if segment.is_empty()
+        || segment.contains('/')
+        || segment.contains('\\')
+        || segment.contains("..")
     {
         return None;
     }
@@ -5339,7 +7186,10 @@ async fn get_world_asset(
     // assets directory (defense in depth atop the segment allowlist).
     let assets_dir = store.assets_dir(&world_id);
     let read = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, std::io::Error> {
-        match (std::fs::canonicalize(&path), std::fs::canonicalize(&assets_dir)) {
+        match (
+            std::fs::canonicalize(&path),
+            std::fs::canonicalize(&assets_dir),
+        ) {
             (Ok(canon_file), Ok(canon_dir)) => {
                 if !canon_file.starts_with(&canon_dir) {
                     return Ok(None);
@@ -5356,10 +7206,8 @@ async fn get_world_asset(
         Ok(Ok(Some(bytes))) => {
             let mut out = Response::new(Body::from(bytes));
             *out.status_mut() = StatusCode::OK;
-            out.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(content_type),
-            );
+            out.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
             out.headers_mut().insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("public, max-age=31536000, immutable"),
@@ -5439,19 +7287,18 @@ async fn get_world_export(
     }
     let store = state.world_store.clone();
     let id = world_id.clone();
-    let zipped = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, share::ShareError> {
-        if !store.world_exists(&id) {
-            return Ok(None);
-        }
-        let dir = store.world_dir(&id);
-        Ok(Some(share::zip_dir(&dir, "")?))
-    })
-    .await;
+    let zipped =
+        tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, share::ShareError> {
+            if !store.world_exists(&id) {
+                return Ok(None);
+            }
+            let dir = store.world_dir(&id);
+            Ok(Some(share::zip_dir(&dir, "")?))
+        })
+        .await;
 
     match zipped {
-        Ok(Ok(Some(bytes))) => {
-            zip_attachment_response(bytes, &format!("{world_id}.gmworld.zip"))
-        }
+        Ok(Ok(Some(bytes))) => zip_attachment_response(bytes, &format!("{world_id}.gmworld.zip")),
         Ok(Ok(None)) => json_response(
             StatusCode::NOT_FOUND,
             &json!({"ok": false, "error": "world not found"}),
@@ -5538,27 +7385,28 @@ async fn get_story_export(
     let world_store = state.world_store.clone();
     let world_id = world_ref.id.clone();
     let story_id_for_file = story_id.clone();
-    let zipped = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, share::ShareError> {
-        if !world_store.world_exists(&world_id) {
-            return Ok(None);
-        }
-        let world_dir = world_store.world_dir(&world_id);
-        // Read the on-disk story.json and flip world_embedded=true for the
-        // embedded copy (key order preserved by serde_json preserve_order).
-        let manifest_path = story_dir.join("story.json");
-        let raw = std::fs::read(&manifest_path)
-            .map_err(|e| share::ShareError::Io(e.to_string()))?;
-        let mut manifest: Value = serde_json::from_slice(&raw)
-            .map_err(|e| share::ShareError::Io(format!("parse story.json: {e}")))?;
-        if let Value::Object(map) = &mut manifest {
-            map.insert("world_embedded".to_string(), Value::Bool(true));
-        }
-        let manifest_bytes = serde_json::to_vec(&manifest)
-            .map_err(|e| share::ShareError::Io(format!("serialize story.json: {e}")))?;
-        let bytes = share::zip_story_with_world(&story_dir, &world_dir, &manifest_bytes)?;
-        Ok(Some(bytes))
-    })
-    .await;
+    let zipped =
+        tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, share::ShareError> {
+            if !world_store.world_exists(&world_id) {
+                return Ok(None);
+            }
+            let world_dir = world_store.world_dir(&world_id);
+            // Read the on-disk story.json and flip world_embedded=true for the
+            // embedded copy (key order preserved by serde_json preserve_order).
+            let manifest_path = story_dir.join("story.json");
+            let raw =
+                std::fs::read(&manifest_path).map_err(|e| share::ShareError::Io(e.to_string()))?;
+            let mut manifest: Value = serde_json::from_slice(&raw)
+                .map_err(|e| share::ShareError::Io(format!("parse story.json: {e}")))?;
+            if let Value::Object(map) = &mut manifest {
+                map.insert("world_embedded".to_string(), Value::Bool(true));
+            }
+            let manifest_bytes = serde_json::to_vec(&manifest)
+                .map_err(|e| share::ShareError::Io(format!("serialize story.json: {e}")))?;
+            let bytes = share::zip_story_with_world(&story_dir, &world_dir, &manifest_bytes)?;
+            Ok(Some(bytes))
+        })
+        .await;
 
     match zipped {
         Ok(Ok(Some(bytes))) => {
@@ -5629,13 +7477,8 @@ async fn post_library_import(
                     Ok((kind, id))
                 }
                 share::PackageKind::Story => {
-                    let id = import_story_into(
-                        &archive,
-                        &stories_dir,
-                        &worlds_dir,
-                        overwrite,
-                        &config,
-                    )?;
+                    let id =
+                        import_story_into(&archive, &stories_dir, &worlds_dir, overwrite, &config)?;
                     Ok((kind, id))
                 }
                 share::PackageKind::Character => {
@@ -5797,15 +7640,19 @@ fn import_story_into(
     let baked = archive.has_baked_world();
     let world_subtree = archive.subtree("world/");
     let world_id = if baked {
-        let wid = resolve_import_id(&world_subtree, share::PackageKind::World, worlds_dir, overwrite)?;
+        let wid = resolve_import_id(
+            &world_subtree,
+            share::PackageKind::World,
+            worlds_dir,
+            overwrite,
+        )?;
         Some(wid)
     } else {
         None
     };
 
     std::fs::create_dir_all(stories_dir).map_err(|e| share::ShareError::Io(e.to_string()))?;
-    let story_staging =
-        stories_dir.join(format!(".import-{id}.{}.tmp", std::process::id()));
+    let story_staging = stories_dir.join(format!(".import-{id}.{}.tmp", std::process::id()));
     let _ = std::fs::remove_dir_all(&story_staging);
     // Story package without the baked world/ subtree.
     archive.extract_excluding(&story_staging, "world/")?;
@@ -5856,12 +7703,17 @@ fn import_character_into(
     overwrite: bool,
 ) -> Result<String, share::ShareError> {
     // Structural validation of the manifest BEFORE any id allocation / write.
-    let manifest = archive
-        .character_manifest()
-        .ok_or_else(|| share::ShareError::Unrecognized("archive has no character.json".to_string()))?;
+    let manifest = archive.character_manifest().ok_or_else(|| {
+        share::ShareError::Unrecognized("archive has no character.json".to_string())
+    })?;
     validate_imported_character_manifest(&manifest)?;
 
-    let id = resolve_import_id(archive, share::PackageKind::Character, characters_dir, overwrite)?;
+    let id = resolve_import_id(
+        archive,
+        share::PackageKind::Character,
+        characters_dir,
+        overwrite,
+    )?;
     let dest = characters_dir.join(&id);
     std::fs::create_dir_all(characters_dir).map_err(|e| share::ShareError::Io(e.to_string()))?;
     let staging = characters_dir.join(format!(".import-{id}.{}.tmp", std::process::id()));
@@ -5876,9 +7728,9 @@ fn import_character_into(
 /// `payload.player_character` is an object. Any failure is a hard
 /// [`share::ShareError::Unrecognized`] (400) — the package never lands.
 fn validate_imported_character_manifest(manifest: &Value) -> Result<(), share::ShareError> {
-    let obj = manifest
-        .as_object()
-        .ok_or_else(|| share::ShareError::Unrecognized("character.json is not an object".to_string()))?;
+    let obj = manifest.as_object().ok_or_else(|| {
+        share::ShareError::Unrecognized("character.json is not an object".to_string())
+    })?;
     let format = obj.get("format").and_then(Value::as_str).unwrap_or("");
     if format != share::CHARACTER_FORMAT {
         return Err(share::ShareError::Unrecognized(format!(
@@ -5886,7 +7738,11 @@ fn validate_imported_character_manifest(manifest: &Value) -> Result<(), share::S
             share::CHARACTER_FORMAT
         )));
     }
-    let title = obj.get("title").and_then(Value::as_str).unwrap_or("").trim();
+    let title = obj
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     if title.is_empty() {
         return Err(share::ShareError::Unrecognized(
             "character.json title must be non-empty".to_string(),
@@ -5895,7 +7751,9 @@ fn validate_imported_character_manifest(manifest: &Value) -> Result<(), share::S
     let payload = obj
         .get("payload")
         .and_then(Value::as_object)
-        .ok_or_else(|| share::ShareError::Unrecognized("character.json payload must be an object".to_string()))?;
+        .ok_or_else(|| {
+            share::ShareError::Unrecognized("character.json payload must be an object".to_string())
+        })?;
     match payload.get("player_character") {
         Some(Value::Object(_)) => Ok(()),
         _ => Err(share::ShareError::Unrecognized(
@@ -5914,11 +7772,12 @@ fn rewrite_staged_story_world_ref(
 ) -> Result<(), share::ShareError> {
     let manifest_path = story_staging.join("story.json");
     let bytes = std::fs::read(&manifest_path).map_err(|e| share::ShareError::Io(e.to_string()))?;
-    let mut value: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| share::ShareError::Unrecognized(format!("story.json is not valid JSON: {e}")))?;
-    let obj = value
-        .as_object_mut()
-        .ok_or_else(|| share::ShareError::Unrecognized("story.json is not an object".to_string()))?;
+    let mut value: Value = serde_json::from_slice(&bytes).map_err(|e| {
+        share::ShareError::Unrecognized(format!("story.json is not valid JSON: {e}"))
+    })?;
+    let obj = value.as_object_mut().ok_or_else(|| {
+        share::ShareError::Unrecognized("story.json is not an object".to_string())
+    })?;
     let world_ref = obj
         .entry("world_ref".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
@@ -5945,17 +7804,13 @@ fn swap_in(staging: &std::path::Path, dest: &std::path::Path) -> Result<(), shar
     Ok(())
 }
 
+const TRANSCRIBE_BODY_LIMIT: usize = 32 * 1024 * 1024;
+
 async fn post_transcribe(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if state.config.backend != "codex" {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": "транскрипция доступна только при GM_BACKEND=codex"}),
-        );
-    }
     if body.is_empty() {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -5967,12 +7822,37 @@ async fn post_transcribe(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("audio/webm")
         .to_string();
-    match gml_audio::transcribe(&state.config, &body, &content_type).await {
+    let binding = active_model_binding(&state);
+    let Some(registry) = state.store.connector_registry() else {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": "коннекторы моделей не инициализированы"}),
+        );
+    };
+    match registry
+        .transcribe(binding.connector_id(), &body, &content_type, None)
+        .await
+    {
         Ok(text) => ok_json(&json!({"ok": true, "text": text})),
-        Err(e) => {
-            // status surfaced into the JSON exactly like server.py.
-            let status = e.status().map(|s| json!(s)).unwrap_or(Value::Null);
-            ok_json(&json!({"ok": false, "error": e.to_string(), "status": status}))
+        Err(error) => {
+            let provider_status = error.http_status();
+            let response_status =
+                if matches!(&error, gml_llm::ConnectorError::UnsupportedOperation { .. }) {
+                    StatusCode::NOT_IMPLEMENTED
+                } else {
+                    provider_status
+                        .and_then(|status| StatusCode::from_u16(status).ok())
+                        .unwrap_or(StatusCode::BAD_GATEWAY)
+                };
+            json_response(
+                response_status,
+                &json!({
+                    "ok": false,
+                    "error": error.to_string(),
+                    "status": provider_status,
+                    "connector_id": binding.connector_id(),
+                }),
+            )
         }
     }
 }
@@ -6125,27 +8005,41 @@ async fn npc_pronouns(state: &AppState, npc_id: &str) -> String {
 }
 
 async fn post_codex_login(State(state): State<AppState>) -> Response {
-    if state.config.backend != "codex" {
-        return json_response(
+    let Some(registry) = state.store.connector_registry() else {
+        return not_found();
+    };
+    let id = ConnectorId::new("codex").expect("codex connector id is valid");
+    match registry.start_auth(&id, "chatgpt").await {
+        Ok(_) => {
+            let auth = registry.auth_status(&id).await.ok();
+            ok_json(&json!({
+                "ok": true,
+                "auth": auth.as_ref().map(legacy_codex_auth_payload),
+            }))
+        }
+        Err(error) => json_response(
             StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": "GM_BACKEND is not codex"}),
-        );
-    }
-    match gml_codex::run_oauth(&state.http, &state.config).await {
-        Ok(_) => ok_json(&json!({"ok": true, "auth": gml_codex::auth_status()})),
-        Err(e) => json_response(
-            StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": e.to_string(), "auth": gml_codex::auth_status()}),
+            &json!({"ok": false, "error": error.to_string()}),
         ),
     }
 }
 
 async fn post_codex_logout(State(state): State<AppState>) -> Response {
-    match gml_codex::revoke_credential(&state.http, &state.config).await {
-        Ok(_) => ok_json(&json!({"ok": true, "auth": gml_codex::auth_status()})),
-        Err(e) => json_response(
+    let Some(registry) = state.store.connector_registry() else {
+        return not_found();
+    };
+    let id = ConnectorId::new("codex").expect("codex connector id is valid");
+    match registry.logout_auth(&id).await {
+        Ok(()) => {
+            let auth = registry.auth_status(&id).await.ok();
+            ok_json(&json!({
+                "ok": true,
+                "auth": auth.as_ref().map(legacy_codex_auth_payload),
+            }))
+        }
+        Err(error) => json_response(
             StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": e.to_string(), "auth": gml_codex::auth_status()}),
+            &json!({"ok": false, "error": error.to_string()}),
         ),
     }
 }
@@ -6159,11 +8053,14 @@ async fn debug_mutate<F>(state: &AppState, f: F) -> Response
 where
     F: FnOnce(&mut DialogRuntime, &Config, &RuntimeSettings) -> Value + Send + 'static,
 {
+    let chat_id = match active_chat(state) {
+        Ok(chat_id) => chat_id,
+        Err(response) => return response,
+    };
     let cfg = state.config.clone();
     let settings = state.settings.clone();
-    match with_active(state, move |rt| f(rt, &cfg, &settings)).await {
+    match with_chat_saved(state, chat_id, move |rt| f(rt, &cfg, &settings)).await {
         Ok(v) => {
-            persist_active(state).await;
             // Some mutators (npc) signal failure via ok:false; surface 400.
             if v.get("ok").and_then(Value::as_bool) == Some(false) {
                 json_response(StatusCode::BAD_REQUEST, &v)
@@ -6375,63 +8272,34 @@ fn die_or_none(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-/// `_model_hint_for_new_chat(dialog)`.
-fn model_hint_for_new_chat(rt: &DialogRuntime, cfg: &Config) -> String {
-    let session = &rt.session;
-    let matches = session.client_backend.is_empty() || session.client_backend == cfg.backend;
-    if !matches {
-        return String::new();
-    }
-    if !session.client_model.is_empty() {
-        return session.client_model.clone();
-    }
-    session.client.model()
-}
-
 /// Build a seeded session (`_seeded_session`).
 fn build_session(
     client: Arc<dyn Backend>,
     world: World,
-    make_client: &MakeClient,
+    client_factory: &gml_orchestrator::ClientFactory,
     cfg: &Config,
-    model_hint: &str,
+    binding: ModelBinding,
 ) -> Session {
-    let mut session = Session::with_world(client.clone(), world, make_client.clone());
+    let mut session =
+        Session::with_world_binding(client.clone(), world, client_factory.clone(), binding);
     session.compaction = CompactionThresholds::from_config(cfg);
-    session.client_backend = cfg.backend.clone();
-    let m = client.model();
-    session.client_model = if !m.is_empty() {
-        m
-    } else {
-        model_hint.to_string()
-    };
     session.client_session_id = client.session_id();
     session.client_thread_id = client.thread_id();
     session
 }
 
-/// Build a story session (`_story_session`) — no live client work yet.
+/// Build a story session with the same live connector semantics as every other
+/// chat shape. There is no placeholder that can later rebind the history.
 fn story_session(
     client: Arc<dyn Backend>,
     world: World,
+    client_factory: &gml_orchestrator::ClientFactory,
     cfg: &Config,
-    model_hint: &str,
+    binding: ModelBinding,
 ) -> Session {
-    let factory: gml_orchestrator::ClientFactory = Arc::new({
-        let _ = client; // story session uses the default factory for NPCs
-        || -> Arc<dyn Backend> { Arc::new(gml_llm::MockClient::new()) }
-    });
-    let mut session = Session::with_world(client_placeholder(), world, factory);
+    let mut session = Session::with_world_binding(client, world, client_factory.clone(), binding);
     session.compaction = CompactionThresholds::from_config(cfg);
-    session.client_backend = cfg.backend.clone();
-    session.client_model = model_hint.to_string();
     session
-}
-
-/// A placeholder client for a story session (Python passes `client=None`; we
-/// keep a mock until `ensure_client` builds the real one on first use).
-fn client_placeholder() -> Arc<dyn Backend> {
-    Arc::new(gml_llm::MockClient::new())
 }
 
 /// `_list_models(client)`.
@@ -6453,22 +8321,6 @@ async fn list_models(client: &dyn Backend, cfg: &Config) -> Vec<Value> {
         }
     };
     vec![json!({"id": model, "name": model, "supported": true})]
-}
-
-/// Persist the active chat (DialogStore.save) after a mutating handler.
-async fn persist_active(state: &AppState) {
-    let scope = chat_scope_id();
-    let chat_id = match state.store.active_chat_id(&scope) {
-        Ok(Some(id)) => id,
-        _ => return,
-    };
-    let store = state.store.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let _ = store.with_runtime(&scope, &chat_id, |rt| {
-            let _ = store.save(rt);
-        });
-    })
-    .await;
 }
 
 /// Collapse a `spawn_blocking` of a `Result<Value, StoreError>` into a Response.
@@ -6641,6 +8493,283 @@ fn load_key(path: &std::path::Path) -> std::io::Result<rustls::pki_types::Privat
 }
 
 #[cfg(test)]
+mod connector_history_tests {
+    use super::*;
+
+    fn binding(connector: &str, model: &str) -> ModelBinding {
+        ModelBinding::new(ConnectorId::new(connector).unwrap(), model).unwrap()
+    }
+
+    #[test]
+    fn architect_state_distinguishes_new_from_legacy_bound_history() {
+        let fresh = architect_state_parts(None).unwrap();
+        assert!(!fresh.state_exists);
+
+        let legacy = architect_state_parts(Some(json!({"messages": []}))).unwrap();
+        assert!(legacy.state_exists);
+        assert!(legacy.model_binding.is_none());
+
+        let default = binding("codex", "gpt-test");
+        assert_eq!(architect_public_state(None, &default).unwrap().1, None);
+        assert_eq!(
+            architect_public_state(Some(json!({"messages": []})), &default)
+                .unwrap()
+                .1,
+            Some(default)
+        );
+    }
+
+    #[test]
+    fn malformed_architect_binding_is_never_silently_dropped() {
+        let result = architect_state_parts(Some(json!({
+            "model_binding": {"connector_id": "../xai", "model_id": "grok"}
+        })));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn architect_model_change_discards_provider_cache_identity() {
+        let stored = ArchitectStateParts {
+            state_exists: true,
+            cache_session_id: Some("session-old".to_string()),
+            cache_thread_id: Some("thread-old".to_string()),
+            model_binding: Some(binding("xai", "grok-old")),
+            ..ArchitectStateParts::default()
+        };
+
+        assert_eq!(
+            architect_cache_ids(&stored, &binding("xai", "grok-old")),
+            (
+                Some("session-old".to_string()),
+                Some("thread-old".to_string())
+            )
+        );
+        assert_eq!(
+            architect_cache_ids(&stored, &binding("xai", "grok-new")),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn architect_state_persists_connector_owned_assistant_metadata() {
+        let assistant = json!({
+            "role": "assistant",
+            "content": "done",
+            "_gml_xai_reasoning": {
+                "items": [{"id": "rs_1", "encrypted_content": "cipher"}]
+            }
+        });
+        let state = architect_state_value(
+            Vec::new(),
+            vec![
+                json!({"role": "user", "content": " next ", "untrusted": true}),
+                assistant.clone(),
+            ],
+            None,
+            None,
+            &binding("xai", "grok"),
+        );
+
+        assert_eq!(
+            state["model_history"],
+            json!([
+                {"role": "user", "content": "next"},
+                assistant,
+            ])
+        );
+    }
+}
+
+#[cfg(test)]
+mod chat_concurrency_tests {
+    use super::*;
+    use gml_mock::MockClient;
+
+    fn state(tmp: &tempfile::TempDir) -> AppState {
+        let mut config = Config::from_env();
+        config.backend = "mock".to_string();
+        config.rag_enabled = false;
+        let config = Arc::new(config);
+        let settings = Arc::new(RuntimeSettings::new(
+            &config,
+            tmp.path().join("settings.json"),
+        ));
+        let factory: gml_orchestrator::ClientFactory =
+            Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>);
+        let store = Arc::new(
+            DialogStore::new(
+                tmp.path().join("dialogs.sqlite3").to_string_lossy(),
+                factory,
+                config.clone(),
+            )
+            .unwrap(),
+        );
+        let library = tmp.path().join("library");
+        AppState {
+            store,
+            world_store: Arc::new(WorldStore::new(&library).unwrap()),
+            story_store: Arc::new(std::sync::Mutex::new(StoryStore::new(&library).unwrap())),
+            character_store: Arc::new(std::sync::Mutex::new(
+                CharacterStore::new(&library).unwrap(),
+            )),
+            config,
+            settings,
+            http: reqwest::Client::new(),
+            sidecar: None,
+            locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            turn_registry: Arc::new(TurnRegistry::default()),
+            index_html: Arc::new(None),
+        }
+    }
+
+    #[test]
+    fn resource_locks_reuse_live_entries_and_prune_stale_batches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(&tmp);
+
+        let live = state.resource_lock("chat:live".to_string());
+        let same = state.resource_lock("chat:live".to_string());
+        assert!(Arc::ptr_eq(&live, &same));
+        drop(same);
+        drop(live);
+        state.locks.lock().unwrap().clear();
+
+        for index in 0..64 {
+            drop(state.resource_lock(format!("chat:stale-{index}")));
+        }
+        assert_eq!(state.locks.lock().unwrap().len(), 64);
+
+        let current = state.resource_lock("chat:current".to_string());
+        let locks = state.locks.lock().unwrap();
+        assert_eq!(locks.len(), 1);
+        let stored = locks.get("chat:current").unwrap().upgrade().unwrap();
+        assert!(Arc::ptr_eq(&current, &stored));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_fence_makes_cancel_vs_sqlite_commit_deterministic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(&tmp);
+        let scope = "shared";
+        let chat_id = state.store.get_active(scope).unwrap();
+        let request_id = "commit-fence-race";
+        let mut runtime = state.store.load_chat(scope, &chat_id).unwrap();
+        runtime.turn_count += 1;
+        runtime.session.turn = runtime.turn_count;
+        runtime.transcript.push(json!({
+            "turn": runtime.turn_count,
+            "request_id": request_id,
+            "event": {
+                "kind": "player",
+                "agent": "Игрок",
+                "data": "Проверка границы сохранения",
+            },
+        }));
+
+        let control = Arc::new(TurnControl::new());
+        let save_control = control.clone();
+        let store = state.store.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let save = tokio::task::spawn_blocking(move || {
+            save_control.commit(|| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                store.save_owned(runtime)
+            })
+        });
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("save did not acquire commit fence")
+        })
+        .await
+        .unwrap();
+
+        control.request_cancellation();
+        let wait_control = control.clone();
+        let mut cancel_wait = tokio::task::spawn_blocking(move || wait_control.wait_for_commit());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut cancel_wait)
+                .await
+                .is_err(),
+            "cancel acknowledgement must wait for a save that already owns the fence"
+        );
+
+        release_tx.send(()).unwrap();
+        match save.await.unwrap() {
+            Ok(Ok(())) => {}
+            other => panic!("commit winner failed: {other:?}"),
+        }
+        cancel_wait.await.unwrap();
+        let saved = state.store.load_chat(scope, &chat_id).unwrap();
+        assert_eq!(
+            committed_turn_for_request(&saved.transcript, request_id),
+            Some(1),
+            "a commit that entered first remains canonical"
+        );
+
+        let cancel_winner = TurnControl::new();
+        cancel_winner.request_cancellation();
+        let save_called = AtomicBool::new(false);
+        assert!(cancel_winner
+            .commit(|| save_called.store(true, Ordering::Release))
+            .is_err());
+        assert!(!save_called.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn debug_mutation_saves_resolved_chat_during_active_switch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(&tmp);
+        let scope = chat_scope_id();
+        let chat_a = state
+            .store
+            .create_chat(&scope, None, None, 0, Some("A"), None, true)
+            .unwrap();
+        let chat_b = state
+            .store
+            .create_chat(&scope, None, None, 0, Some("B"), None, false)
+            .unwrap();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mutation_state = state.clone();
+        let mutation = tokio::spawn(async move {
+            debug_mutate(&mutation_state, move |runtime, _, _| {
+                runtime.session.last_player_action = "ACTIVE_SWITCH_SENTINEL".to_string();
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                json!({"ok": true})
+            })
+            .await
+        });
+
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+            .await
+            .unwrap();
+        let switch_store = state.store.clone();
+        let switch_scope = scope.clone();
+        let switch = tokio::task::spawn_blocking(move || {
+            switch_store
+                .activate_chat(&switch_scope, &chat_b)
+                .expect("activate B")
+        });
+        // Activation updates SQLite before it reaches the cache currently held
+        // by the mutation. This deterministically exercises the old race.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        release_tx.send(()).unwrap();
+
+        let response = mutation.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(switch.await.unwrap());
+
+        let saved_a = state.store.load_chat(&scope, &chat_a).unwrap();
+        assert_eq!(saved_a.session.last_player_action, "ACTIVE_SWITCH_SENTINEL");
+    }
+}
+
+#[cfg(test)]
 mod sidecar_image_path_tests {
     use super::sidecar_image_path;
 
@@ -6662,8 +8791,14 @@ mod sidecar_image_path_tests {
         assert_eq!(sidecar_image_path("/image-files/../../secret"), None);
         assert_eq!(sidecar_image_path("/image-files/run/../secret.png"), None);
         // Absolute remote URL (SSRF) — a scheme/host is rejected outright.
-        assert_eq!(sidecar_image_path("http://evil.example/image-files/a/b"), None);
-        assert_eq!(sidecar_image_path("https://169.254.169.254/image-files/a/b"), None);
+        assert_eq!(
+            sidecar_image_path("http://evil.example/image-files/a/b"),
+            None
+        );
+        assert_eq!(
+            sidecar_image_path("https://169.254.169.254/image-files/a/b"),
+            None
+        );
         assert_eq!(sidecar_image_path("//evil.example/image-files/a/b"), None);
         // Wrong segment count.
         assert_eq!(sidecar_image_path("/image-files/run-1"), None);
@@ -6704,7 +8839,11 @@ mod phase_a_gc_tests {
         std::fs::write(dir.path().join("story.json"), story.as_bytes()).unwrap();
         std::fs::create_dir_all(dir.path().join("world")).unwrap();
         let world = format!(r#"{{"format":"gmlab.world/1","id":"{world_id}","title":"t"}}"#);
-        std::fs::write(dir.path().join("world").join("world.json"), world.as_bytes()).unwrap();
+        std::fs::write(
+            dir.path().join("world").join("world.json"),
+            world.as_bytes(),
+        )
+        .unwrap();
         share::zip_dir(dir.path(), "").unwrap()
     }
 
@@ -6739,7 +8878,11 @@ mod phase_a_gc_tests {
         let created = store
             .create_world(serde_json::json!({"title": "t"}))
             .unwrap();
-        let world_id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let world_id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         let cache = seed_cache(&config, &world_id);
         assert!(cache.is_file());
 

@@ -8,10 +8,11 @@
 //!   - GET /debug    has the documented `{ok, meta, ...}` shape
 //!   - GET /chats    -> {ok, active_chat_id, chats[]}
 //!   - POST /turn (SSE) yields `data: {json}\n\n` frames parseable as the turn
-//!     event sequence and ends with `data: {"kind": "done"}\n\n`
+//!     event sequence and ends with a structured `done` frame
 //!   - unknown route -> 404 {error:"not found"}
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -22,10 +23,13 @@ use tower::ServiceExt; // oneshot
 
 use gml_config::{Config, RuntimeSettings};
 use gml_llm::{
-    Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput, MockClient,
+    Backend, BackendError, ChatOutput, ChatStreamOutput, ConnectorCapability, ConnectorDescriptor,
+    ConnectorError, ConnectorId, ConnectorRegistry, DeltaSink, JsonStreamOutput, ModelBinding,
+    ModelConnector, ModelDescriptor,
 };
-use gml_persistence::{CharacterStore, DialogStore, WorldStore};
-use gml_server::{build_router, AppState};
+use gml_mock::MockClient;
+use gml_persistence::{CharacterStore, DialogStore, TurnCheckpoint, WorldStore};
+use gml_server::{build_router, AppState, TurnRegistry};
 
 #[derive(Default)]
 struct IdentitySpyState {
@@ -161,12 +165,299 @@ impl Backend for IdentitySpyBackend {
 fn install_identity_spy(state: &mut AppState) -> Arc<std::sync::Mutex<IdentitySpyState>> {
     let spy = Arc::new(std::sync::Mutex::new(IdentitySpyState::default()));
     let spy_factory = spy.clone();
-    state.make_client = Arc::new(move || {
+    let factory: gml_orchestrator::ClientFactory = Arc::new(move || {
         Arc::new(IdentitySpyBackend {
             state: spy_factory.clone(),
         }) as Arc<dyn Backend>
     });
+    state.store = Arc::new(
+        DialogStore::new(
+            state.store.db_path().to_string(),
+            factory,
+            state.config.clone(),
+        )
+        .expect("reopen dialog store with identity spy"),
+    );
     spy
+}
+
+struct FailFirstTurnBackend {
+    inner: MockClient,
+    stream_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl Backend for FailFirstTurnBackend {
+    fn model(&self) -> String {
+        self.inner.model()
+    }
+
+    fn set_model(&self, model: &str) {
+        self.inner.set_model(model);
+    }
+
+    async fn list_models(&self) -> Vec<Value> {
+        self.inner.list_models().await
+    }
+
+    async fn chat(
+        &self,
+        messages: &Value,
+        tools: Option<&Value>,
+        think: Option<bool>,
+        reasoning_role: &str,
+    ) -> Result<ChatOutput, BackendError> {
+        self.inner
+            .chat(messages, tools, think, reasoning_role)
+            .await
+    }
+
+    async fn chat_json(
+        &self,
+        messages: &Value,
+        schema: &Value,
+        think: Option<bool>,
+        reasoning_role: &str,
+    ) -> Result<Map<String, Value>, BackendError> {
+        self.inner
+            .chat_json(messages, schema, think, reasoning_role)
+            .await
+    }
+
+    async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
+        self.inner.summarize(text, proper_nouns).await
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: &Value,
+        tools: Option<&Value>,
+        think: Option<bool>,
+        reasoning_role: &str,
+        sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<ChatStreamOutput, BackendError> {
+        let call = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            return Err(BackendError::new("injected retryable model failure"));
+        }
+        self.inner
+            .chat_stream(messages, tools, think, reasoning_role, sink)
+            .await
+    }
+
+    async fn chat_json_stream(
+        &self,
+        messages: &Value,
+        schema: &Value,
+        think: Option<bool>,
+        reasoning_role: &str,
+        sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<JsonStreamOutput, BackendError> {
+        self.inner
+            .chat_json_stream(messages, schema, think, reasoning_role, sink)
+            .await
+    }
+}
+
+fn fail_first_turn_state(tmp: &tempfile::TempDir) -> (AppState, Arc<AtomicUsize>) {
+    let mut state = mock_state(tmp);
+    let stream_calls = Arc::new(AtomicUsize::new(0));
+    let factory_calls = stream_calls.clone();
+    let factory: gml_orchestrator::ClientFactory = Arc::new(move || {
+        Arc::new(FailFirstTurnBackend {
+            inner: MockClient::new(),
+            stream_calls: factory_calls.clone(),
+        }) as Arc<dyn Backend>
+    });
+    state.store = Arc::new(
+        DialogStore::new(
+            state.store.db_path().to_string(),
+            factory,
+            state.config.clone(),
+        )
+        .expect("reopen dialog store with fail-first backend"),
+    );
+    (state, stream_calls)
+}
+
+struct PendingTurnBackend {
+    inner: MockClient,
+    started: Arc<tokio::sync::Notify>,
+    cancelled: Arc<tokio::sync::Notify>,
+}
+
+struct PendingCallGuard(Arc<tokio::sync::Notify>);
+
+impl Drop for PendingCallGuard {
+    fn drop(&mut self) {
+        self.0.notify_one();
+    }
+}
+
+#[async_trait::async_trait]
+impl Backend for PendingTurnBackend {
+    fn model(&self) -> String {
+        self.inner.model()
+    }
+
+    fn set_model(&self, model: &str) {
+        self.inner.set_model(model);
+    }
+
+    async fn list_models(&self) -> Vec<Value> {
+        self.inner.list_models().await
+    }
+
+    async fn chat(
+        &self,
+        messages: &Value,
+        tools: Option<&Value>,
+        think: Option<bool>,
+        reasoning_role: &str,
+    ) -> Result<ChatOutput, BackendError> {
+        self.inner
+            .chat(messages, tools, think, reasoning_role)
+            .await
+    }
+
+    async fn chat_json(
+        &self,
+        messages: &Value,
+        schema: &Value,
+        think: Option<bool>,
+        reasoning_role: &str,
+    ) -> Result<Map<String, Value>, BackendError> {
+        self.inner
+            .chat_json(messages, schema, think, reasoning_role)
+            .await
+    }
+
+    async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
+        self.inner.summarize(text, proper_nouns).await
+    }
+
+    async fn chat_stream(
+        &self,
+        _messages: &Value,
+        _tools: Option<&Value>,
+        _think: Option<bool>,
+        _reasoning_role: &str,
+        _sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<ChatStreamOutput, BackendError> {
+        let _cancelled = PendingCallGuard(self.cancelled.clone());
+        self.started.notify_one();
+        std::future::pending().await
+    }
+
+    async fn chat_json_stream(
+        &self,
+        messages: &Value,
+        schema: &Value,
+        think: Option<bool>,
+        reasoning_role: &str,
+        sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<JsonStreamOutput, BackendError> {
+        self.inner
+            .chat_json_stream(messages, schema, think, reasoning_role, sink)
+            .await
+    }
+}
+
+fn pending_turn_state(
+    tmp: &tempfile::TempDir,
+) -> (AppState, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let mut state = mock_state(tmp);
+    let started = Arc::new(tokio::sync::Notify::new());
+    let cancelled = Arc::new(tokio::sync::Notify::new());
+    let factory_started = started.clone();
+    let factory_cancelled = cancelled.clone();
+    let factory: gml_orchestrator::ClientFactory = Arc::new(move || {
+        Arc::new(PendingTurnBackend {
+            inner: MockClient::new(),
+            started: factory_started.clone(),
+            cancelled: factory_cancelled.clone(),
+        }) as Arc<dyn Backend>
+    });
+    state.store = Arc::new(
+        DialogStore::new(
+            state.store.db_path().to_string(),
+            factory,
+            state.config.clone(),
+        )
+        .expect("reopen dialog store with pending backend"),
+    );
+    (state, started, cancelled)
+}
+
+fn seed_completed_turn_checkpoint(state: &AppState, text: &str) -> String {
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let mut runtime = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load runtime to seed checkpoint");
+    assert_eq!(runtime.turn_count, 0);
+    let checkpoint = TurnCheckpoint::capture(&runtime, 1, "seeded-turn", text)
+        .expect("capture seeded checkpoint");
+    runtime.turn_count = 1;
+    runtime.session.turn = 1;
+    runtime.session.last_player_action = text.to_string();
+    runtime
+        .session
+        .gm_messages
+        .push(json!({"role": "user", "content": text}));
+    runtime.transcript.push(json!({
+        "turn": 1,
+        "request_id": "seeded-turn",
+        "event": {"kind": "player", "agent": "Игрок", "data": text, "sid": null}
+    }));
+    runtime.transcript.push(json!({
+        "turn": 1,
+        "event": {"kind": "gm", "agent": "ГМ", "data": "seeded answer", "sid": null}
+    }));
+    state
+        .store
+        .save_owned_with_checkpoint(runtime, checkpoint)
+        .expect("save seeded checkpoint");
+    chat_id
+}
+
+/// Reproduce the three-row failure shape persisted by the pre-staging server:
+/// the model failed before any tool call, but the turn prelude and player world
+/// event were already durable.
+async fn seed_legacy_failed_turn(state: &AppState, text: &str) -> String {
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let mut runtime = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load runtime to seed legacy failure");
+    assert!(runtime.transcript.is_empty());
+
+    let events =
+        gml_orchestrator::run_turn(&mut runtime.session, state.settings.as_ref(), text).await;
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["player", "error", "meta_total"],
+        "the fail-first backend must produce the recoverable legacy tail"
+    );
+    assert!(events[1]
+        .data
+        .as_str()
+        .is_some_and(|message| message.starts_with("Ошибка вызова модели:")));
+
+    runtime.turn_count = runtime.session.turn;
+    runtime.session.record_public("player", "speech", text, "");
+    runtime.transcript = events
+        .into_iter()
+        .map(|event| json!({"turn": runtime.turn_count, "event": event}))
+        .collect();
+    state
+        .store
+        .save_owned(runtime)
+        .expect("persist legacy failed turn");
+    chat_id
 }
 
 fn draft_world_bible_properties(tools: &Value) -> &Map<String, Value> {
@@ -197,8 +488,6 @@ fn mock_state_with_infer_url(tmp: &tempfile::TempDir, infer_base_url: &str) -> A
     let settings_path = tmp.path().join("settings.json");
     let settings = Arc::new(RuntimeSettings::new(&cfg, settings_path));
 
-    let make_client: gml_server::MakeClient =
-        Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>);
     let factory: gml_orchestrator::ClientFactory =
         Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>);
 
@@ -221,12 +510,12 @@ fn mock_state_with_infer_url(tmp: &tempfile::TempDir, infer_base_url: &str) -> A
         world_store,
         story_store,
         character_store,
-        make_client,
         config: cfg,
         settings,
         http: reqwest::Client::new(),
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        turn_registry: Arc::new(TurnRegistry::default()),
         index_html: Arc::new(None),
     }
 }
@@ -245,8 +534,6 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
     let settings_path = tmp.path().join("settings.json");
     let settings = Arc::new(RuntimeSettings::new(&cfg, settings_path));
 
-    let make_client: gml_server::MakeClient =
-        Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>);
     let factory: gml_orchestrator::ClientFactory =
         Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>);
 
@@ -256,9 +543,8 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
             .expect("open temp dialog store"),
     );
 
-    let world_store = Arc::new(
-        WorldStore::new(tmp.path().join("library")).expect("open temp world store"),
-    );
+    let world_store =
+        Arc::new(WorldStore::new(tmp.path().join("library")).expect("open temp world store"));
     let story_store = Arc::new(std::sync::Mutex::new(
         gml_stories::StoryStore::new(tmp.path().join("library")).expect("open temp story store"),
     ));
@@ -271,14 +557,127 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
         world_store,
         story_store,
         character_store,
-        make_client,
         config: cfg,
         settings,
         http: reqwest::Client::new(),
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        turn_registry: Arc::new(TurnRegistry::default()),
         index_html: Arc::new(None),
     }
+}
+
+fn connector_state(tmp: &tempfile::TempDir) -> AppState {
+    let mut state = mock_state(tmp);
+    let registry = Arc::new(ConnectorRegistry::new());
+    registry
+        .register(Arc::new(SpeechMockConnector))
+        .expect("register mock connector");
+    let binding = ModelBinding::new(ConnectorId::new("mock").unwrap(), "mock").unwrap();
+    state.store = Arc::new(
+        DialogStore::with_connectors(
+            state.store.db_path().to_string(),
+            registry,
+            binding,
+            state.config.clone(),
+        )
+        .expect("reopen dialog store with connectors"),
+    );
+    state
+}
+
+struct SpeechMockConnector;
+
+#[async_trait::async_trait]
+impl ModelConnector for SpeechMockConnector {
+    fn descriptor(&self) -> ConnectorDescriptor {
+        ConnectorDescriptor::new(ConnectorId::new("mock").unwrap(), "Mock")
+            .unwrap()
+            .with_capability(ConnectorCapability::SpeechToText)
+    }
+
+    fn default_model_id(&self) -> String {
+        "mock".to_string()
+    }
+
+    async fn transcribe(
+        &self,
+        audio: &[u8],
+        content_type: &str,
+        language: Option<&str>,
+    ) -> Result<String, ConnectorError> {
+        assert_eq!(audio, [1, 2, 3]);
+        assert_eq!(content_type, "audio/webm");
+        assert_eq!(language, None);
+        Ok("проверка распознавания".to_string())
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelDescriptor>, ConnectorError> {
+        Ok(vec![ModelDescriptor::new("mock", "Mock")?])
+    }
+
+    fn create_backend(&self, model_id: &str) -> Arc<dyn Backend> {
+        let backend = Arc::new(MockClient::new());
+        backend.set_model(model_id);
+        backend
+    }
+}
+
+struct SlowMockConnector {
+    id: &'static str,
+    model: &'static str,
+}
+
+#[async_trait::async_trait]
+impl ModelConnector for SlowMockConnector {
+    fn descriptor(&self) -> ConnectorDescriptor {
+        ConnectorDescriptor::new(ConnectorId::new(self.id).unwrap(), self.id).unwrap()
+    }
+
+    fn default_model_id(&self) -> String {
+        self.model.to_string()
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelDescriptor>, ConnectorError> {
+        // Widen the overlap in the regression test. The production architect
+        // lock must still make the two complete turns execute sequentially.
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        Ok(vec![ModelDescriptor::new(self.model, self.model)?])
+    }
+
+    fn create_backend(&self, model_id: &str) -> Arc<dyn Backend> {
+        let backend = Arc::new(MockClient::new());
+        backend.set_model(model_id);
+        backend
+    }
+}
+
+fn competing_connector_state(tmp: &tempfile::TempDir) -> AppState {
+    let mut state = mock_state(tmp);
+    let registry = Arc::new(ConnectorRegistry::new());
+    registry
+        .register(Arc::new(SlowMockConnector {
+            id: "connector-a",
+            model: "model-a",
+        }))
+        .unwrap();
+    registry
+        .register(Arc::new(SlowMockConnector {
+            id: "connector-b",
+            model: "model-b",
+        }))
+        .unwrap();
+    let binding = ModelBinding::new(ConnectorId::new("connector-a").unwrap(), "model-a").unwrap();
+    state.store = Arc::new(
+        DialogStore::with_connectors(
+            state.store.db_path().to_string(),
+            registry,
+            binding,
+            state.config.clone(),
+        )
+        .expect("reopen dialog store with competing connectors"),
+    );
+    state
 }
 
 async fn get(state: &AppState, path: &str) -> (StatusCode, Vec<u8>) {
@@ -309,15 +708,25 @@ async fn post(state: &AppState, path: &str, body: Value) -> (StatusCode, Vec<u8>
 }
 
 async fn post_turn_text(state: &AppState, text: &str) -> (StatusCode, String) {
+    post_turn_request(state, text, None).await
+}
+
+async fn post_turn_request(
+    state: &AppState,
+    text: &str,
+    request_id: Option<&str>,
+) -> (StatusCode, String) {
+    let mut payload = json!({"text": text});
+    if let Some(request_id) = request_id {
+        payload["request_id"] = Value::String(request_id.to_string());
+    }
     let resp = build_router(state.clone())
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/turn")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&serde_json::json!({ "text": text })).unwrap(),
-                ))
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),
         )
         .await
@@ -325,6 +734,60 @@ async fn post_turn_text(state: &AppState, text: &str) -> (StatusCode, String) {
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+async fn post_legacy_turn_request(
+    state: &AppState,
+    text: &str,
+    request_id: &str,
+) -> (StatusCode, String) {
+    let payload = json!({
+        "text": text,
+        "request_id": request_id,
+        "legacy_resume": true,
+    });
+    let resp = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/turn")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+fn sse_payloads(text: &str) -> Vec<Value> {
+    text.split("\n\n")
+        .filter_map(|frame| frame.trim().strip_prefix("data: "))
+        .map(|payload| {
+            serde_json::from_str(payload)
+                .unwrap_or_else(|error| panic!("invalid SSE JSON ({error}): {payload:?}"))
+        })
+        .collect()
+}
+
+fn assert_successful_done(text: &str) -> Value {
+    let done = sse_payloads(text)
+        .into_iter()
+        .last()
+        .expect("SSE stream must not be empty");
+    assert_eq!(done["kind"], "done", "last SSE frame must be done");
+    assert_eq!(done["ok"], true, "turn must commit successfully: {done}");
+    assert_eq!(done["retryable"], false);
+    assert_eq!(done["replayed"], false);
+    assert!(
+        done["request_id"]
+            .as_str()
+            .is_some_and(|request_id| !request_id.is_empty()),
+        "done must carry the effective request id: {done}"
+    );
+    done
 }
 
 fn reference(name: &str) -> Value {
@@ -500,6 +963,104 @@ async fn get_chats_shape() {
 }
 
 #[tokio::test]
+async fn connector_catalog_and_chat_binding_contract() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = connector_state(&tmp);
+
+    let (status, body) = get(&state, "/connectors").await;
+    assert_eq!(status, StatusCode::OK);
+    let catalog: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(catalog["connectors"][0]["id"], "mock");
+    assert_eq!(catalog["connectors"][0]["default_model_id"], "mock");
+    assert_eq!(catalog["connectors"][0]["auth"]["state"], "not_required");
+
+    let (status, body) = get(&state, "/connectors/mock/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let models: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(models["models"][0]["id"], "mock");
+
+    let (status, _) = get(&state, "/chats").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = post(
+        &state,
+        "/model",
+        json!({"connector_id": "xai", "model_id": "grok"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("connector is fixed"));
+}
+
+#[tokio::test]
+async fn concurrent_first_architect_turns_cannot_bind_two_connectors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = competing_connector_state(&tmp);
+    let world_id = create_saved_world(&state, "Locked Architect World").await;
+
+    let first = post(
+        &state,
+        "/world-architect/chat",
+        json!({
+            "world_id": world_id,
+            "message": "Первый параллельный ход",
+            "connector_id": "connector-a",
+            "model_id": "model-a",
+        }),
+    );
+    let second = post(
+        &state,
+        "/world-architect/chat",
+        json!({
+            "world_id": world_id,
+            "message": "Второй параллельный ход",
+            "connector_id": "connector-b",
+            "model_id": "model-b",
+        }),
+    );
+    let ((first_status, first_body), (second_status, second_body)) = tokio::join!(first, second);
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(second_status, StatusCode::OK);
+
+    let results = [
+        architect_result(&first_body),
+        architect_result(&second_body),
+    ];
+    assert_eq!(
+        results.iter().filter(|result| result["ok"] == true).count(),
+        1,
+        "exactly one connector may win the first history binding: {results:?}"
+    );
+    let rejected = results
+        .iter()
+        .find(|result| result["ok"] != true)
+        .expect("one turn must be rejected");
+    assert!(rejected["data"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("connector is fixed"));
+
+    let persisted = state
+        .store
+        .get_architect_chat("world", &world_id)
+        .expect("read architect chat")
+        .expect("architect chat exists");
+    let connector = persisted["model_binding"]["connector_id"].as_str().unwrap();
+    assert!(connector == "connector-a" || connector == "connector-b");
+    let user_messages = persisted["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .count();
+    assert_eq!(user_messages, 1, "rejected turn must not enter history");
+}
+
+#[tokio::test]
 async fn search_returns_unified_library_items() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
@@ -529,15 +1090,7 @@ async fn search_finds_only_player_facing_chat_messages() {
     let state = mock_state(&tmp);
     let chat_id = state
         .store
-        .create_chat(
-            "shared",
-            None,
-            None,
-            0,
-            Some("Quiet Camp"),
-            None,
-            true,
-        )
+        .create_chat("shared", None, None, 0, Some("Quiet Camp"), None, true)
         .expect("create chat");
     state
         .store
@@ -602,10 +1155,7 @@ async fn search_rejects_an_oversized_query() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], false);
-    assert!(got["error"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("160"));
+    assert!(got["error"].as_str().unwrap_or_default().contains("160"));
 }
 
 #[tokio::test]
@@ -799,10 +1349,7 @@ async fn turn_sse_streams_frames_and_ends_with_done() {
     let text = String::from_utf8(bytes.to_vec()).unwrap();
 
     // Every frame is `data: {json}\n\n`. Parse each `data:` payload as JSON.
-    assert!(
-        text.ends_with("data: {\"kind\": \"done\"}\n\n"),
-        "stream must end with the done frame"
-    );
+    assert_successful_done(&text);
     let mut kinds: Vec<String> = Vec::new();
     let mut done_seen = false;
     for frame in text.split("\n\n") {
@@ -847,6 +1394,765 @@ async fn turn_sse_streams_frames_and_ends_with_done() {
 }
 
 #[tokio::test]
+async fn edit_and_branch_use_exact_pre_turn_checkpoints() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+
+    let (_, first_stream) = post_turn_text(&state, "Первый ход").await;
+    let first_done = assert_successful_done(&first_stream);
+    assert_eq!(first_done["turn"], 1);
+    assert_eq!(first_done["rewindable"], true);
+    let after_first = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load after first")
+        .payload_json();
+
+    let (_, second_stream) = post_turn_text(&state, "Второй ход").await;
+    let second_done = assert_successful_done(&second_stream);
+    assert_eq!(second_done["turn"], 2);
+    assert_eq!(second_done["rewindable"], true);
+
+    let (status, body) = get(&state, "/transcript").await;
+    assert_eq!(status, StatusCode::OK);
+    let transcript: Value = serde_json::from_slice(&body).unwrap();
+    let players = transcript["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["kind"] == "player")
+        .collect::<Vec<_>>();
+    assert_eq!(players.len(), 2);
+    assert_eq!(players[0]["turn"], 1);
+    assert_eq!(players[0]["rewindable"], true);
+    assert!(players[0]["message_id"].as_str().is_some());
+
+    let (status, body) = post(
+        &state,
+        "/turn",
+        json!({
+            "chat_id": chat_id,
+            "text": "Новый второй ход",
+            "request_id": "staged-edit-turn",
+            "history": {"kind": "edit", "turn": 2},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let replacement_stream = String::from_utf8(body).unwrap();
+    let replacement_done = assert_successful_done(&replacement_stream);
+    assert_eq!(replacement_done["chat_id"], chat_id);
+    assert_eq!(replacement_done["turn"], 2);
+    let source_after_replacement = state
+        .store
+        .load_chat("shared", &chat_id)
+        .unwrap()
+        .payload_json();
+    assert_ne!(source_after_replacement, after_first);
+
+    let branch_request_id = "staged-branch-turn";
+    let branch_body = json!({
+        "chat_id": chat_id,
+        "text": "Альтернативный второй ход",
+        "request_id": branch_request_id,
+        "history": {"kind": "branch", "turn": 2, "title": "Другая ветвь"},
+    });
+    let (status, body) = post(&state, "/turn", branch_body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let branch_stream = String::from_utf8(body).unwrap();
+    let branched = assert_successful_done(&branch_stream);
+    let branch_id = branched["chat_id"].as_str().unwrap();
+    assert_ne!(branch_id, chat_id);
+    assert_eq!(branched["turn"], 2);
+    let branch = state.store.load_chat("shared", branch_id).unwrap();
+    assert_eq!(branch.turn_count, 2);
+    assert_eq!(branch.rewindable_turns, vec![1, 2]);
+    assert_eq!(
+        state
+            .store
+            .load_chat("shared", &chat_id)
+            .unwrap()
+            .payload_json(),
+        source_after_replacement,
+        "branch must not mutate its source"
+    );
+
+    // Losing the terminal SSE receipt and retrying the same logical branch is
+    // idempotent: the durable source->destination receipt replays the existing
+    // branch instead of creating another chat.
+    let (status, body) = post(&state, "/turn", branch_body).await;
+    assert_eq!(status, StatusCode::OK);
+    let replayed = sse_payloads(&String::from_utf8(body).unwrap())
+        .into_iter()
+        .last()
+        .expect("replayed branch terminal receipt");
+    assert_eq!(replayed["kind"], "done");
+    assert_eq!(replayed["ok"], true);
+    assert_eq!(replayed["replayed"], true);
+    assert_eq!(replayed["chat_id"], branch_id);
+
+    // The same durable receipt also resolves a late Stop after the in-flight
+    // control has gone away: the client receives the committed branch bundle.
+    let (status, body) = post(
+        &state,
+        &format!("/turn/{branch_request_id}/cancel"),
+        json!({"chat_id": chat_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cancel: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(cancel["status"], "committed");
+    assert_eq!(cancel["chat_id"], branch_id);
+    assert_eq!(cancel["source_chat_id"], chat_id);
+
+    let source_before_invalid = state
+        .store
+        .load_chat("shared", &chat_id)
+        .unwrap()
+        .payload_json();
+    let (status, body) = post(
+        &state,
+        "/turn",
+        json!({
+            "chat_id": chat_id,
+            "text": "Недоступная правка",
+            "request_id": "invalid-staged-edit",
+            "history": {"kind": "edit", "turn": 99},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let frames = sse_payloads(&String::from_utf8(body).unwrap());
+    let done = frames.iter().find(|frame| frame["kind"] == "done").unwrap();
+    assert_eq!(done["ok"], false);
+    assert_eq!(done["retryable"], false);
+    assert_eq!(
+        state
+            .store
+            .load_chat("shared", &chat_id)
+            .unwrap()
+            .payload_json(),
+        source_before_invalid
+    );
+}
+
+#[tokio::test]
+async fn staged_edit_model_failure_keeps_source_exact_and_can_retry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, stream_calls) = fail_first_turn_state(&tmp);
+    let chat_id = seed_completed_turn_checkpoint(&state, "Исходный первый ход");
+    let source_before = state.store.load_chat("shared", &chat_id).unwrap();
+    let source_payload_before = source_before.payload_json();
+    let source_metadata_before = (
+        source_before.title.clone(),
+        source_before.preview.clone(),
+        source_before.created_at.clone(),
+        source_before.updated_at.clone(),
+    );
+    let chats_before = state.store.list_chats("shared").unwrap();
+    let request = json!({
+        "chat_id": chat_id,
+        "text": "Исправленный первый ход",
+        "request_id": "failed-staged-edit",
+        "history": {"kind": "edit", "turn": 1},
+    });
+
+    let (status, body) = post(&state, "/turn", request.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let failed = sse_payloads(&String::from_utf8(body).unwrap());
+    let done = failed.iter().find(|event| event["kind"] == "done").unwrap();
+    assert_eq!(done["ok"], false);
+    assert_eq!(done["retryable"], true);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+
+    let source_after_failure = state.store.load_chat("shared", &chat_id).unwrap();
+    assert_eq!(source_after_failure.payload_json(), source_payload_before);
+    assert_eq!(
+        (
+            source_after_failure.title,
+            source_after_failure.preview,
+            source_after_failure.created_at,
+            source_after_failure.updated_at,
+        ),
+        source_metadata_before
+    );
+    assert_eq!(state.store.list_chats("shared").unwrap(), chats_before);
+    assert!(state
+        .store
+        .history_turn_receipt("shared", &chat_id, "failed-staged-edit")
+        .unwrap()
+        .is_none());
+
+    let (status, body) = post(&state, "/turn", request).await;
+    assert_eq!(status, StatusCode::OK);
+    let retried = assert_successful_done(&String::from_utf8(body).unwrap());
+    assert_eq!(retried["chat_id"], chat_id);
+    assert_eq!(retried["turn"], 1);
+    assert!(stream_calls.load(Ordering::SeqCst) >= 2);
+    assert_ne!(
+        state
+            .store
+            .load_chat("shared", &chat_id)
+            .unwrap()
+            .payload_json(),
+        source_payload_before
+    );
+}
+
+#[tokio::test]
+async fn dropping_turn_stream_cancels_model_call_and_keeps_checkpoint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, started, cancelled) = pending_turn_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let before = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load pre-turn runtime");
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/turn")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "text": "Я останавливаю незавершённый ход.",
+                        "request_id": "cancel-turn-contract",
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut body = response.into_body();
+    let first_frame = tokio::time::timeout(std::time::Duration::from_secs(2), body.frame())
+        .await
+        .expect("player frame timed out")
+        .expect("turn body ended before player frame")
+        .expect("turn body frame failed");
+    let first_text = std::str::from_utf8(first_frame.data_ref().expect("SSE data frame"))
+        .expect("SSE frame must be UTF-8");
+    assert!(first_text.contains("\"kind\":\"player\""));
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .expect("model call did not start");
+    drop(body);
+    tokio::time::timeout(std::time::Duration::from_secs(2), cancelled.notified())
+        .await
+        .expect("dropping SSE did not cancel the model call");
+
+    let after = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load runtime after cancellation");
+    assert_eq!(after.turn_count, before.turn_count);
+    assert_eq!(after.transcript, before.transcript);
+    assert_eq!(after.payload_json(), before.payload_json());
+}
+
+#[tokio::test]
+async fn explicit_turn_cancel_aborts_model_and_returns_canonical_checkpoint() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, started, cancelled) = pending_turn_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let before = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load pre-turn runtime");
+    let request_id = "explicit-cancel-turn-contract";
+
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/turn")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "chat_id": chat_id,
+                        "text": "Я явно останавливаю незавершённый ход.",
+                        "request_id": request_id,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut turn_body = response.into_body();
+    let first_frame = tokio::time::timeout(std::time::Duration::from_secs(2), turn_body.frame())
+        .await
+        .expect("player frame timed out")
+        .expect("turn body ended before player frame")
+        .expect("turn body frame failed");
+    assert!(
+        std::str::from_utf8(first_frame.data_ref().expect("SSE data frame"))
+            .unwrap()
+            .contains("\"kind\":\"player\"")
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .expect("model call did not start");
+
+    let (status, cancel_body) = post(
+        &state,
+        &format!("/turn/{request_id}/cancel"),
+        json!({"chat_id": chat_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cancel: Value = serde_json::from_slice(&cancel_body).unwrap();
+    assert_eq!(cancel["ok"], true);
+    assert_eq!(cancel["status"], "cancelled");
+    assert_eq!(cancel["committed"], false);
+    assert_eq!(cancel["request_id"], request_id);
+    assert_eq!(cancel["chat_id"], chat_id);
+    assert_eq!(cancel["chat"]["turn_count"], before.turn_count);
+    assert_eq!(cancel["transcript"]["events"], json!([]));
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), cancelled.notified())
+        .await
+        .expect("cancel endpoint did not abort the model call");
+    let remaining = tokio::time::timeout(std::time::Duration::from_secs(2), turn_body.collect())
+        .await
+        .expect("cancelled turn stream did not finish")
+        .unwrap()
+        .to_bytes();
+    let terminal = sse_payloads(std::str::from_utf8(&remaining).unwrap())
+        .into_iter()
+        .find(|event| event["kind"] == "done")
+        .expect("cancelled terminal receipt");
+    assert_eq!(terminal["ok"], false);
+    assert_eq!(terminal["cancelled"], true);
+    assert_eq!(terminal["retryable"], false);
+
+    let after = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load runtime after explicit cancellation");
+    assert_eq!(after.turn_count, before.turn_count);
+    assert_eq!(after.transcript, before.transcript);
+    assert_eq!(after.payload_json(), before.payload_json());
+}
+
+#[tokio::test]
+async fn explicit_turn_chat_id_cannot_cross_persistence_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let foreign_chat_id = state
+        .store
+        .create_chat("another-scope", None, None, 0, None, None, false)
+        .unwrap();
+
+    let (status, body) = post(
+        &state,
+        "/turn",
+        json!({
+            "chat_id": foreign_chat_id,
+            "text": "Этот ход не должен попасть в чужую историю",
+            "request_id": "foreign-scope-turn",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["ok"], false);
+    assert_eq!(error["code"], "chat_not_found");
+    let foreign = state
+        .store
+        .load_chat("another-scope", &foreign_chat_id)
+        .unwrap();
+    assert_eq!(foreign.turn_count, 0);
+    assert!(foreign.transcript.is_empty());
+}
+
+#[tokio::test]
+async fn turn_failure_rolls_back_and_successful_request_id_is_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, stream_calls) = fail_first_turn_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let before = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load pre-turn runtime");
+    let before_payload = before.payload_json();
+    let before_turn_count = before.turn_count;
+    let (status, before_transcript_body) = get(&state, "/transcript").await;
+    assert_eq!(status, StatusCode::OK);
+    let before_transcript: Value = serde_json::from_slice(&before_transcript_body).unwrap();
+    let request_id = "turn-idempotency-contract";
+    let text = "Я осматриваю зал трактира.";
+
+    let (status, failed_sse) = post_turn_request(&state, text, Some(request_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    let failed_frames = sse_payloads(&failed_sse);
+    let failed_done = failed_frames.last().expect("failed done frame");
+    assert_eq!(failed_done["kind"], "done");
+    assert_eq!(failed_done["ok"], false);
+    assert_eq!(failed_done["retryable"], true);
+    assert_eq!(failed_done["replayed"], false);
+    assert_eq!(failed_done["request_id"], request_id);
+    assert!(
+        failed_frames.iter().any(|event| {
+            event["kind"] == "error"
+                && event["data"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("injected retryable model failure"))
+        }),
+        "terminal model error must be streamed"
+    );
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+
+    let after_failure = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load runtime after failed attempt");
+    assert_eq!(after_failure.payload_json(), before_payload);
+    assert_eq!(after_failure.turn_count, before_turn_count);
+    let (status, after_failure_transcript_body) = get(&state, "/transcript").await;
+    assert_eq!(status, StatusCode::OK);
+    let after_failure_transcript: Value =
+        serde_json::from_slice(&after_failure_transcript_body).unwrap();
+    assert_eq!(
+        after_failure_transcript, before_transcript,
+        "failed staged events must not leak through the cached transcript"
+    );
+
+    let (status, successful_sse) = post_turn_request(&state, text, Some(request_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    let successful_done = assert_successful_done(&successful_sse);
+    assert_eq!(successful_done["request_id"], request_id);
+    let calls_after_success = stream_calls.load(Ordering::SeqCst);
+    assert!(calls_after_success > 1, "retry must execute the model");
+
+    let after_success = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load committed runtime");
+    assert_eq!(after_success.turn_count, before_turn_count + 1);
+    assert!(after_success
+        .transcript
+        .iter()
+        .any(|row| { row.get("request_id").and_then(Value::as_str) == Some(request_id) }));
+    let matching_player_events = after_success
+        .transcript
+        .iter()
+        .filter(|row| {
+            row.get("request_id").and_then(Value::as_str) == Some(request_id)
+                && row["event"]["kind"] == "player"
+                && row["event"]["data"] == text
+        })
+        .count();
+    assert_eq!(
+        matching_player_events, 1,
+        "one logical request must persist exactly one matching player event"
+    );
+    let committed_payload = after_success.payload_json();
+
+    let (status, replayed_sse) = post_turn_request(&state, text, Some(request_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    let replayed_frames = sse_payloads(&replayed_sse);
+    assert_eq!(
+        replayed_frames.len(),
+        1,
+        "replay must not restream the turn"
+    );
+    let replayed_done = &replayed_frames[0];
+    assert_eq!(replayed_done["kind"], "done");
+    assert_eq!(replayed_done["ok"], true);
+    assert_eq!(replayed_done["retryable"], false);
+    assert_eq!(replayed_done["replayed"], true);
+    assert_eq!(replayed_done["request_id"], request_id);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), calls_after_success);
+
+    let after_replay = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load runtime after replay");
+    assert_eq!(after_replay.payload_json(), committed_payload);
+
+    let (status, conflict_sse) =
+        post_turn_request(&state, "Другое действие", Some(request_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    let conflict_frames = sse_payloads(&conflict_sse);
+    let conflict_done = conflict_frames.last().expect("conflict done frame");
+    assert_eq!(conflict_done["ok"], false);
+    assert_eq!(conflict_done["retryable"], false);
+    assert_eq!(conflict_done["replayed"], false);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), calls_after_success);
+}
+
+#[tokio::test]
+async fn legacy_model_failure_resumes_same_turn_without_durable_duplicates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, stream_calls) = fail_first_turn_state(&tmp);
+    let text = "Я осматриваю зал трактира.";
+    let request_id = "legacy-resume-contract";
+    let chat_id = seed_legacy_failed_turn(&state, text).await;
+
+    let before = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load seeded legacy runtime");
+    assert_eq!(before.turn_count, 1);
+    assert_eq!(before.session.turn, 1);
+    assert_eq!(
+        before
+            .session
+            .gm_messages
+            .iter()
+            .filter(|message| **message == gml_agents::gm_user_message(text))
+            .count(),
+        1
+    );
+    let player_event = before
+        .session
+        .events
+        .iter()
+        .find(|event| event.turn == 1 && event.actor == "player" && event.speech == text)
+        .expect("seeded player world event");
+    let player_source_id = format!("world_event_{}", player_event.seq);
+    let player_memory_count_before = before
+        .session
+        .world
+        .world_canon
+        .memory
+        .units
+        .values()
+        .filter(|unit| unit.source_event_ids.contains(&player_source_id))
+        .count();
+    assert!(player_memory_count_before > 0);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
+
+    let (status, resumed_sse) = post_legacy_turn_request(&state, text, request_id).await;
+    assert_eq!(status, StatusCode::OK);
+    let resumed_frames = sse_payloads(&resumed_sse);
+    let resumed_done = resumed_frames.last().expect("resumed done frame");
+    assert_eq!(resumed_done["kind"], "done");
+    assert_eq!(
+        resumed_done["ok"], true,
+        "resume must commit: {resumed_done}"
+    );
+    assert_eq!(resumed_done["retryable"], false);
+    assert_eq!(resumed_done["replayed"], false);
+    assert_eq!(resumed_done["request_id"], request_id);
+    assert!(
+        resumed_frames.iter().all(|event| event["kind"] != "player"),
+        "resume must not stream a second player echo: {resumed_frames:?}"
+    );
+    let calls_after_resume = stream_calls.load(Ordering::SeqCst);
+    assert!(calls_after_resume > 1, "resume must call the model");
+
+    let after = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load resumed runtime");
+    assert_eq!(after.turn_count, 1, "resume must not create a new turn");
+    assert_eq!(after.session.turn, 1, "session turn stays unchanged");
+    assert_eq!(
+        after.session.run_usage.get("turns").and_then(Value::as_i64),
+        Some(1),
+        "the empty failed attempt is replaced by the successful usage"
+    );
+    assert_eq!(
+        after
+            .session
+            .gm_messages
+            .iter()
+            .filter(|message| **message == gml_agents::gm_user_message(text))
+            .count(),
+        1,
+        "resume must reuse the existing GM user action"
+    );
+    assert_eq!(
+        after
+            .session
+            .events
+            .iter()
+            .filter(|event| { event.turn == 1 && event.actor == "player" && event.speech == text })
+            .count(),
+        1,
+        "resume must reuse the existing player world event"
+    );
+    assert_eq!(
+        after
+            .session
+            .world
+            .world_canon
+            .memory
+            .units
+            .values()
+            .filter(|unit| unit.source_event_ids.contains(&player_source_id))
+            .count(),
+        player_memory_count_before,
+        "resume must not duplicate player-event memories"
+    );
+    let player_rows: Vec<&Value> = after
+        .transcript
+        .iter()
+        .filter(|row| row["event"]["kind"] == "player" && row["event"]["data"] == text)
+        .collect();
+    assert_eq!(player_rows.len(), 1, "one durable player transcript row");
+    assert_eq!(player_rows[0]["request_id"], request_id);
+    assert!(after.transcript.iter().all(|row| {
+        row["event"]["kind"] != "error"
+            || !row["event"]["data"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Ошибка вызова модели:"))
+    }));
+
+    let committed_payload = after.payload_json();
+    let (status, replayed_sse) = post_legacy_turn_request(&state, text, request_id).await;
+    assert_eq!(status, StatusCode::OK);
+    let replayed_frames = sse_payloads(&replayed_sse);
+    assert_eq!(replayed_frames.len(), 1, "replay must not restream events");
+    assert_eq!(replayed_frames[0]["kind"], "done");
+    assert_eq!(replayed_frames[0]["ok"], true);
+    assert_eq!(replayed_frames[0]["replayed"], true);
+    assert_eq!(replayed_frames[0]["request_id"], request_id);
+    assert_eq!(stream_calls.load(Ordering::SeqCst), calls_after_resume);
+    assert_eq!(
+        state
+            .store
+            .load_chat("shared", &chat_id)
+            .expect("load after replay")
+            .payload_json(),
+        committed_payload
+    );
+}
+
+#[tokio::test]
+async fn legacy_resume_rejects_unsafe_saved_shapes_without_calling_model() {
+    for shape in [
+        "extra_current_turn_row",
+        "request_id_on_error_row",
+        "nonzero_meta",
+        "mismatched_run_usage",
+        "wrong_gm_tail",
+        "duplicate_player_world_event",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, stream_calls) = fail_first_turn_state(&tmp);
+        let text = "Я осматриваю зал трактира.";
+        let chat_id = seed_legacy_failed_turn(&state, text).await;
+        let mut runtime = state
+            .store
+            .load_chat("shared", &chat_id)
+            .expect("load legacy runtime for unsafe mutation");
+
+        match shape {
+            "extra_current_turn_row" => {
+                let insert_at = runtime.transcript.len() - 2;
+                runtime.transcript.insert(
+                    insert_at,
+                    json!({
+                        "turn": runtime.turn_count,
+                        "event": {
+                            "kind": "delta",
+                            "agent": "ГМ",
+                            "data": {"text": "partial"},
+                            "sid": null,
+                        }
+                    }),
+                );
+            }
+            "request_id_on_error_row" => {
+                runtime.transcript[1]["request_id"] = json!("old-receipt");
+            }
+            "nonzero_meta" => {
+                runtime
+                    .transcript
+                    .last_mut()
+                    .and_then(|row| row.get_mut("event"))
+                    .and_then(|event| event.get_mut("data"))
+                    .and_then(Value::as_object_mut)
+                    .expect("meta_total data")["tokens"] = json!(1);
+            }
+            "mismatched_run_usage" => {
+                runtime.transcript[2]["event"]["data"]["run"]["turns"] = json!(2);
+            }
+            "wrong_gm_tail" => runtime
+                .session
+                .gm_messages
+                .push(json!({"role": "system", "content": "extra"})),
+            "duplicate_player_world_event" => {
+                let event = runtime
+                    .session
+                    .events
+                    .iter()
+                    .find(|event| event.actor == "player" && event.speech == text)
+                    .expect("seeded player event")
+                    .clone();
+                runtime.session.events.push(event);
+            }
+            _ => unreachable!(),
+        }
+
+        state
+            .store
+            .save_owned(runtime)
+            .expect("persist unsafe legacy shape");
+        let unsafe_payload = state
+            .store
+            .load_chat("shared", &chat_id)
+            .expect("load persisted unsafe shape")
+            .payload_json();
+        let calls_before = stream_calls.load(Ordering::SeqCst);
+
+        let (status, rejected_sse) =
+            post_legacy_turn_request(&state, text, &format!("unsafe-{shape}")).await;
+        assert_eq!(status, StatusCode::OK, "shape: {shape}");
+        let frames = sse_payloads(&rejected_sse);
+        let done = frames.last().expect("rejected done frame");
+        assert_eq!(done["kind"], "done", "shape: {shape}");
+        assert_eq!(done["ok"], false, "shape: {shape}");
+        assert_eq!(done["retryable"], false, "shape: {shape}");
+        assert_eq!(done["replayed"], false, "shape: {shape}");
+        assert_eq!(
+            stream_calls.load(Ordering::SeqCst),
+            calls_before,
+            "unsafe shape must be rejected before model execution: {shape}"
+        );
+        assert_eq!(
+            state
+                .store
+                .load_chat("shared", &chat_id)
+                .expect("load after unsafe rejection")
+                .payload_json(),
+            unsafe_payload,
+            "rejection must leave the saved runtime untouched: {shape}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn turn_rejects_non_boolean_legacy_resume_before_streaming() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let (status, body) = post(
+        &state,
+        "/turn",
+        json!({
+            "text": "Я осматриваюсь.",
+            "request_id": "bad-legacy-resume-type",
+            "legacy_resume": "true",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let response: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["error"], "legacy_resume must be a boolean");
+}
+
+#[tokio::test]
 async fn turn_replaces_cached_runtime_before_state_reads() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
@@ -858,10 +2164,7 @@ async fn turn_replaces_cached_runtime_before_state_reads() {
 
     let (status, sse) = post_turn_text(&state, "Я осматриваю зал трактира.").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        sse.ends_with("data: {\"kind\": \"done\"}\n\n"),
-        "turn must complete with done frame"
-    );
+    assert_successful_done(&sse);
 
     let (status, body) = get(&state, "/state").await;
     assert_eq!(status, StatusCode::OK);
@@ -881,9 +2184,9 @@ async fn turn_replaces_cached_runtime_before_state_reads() {
 }
 
 #[tokio::test]
-async fn transcribe_is_400_when_backend_not_codex() {
+async fn transcribe_uses_the_active_chat_connector() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = mock_state(&tmp);
+    let state = connector_state(&tmp);
     let resp = build_router(state.clone())
         .oneshot(
             Request::builder()
@@ -895,10 +2198,12 @@ async fn transcribe_is_400_when_backend_not_codex() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let got: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(got["ok"], false);
+    assert_eq!(got["ok"], true);
+    assert_eq!(got["text"], "проверка распознавания");
+    assert_eq!(got.get("connector_id"), None);
 }
 
 #[tokio::test]
@@ -965,7 +2270,12 @@ async fn authored_story_without_pc_requires_protagonist() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create authored: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create authored: {}",
+        String::from_utf8_lossy(&body)
+    );
     let created: Value = serde_json::from_slice(&body).unwrap();
     let story_id = created["story"]["id"].as_str().unwrap().to_string();
 
@@ -1025,7 +2335,12 @@ async fn procedural_story_with_plot_pc_seeds_it_without_character() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create: {}",
+        String::from_utf8_lossy(&body)
+    );
     let created: Value = serde_json::from_slice(&body).unwrap();
     let story_id = created["story"]["id"].as_str().unwrap().to_string();
 
@@ -1131,10 +2446,7 @@ async fn create_procedural_chat_is_canon_authoritative_and_turns() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(
-        text.ends_with("data: {\"kind\": \"done\"}\n\n"),
-        "procedural turn must complete with a done frame"
-    );
+    assert_successful_done(&text);
     // The turn opened with the player echo (the scene was real enough to run).
     let mut kinds: Vec<String> = Vec::new();
     for frame in text.split("\n\n") {
@@ -1376,7 +2688,10 @@ async fn update_world_marks_ready_and_preserves_architect_history() {
     let (status, body) = get(&state, &format!("/worlds/{world_id}/architect")).await;
     assert_eq!(status, StatusCode::OK);
     let chat: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(chat["architect"]["messages"][0]["content"], "Хочу мир клятв.");
+    assert_eq!(
+        chat["architect"]["messages"][0]["content"],
+        "Хочу мир клятв."
+    );
 }
 
 #[tokio::test]
@@ -1545,7 +2860,10 @@ async fn story_architect_chat_creates_bound_story_and_persists_meta() {
     assert_eq!(got["draft"]["title"], "Деревня у живой дороги");
     assert_eq!(got["story"]["kind"], "authored");
     assert_eq!(got["story"]["world_ref"]["id"], json!(world_id));
-    assert_eq!(got["story"]["seed"]["hidden_truth"], "Староста скормил дороге собственного сына ради урожая.");
+    assert_eq!(
+        got["story"]["seed"]["hidden_truth"],
+        "Староста скормил дороге собственного сына ради урожая."
+    );
     // The story/chat split: the content row carries NO chat state at all.
     assert!(got["story"]["seed"].get("architect_messages").is_none());
     assert!(got["story"].get("architect_messages").is_none());
@@ -1662,7 +2980,10 @@ async fn character_architect_chat_creates_package_and_persists_chat() {
     assert_eq!(status, StatusCode::OK);
     let got = architect_result(&body);
     assert_eq!(got["ok"], true, "architect_done: {got}");
-    let character_id = got["character_id"].as_str().expect("character_id").to_string();
+    let character_id = got["character_id"]
+        .as_str()
+        .expect("character_id")
+        .to_string();
     assert_eq!(got["character"]["id"], json!(character_id));
     // The mock character architect drafts a flat sheet: name + stats land in the
     // package's payload.player_character.
@@ -1697,7 +3018,9 @@ async fn character_architect_chat_creates_package_and_persists_chat() {
     let visible = chat["architect"]["messages"].as_array().unwrap();
     assert_eq!(visible[0]["role"], "user");
     assert_eq!(visible[0]["content"], "Сделай следопытку с луком.");
-    assert!(visible.iter().any(|m| m["name"] == "draft_player_character"));
+    assert!(visible
+        .iter()
+        .any(|m| m["name"] == "draft_player_character"));
     assert_eq!(visible.last().unwrap()["role"], "assistant");
     assert!(visible.last().unwrap()["content"]
         .as_str()
@@ -1782,11 +3105,19 @@ async fn save_protagonist_creates_character_from_story_draft() {
         json!({}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "save-protagonist: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "save-protagonist: {}",
+        String::from_utf8_lossy(&body)
+    );
     let saved: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(saved["ok"], true);
     // The loose authored PC is coerced through the canonical seam → full sheet.
-    assert_eq!(saved["character"]["payload"]["player_character"]["name"], "Мира");
+    assert_eq!(
+        saved["character"]["payload"]["player_character"]["name"],
+        "Мира"
+    );
     assert_eq!(saved["character"]["title"], "Мира");
     // The coercion fills the canonical stat fields even when the draft omitted them.
     assert!(saved["character"]["payload"]["player_character"]
@@ -1895,7 +3226,12 @@ async fn update_story_route_merges_and_bumps_version() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "update: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "update: {}",
+        String::from_utf8_lossy(&body)
+    );
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], true);
     assert_eq!(got["story"]["title"], "Готовая");
@@ -1912,16 +3248,14 @@ async fn update_story_route_rejects_builtin_and_unknown() {
     let state = mock_state(&tmp);
 
     // A self-contained builtin cannot be architect-edited.
-    let (status, body) = post(
-        &state,
-        "/stories/turnvale-murder",
-        json!({"title": "x"}),
-    )
-    .await;
+    let (status, body) = post(&state, "/stories/turnvale-murder", json!({"title": "x"})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], false);
-    assert!(got["error"].as_str().unwrap_or("").contains("self-contained"));
+    assert!(got["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("self-contained"));
 
     // Unknown id -> 400.
     let (status, body) = post(&state, "/stories/nope", json!({"title": "x"})).await;
@@ -1943,8 +3277,18 @@ async fn update_story_route_rejects_builtin_and_unknown() {
     let created: Value = serde_json::from_slice(&body).unwrap();
     let story_id = created["story"]["id"].as_str().unwrap().to_string();
 
-    let (status, body) = post(&state, &format!("/stories/{story_id}"), json!({"title": "x"})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "update route: {}", String::from_utf8_lossy(&body));
+    let (status, body) = post(
+        &state,
+        &format!("/stories/{story_id}"),
+        json!({"title": "x"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "update route: {}",
+        String::from_utf8_lossy(&body)
+    );
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert!(got["error"].as_str().unwrap_or("").contains("authored"));
 
@@ -1954,7 +3298,12 @@ async fn update_story_route_rejects_builtin_and_unknown() {
         json!({"story_id": story_id, "message": "Допиши сюжет."}),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "architect route: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "architect route: {}",
+        String::from_utf8_lossy(&body)
+    );
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert!(got["error"].as_str().unwrap_or("").contains("authored"));
 }
@@ -2493,7 +3842,11 @@ async fn play_saved_world_with_missing_world_id_errors_and_creates_no_chat() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "dangling world_id must fail");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "dangling world_id must fail"
+    );
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], false);
     assert!(got["error"]
@@ -2679,7 +4032,7 @@ async fn create_and_launch_authored_story_composes_world_and_plot() {
     assert_eq!(debug["player_character"]["name"], "Мира");
     assert_eq!(debug["scene"]["title"], "Ворота деревни");
     assert_eq!(debug["time"]["time_of_day"], "18:00"); // 1080 minutes
-    // The authored NPC is in the roster and present in the authored scene.
+                                                       // The authored NPC is in the roster and present in the authored scene.
     let npc_ids: Vec<&str> = debug["npcs"]
         .as_array()
         .unwrap()
@@ -2696,8 +4049,14 @@ async fn create_and_launch_authored_story_composes_world_and_plot() {
             launched["active_chat_id"].as_str().unwrap(),
             |rt| {
                 let w = &rt.session.world;
-                assert_eq!(w.world_ref.as_ref().map(|r| r.id.as_str()), Some(world_id.as_str()));
-                assert_eq!(w.story_ref.as_ref().map(|r| r.id.as_str()), Some(story_id.as_str()));
+                assert_eq!(
+                    w.world_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(world_id.as_str())
+                );
+                assert_eq!(
+                    w.story_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(story_id.as_str())
+                );
                 // The world bible flowed in via worldgen (lore name retained on
                 // the canon's world_lore), and the authored scene was upserted on
                 // top of the generated canon (canon has MORE than one place).
@@ -2732,7 +4091,10 @@ async fn create_story_with_missing_world_id_errors_and_writes_no_package() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], false);
-    assert!(got["error"].as_str().unwrap_or_default().contains("nope-world"));
+    assert!(got["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("nope-world"));
 
     // No story package written: GET /stories still has exactly the 3 builtins +
     // the procedural pseudo-entry.
@@ -2820,7 +4182,12 @@ async fn export_world_is_a_zip_with_manifest() {
     let world_id = create_saved_world(&state, "Экспортируемый мир").await;
 
     let (status, bytes) = get(&state, &format!("/worlds/{world_id}/export")).await;
-    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&bytes));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
     let names = zip_entry_names(&bytes);
     assert!(names.iter().any(|n| n == "world.json"), "names={names:?}");
 
@@ -2874,7 +4241,12 @@ async fn export_story_baked_then_import_brings_world() {
 
     // Bake the world inside the story zip.
     let (status, exported) = get(&src, &format!("/stories/{story_id}/export?bake=1")).await;
-    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&exported));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&exported)
+    );
     let names = zip_entry_names(&exported);
     assert!(names.iter().any(|n| n == "story.json"), "names={names:?}");
     assert!(
@@ -2959,8 +4331,13 @@ async fn import_malformed_zip_errors_and_writes_nothing() {
         .len();
 
     // Garbage bytes -> bad zip.
-    let (status, body) =
-        post_bytes(&state, "/library/import", "application/zip", b"not a zip".to_vec()).await;
+    let (status, body) = post_bytes(
+        &state,
+        "/library/import",
+        "application/zip",
+        b"not a zip".to_vec(),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
@@ -3098,7 +4475,10 @@ async fn launch_saved_world_with_empty_lore_is_rejected() {
     );
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], false);
-    assert!(got["error"].as_str().unwrap_or_default().contains("lore is empty"));
+    assert!(got["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("lore is empty"));
 }
 
 /// F2: a crafted `world_lore.world_image_url` (path traversal or an absolute
@@ -3247,8 +4627,7 @@ async fn import_baked_story_rewrites_world_ref_to_imported_world() {
     let tmp = tempfile::tempdir().unwrap();
     let state = mock_state(&tmp);
 
-    let (status, body) =
-        post_bytes(&state, "/library/import", "application/zip", crafted).await;
+    let (status, body) = post_bytes(&state, "/library/import", "application/zip", crafted).await;
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["kind"], "story");
@@ -3265,10 +4644,10 @@ async fn import_baked_story_rewrites_world_ref_to_imported_world() {
         .join("stories")
         .join(&story_id)
         .join("story.json");
-    let manifest: Value =
-        serde_json::from_slice(&std::fs::read(&story_manifest).unwrap()).unwrap();
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&story_manifest).unwrap()).unwrap();
     assert_eq!(
-        manifest["world_ref"]["id"], json!(imported_world_id),
+        manifest["world_ref"]["id"],
+        json!(imported_world_id),
         "world_ref.id must be rewritten to the imported world id, got {manifest:?}"
     );
 
@@ -3312,7 +4691,12 @@ async fn launch_story_warns_on_world_version_drift() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create story: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create story: {}",
+        String::from_utf8_lossy(&body)
+    );
     let created: Value = serde_json::from_slice(&body).unwrap();
     let story_id = created["story"]["id"].as_str().unwrap().to_string();
 
@@ -3336,7 +4720,12 @@ async fn launch_story_warns_on_world_version_drift() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "update world: {}", String::from_utf8_lossy(&ubody));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "update world: {}",
+        String::from_utf8_lossy(&ubody)
+    );
     let updated: Value = serde_json::from_slice(&ubody).unwrap();
     assert_eq!(updated["ok"], true, "world updated: {updated}");
     // (The world-row response does not surface `version`; the live version is
@@ -3349,7 +4738,12 @@ async fn launch_story_warns_on_world_version_drift() {
         json!({"story_id": story_id, "character_id": char_id, "activate": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "launch story: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch story: {}",
+        String::from_utf8_lossy(&body)
+    );
     let launched: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(launched["ok"], true);
 
@@ -3371,16 +4765,27 @@ async fn launch_story_warns_on_world_version_drift() {
     // Persisted session: authored pin (v2) AND the live world_ref version (v3).
     state
         .store
-        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
-            let w = &rt.session.world;
-            assert_eq!(w.world_ref_authored_version, Some(2), "authored pin recorded");
-            assert_eq!(
-                w.world_ref.as_ref().map(|r| r.version),
-                Some(3),
-                "world_ref stamps the LIVE version"
-            );
-            assert_eq!(w.world_ref.as_ref().map(|r| r.id.as_str()), Some(world_id.as_str()));
-        })
+        .with_runtime(
+            "shared",
+            launched["active_chat_id"].as_str().unwrap(),
+            |rt| {
+                let w = &rt.session.world;
+                assert_eq!(
+                    w.world_ref_authored_version,
+                    Some(2),
+                    "authored pin recorded"
+                );
+                assert_eq!(
+                    w.world_ref.as_ref().map(|r| r.version),
+                    Some(3),
+                    "world_ref stamps the LIVE version"
+                );
+                assert_eq!(
+                    w.world_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(world_id.as_str())
+                );
+            },
+        )
         .unwrap();
 }
 
@@ -3405,7 +4810,12 @@ async fn launch_story_without_drift_emits_no_warnings_key() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create story: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create story: {}",
+        String::from_utf8_lossy(&body)
+    );
     let created: Value = serde_json::from_slice(&body).unwrap();
     let story_id = created["story"]["id"].as_str().unwrap().to_string();
 
@@ -3415,7 +4825,12 @@ async fn launch_story_without_drift_emits_no_warnings_key() {
         json!({"story_id": story_id, "character_id": char_id, "activate": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "launch story: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch story: {}",
+        String::from_utf8_lossy(&body)
+    );
     let launched: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(launched["ok"], true);
     assert!(
@@ -3427,9 +4842,13 @@ async fn launch_story_without_drift_emits_no_warnings_key() {
     // without drift.
     state
         .store
-        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
-            assert_eq!(rt.session.world.world_ref_authored_version, Some(2));
-        })
+        .with_runtime(
+            "shared",
+            launched["active_chat_id"].as_str().unwrap(),
+            |rt| {
+                assert_eq!(rt.session.world.world_ref_authored_version, Some(2));
+            },
+        )
         .unwrap();
 }
 
@@ -3477,7 +4896,12 @@ async fn launch_unpinned_story_ref_records_no_pin_and_no_warning() {
         json!({"story_id": story_id, "character_id": char_id, "activate": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "launch unpinned story: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch unpinned story: {}",
+        String::from_utf8_lossy(&body)
+    );
     let launched: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(launched["ok"], true);
     assert!(
@@ -3488,11 +4912,18 @@ async fn launch_unpinned_story_ref_records_no_pin_and_no_warning() {
     // No pin recorded; but the world_ref still stamps the live version.
     state
         .store
-        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
-            let w = &rt.session.world;
-            assert_eq!(w.world_ref_authored_version, None, "unpinned -> no pin");
-            assert_eq!(w.world_ref.as_ref().map(|r| r.id.as_str()), Some(world_id.as_str()));
-        })
+        .with_runtime(
+            "shared",
+            launched["active_chat_id"].as_str().unwrap(),
+            |rt| {
+                let w = &rt.session.world;
+                assert_eq!(w.world_ref_authored_version, None, "unpinned -> no pin");
+                assert_eq!(
+                    w.world_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(world_id.as_str())
+                );
+            },
+        )
         .unwrap();
 }
 
@@ -3503,7 +4934,12 @@ async fn launch_unpinned_story_ref_records_no_pin_and_no_warning() {
 /// Create a character via `POST /characters` and return its id. `payload` is
 /// always sent (design §8: no default hero — a package must carry a PC).
 async fn create_character_via_api(state: &AppState, title: &str, payload: Value) -> String {
-    let (status, resp) = post(state, "/characters", json!({ "title": title, "payload": payload })).await;
+    let (status, resp) = post(
+        state,
+        "/characters",
+        json!({ "title": title, "payload": payload }),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -3518,7 +4954,12 @@ async fn create_character_via_api(state: &AppState, title: &str, payload: Value)
 /// launches that now REQUIRE a character (design §8: no default hero is seeded,
 /// so a procedural/PC-less launch without a `character_id` is a 400).
 async fn create_test_character(state: &AppState) -> String {
-    create_character_via_api(state, "Тест-Герой", json!({"player_character": {"name": "Тест-Герой"}})).await
+    create_character_via_api(
+        state,
+        "Тест-Герой",
+        json!({"player_character": {"name": "Тест-Герой"}}),
+    )
+    .await
 }
 
 /// CRUD over the HTTP surface: create (explicit payload — no default hero),
@@ -3552,9 +4993,18 @@ async fn character_crud_over_http() {
     );
 
     // Update metadata (rename) -> version 2.
-    let (status, body) =
-        post(&state, &format!("/characters/{id}"), json!({"title": "Переименован"})).await;
-    assert_eq!(status, StatusCode::OK, "update: {}", String::from_utf8_lossy(&body));
+    let (status, body) = post(
+        &state,
+        &format!("/characters/{id}"),
+        json!({"title": "Переименован"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "update: {}",
+        String::from_utf8_lossy(&body)
+    );
     let updated: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(updated["character"]["version"], json!(2));
     assert_eq!(updated["character"]["title"], json!("Переименован"));
@@ -3584,7 +5034,12 @@ async fn character_crud_over_http() {
 
     // Delete -> gone from the list.
     let (status, body) = post(&state, &format!("/characters/{id}/delete"), json!({})).await;
-    assert_eq!(status, StatusCode::OK, "delete: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "delete: {}",
+        String::from_utf8_lossy(&body)
+    );
     let deleted: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(deleted["deleted"], json!(true));
     let (status, body) = get(&state, "/characters").await;
@@ -3634,23 +5089,41 @@ async fn character_draft_save_snapshots_sheet_and_follows_title() {
         }}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "draft save: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "draft save: {}",
+        String::from_utf8_lossy(&body)
+    );
     let saved: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(saved["ok"], true);
     // FULL REPLACE: the new name AND the edited lists land in the payload.
-    assert_eq!(saved["character"]["payload"]["player_character"]["name"], json!("Новое имя"));
-    assert_eq!(saved["character"]["payload"]["player_character"]["abilities"]["STR"], json!(15));
+    assert_eq!(
+        saved["character"]["payload"]["player_character"]["name"],
+        json!("Новое имя")
+    );
+    assert_eq!(
+        saved["character"]["payload"]["player_character"]["abilities"]["STR"],
+        json!(15)
+    );
     assert_eq!(
         saved["character"]["payload"]["player_character"]["spells"][0]["name"],
         json!("Огненный шар")
     );
     // Version 1 -> 3: snapshot bump (1->2) + retitle bump (2->3, name changed).
     assert_eq!(saved["character"]["version"], json!(3));
-    assert_eq!(saved["character"]["title"], json!("Новое имя"), "title follows the hero name");
+    assert_eq!(
+        saved["character"]["title"],
+        json!("Новое имя"),
+        "title follows the hero name"
+    );
     // No architect / SSE fields leak into the direct-save response.
     assert!(saved["character"].get("architect_messages").is_none());
     assert!(saved.get("reply").is_none());
-    assert!(saved.get("characters").is_none(), "direct save returns just {{ok, character}}");
+    assert!(
+        saved.get("characters").is_none(),
+        "direct save returns just {{ok, character}}"
+    );
 
     // ---- A name-PRESERVING edit bumps exactly once and does NOT retitle ----
     let (status, body) = post(
@@ -3659,10 +5132,23 @@ async fn character_draft_save_snapshots_sheet_and_follows_title() {
         json!({"player_character": {"name": "Новое имя", "spells": []}}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "second draft save: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "second draft save: {}",
+        String::from_utf8_lossy(&body)
+    );
     let saved2: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(saved2["character"]["version"], json!(4), "snapshot-only bump 3->4");
-    assert_eq!(saved2["character"]["title"], json!("Новое имя"), "title unchanged when name is");
+    assert_eq!(
+        saved2["character"]["version"],
+        json!(4),
+        "snapshot-only bump 3->4"
+    );
+    assert_eq!(
+        saved2["character"]["title"],
+        json!("Новое имя"),
+        "title unchanged when name is"
+    );
     assert_eq!(
         saved2["character"]["payload"]["player_character"]["spells"],
         json!([]),
@@ -3680,7 +5166,10 @@ async fn character_draft_save_snapshots_sheet_and_follows_title() {
         .get_architect_chat("character", &id)
         .expect("read chat")
         .expect("chat still present");
-    assert_eq!(stored, chat_before, "draft save must not rewrite the architect chat");
+    assert_eq!(
+        stored, chat_before,
+        "draft save must not rewrite the architect chat"
+    );
 
     // ---- A non-object player_character -> 400 ----
     let (status, body) = post(
@@ -3703,7 +5192,11 @@ async fn character_draft_save_snapshots_sheet_and_follows_title() {
         .contains("player_character must be an object"));
     // A MISSING player_character key is likewise a 400 (no silent no-op).
     let (status, _b) = post(&state, &format!("/characters/{id}/draft"), json!({})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "missing player_character -> 400");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "missing player_character -> 400"
+    );
 
     // ---- An unknown id -> 404 ----
     let (status, body) = post(
@@ -3729,7 +5222,10 @@ async fn character_draft_save_snapshots_sheet_and_follows_title() {
     std::io::Read::read_to_string(&mut f, &mut s).unwrap();
     let manifest: Value = serde_json::from_str(&s).unwrap();
     assert_eq!(manifest["title"], json!("Новое имя"));
-    assert_eq!(manifest["payload"]["player_character"]["name"], json!("Новое имя"));
+    assert_eq!(
+        manifest["payload"]["player_character"]["name"],
+        json!("Новое имя")
+    );
     assert!(manifest.get("architect_messages").is_none());
     assert!(manifest["payload"].get("architect").is_none());
     assert!(
@@ -3748,7 +5244,8 @@ fn build_character_zip(manifest: Value) -> Vec<u8> {
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
         zip.start_file("character.json", options).unwrap();
-        zip.write_all(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
         zip.finish().unwrap();
     }
     buf
@@ -3769,9 +5266,17 @@ async fn character_export_import_roundtrip_reject_and_collision() {
 
     // Export is a .gmchar.zip carrying character.json.
     let (status, exported) = get(&src, &format!("/characters/{id}/export")).await;
-    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&exported));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&exported)
+    );
     let names = zip_entry_names(&exported);
-    assert!(names.iter().any(|n| n == "character.json"), "names={names:?}");
+    assert!(
+        names.iter().any(|n| n == "character.json"),
+        "names={names:?}"
+    );
     // Missing character -> 404.
     let (status, _b) = get(&src, "/characters/does-not-exist/export").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -3797,15 +5302,27 @@ async fn character_export_import_roundtrip_reject_and_collision() {
         .iter()
         .find(|c| c["id"] == json!(imported_id))
         .expect("imported character present");
-    assert_eq!(found["payload"]["player_character"]["card_revision"], json!(3));
+    assert_eq!(
+        found["payload"]["player_character"]["card_revision"],
+        json!(3)
+    );
 
     // Re-import WITHOUT overwrite -> 409 collision (same manifest id).
     let (status, _b) =
         post_bytes(&dst, "/library/import", "application/zip", exported.clone()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "collision without overwrite -> 409");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "collision without overwrite -> 409"
+    );
     // WITH overwrite=1 -> OK.
-    let (status, _b) =
-        post_bytes(&dst, "/library/import?overwrite=1", "application/zip", exported).await;
+    let (status, _b) = post_bytes(
+        &dst,
+        "/library/import?overwrite=1",
+        "application/zip",
+        exported,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "overwrite import ok");
 
     // Structural-validation rejection: a character.json whose payload has no
@@ -3859,7 +5376,12 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create authored: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create authored: {}",
+        String::from_utf8_lossy(&body)
+    );
     let authored: Value = serde_json::from_slice(&body).unwrap();
     let authored_story_id = authored["story"]["id"].as_str().unwrap().to_string();
 
@@ -3869,28 +5391,42 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
         json!({"story_id": authored_story_id, "character_id": char_id, "activate": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "launch authored+char: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch authored+char: {}",
+        String::from_utf8_lossy(&body)
+    );
     let launched: Value = serde_json::from_slice(&body).unwrap();
     // The override warning is present (story carried its own PC).
     let warnings = launched["warnings"].as_array().expect("warnings present");
     assert!(
-        warnings.iter().any(|w| w["code"] == json!("story_pc_override")),
+        warnings
+            .iter()
+            .any(|w| w["code"] == json!("story_pc_override")),
         "authored-with-PC + character_id must warn story_pc_override: {warnings:?}"
     );
     // The PC was OVERLAID from the package (full replace, card_revision verbatim)
     // and char_ref stamped.
     state
         .store
-        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
-            let w = &rt.session.world;
-            assert_eq!(w.player_character.name, "Кассандра", "package PC overlaid");
-            assert_eq!(w.player_character.card_revision, 7, "card_revision travels verbatim");
-            assert_eq!(
-                w.char_ref.as_ref().map(|r| r.id.as_str()),
-                Some(char_id.as_str()),
-                "char_ref stamped"
-            );
-        })
+        .with_runtime(
+            "shared",
+            launched["active_chat_id"].as_str().unwrap(),
+            |rt| {
+                let w = &rt.session.world;
+                assert_eq!(w.player_character.name, "Кассандра", "package PC overlaid");
+                assert_eq!(
+                    w.player_character.card_revision, 7,
+                    "card_revision travels verbatim"
+                );
+                assert_eq!(
+                    w.char_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(char_id.as_str()),
+                    "char_ref stamped"
+                );
+            },
+        )
         .unwrap();
 
     // ---- Case B: procedural story -> NO override warning ----
@@ -3905,7 +5441,12 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create procedural: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create procedural: {}",
+        String::from_utf8_lossy(&body)
+    );
     let proc: Value = serde_json::from_slice(&body).unwrap();
     let proc_story_id = proc["story"]["id"].as_str().unwrap().to_string();
 
@@ -3915,22 +5456,37 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
         json!({"story_id": proc_story_id, "character_id": char_id, "activate": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "launch procedural+char: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch procedural+char: {}",
+        String::from_utf8_lossy(&body)
+    );
     let launched: Value = serde_json::from_slice(&body).unwrap();
     let has_override = launched
         .get("warnings")
         .and_then(Value::as_array)
         .map(|ws| ws.iter().any(|w| w["code"] == json!("story_pc_override")))
         .unwrap_or(false);
-    assert!(!has_override, "procedural story must NOT warn story_pc_override: {launched}");
+    assert!(
+        !has_override,
+        "procedural story must NOT warn story_pc_override: {launched}"
+    );
     // Overlay still applies + char_ref set.
     state
         .store
-        .with_runtime("shared", launched["active_chat_id"].as_str().unwrap(), |rt| {
-            let w = &rt.session.world;
-            assert_eq!(w.player_character.name, "Кассандра");
-            assert_eq!(w.char_ref.as_ref().map(|r| r.id.as_str()), Some(char_id.as_str()));
-        })
+        .with_runtime(
+            "shared",
+            launched["active_chat_id"].as_str().unwrap(),
+            |rt| {
+                let w = &rt.session.world;
+                assert_eq!(w.player_character.name, "Кассандра");
+                assert_eq!(
+                    w.char_ref.as_ref().map(|r| r.id.as_str()),
+                    Some(char_id.as_str())
+                );
+            },
+        )
         .unwrap();
     // §К1.5: the active chat's `/state` surfaces `char_ref {id, version}` so the
     // player-facing "save hero" control can offer "update the source".
@@ -3942,7 +5498,10 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
         Some(char_id.as_str()),
         "/state must surface char_ref.id after a character launch: {st}"
     );
-    assert!(st["char_ref"]["version"].is_u64(), "char_ref.version is a number");
+    assert!(
+        st["char_ref"]["version"].is_u64(),
+        "char_ref.version is a number"
+    );
 
     // ---- Case C: no character_id on a PC-less procedural story -> 400 ----
     // Design §8: no default hero is ever seeded, so a launch with neither a
@@ -3970,7 +5529,11 @@ async fn launch_with_character_overlays_pc_and_sets_char_ref() {
         json!({"story_id": proc_story_id, "character_id": "ghost", "activate": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "unknown character_id -> 400");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unknown character_id -> 400"
+    );
 }
 
 /// `POST /chats/{chat_id}/save-character`: create-new (no id) then update
@@ -4002,13 +5565,28 @@ async fn save_character_new_update_and_missing_id() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "create chat: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create chat: {}",
+        String::from_utf8_lossy(&body)
+    );
     let launched: Value = serde_json::from_slice(&body).unwrap();
     let chat_id = launched["active_chat_id"].as_str().unwrap().to_string();
 
     // Save-back WITHOUT an id -> creates a NEW character (title = hero name).
-    let (status, body) = post(&state, &format!("/chats/{chat_id}/save-character"), json!({})).await;
-    assert_eq!(status, StatusCode::OK, "save new: {}", String::from_utf8_lossy(&body));
+    let (status, body) = post(
+        &state,
+        &format!("/chats/{chat_id}/save-character"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "save new: {}",
+        String::from_utf8_lossy(&body)
+    );
     let saved: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(saved["ok"], true);
     let new_id = saved["character"]["id"].as_str().unwrap().to_string();
@@ -4023,10 +5601,19 @@ async fn save_character_new_update_and_missing_id() {
         json!({"character_id": new_id}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "save update: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "save update: {}",
+        String::from_utf8_lossy(&body)
+    );
     let updated: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(updated["character"]["id"], json!(new_id));
-    assert_eq!(updated["character"]["version"], json!(2), "snapshot bumps version");
+    assert_eq!(
+        updated["character"]["version"],
+        json!(2),
+        "snapshot bumps version"
+    );
 
     // Save-back with an UNKNOWN id -> 400.
     let (status, _b) = post(

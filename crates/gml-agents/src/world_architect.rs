@@ -10,8 +10,7 @@ use serde_json::{json, Map, Value};
 use gml_llm::{Backend, BackendError};
 
 use crate::architect_runner::{
-    architect_messages_with_user, architect_turn, ArchitectConfig, ArchitectOutput,
-    ToolApplication,
+    architect_messages_with_user, architect_turn, ArchitectConfig, ArchitectOutput, ToolApplication,
 };
 // Re-exported through this module's public surface (unchanged for callers).
 pub use crate::architect_runner::{ArchitectStream, NullArchitectStream};
@@ -121,7 +120,8 @@ impl ArchitectConfig for WorldArchitectConfig {
                     ToolApplication {
                         args: nested,
                         changed: false,
-                        result: "Аргументы draft_world_bible не разобраны — черновик не изменён.".to_string(),
+                        result: "Аргументы draft_world_bible не разобраны — черновик не изменён."
+                            .to_string(),
                     }
                 }
             }
@@ -165,7 +165,11 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
         .cloned()
         .unwrap_or_default();
     let list_len = |stage: &Map<String, Value>, key: &str| -> usize {
-        stage.get(key).and_then(Value::as_array).map(Vec::len).unwrap_or(0)
+        stage
+            .get(key)
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0)
     };
     let mut lines: Vec<String> = Vec::new();
 
@@ -173,7 +177,10 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
         if !set.is_empty() {
             lines.push(format!(
                 "Поля обновлены: {}.",
-                set.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+                set.keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -188,11 +195,15 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
     }
     if let Some(Value::Object(add)) = args.get("add") {
         for (key, value) in add {
-            let Some(items) = value.as_array() else { continue };
+            let Some(items) = value.as_array() else {
+                continue;
+            };
             let entry = stage
                 .entry(key.clone())
                 .or_insert_with(|| Value::Array(Vec::new()));
-            let Value::Array(existing) = entry else { continue };
+            let Value::Array(existing) = entry else {
+                continue;
+            };
             let mut added = 0usize;
             for item in items {
                 if !existing.contains(item) {
@@ -212,9 +223,7 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
     if let Some(Value::Object(remove)) = args.get("remove") {
         for (key, value) in remove {
             let targets: Vec<Value> = value.as_array().cloned().unwrap_or_default();
-            let existing = stage
-                .get_mut(key)
-                .and_then(|v| v.as_array_mut());
+            let existing = stage.get_mut(key).and_then(|v| v.as_array_mut());
             let mut removed = 0usize;
             let mut misses: Vec<String> = Vec::new();
             if let Some(existing) = existing {
@@ -228,12 +237,17 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
                     }
                 }
                 if removed > 0 {
-                    lines.push(format!("{key}: удалено {removed} (теперь {})." , existing.len()));
+                    lines.push(format!(
+                        "{key}: удалено {removed} (теперь {}).",
+                        existing.len()
+                    ));
                 }
             } else {
-                misses.extend(targets.iter().filter_map(|t| {
-                    t.as_str().map(|s| format!("«{s}»"))
-                }));
+                misses.extend(
+                    targets
+                        .iter()
+                        .filter_map(|t| t.as_str().map(|s| format!("«{s}»"))),
+                );
             }
             if !misses.is_empty() {
                 lines.push(format!(
@@ -294,9 +308,7 @@ fn read_world_bible_result(args: &Map<String, Value>, working_draft: &Value) -> 
         }
     } else {
         for name in sections {
-            let value = draft
-                .get(&name)
-                .or_else(|| lore.and_then(|l| l.get(&name)));
+            let value = draft.get(&name).or_else(|| lore.and_then(|l| l.get(&name)));
             match value {
                 Some(v) => {
                     if let Some(block) = bible_section_block(&name, v) {
@@ -909,7 +921,8 @@ mod tests {
             "add": {"taboos": ["нельзя сыпать соль", "нельзя лгать под знаменем"]},
             "remove": {"taboos": ["нельзя свистеть ночью", "такого табу нет"]}
         });
-        let applied = config.apply_tool("edit_world_bible", args.as_object().unwrap(), &mut working);
+        let applied =
+            config.apply_tool("edit_world_bible", args.as_object().unwrap(), &mut working);
         assert!(applied.changed);
         assert!(applied.result.contains("Поля обновлены: tone."));
         // One of the two adds was a duplicate.
@@ -917,7 +930,9 @@ mod tests {
         assert!(applied.result.contains("пропущено как дубли"));
         // One remove hit, one missed — the miss is called out with the nudge.
         assert!(applied.result.contains("удалено 1"), "{}", applied.result);
-        assert!(applied.result.contains("НЕ найдено для удаления: «такого табу нет»"));
+        assert!(applied
+            .result
+            .contains("НЕ найдено для удаления: «такого табу нет»"));
         assert!(applied.result.contains("read_world_bible"));
 
         // A remove that matches nothing at all must NOT read as success.

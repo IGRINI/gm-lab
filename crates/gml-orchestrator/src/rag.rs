@@ -665,8 +665,7 @@ mod tests {
         });
 
         let access = MemoryAccess::scoped(["actor:borin".to_string()].into_iter().collect());
-        let report =
-            retrieve_memory_rows_report(&world, &access, "пароль ворот", 4, false, false);
+        let report = retrieve_memory_rows_report(&world, &access, "пароль ворот", 4, false, false);
         // Degraded (dead embedder), but that is not what we assert — the routing
         // side effect is the created cache file.
         assert!(report.status.get("enabled").and_then(Value::as_bool) == Some(true));

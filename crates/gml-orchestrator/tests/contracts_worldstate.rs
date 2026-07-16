@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use gml_llm::{Backend, MockClient};
+use gml_llm::Backend;
+use gml_mock::MockClient;
 use gml_orchestrator::worldstate::{
     apply_world_state_batch, consolidate_memory, get_memory, note_memory, npc_memory_recall,
     query_world_state,

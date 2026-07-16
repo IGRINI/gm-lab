@@ -84,76 +84,99 @@ fn selects_present_nearby_seed_and_recent_but_excludes_others() {
     let mut world = base_world();
 
     // (1) present in the scene.
-    world.npcs.insert("innkeeper".to_string(), npc("innkeeper", "alive"));
     world
-        .world_canon
-        .actors
-        .insert("innkeeper".to_string(), actor_at("innkeeper", "tavern", Provenance::default()));
+        .npcs
+        .insert("innkeeper".to_string(), npc("innkeeper", "alive"));
+    world.world_canon.actors.insert(
+        "innkeeper".to_string(),
+        actor_at("innkeeper", "tavern", Provenance::default()),
+    );
     world.scene.present_npcs.insert("innkeeper".to_string());
 
     // (2) at the player's place (not present) and one transition away.
-    world.npcs.insert("smith".to_string(), npc("smith", "alive"));
     world
-        .world_canon
-        .actors
-        .insert("smith".to_string(), actor_at("smith", "tavern", Provenance::default()));
-    world.npcs.insert("guard".to_string(), npc("guard", "alive"));
+        .npcs
+        .insert("smith".to_string(), npc("smith", "alive"));
+    world.world_canon.actors.insert(
+        "smith".to_string(),
+        actor_at("smith", "tavern", Provenance::default()),
+    );
     world
-        .world_canon
-        .actors
-        .insert("guard".to_string(), actor_at("guard", "yard", Provenance::default()));
+        .npcs
+        .insert("guard".to_string(), npc("guard", "alive"));
+    world.world_canon.actors.insert(
+        "guard".to_string(),
+        actor_at("guard", "yard", Provenance::default()),
+    );
 
     // (3) alive story-seed NPC, far away.
-    world.npcs.insert("elder".to_string(), npc("elder", "alive"));
     world
-        .world_canon
-        .actors
-        .insert("elder".to_string(), actor_at("elder", "farlands", Provenance::seed()));
+        .npcs
+        .insert("elder".to_string(), npc("elder", "alive"));
+    world.world_canon.actors.insert(
+        "elder".to_string(),
+        actor_at("elder", "farlands", Provenance::seed()),
+    );
 
     // (3-negative) DEAD seed NPC, far away — must be excluded.
     world.npcs.insert("ghost".to_string(), npc("ghost", "dead"));
-    world
-        .world_canon
-        .actors
-        .insert("ghost".to_string(), actor_at("ghost", "farlands", Provenance::seed()));
+    world.world_canon.actors.insert(
+        "ghost".to_string(),
+        actor_at("ghost", "farlands", Provenance::seed()),
+    );
 
     // (4) recently contacted, far away, not seed.
-    world.npcs.insert("merchant".to_string(), npc("merchant", "alive"));
     world
-        .world_canon
-        .actors
-        .insert("merchant".to_string(), actor_at("merchant", "farlands", Provenance::default()));
+        .npcs
+        .insert("merchant".to_string(), npc("merchant", "alive"));
+    world.world_canon.actors.insert(
+        "merchant".to_string(),
+        actor_at("merchant", "farlands", Provenance::default()),
+    );
 
     // (excluded) far, non-seed, not present/nearby/recent.
-    world.npcs.insert("wanderer".to_string(), npc("wanderer", "alive"));
     world
-        .world_canon
-        .actors
-        .insert("wanderer".to_string(), actor_at("wanderer", "farlands", Provenance::default()));
+        .npcs
+        .insert("wanderer".to_string(), npc("wanderer", "alive"));
+    world.world_canon.actors.insert(
+        "wanderer".to_string(),
+        actor_at("wanderer", "farlands", Provenance::default()),
+    );
 
     let before = world.world_canon.clone();
     let recent: BTreeSet<String> = ["merchant".to_string()].into_iter().collect();
     let roster = world.dynamic_roster_context(&recent);
 
     for id in ["innkeeper", "smith", "guard", "elder", "merchant"] {
-        assert!(roster.contains(&format!("id={id}")), "must include {id}: {roster}");
+        assert!(
+            roster.contains(&format!("id={id}")),
+            "must include {id}: {roster}"
+        );
     }
     for id in ["ghost", "wanderer"] {
-        assert!(!roster.contains(&format!("id={id}")), "must exclude {id}: {roster}");
+        assert!(
+            !roster.contains(&format!("id={id}")),
+            "must exclude {id}: {roster}"
+        );
     }
     // Pure read: dynamic_roster_context mutates nothing.
-    assert_eq!(world.world_canon, before, "roster build must not mutate canon");
+    assert_eq!(
+        world.world_canon, before,
+        "roster build must not mutate canon"
+    );
 }
 
 #[test]
 fn empty_selection_renders_none() {
     let mut world = base_world();
     // An NPC that exists but is far, non-seed, not present/recent.
-    world.npcs.insert("wanderer".to_string(), npc("wanderer", "alive"));
     world
-        .world_canon
-        .actors
-        .insert("wanderer".to_string(), actor_at("wanderer", "farlands", Provenance::default()));
+        .npcs
+        .insert("wanderer".to_string(), npc("wanderer", "alive"));
+    world.world_canon.actors.insert(
+        "wanderer".to_string(),
+        actor_at("wanderer", "farlands", Provenance::default()),
+    );
 
     let roster = world.dynamic_roster_context(&BTreeSet::new());
     assert_eq!(roster, "(none)");
@@ -188,7 +211,10 @@ fn full_roster_context_lists_every_card() {
     world.npcs.insert("a".to_string(), npc("a", "alive"));
     world.npcs.insert("b".to_string(), npc("b", "alive"));
     let full = world.full_roster_context();
-    assert!(full.contains("id=a") && full.contains("id=b"), "full roster lists all: {full}");
+    assert!(
+        full.contains("id=a") && full.contains("id=b"),
+        "full roster lists all: {full}"
+    );
     // No canon actors needed: full roster is card-driven.
     let empty = World::empty_with_rng(MersenneTwister::from_u128_seed(1)).full_roster_context();
     assert_eq!(empty, "(none)");
@@ -209,14 +235,18 @@ fn cap_keeps_priority_npcs_over_lexicographic_seeds() {
             .insert(id.clone(), actor_at(&id, "farlands", Provenance::seed()));
     }
     // Present in scene, id sorts AFTER every seed id.
-    world.npcs.insert("zz_present".to_string(), npc("zz_present", "alive"));
+    world
+        .npcs
+        .insert("zz_present".to_string(), npc("zz_present", "alive"));
     world.world_canon.actors.insert(
         "zz_present".to_string(),
         actor_at("zz_present", "tavern", Provenance::default()),
     );
     world.scene.present_npcs.insert("zz_present".to_string());
     // Recently contacted, off-scene, id also sorts last.
-    world.npcs.insert("zz_recent".to_string(), npc("zz_recent", "alive"));
+    world
+        .npcs
+        .insert("zz_recent".to_string(), npc("zz_recent", "alive"));
     world.world_canon.actors.insert(
         "zz_recent".to_string(),
         actor_at("zz_recent", "farlands", Provenance::default()),
@@ -233,7 +263,10 @@ fn cap_keeps_priority_npcs_over_lexicographic_seeds() {
         roster.contains("id=zz_recent"),
         "recently-contacted NPC must survive the cap: {roster}"
     );
-    assert!(roster.contains("offscreen"), "cap note still present: {roster}");
+    assert!(
+        roster.contains("offscreen"),
+        "cap note still present: {roster}"
+    );
 }
 
 /// Review fix: the seed filter follows the engine's own in-play convention —
@@ -241,16 +274,20 @@ fn cap_keeps_priority_npcs_over_lexicographic_seeds() {
 #[test]
 fn seed_filter_drops_only_dead() {
     let mut world = base_world();
-    world.npcs.insert("wounded".to_string(), npc("wounded", "ранен"));
     world
-        .world_canon
-        .actors
-        .insert("wounded".to_string(), actor_at("wounded", "farlands", Provenance::seed()));
-    world.npcs.insert("corpse".to_string(), npc("corpse", "dead"));
+        .npcs
+        .insert("wounded".to_string(), npc("wounded", "ранен"));
+    world.world_canon.actors.insert(
+        "wounded".to_string(),
+        actor_at("wounded", "farlands", Provenance::seed()),
+    );
     world
-        .world_canon
-        .actors
-        .insert("corpse".to_string(), actor_at("corpse", "farlands", Provenance::seed()));
+        .npcs
+        .insert("corpse".to_string(), npc("corpse", "dead"));
+    world.world_canon.actors.insert(
+        "corpse".to_string(),
+        actor_at("corpse", "farlands", Provenance::seed()),
+    );
 
     let roster = world.dynamic_roster_context(&BTreeSet::new());
     assert!(

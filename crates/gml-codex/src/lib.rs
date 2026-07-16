@@ -26,12 +26,14 @@
 //! checks, switch this crate to an impersonating client (PORT_PLAN §1.3).
 
 pub mod client;
+pub mod connector;
 pub mod install_id;
 pub mod oauth;
 pub mod responses;
 pub mod stream;
 
 pub use client::{usage_stats, CodexClient};
+pub use connector::CodexConnector;
 pub use install_id::installation_id;
 pub use oauth::{
     account_id_from_tokens, auth_status, authorize_url, code_challenge, credential_path,

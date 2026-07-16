@@ -49,7 +49,13 @@ mod tests {
     fn role_reasoning_roles_order() {
         assert_eq!(
             REASONING_ROLES,
-            [Role::Gm, Role::Npc, Role::Compact, Role::Location, Role::Character]
+            [
+                Role::Gm,
+                Role::Npc,
+                Role::Compact,
+                Role::Location,
+                Role::Character
+            ]
         );
     }
 

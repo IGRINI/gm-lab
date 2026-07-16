@@ -315,10 +315,7 @@ fn ac_is_left_untouched_by_stat_normalization() {
     // `ac` is a bare Value, NOT a stat dict — a stringy annotated AC must survive
     // verbatim (spec §К2.1: leave ac alone).
     let mut w = pinned_world();
-    w.update_player_character(
-        &json!({"ac": "13 (кожаный доспех)"}),
-        "armor",
-    );
+    w.update_player_character(&json!({"ac": "13 (кожаный доспех)"}), "armor");
     assert_eq!(w.player_character.ac, json!("13 (кожаный доспех)"));
 }
 

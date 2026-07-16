@@ -25,7 +25,10 @@ fn sample_npc() -> Npc {
 }
 
 fn content(m: &Value) -> String {
-    m.get("content").and_then(Value::as_str).unwrap_or("").to_string()
+    m.get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 #[test]
@@ -43,7 +46,10 @@ fn persisted_card_is_sent_verbatim_not_downgraded_to_historical() {
     let card = npc_card_message(&npc);
     // historical_npc_message must pass the card through unchanged.
     let historical = historical_npc_message(&card);
-    assert_eq!(historical, card, "card is authoritative, not a historical exchange");
+    assert_eq!(
+        historical, card,
+        "card is authoritative, not a historical exchange"
+    );
     assert!(!content(&historical).contains("HISTORICAL NPC EXCHANGE"));
 }
 
@@ -61,7 +67,10 @@ fn request_with_card_in_history_sends_a_bare_final_turn() {
     // The final message is the bare turn — the card is NOT glued onto it again.
     let last = req.last().expect("non-empty request");
     assert_eq!(last, &final_turn, "final turn must be sent bare");
-    assert!(!content(last).contains(NPC_CARD_HEADER), "no per-call card injection");
+    assert!(
+        !content(last).contains(NPC_CARD_HEADER),
+        "no per-call card injection"
+    );
 
     // The card still appears once, verbatim, inside the history segment.
     let card_count = req.iter().filter(|m| is_npc_card_message(m)).count();
@@ -81,5 +90,8 @@ fn request_without_card_in_history_falls_back_to_gluing_the_card() {
         content(last).contains("CURRENT NPC CARD"),
         "defensive fallback keeps the card visible when history lacks it"
     );
-    assert!(content(last).contains("привет"), "final turn text is preserved");
+    assert!(
+        content(last).contains("привет"),
+        "final turn text is preserved"
+    );
 }

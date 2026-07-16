@@ -111,9 +111,7 @@ impl Drop for MockEmbedServer {
 
 fn split_body(buf: &[u8]) -> Option<usize> {
     // Return byte offset where the body starts (after \r\n\r\n).
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
 fn body_complete(buf: &[u8], body_start: usize) -> bool {
@@ -182,7 +180,10 @@ fn world_cache_path_sanitizes_and_falls_back() {
 
     // Safe ids: used verbatim as the stem.
     let p = world_cache_path(&c, "abc-DEF_123");
-    assert_eq!(p.file_name().unwrap().to_string_lossy(), "abc-DEF_123.sqlite3");
+    assert_eq!(
+        p.file_name().unwrap().to_string_lossy(),
+        "abc-DEF_123.sqlite3"
+    );
 
     // Unsafe ids: deterministic `w-<32 hex>` fallback, stable across calls.
     let p1 = world_cache_path(&c, "world/with space");
@@ -271,8 +272,7 @@ fn world_ref_none_writes_the_global_file() {
     let docs = sample_docs();
 
     let global = resolve_cache_path(&config, None);
-    let out =
-        retrieve_world_fact_at(&global, "north gate password", &docs, &config).expect("ok");
+    let out = retrieve_world_fact_at(&global, "north gate password", &docs, &config).expect("ok");
     assert!(out.is_some());
 
     assert!(global.is_file(), "global cache created for None world");
@@ -355,7 +355,11 @@ fn scoped_purge_only_touches_the_target_world_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut config = Config::from_env();
     config.rag_enabled = true;
-    config.rag_cache_path = dir.path().join("global.sqlite3").to_string_lossy().into_owned();
+    config.rag_cache_path = dir
+        .path()
+        .join("global.sqlite3")
+        .to_string_lossy()
+        .into_owned();
     config.rag_worlds_dir = dir.path().join("rag_worlds").to_string_lossy().into_owned();
 
     let model = format!("{}@{}", config.rag_embeddings_model, config.embedder_quant);
@@ -368,7 +372,9 @@ fn scoped_purge_only_touches_the_target_world_file() {
     let path_g = PathBuf::from(&config.rag_cache_path);
     for p in [&path_a, &path_b, &path_g] {
         let cache = EmbeddingCache::new(p).unwrap();
-        cache.put_many(&model, &[(text.clone(), vec.clone())]).unwrap();
+        cache
+            .put_many(&model, &[(text.clone(), vec.clone())])
+            .unwrap();
     }
 
     // Purge scoped to world-a only.

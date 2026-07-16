@@ -23,9 +23,10 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
 use gml_llm::{
-    Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput, MockClient,
+    Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
     SessionIdentity,
 };
+use gml_mock::MockClient;
 use gml_orchestrator::{run_tool_collect, ClientFactory, Session};
 use gml_stories::StoryStore;
 use gml_world::{Npc, Place, Provenance, Transition, World};
@@ -894,7 +895,7 @@ fn canon_tools_are_available_in_the_canon_catalog() {
     // The core additive set is fixed; `long_rest` is a later deferred addition by
     // the canon builder, so tolerate (but do not require) its presence rather than
     // pinning an exact length that the parallel owner would break.
-    let core = vec![
+    let core = [
         "move_player",
         "world_debug",
         "generate_location",
@@ -944,8 +945,17 @@ fn read_state_renders_requested_sections_from_live_world_without_mutating() {
     assert_eq!(payload["ok"], json!(true));
     // The GM-facing model channel carries the rendered blocks for each section.
     let text = payload["text"].as_str().unwrap_or("");
-    for heading in ["## TIME", "## SCENE", "## PLAYER", "## ROSTER (full)", "## PUBLIC FACTS"] {
-        assert!(text.contains(heading), "missing section heading {heading}: {text}");
+    for heading in [
+        "## TIME",
+        "## SCENE",
+        "## PLAYER",
+        "## ROSTER (full)",
+        "## PUBLIC FACTS",
+    ] {
+        assert!(
+            text.contains(heading),
+            "missing section heading {heading}: {text}"
+        );
     }
     assert!(
         result.model.contains("## TIME"),
@@ -958,7 +968,9 @@ fn read_state_renders_requested_sections_from_live_world_without_mutating() {
         "read_state must not mutate canon"
     );
     assert!(
-        !events.iter().any(|e| e.kind == "scene_update" || e.kind == "error"),
+        !events
+            .iter()
+            .any(|e| e.kind == "scene_update" || e.kind == "error"),
         "read_state must emit no scene_update / error events"
     );
 }
@@ -1042,7 +1054,9 @@ struct RerankStub {
 impl RerankStub {
     fn start(score: f64) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind rerank stub");
-        listener.set_nonblocking(true).expect("nonblocking listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
         let addr = listener.local_addr().expect("addr");
         let url = format!("http://{addr}/rerank");
         let stop = Arc::new(AtomicBool::new(false));
@@ -1052,8 +1066,7 @@ impl RerankStub {
                 match listener.accept() {
                     Ok((mut sock, _)) => {
                         let _ = sock.set_nonblocking(false);
-                        let _ =
-                            sock.set_read_timeout(Some(std::time::Duration::from_millis(200)));
+                        let _ = sock.set_read_timeout(Some(std::time::Duration::from_millis(200)));
                         // Drain the WHOLE request (headers + body) before replying,
                         // else closing with unread bytes triggers a TCP RST the
                         // client sees as a send error. Read until a timeout/EOF.
@@ -1152,7 +1165,10 @@ fn generate_npc_commits_card_actor_and_redacts_secret() {
         "generated NPC is present in the live scene"
     );
     assert!(
-        session.world.extra_proper_nouns.contains(&"Тихон Ржавый".to_string()),
+        session
+            .world
+            .extra_proper_nouns
+            .contains(&"Тихон Ржавый".to_string()),
         "generated name registered as a proper noun"
     );
 
@@ -1297,12 +1313,20 @@ fn generate_npc_dedup_degraded_proceeds() {
         "generate_npc",
         &json!({ "request": "Игрок обращается к бармену.", "role": "бармен" }),
     ));
-    for k in ["GM_NPC_DEDUP_ENABLED", "GM_RAG_RERANK_URL", "GM_RAG_TIMEOUT_SECONDS"] {
+    for k in [
+        "GM_NPC_DEDUP_ENABLED",
+        "GM_RAG_RERANK_URL",
+        "GM_RAG_TIMEOUT_SECONDS",
+    ] {
         std::env::remove_var(k);
     }
 
     let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
-    assert_eq!(payload["ok"], json!(true), "degraded gate must not block: {payload}");
+    assert_eq!(
+        payload["ok"],
+        json!(true),
+        "degraded gate must not block: {payload}"
+    );
     assert_eq!(payload["dedup"]["degraded"], json!(true));
     assert_eq!(payload["dedup"]["reason"], json!("rerank_error"));
 }
@@ -1326,10 +1350,16 @@ fn generate_npc_duplicate_candidates_then_retry_bypasses() {
         &json!({ "request": "Ещё один страж у ворот.", "role": "стражник" }),
     ));
     let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
-    assert_eq!(payload["status"], json!("duplicate_candidates"), "payload: {payload}");
+    assert_eq!(
+        payload["status"],
+        json!("duplicate_candidates"),
+        "payload: {payload}"
+    );
     assert_eq!(payload["ok"], json!(false));
     assert!(
-        payload["candidates"].as_array().is_some_and(|c| !c.is_empty()),
+        payload["candidates"]
+            .as_array()
+            .is_some_and(|c| !c.is_empty()),
         "duplicate gate lists existing candidates: {payload}"
     );
     assert_eq!(
@@ -1359,7 +1389,11 @@ fn generate_npc_duplicate_candidates_then_retry_bypasses() {
     drop(stub);
 
     let payload2: Value = serde_json::from_str(&result2.full).expect("full is JSON");
-    assert_eq!(payload2["ok"], json!(true), "retry must bypass the gate: {payload2}");
+    assert_eq!(
+        payload2["ok"],
+        json!(true),
+        "retry must bypass the gate: {payload2}"
+    );
     assert_eq!(payload2["committed"], json!(true));
     assert_eq!(payload2["dedup"]["reason"], json!("retry_forced"));
     assert_eq!(
@@ -1398,7 +1432,10 @@ fn generate_npc_present_false_without_place_stays_offscene() {
         json!(false),
         "reported presence must reflect the derived scene: {payload}"
     );
-    let npc_id = payload["npc"]["npc_id"].as_str().expect("npc id").to_string();
+    let npc_id = payload["npc"]["npc_id"]
+        .as_str()
+        .expect("npc id")
+        .to_string();
 
     let actor = session
         .world
@@ -1492,16 +1529,14 @@ fn generate_npc_generator_state_round_trips_through_payload() {
     assert!(!session.character_generator_client_state.model.is_empty());
 
     let payload = session.to_payload();
-    let restored = Session::from_payload(&payload, client(), factory())
-        .expect("session payload restores");
+    let restored =
+        Session::from_payload(&payload, client(), factory()).expect("session payload restores");
     assert_eq!(
-        restored.character_generator_messages,
-        session.character_generator_messages,
+        restored.character_generator_messages, session.character_generator_messages,
         "character generator history is persisted"
     );
     assert_eq!(
-        restored.character_generator_anti_repeat,
-        session.character_generator_anti_repeat,
+        restored.character_generator_anti_repeat, session.character_generator_anti_repeat,
         "character generator anti-repeat ring is persisted"
     );
     assert_eq!(
@@ -1562,9 +1597,17 @@ fn take_item_moves_scene_item_into_card_and_emits_updates() {
     let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
     assert_eq!(payload["ok"], json!(true));
     assert_eq!(payload["status"], json!("taken"));
-    assert_eq!(payload["inventory_entry"], json!("Медная монета — потёртая"));
+    assert_eq!(
+        payload["inventory_entry"],
+        json!("Медная монета — потёртая")
+    );
     // The scene item is gone; the card carries the entry.
-    assert!(!session.world.scene.items.iter().any(|i| i.item_id == "coin"));
+    assert!(!session
+        .world
+        .scene
+        .items
+        .iter()
+        .any(|i| i.item_id == "coin"));
     assert!(session
         .world
         .player_character
@@ -1629,7 +1672,12 @@ fn take_item_non_portable_is_rejected_as_fiction() {
         result.model
     );
     assert!(events.iter().any(|e| e.kind == "error"));
-    assert!(session.world.scene.items.iter().any(|i| i.item_id == "statue"));
+    assert!(session
+        .world
+        .scene
+        .items
+        .iter()
+        .any(|i| i.item_id == "statue"));
 }
 
 #[test]
@@ -1641,7 +1689,11 @@ fn take_item_invisible_only_by_id() {
         "take_item",
         &json!({"name": "Ключ"}),
     ));
-    assert!(by_name.model.contains("code: item_not_here"), "{}", by_name.model);
+    assert!(
+        by_name.model.contains("code: item_not_here"),
+        "{}",
+        by_name.model
+    );
     // By id: GM-trusted path succeeds.
     let (_events, by_id) = block_on(run_tool_collect(
         &mut session,
@@ -1650,7 +1702,12 @@ fn take_item_invisible_only_by_id() {
     ));
     let payload: Value = serde_json::from_str(&by_id.full).unwrap();
     assert_eq!(payload["ok"], json!(true));
-    assert!(!session.world.scene.items.iter().any(|i| i.item_id == "vault_key"));
+    assert!(!session
+        .world
+        .scene
+        .items
+        .iter()
+        .any(|i| i.item_id == "vault_key"));
 }
 
 #[test]
@@ -1729,7 +1786,12 @@ fn take_then_move_does_not_leak_and_drop_lands_in_the_new_place() {
     assert_ne!(arrived, start);
     // The start place's non-taken items did not travel here.
     assert!(
-        !session.world.scene.items.iter().any(|i| i.item_id == "statue"),
+        !session
+            .world
+            .scene
+            .items
+            .iter()
+            .any(|i| i.item_id == "statue"),
         "scene items must not leak across a move"
     );
     // Drop the coin in the new place.
@@ -1738,7 +1800,12 @@ fn take_then_move_does_not_leak_and_drop_lands_in_the_new_place() {
         "drop_item",
         &json!({"name": "Медная монета", "location": "на камне"}),
     ));
-    assert!(session.world.scene.items.iter().any(|i| i.name == "Медная монета"));
+    assert!(session
+        .world
+        .scene
+        .items
+        .iter()
+        .any(|i| i.name == "Медная монета"));
 }
 
 // --- §С2 cast_spell dispatch -----------------------------------------------
@@ -1788,8 +1855,14 @@ fn cast_spell_spends_slot_sets_concentration_and_emits_card_update_only() {
     assert_eq!(payload["slot_spent_level"], json!(1));
     assert_eq!(payload["concentration_started"], json!("Огненная хватка"));
     // Engine state mutated: slot decremented, concentration held.
-    assert_eq!(session.world.player_character.spell_slots.get("1"), Some(&json!(0)));
-    assert_eq!(session.world.player_character.concentration, "Огненная хватка");
+    assert_eq!(
+        session.world.player_character.spell_slots.get("1"),
+        Some(&json!(0))
+    );
+    assert_eq!(
+        session.world.player_character.concentration,
+        "Огненная хватка"
+    );
     // A card update is emitted; NO scene update (the scene is untouched) and NO
     // canon event (§0).
     assert!(events.iter().any(|e| e.kind == "player_character_update"));
@@ -1901,7 +1974,10 @@ fn ensure_npc_card_injected_appends_exactly_one_update_on_revision_bump() {
     assert_eq!(history.len(), 2, "one card + one update, no duplicate");
     assert!(gml_agents::is_npc_card_message(&history[0]));
     assert!(gml_agents::is_npc_card_message(&history[1]));
-    let last = history[1].get("content").and_then(Value::as_str).unwrap_or("");
+    let last = history[1]
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     assert!(last.starts_with(gml_agents::NPC_CARD_UPDATE_HEADER));
     assert_eq!(session.npc_injected_card_revision.get("borin"), Some(&1));
 }
@@ -2028,13 +2104,13 @@ fn long_rest_restores_slots_hp_concentration_and_advances_eight_hours() {
 #[test]
 fn long_rest_reason_optional_but_empty_is_fine() {
     let mut session = rest_session();
-    let (_events, result) = block_on(run_tool_collect(
-        &mut session,
-        "long_rest",
-        &json!({}),
-    ));
+    let (_events, result) = block_on(run_tool_collect(&mut session, "long_rest", &json!({})));
     let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
-    assert_eq!(payload["ok"], json!(true), "empty reason is accepted: {payload}");
+    assert_eq!(
+        payload["ok"],
+        json!(true),
+        "empty reason is accepted: {payload}"
+    );
     assert_eq!(payload["elapsed_minutes"], json!(480));
 }
 
@@ -2060,14 +2136,21 @@ fn no_slots_then_long_rest_lets_the_spell_be_cast_again() {
 
     // A long rest refills the slots; the same spell casts again.
     block_on(run_tool_collect(&mut session, "long_rest", &json!({})));
-    assert_eq!(session.world.player_character.spell_slots.get("1"), Some(&json!(2)));
+    assert_eq!(
+        session.world.player_character.spell_slots.get("1"),
+        Some(&json!(2))
+    );
     let (_events, after) = block_on(run_tool_collect(
         &mut session,
         "cast_spell",
         &json!({"name": "огненная хватка"}),
     ));
     let payload: Value = serde_json::from_str(&after.full).expect("full is JSON");
-    assert_eq!(payload["ok"], json!(true), "cast works after long rest: {payload}");
+    assert_eq!(
+        payload["ok"],
+        json!(true),
+        "cast works after long rest: {payload}"
+    );
     assert_eq!(payload["slot_spent_level"], json!(1));
 }
 
@@ -2123,10 +2206,17 @@ fn tool_staleness_maps_round_trip_through_payload() {
         session.tool_loaded_turn.contains_key("move_npc"),
         "loaded schema is recorded in tool_loaded_turn"
     );
+    assert!(
+        session.loaded_gm_tools.contains("move_npc"),
+        "loading a schema admits the tool into the session set"
+    );
+    // A loaded schema need not have either staleness signal yet. Its membership
+    // is still exact runtime state and must survive a checkpoint round-trip.
+    session.loaded_gm_tools.insert("world_debug".to_string());
 
     let payload = session.to_payload();
-    let restored = Session::from_payload(&payload, client(), factory())
-        .expect("session payload restores");
+    let restored =
+        Session::from_payload(&payload, client(), factory()).expect("session payload restores");
     assert_eq!(
         restored.tool_last_used, session.tool_last_used,
         "tool_last_used survives the round-trip"
@@ -2135,13 +2225,41 @@ fn tool_staleness_maps_round_trip_through_payload() {
         restored.tool_loaded_turn, session.tool_loaded_turn,
         "tool_loaded_turn survives the round-trip"
     );
+    assert_eq!(
+        restored.loaded_gm_tools, session.loaded_gm_tools,
+        "the exact loaded-tool set survives the round-trip"
+    );
 
-    // A legacy payload without the keys restores to empty maps (no records).
+    // A legacy payload with staleness maps reconstructs a deterministic safe
+    // set: initial tools plus valid names evidenced by those maps.
+    let mut legacy_with_maps = payload.clone();
+    legacy_with_maps
+        .as_object_mut()
+        .unwrap()
+        .remove("loaded_gm_tools");
+    let restored_legacy_with_maps =
+        Session::from_payload(&legacy_with_maps, client(), factory()).expect("legacy restores");
+    assert!(restored_legacy_with_maps
+        .loaded_gm_tools
+        .is_superset(&gml_agents::initial_gm_tool_names(false)));
+    assert!(restored_legacy_with_maps
+        .loaded_gm_tools
+        .contains("move_npc"));
+    assert!(!restored_legacy_with_maps
+        .loaded_gm_tools
+        .contains("world_debug"));
+
+    // A fully legacy payload has empty staleness maps and the safe initial set.
     let mut legacy = payload.clone();
+    legacy.as_object_mut().unwrap().remove("loaded_gm_tools");
     legacy.as_object_mut().unwrap().remove("tool_last_used");
     legacy.as_object_mut().unwrap().remove("tool_loaded_turn");
-    let legacy_session = Session::from_payload(&legacy, client(), factory())
-        .expect("legacy payload restores");
+    let legacy_session =
+        Session::from_payload(&legacy, client(), factory()).expect("legacy payload restores");
     assert!(legacy_session.tool_last_used.is_empty());
     assert!(legacy_session.tool_loaded_turn.is_empty());
+    assert_eq!(
+        legacy_session.loaded_gm_tools,
+        gml_agents::initial_gm_tool_names(false)
+    );
 }

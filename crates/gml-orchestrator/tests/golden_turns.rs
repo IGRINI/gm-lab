@@ -13,7 +13,8 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use gml_config::{Config, RuntimeSettings};
-use gml_llm::{Backend, MockClient};
+use gml_llm::Backend;
+use gml_mock::MockClient;
 use gml_orchestrator::{run_turn, Session};
 use gml_stories::StoryStore;
 use gml_world::World;

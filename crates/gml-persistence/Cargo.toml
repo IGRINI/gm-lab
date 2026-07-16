@@ -20,5 +20,6 @@ getrandom = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+gml-mock = { workspace = true }
 gml-stories = { path = "../gml-stories" }
 tempfile = { workspace = true }

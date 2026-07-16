@@ -90,7 +90,9 @@ mod tests {
         let (_dir, store) = temp_store();
         assert!(store.story_ids().contains(DEFAULT_STORY_ID));
         // Metadata resolves for the default id.
-        let meta = store.story_metadata(DEFAULT_STORY_ID).expect("default metadata");
+        let meta = store
+            .story_metadata(DEFAULT_STORY_ID)
+            .expect("default metadata");
         assert_eq!(
             meta.get("id").and_then(Value::as_str),
             Some(DEFAULT_STORY_ID)

@@ -283,7 +283,11 @@ impl StoryStore {
 
         let needs_strip = self
             .find(&story_id)
-            .map(|env| LEGACY_ARCHITECT_META_KEYS.iter().any(|k| env.meta.contains_key(*k)))
+            .map(|env| {
+                LEGACY_ARCHITECT_META_KEYS
+                    .iter()
+                    .any(|k| env.meta.contains_key(*k))
+            })
             .unwrap_or(false);
         if needs_strip {
             let stripped_env = {
@@ -603,11 +607,7 @@ impl StoryStore {
         env.version = env.version.saturating_add(1);
         env.updated_at = now_timestamp();
         self.write_envelope(&env)?;
-        let response = env
-            .to_file_value()
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let response = env.to_file_value().as_object().cloned().unwrap_or_default();
         self.stories[idx] = env;
         Ok(response)
     }
@@ -771,9 +771,9 @@ impl StoryEnvelope {
     /// Build an envelope from a parsed `story.json`, using `id` (the folder name)
     /// as the authoritative id.
     fn from_value(id: &str, value: Value) -> Result<Self, StoryStoreError> {
-        let obj = value
-            .as_object()
-            .ok_or_else(|| StoryStoreError::Io(format!("story {id}: story.json is not an object")))?;
+        let obj = value.as_object().ok_or_else(|| {
+            StoryStoreError::Io(format!("story {id}: story.json is not an object"))
+        })?;
         let world_ref = parse_world_ref(obj.get("world_ref"));
         // The seed (authored plot for Phase-4 stories) is REQUIRED for a
         // self-contained story (no world_ref). A story bound to a world may
@@ -848,18 +848,21 @@ impl StoryEnvelope {
         })
     }
 
-    /// `{id, title, description, story_brief, kind, world_ref?, has_pc}` — the
-    /// PLAYER-facing catalog row (`GET /stories`). The leading four keys keep the
-    /// legacy public catalog shape (`story_brief` is the seed's `story_brief`, else
-    /// `public_intro`); `kind` (always), `world_ref` (when present) and `has_pc`
-    /// (always) are the ONLY additive keys — just enough for the front-end to gate
-    /// the "✎ edit" affordance (`§С1.3`) and for the new-game wizard to tell
-    /// whether an authored story ships its own protagonist.
+    /// `{id, title, description, story_brief, kind, world_ref?, has_pc, pc?}` —
+    /// the PLAYER-facing catalog row (`GET /stories`). The leading four keys keep
+    /// the legacy public catalog shape (`story_brief` is the seed's `story_brief`,
+    /// else `public_intro`); `kind` (always), `world_ref` (when present), `has_pc`
+    /// (always) and `pc` (when public material survives) are the ONLY additive
+    /// keys — just enough for the front-end to gate the "✎ edit" affordance
+    /// (`§С1.3`) and for the new-game wizard to present an authored story's own
+    /// protagonist.
     ///
     /// `has_pc` is a NON-SECRET boolean (does the seed carry an authored
-    /// protagonist?) — the `hidden_truth`/mystery solution stays omitted with the
-    /// rest of the seed. This row is DELIBERATELY minimal: it carries NO `seed`
-    /// and NO `architect_*` chat state, because the catalog is loaded at app start
+    /// protagonist?); `pc` is the protagonist reduced to [`PC_PUBLIC_FIELDS`] —
+    /// the `hidden_truth`/mystery solution stays omitted with the rest of the
+    /// seed, and the sheet's `gm_notes`/stat blocks never pass the whitelist.
+    /// This row is DELIBERATELY minimal: it carries NO `seed` and NO
+    /// `architect_*` chat state, because the catalog is loaded at app start
     /// for every player and the `seed` holds GM-only secrets (e.g. `hidden_truth`,
     /// the mystery solutions). The GM-scoped plot draft + chat state come from
     /// [`Self::draft_row`] via `GET /stories/{id}/draft` instead.
@@ -886,6 +889,9 @@ impl StoryEnvelope {
             );
         }
         meta.insert("has_pc".to_string(), Value::Bool(seed_has_pc(&self.seed)));
+        if let Some(pc) = seed_pc_public(&self.seed) {
+            meta.insert("pc".to_string(), Value::Object(pc));
+        }
         meta
     }
 
@@ -1007,18 +1013,69 @@ fn seed_str(seed: &Value, key: &str) -> String {
         .to_string()
 }
 
-/// Whether the seed carries an authored protagonist — a non-empty `player_character`
-/// (or the legacy `player` alias) OBJECT under either key. Mirrors the server's
-/// `story_plot_has_pc` launch-gate logic so the catalog `has_pc` flag and the
-/// gate agree. A NON-SECRET boolean, safe for the player-facing catalog.
+/// The seed's authored protagonist object under `player_character` (or the
+/// legacy `player` alias). FIRST PRESENT key wins — no fall-through when it is
+/// present but empty/non-object — mirroring the server's `story_plot_has_pc`
+/// launch gate exactly, so `has_pc`, the `pc` summary and the gate can never
+/// disagree on one seed.
+fn seed_pc(seed: &Value) -> Option<&Map<String, Value>> {
+    let obj = seed.as_object()?;
+    let pc = obj.get("player_character").or_else(|| obj.get("player"))?;
+    pc.as_object().filter(|m| !m.is_empty())
+}
+
+/// Whether the seed carries an authored protagonist — a non-empty
+/// `player_character` (or legacy `player`) object, per [`seed_pc`] (the shared
+/// launch-gate lookup). A NON-SECRET boolean, safe for the player-facing
+/// catalog.
 fn seed_has_pc(seed: &Value) -> bool {
-    let Some(obj) = seed.as_object() else {
-        return false;
-    };
-    ["player_character", "player"]
-        .iter()
-        .filter_map(|k| obj.get(*k))
-        .any(|v| matches!(v, Value::Object(m) if !m.is_empty()))
+    seed_pc(seed).is_some()
+}
+
+/// The PUBLIC protagonist fields allowed into the catalog row's `pc` object — a
+/// WHITELIST (mirrors the character architect's base blocks): the catalog is
+/// player-facing, so the sheet's `gm_notes` and ANY ad-hoc GM key the story
+/// architect may fold into `player_character` stay private until deliberately
+/// added here. Stat blocks / inventories are also out — the row presents the
+/// hero, it does not replace the in-game sheet.
+const PC_PUBLIC_FIELDS: [&str; 11] = [
+    "name",
+    "pronouns",
+    "class_role",
+    "level",
+    "background",
+    "age",
+    "physical_type",
+    "distinctive_features",
+    "personality",
+    "values",
+    "condition",
+];
+
+/// The seed's authored protagonist ([`seed_pc`] — the same lookup behind
+/// [`seed_has_pc`]) reduced to [`PC_PUBLIC_FIELDS`]: blank strings dropped,
+/// objects/arrays never pass. `None` when the seed has no PC or nothing public
+/// survives — the catalog row then simply omits `pc`.
+fn seed_pc_public(seed: &Value) -> Option<Map<String, Value>> {
+    let pc = seed_pc(seed)?;
+    let mut public = Map::new();
+    for key in PC_PUBLIC_FIELDS {
+        if let Some(v) = pc.get(key) {
+            let keep = match v {
+                Value::String(s) => !s.trim().is_empty(),
+                Value::Number(_) | Value::Bool(_) => true,
+                Value::Null | Value::Object(_) | Value::Array(_) => false,
+            };
+            if keep {
+                public.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    if public.is_empty() {
+        None
+    } else {
+        Some(public)
+    }
 }
 
 /// The id order of the embedded built-in catalog. Defines the default story
@@ -1120,7 +1177,10 @@ fn normalize_architect_state(state: Value) -> Value {
 /// Extract the LEGACY `meta.architect_*` chat state (pre-split packages) as a
 /// canonical architect-state value. `None` when the meta carries none.
 fn legacy_architect_state(meta: &Map<String, Value>) -> Option<Value> {
-    if !LEGACY_ARCHITECT_META_KEYS.iter().any(|k| meta.contains_key(*k)) {
+    if !LEGACY_ARCHITECT_META_KEYS
+        .iter()
+        .any(|k| meta.contains_key(*k))
+    {
         return None;
     }
     let mut state = Map::new();
@@ -1266,7 +1326,11 @@ mod tests {
         );
         assert!(!store.world_embedded(&id).unwrap());
         assert_eq!(
-            store.plot(&id).unwrap().get("hidden_truth").and_then(Value::as_str),
+            store
+                .plot(&id)
+                .unwrap()
+                .get("hidden_truth")
+                .and_then(Value::as_str),
             Some("тайна")
         );
 
@@ -1278,6 +1342,108 @@ mod tests {
                 id: "some-world".to_string(),
                 version: 3,
             })
+        );
+    }
+
+    /// The catalog row's `pc` is a strict PUBLIC whitelist of the seed's
+    /// protagonist: presentation fields pass, `gm_notes` (GM-only) and the
+    /// mechanical blocks (abilities/inventory) never do, and a PC-less story
+    /// omits the key entirely.
+    #[test]
+    fn catalog_row_pc_is_a_public_whitelist() {
+        let (_dir, mut store) = temp_store();
+        let with_pc = store
+            .create_bound_story(
+                "С протагонистом",
+                "",
+                "authored",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 1,
+                },
+                json!({
+                    "hidden_truth": "тайна",
+                    "player_character": {
+                        "name": "Дарра",
+                        "class_role": "сыщица",
+                        "level": 2,
+                        "background": "вольная сыщица",
+                        "gm_notes": "секрет мастера",
+                        "abilities": {"STR": 9},
+                        "inventory": ["кинжал"],
+                        "condition": "   "
+                    }
+                }),
+            )
+            .expect("create with pc");
+        let without_pc = store
+            .create_bound_story(
+                "Без протагониста",
+                "",
+                "authored",
+                StoryWorldRef {
+                    id: "w".to_string(),
+                    version: 1,
+                },
+                json!({"story_brief": "кратко"}),
+            )
+            .expect("create without pc");
+
+        let rows = store.list_stories();
+        let row = |meta: &Map<String, Value>| {
+            let id = meta.get("id").and_then(Value::as_str).unwrap();
+            rows.iter()
+                .find(|r| r.get("id").and_then(Value::as_str) == Some(id))
+                .cloned()
+                .unwrap()
+        };
+
+        let with = row(&with_pc);
+        assert_eq!(with.get("has_pc"), Some(&Value::Bool(true)));
+        let pc = with
+            .get("pc")
+            .and_then(Value::as_object)
+            .expect("pc object");
+        assert_eq!(pc.get("name"), Some(&json!("Дарра")));
+        assert_eq!(pc.get("class_role"), Some(&json!("сыщица")));
+        assert_eq!(pc.get("level"), Some(&json!(2)));
+        // GM-only and mechanical fields never pass; blank strings are dropped.
+        for hidden in ["gm_notes", "abilities", "inventory", "condition"] {
+            assert!(pc.get(hidden).is_none(), "{hidden} must not leak");
+        }
+
+        let without = row(&without_pc);
+        assert_eq!(without.get("has_pc"), Some(&Value::Bool(false)));
+        assert!(
+            without.get("pc").is_none(),
+            "no pc key without a protagonist"
+        );
+    }
+
+    /// `has_pc`, `pc` and the server's launch gate share ONE lookup: the first
+    /// PRESENT of `player_character`/legacy `player` wins, with no fall-through
+    /// when it is empty or non-object. The divergent both-keys shapes (reachable
+    /// via update_story's shallow seed merge on a legacy package) must resolve
+    /// identically everywhere — never "has_pc=true but no pc / launch 400s".
+    #[test]
+    fn pc_lookup_matches_launch_gate_on_divergent_seeds() {
+        // Empty player_character shadows a populated legacy player: gate says
+        // NO protagonist, so the catalog must too.
+        let shadowed = json!({"player_character": {}, "player": {"name": "X"}});
+        assert!(!seed_has_pc(&shadowed));
+        assert!(seed_pc_public(&shadowed).is_none());
+
+        // Non-object player_character shadows the legacy key the same way.
+        let non_object = json!({"player_character": "Дарра", "player": {"name": "X"}});
+        assert!(!seed_has_pc(&non_object));
+        assert!(seed_pc_public(&non_object).is_none());
+
+        // The legacy alias alone still counts.
+        let legacy = json!({"player": {"name": "X"}});
+        assert!(seed_has_pc(&legacy));
+        assert_eq!(
+            seed_pc_public(&legacy).and_then(|m| m.get("name").cloned()),
+            Some(json!("X"))
         );
     }
 
@@ -1425,7 +1591,11 @@ mod tests {
                 json!({"story_brief": "старт", "hidden_truth": "тайна"}),
             )
             .expect("create");
-        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         assert_eq!(store.version(&id).unwrap(), 1);
 
         // Patch: overwrite title, merge into seed (add public_intro, DROP
@@ -1468,7 +1638,9 @@ mod tests {
     #[test]
     fn update_story_unknown_id_errors() {
         let (_dir, mut store) = temp_store();
-        let err = store.update_story("nope", json!({"title": "x"})).unwrap_err();
+        let err = store
+            .update_story("nope", json!({"title": "x"}))
+            .unwrap_err();
         assert_eq!(err, StoryStoreError::StoryNotFound("nope".to_string()));
     }
 
@@ -1505,7 +1677,11 @@ mod tests {
                 json!({}),
             )
             .expect("create");
-        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         let err = store.update_story(&id, json!({"title": "x"})).unwrap_err();
         match err {
             StoryStoreError::Invalid(msg) => assert!(msg.contains("authored")),
@@ -1530,8 +1706,14 @@ mod tests {
                 json!({}),
             )
             .expect("create");
-        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
-        let err = store.update_story(&id, json!({"title": "   "})).unwrap_err();
+        let id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
+        let err = store
+            .update_story(&id, json!({"title": "   "}))
+            .unwrap_err();
         match err {
             StoryStoreError::Invalid(msg) => assert!(msg.contains("title")),
             other => panic!("expected Invalid, got {other:?}"),
@@ -1553,7 +1735,11 @@ mod tests {
                 json!({"story_brief": "старт", "hidden_truth": "тайна GM"}),
             )
             .expect("create");
-        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         // Fold in some architect chat state via a normal update (meta path).
         store
             .update_story(
@@ -1577,8 +1763,14 @@ mod tests {
         assert_eq!(row.get("kind").and_then(Value::as_str), Some("authored"));
         assert_eq!(row["world_ref"]["id"], "w");
         let seed = row.get("seed").and_then(Value::as_object).expect("seed");
-        assert_eq!(seed.get("story_brief").and_then(Value::as_str), Some("старт"));
-        assert_eq!(seed.get("public_intro").and_then(Value::as_str), Some("интро"));
+        assert_eq!(
+            seed.get("story_brief").and_then(Value::as_str),
+            Some("старт")
+        );
+        assert_eq!(
+            seed.get("public_intro").and_then(Value::as_str),
+            Some("интро")
+        );
         assert_eq!(
             seed.get("hidden_truth").and_then(Value::as_str),
             Some("тайна GM")
@@ -1644,7 +1836,11 @@ mod tests {
                 json!({}),
             )
             .expect("create");
-        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         match store.draft_row(&id).unwrap_err() {
             StoryStoreError::Invalid(msg) => assert!(msg.contains("authored")),
             other => panic!("expected Invalid, got {other:?}"),
@@ -1669,7 +1865,11 @@ mod tests {
                 json!({"story_brief": "кратко", "hidden_truth": "секрет"}),
             )
             .expect("create");
-        let id = created.get("id").and_then(Value::as_str).unwrap().to_string();
+        let id = created
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         store
             .update_story(
                 &id,

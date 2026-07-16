@@ -28,14 +28,17 @@
 //! builds and runs.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gml_audio::{Sidecar, SidecarConfig};
 use gml_config::{Config, RuntimeSettings};
-use gml_llm::{make_client, Backend, BackendError, CodexHook};
+use gml_llm::{ConnectorId, ConnectorRegistry, ModelBinding};
+use gml_mock::MockConnector;
+use gml_openai_compatible::OpenAICompatConnector;
 use gml_persistence::{CharacterStore, DialogStore, WorldStore};
-use gml_server::{build_router, AppState, MakeClient};
+use gml_server::{build_router, AppState, TurnRegistry};
 use gml_stories::StoryStore;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -147,7 +150,8 @@ ENVIRONMENT (headless --server):\n\
 \n\
 ENVIRONMENT (paths, both modes — default to per-OS app-data dirs):\n\
     GM_SETTINGS_PATH, GM_DIALOG_DB, GM_RAG_CACHE_PATH,\n\
-    GM_TTS_CACHE_DIR, GM_CODEX_CREDENTIAL_PATH, GM_PACKAGES_DIR,\n\
+    GM_TTS_CACHE_DIR, GM_CODEX_CREDENTIAL_PATH,\n\
+    GM_SUPERGROK_CREDENTIAL_PATH, GM_PACKAGES_DIR,\n\
     GM_BACKEND, GM_MODEL\n",
         ver = env!("CARGO_PKG_VERSION"),
     );
@@ -204,6 +208,15 @@ impl AppDirs {
 /// so this is how we route their default paths into the app-data dirs while
 /// still letting an explicit override win.
 fn seed_path_env(dirs: &AppDirs) {
+    let codex_credential_path = dirs
+        .config_dir
+        .join("connectors")
+        .join("codex")
+        .join("auth.json");
+    migrate_legacy_credential(
+        &dirs.config_dir.join("codex-oauth.json"),
+        &codex_credential_path,
+    );
     set_if_unset(
         "GM_SETTINGS_PATH",
         dirs.config_dir.join("gm_lab_settings.json"),
@@ -217,11 +230,39 @@ fn seed_path_env(dirs: &AppDirs) {
     // the global cache — deliberately NOT under `library/` (export privacy).
     set_if_unset("GM_RAG_WORLDS_DIR", dirs.data_dir.join("rag_worlds"));
     set_if_unset("GM_TTS_CACHE_DIR", dirs.cache_dir.join("tts_cache"));
-    set_if_unset(
-        "GM_CODEX_CREDENTIAL_PATH",
-        dirs.config_dir.join("codex_credential.json"),
-    );
+    set_if_unset("GM_CODEX_CREDENTIAL_PATH", codex_credential_path);
     set_if_unset("GM_PACKAGES_DIR", dirs.data_dir.join("library"));
+}
+
+/// Preserve an existing sign-in while moving connector-owned state into its
+/// dedicated app-resource directory. The old file is left in place so older
+/// application versions can still start.
+fn migrate_legacy_credential(source: &std::path::Path, target: &std::path::Path) {
+    if target.is_file() || !source.is_file() {
+        return;
+    }
+    let Some(parent) = target.parent() else {
+        return;
+    };
+    let Ok(contents) = std::fs::read(source) else {
+        return;
+    };
+    if serde_json::from_slice::<serde_json::Value>(&contents).is_err()
+        || std::fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    let Ok(mut temporary) = tempfile::NamedTempFile::new_in(parent) else {
+        return;
+    };
+    if temporary.write_all(&contents).is_err()
+        || temporary.flush().is_err()
+        || temporary.as_file().sync_all().is_err()
+    {
+        return;
+    }
+    // Do not overwrite a credential created concurrently by a newer build.
+    let _ = temporary.persist_noclobber(target);
 }
 
 fn set_if_unset(key: &str, value: PathBuf) {
@@ -239,8 +280,8 @@ struct App {
     sidecar: Arc<Sidecar>,
 }
 
-/// Build the full [`AppState`] from per-OS dirs + config + the codex-wired
-/// client factory. This is the single construction site for both modes.
+/// Build the full [`AppState`] from per-OS dirs, config, and connector registry.
+/// This is the single construction site for both modes.
 async fn build_app() -> Result<App, String> {
     let dirs = AppDirs::resolve();
     dirs.ensure();
@@ -255,23 +296,17 @@ async fn build_app() -> Result<App, String> {
         gml_config::default_settings_path(),
     ));
 
-    // --- make_client (the synchronous server factory) ---------------------
-    // The server's `MakeClient` is `Fn() -> Arc<dyn Backend>` (sync). The
-    // gml-llm `make_client` is async (the OpenAI-compat branch probes
-    // GET /v1/models). We bridge by running the async factory on the current
-    // tokio runtime via `Handle::block_in_place` + `block_on` so callers in
-    // sync `spawn_blocking` contexts (DialogStore / Session) work too.
-    let make_client = build_make_client(config.clone(), settings.clone());
-
-    // ClientFactory for the DialogStore (recreates NPC/GM clients on load).
-    let factory: gml_orchestrator::ClientFactory = {
-        let mc = make_client.clone();
-        Arc::new(move || (mc)())
-    };
+    let (connectors, default_binding) =
+        build_connectors(config.clone(), settings.clone(), &dirs).await?;
 
     let store = Arc::new(
-        DialogStore::new(DialogStore::default_db_path(), factory, config.clone())
-            .map_err(|e| format!("open dialog store: {e}"))?,
+        DialogStore::with_connectors(
+            DialogStore::default_db_path(),
+            connectors,
+            default_binding,
+            config.clone(),
+        )
+        .map_err(|e| format!("open dialog store: {e}"))?,
     );
 
     // Filesystem world package store (source of truth for worlds). On first run
@@ -314,12 +349,12 @@ async fn build_app() -> Result<App, String> {
         world_store,
         story_store,
         character_store,
-        make_client,
         config,
         settings,
         http: reqwest::Client::new(),
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        turn_registry: Arc::new(TurnRegistry::default()),
         index_html: Arc::new(resolve_index_html(&dirs)),
     };
 
@@ -398,42 +433,79 @@ async fn build_app() -> Result<App, String> {
     Ok(App { state, sidecar })
 }
 
-/// Build the synchronous `MakeClient` the server expects, wiring the gml-codex
-/// constructor as the codex hook so `GM_BACKEND=codex` works without
-/// `gml-llm -> gml-codex` (which would be a dependency cycle).
-fn build_make_client(config: Arc<Config>, settings: Arc<RuntimeSettings>) -> MakeClient {
-    Arc::new(move || -> Arc<dyn Backend> {
-        let cfg = config.clone();
-        let set = settings.clone();
-        // Codex hook: build a `CodexClient` (implements `Backend`).
-        let hook: Box<CodexHook> = Box::new(|c: Arc<Config>, s: Arc<RuntimeSettings>| {
-            Ok(Arc::new(gml_codex::CodexClient::new(c, s)) as Arc<dyn Backend>)
-        });
-        // Run the async factory to completion on the current runtime. We are
-        // always inside a tokio runtime (both modes start one); use
-        // block_in_place so we don't stall the reactor if called from a worker.
-        let result: Result<Arc<dyn Backend>, BackendError> =
-            match tokio::runtime::Handle::try_current() {
-                Ok(handle) => tokio::task::block_in_place(|| {
-                    handle.block_on(make_client(cfg, set, Some(hook.as_ref())))
-                }),
-                Err(_) => {
-                    // No runtime (shouldn't happen) — spin a tiny one.
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("build fallback runtime");
-                    rt.block_on(make_client(cfg, set, Some(hook.as_ref())))
-                }
-            };
-        match result {
-            Ok(client) => client,
-            Err(e) => {
-                tracing::error!("make_client failed ({e}); falling back to MockClient");
-                Arc::new(gml_llm::MockClient::new())
+async fn build_connectors(
+    config: Arc<Config>,
+    settings: Arc<RuntimeSettings>,
+    dirs: &AppDirs,
+) -> Result<(Arc<ConnectorRegistry>, ModelBinding), String> {
+    let registry = Arc::new(ConnectorRegistry::new());
+    registry
+        .register(Arc::new(MockConnector))
+        .map_err(|error| error.to_string())?;
+    registry
+        .register(Arc::new(
+            OpenAICompatConnector::discover(config.clone(), settings.clone()).await,
+        ))
+        .map_err(|error| error.to_string())?;
+    registry
+        .register(Arc::new(gml_codex::CodexConnector::new(
+            config.clone(),
+            settings,
+        )))
+        .map_err(|error| error.to_string())?;
+
+    let mut xai_config = gml_supergrok::SuperGrokConfig::new(
+        dirs.config_dir
+            .join("connectors")
+            .join("xai")
+            .join("auth.json"),
+    );
+    apply_supergrok_env(&mut xai_config);
+    let xai = gml_supergrok::SuperGrokConnector::new(Arc::new(xai_config))
+        .map_err(|error| format!("initialize SuperGrok connector: {error}"))?;
+    registry
+        .register(Arc::new(xai))
+        .map_err(|error| error.to_string())?;
+
+    let connector_name = match config.backend.trim().to_ascii_lowercase().as_str() {
+        "mock" => "mock",
+        "codex" => "codex",
+        "xai" | "supergrok" => "xai",
+        _ => "openai-compatible",
+    };
+    let connector_id = ConnectorId::new(connector_name).map_err(|error| error.to_string())?;
+    let binding = registry
+        .default_binding(&connector_id)
+        .map_err(|error| error.to_string())?;
+    // Startup validates only construction. Live catalogs may require OAuth or
+    // a local inference server and are validated when a history is created.
+    registry
+        .create_backend(&binding)
+        .map_err(|error| error.to_string())?;
+    Ok((registry, binding))
+}
+
+fn apply_supergrok_env(config: &mut gml_supergrok::SuperGrokConfig) {
+    if let Some(path) =
+        std::env::var_os("GM_SUPERGROK_CREDENTIAL_PATH").filter(|value| !value.is_empty())
+    {
+        config.credential_path = PathBuf::from(path);
+    }
+    let apply = |target: &mut String, key: &str| {
+        if let Ok(value) = std::env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                *target = value.to_string();
             }
         }
-    })
+    };
+    apply(&mut config.inference_base_url, "GM_SUPERGROK_BASE_URL");
+    apply(&mut config.model, "GM_SUPERGROK_MODEL");
+    apply(&mut config.compact_model, "GM_SUPERGROK_COMPACT_MODEL");
+    apply(
+        &mut config.prompt_cache_key,
+        "GM_SUPERGROK_PROMPT_CACHE_KEY",
+    );
 }
 
 /// Resolve the built SPA `index.html`. Search, in order: exe-relative
@@ -506,9 +578,13 @@ async fn run_server() {
         host.as_str()
     };
 
-    let backend = app.state.config.backend.clone();
+    let default_binding = app.state.store.default_binding();
     let url = format!("http://{shown_host}:{port}");
-    println!("GM-Lab web UI: {url}  (backend {backend})");
+    println!(
+        "GM-Lab web UI: {url}  (default connector {}, model {})",
+        default_binding.connector_id(),
+        default_binding.model_id()
+    );
     println!("SQLite dialogs: {}", app.state.store.db_path());
     println!("Shared chat scope: {}", gml_server::chat_scope_id());
 
@@ -658,6 +734,22 @@ fn run_desktop() {
             .title("GM-Lab")
             .inner_size(1280.0, 860.0)
             .min_inner_size(900.0, 600.0)
+            .on_new_window(|url, _features| {
+                if is_external_browser_scheme(url.scheme()) {
+                    if let Err(error) = open::that_detached(url.as_str()) {
+                        tracing::warn!(
+                            url = %url,
+                            error = %error,
+                            "failed to open URL in the system browser"
+                        );
+                    }
+                } else {
+                    tracing::warn!(url = %url, "blocked unsupported external URL scheme");
+                }
+
+                // External links must never create another embedded webview.
+                tauri::webview::NewWindowResponse::Deny
+            })
             .build()?;
         Ok(())
     });
@@ -683,6 +775,11 @@ fn run_desktop() {
 // =========================================================================
 // helpers
 // =========================================================================
+
+#[cfg(any(feature = "gui", test))]
+fn is_external_browser_scheme(scheme: &str) -> bool {
+    matches!(scheme, "http" | "https")
+}
 
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
@@ -774,6 +871,15 @@ mod tests {
     }
 
     #[test]
+    fn external_browser_allows_only_web_urls() {
+        assert!(is_external_browser_scheme("https"));
+        assert!(is_external_browser_scheme("http"));
+        assert!(!is_external_browser_scheme("file"));
+        assert!(!is_external_browser_scheme("javascript"));
+        assert!(!is_external_browser_scheme("gmlab"));
+    }
+
+    #[test]
     fn env_u16_parsing() {
         std::env::set_var("GML_APP_TEST_PORT", "12345");
         assert_eq!(env_u16("GML_APP_TEST_PORT", 8000), 12345);
@@ -788,5 +894,31 @@ mod tests {
         let dirs = AppDirs::resolve();
         // tls_dir is under data_dir
         assert!(dirs.tls_dir().starts_with(&dirs.data_dir));
+    }
+
+    #[test]
+    fn legacy_credential_migration_is_validated_and_never_overwrites() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("legacy.json");
+        let target = directory.path().join("connectors/codex/auth.json");
+        std::fs::write(&source, br#"{"access_token":"old"}"#).unwrap();
+
+        migrate_legacy_credential(&source, &target);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            br#"{"access_token":"old"}"#
+        );
+
+        std::fs::write(&source, br#"{"access_token":"new"}"#).unwrap();
+        migrate_legacy_credential(&source, &target);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            br#"{"access_token":"old"}"#
+        );
+
+        std::fs::remove_file(&target).unwrap();
+        std::fs::write(&source, b"not json").unwrap();
+        migrate_legacy_credential(&source, &target);
+        assert!(!target.exists());
     }
 }

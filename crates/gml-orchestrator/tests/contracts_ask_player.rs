@@ -22,7 +22,7 @@ use gml_config::{Config, RuntimeSettings};
 use gml_llm::backend::{
     channel, Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
 };
-use gml_llm::{mock_stats, MockClient};
+use gml_mock::{mock_stats, MockClient};
 use gml_orchestrator::{run_tool_collect, run_turn, Session};
 use gml_types::{Event, ParsedCall};
 

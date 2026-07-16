@@ -108,7 +108,8 @@ impl CodexClient {
         self.call_log.lock().expect("call_log lock").clone()
     }
 
-    /// `prompt_cache_key` — `CODEX_PROMPT_CACHE_KEY or self.thread_id`.
+    /// Effective prompt-cache key. A configured key is a namespace and the
+    /// rotating thread id remains the per-history cache scope.
     pub fn prompt_cache_key(&self) -> String {
         self.identity
             .prompt_cache_key(&self.cfg.codex_prompt_cache_key)
@@ -451,6 +452,10 @@ fn forward_event(
 
 #[async_trait]
 impl Backend for CodexClient {
+    fn connector_id(&self) -> &str {
+        "codex"
+    }
+
     fn model(&self) -> String {
         self.model.lock().expect("model lock").clone()
     }
@@ -462,7 +467,19 @@ impl Backend for CodexClient {
     fn set_model(&self, model: &str) {
         let m = model.trim();
         if !m.is_empty() {
-            *self.model.lock().expect("model lock") = m.to_string();
+            let changed = {
+                let mut current = self.model.lock().expect("model lock");
+                if *current == m {
+                    false
+                } else {
+                    *current = m.to_string();
+                    true
+                }
+            };
+            if changed {
+                self.turn_state.lock().expect("turn_state lock").clear();
+                self.identity.reset_cache_scope();
+            }
         }
     }
 
@@ -476,6 +493,10 @@ impl Backend for CodexClient {
 
     fn thread_id(&self) -> String {
         self.identity.thread_id()
+    }
+
+    fn prompt_cache_key(&self) -> String {
+        CodexClient::prompt_cache_key(self)
     }
 
     async fn list_models(&self) -> Vec<Value> {
@@ -916,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_key_uses_configured_when_set() {
+    fn configured_prompt_cache_namespace_keeps_history_scope() {
         let mut cfg = Config::from_env();
         cfg.codex_prompt_cache_key = "fixed-cache-key".to_string();
         let cfg = Arc::new(cfg);
@@ -925,8 +946,15 @@ mod tests {
             std::env::temp_dir().join("gml_codex_pck2.json"),
         ));
         let client = CodexClient::new(cfg, settings);
-        assert_eq!(client.prompt_cache_key(), "fixed-cache-key");
+        assert_eq!(
+            client.prompt_cache_key(),
+            format!("fixed-cache-key:{}", client.thread_id())
+        );
         assert_ne!(client.prompt_cache_key(), client.thread_id());
+
+        let before = client.prompt_cache_key();
+        client.set_model("gpt-cache-scope-rotated");
+        assert_ne!(client.prompt_cache_key(), before);
     }
 
     #[test]
@@ -948,10 +976,21 @@ mod tests {
     fn set_model_trims_and_ignores_empty() {
         let client = test_client();
         let orig = client.model();
+        let original_session = client.session_id();
+        let original_thread = client.thread_id();
         client.set_model("   ");
         assert_eq!(client.model(), orig);
+        assert_eq!(client.session_id(), original_session);
+        assert_eq!(client.thread_id(), original_thread);
         client.set_model("  gpt-test  ");
         assert_eq!(client.model(), "gpt-test");
+        assert_ne!(client.session_id(), original_session);
+        assert_ne!(client.thread_id(), original_thread);
+        let changed_session = client.session_id();
+        let changed_thread = client.thread_id();
+        client.set_model("gpt-test");
+        assert_eq!(client.session_id(), changed_session);
+        assert_eq!(client.thread_id(), changed_thread);
     }
 
     #[test]

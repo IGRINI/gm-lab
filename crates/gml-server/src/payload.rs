@@ -15,47 +15,14 @@ use gml_orchestrator::Session;
 use gml_persistence::{DialogRuntime, DEFAULT_CHAT_TITLE};
 use gml_world::{public_gender, public_role, StateRecordQuery, WHEREABOUTS_STATUS_LABELS};
 
-/// `config.BACKEND == "codex"` test, sourced from the shared [`Config`].
-fn is_codex(cfg: &Config) -> bool {
-    cfg.backend == "codex"
-}
-
 /// Convert a settings `BTreeMap` into a JSON value (object). Frontend
 /// `JSON.parse`s the body, so key order is not load-bearing.
 fn settings_to_value(map: gml_config::SettingsMap) -> Value {
     serde_json::to_value(map).unwrap_or(Value::Object(Map::new()))
 }
 
-/// `_default_model()`.
-fn default_model(cfg: &Config) -> String {
-    if cfg.backend == "codex" {
-        if !cfg.codex_model.is_empty() {
-            cfg.codex_model.clone()
-        } else {
-            cfg.model.clone()
-        }
-    } else if !cfg.model.is_empty() {
-        cfg.model.clone()
-    } else {
-        "default".to_string()
-    }
-}
-
-/// `_session_matches_backend(session)`.
-fn session_matches_backend(session: &Session, cfg: &Config) -> bool {
-    session.client_backend.is_empty() || session.client_backend == cfg.backend
-}
-
-/// `model = client.model or (session.client_model if matches) or _default_model()`.
-fn resolve_model(session: &Session, cfg: &Config) -> String {
-    let client_model = session.client.model();
-    if !client_model.is_empty() {
-        return client_model;
-    }
-    if session_matches_backend(session, cfg) && !session.client_model.is_empty() {
-        return session.client_model.clone();
-    }
-    default_model(cfg)
+fn resolve_model(session: &Session, _cfg: &Config) -> String {
+    session.model_binding().model_id().to_string()
 }
 
 /// `dict(world_mod.WHEREABOUTS_STATUS_LABELS)` — preserves insertion order.
@@ -82,6 +49,7 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
     let stream_gm_content = settings.stream_gm_content_enabled(Some(&settings_map));
     let context = context_usage(&mut runtime.session);
     let run_usage = Value::Object(runtime.session.run_usage.clone());
+    let model_binding = runtime.session.model_binding().clone();
 
     let session = &mut runtime.session;
     let w = &mut session.world;
@@ -120,7 +88,14 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
 
     let mut data = Map::new();
     data.insert("model".to_string(), Value::String(model));
-    data.insert("backend".to_string(), Value::String(cfg.backend.clone()));
+    data.insert(
+        "backend".to_string(),
+        Value::String(model_binding.connector_id().as_str().to_string()),
+    );
+    data.insert(
+        "model_binding".to_string(),
+        serde_json::to_value(&model_binding).unwrap_or(Value::Null),
+    );
     data.insert(
         "stream_gm_content".to_string(),
         Value::Bool(stream_gm_content),
@@ -171,12 +146,6 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
     data.insert("entities".to_string(), entities);
     data.insert("status_labels".to_string(), status_labels());
     data.insert("npcs".to_string(), Value::Array(npcs));
-    if is_codex(cfg) {
-        data.insert(
-            "codex_auth".to_string(),
-            Value::Object(gml_codex::auth_status()),
-        );
-    }
     Value::Object(data)
 }
 
@@ -195,6 +164,8 @@ pub fn chat_response(runtime: &DialogRuntime, active: bool) -> Value {
         "created_at": runtime.created_at,
         "updated_at": runtime.updated_at,
         "active": active,
+        "model_binding": runtime.session.model_binding(),
+        "rewindable_turns": runtime.rewindable_turns,
     })
 }
 
@@ -323,7 +294,25 @@ pub fn replay_events(runtime: &mut DialogRuntime) -> Vec<Value> {
         if event.get("kind").and_then(Value::as_str) == Some("delta") {
             continue;
         }
-        events.push(sanitize_player_name(event, &by_id, &by_name));
+        let mut replayed = sanitize_player_name(event, &by_id, &by_name);
+        if let Some(replayed) = replayed.as_object_mut() {
+            if let Some(turn) = row.get("turn").and_then(Value::as_i64) {
+                replayed.insert("turn".to_string(), json!(turn));
+                if event.get("kind").and_then(Value::as_str) == Some("player") {
+                    replayed.insert(
+                        "rewindable".to_string(),
+                        Value::Bool(runtime.rewindable_turns.contains(&turn)),
+                    );
+                }
+            }
+            if event.get("kind").and_then(Value::as_str) == Some("player") {
+                if let Some(request_id) = row.get("request_id").and_then(Value::as_str) {
+                    replayed.insert("message_id".to_string(), json!(request_id));
+                    replayed.insert("request_id".to_string(), json!(request_id));
+                }
+            }
+        }
+        events.push(replayed);
     }
     events
 }
@@ -374,7 +363,8 @@ pub fn export_data(runtime: &mut DialogRuntime, cfg: &Config) -> Value {
     json!({
         "meta": {
             "model": model,
-            "backend": cfg.backend,
+            "backend": session.model_binding().connector_id().as_str(),
+            "model_binding": session.model_binding(),
             "turns": turn_count,
             "run_usage": run_usage,
             "story_id": story_id,
@@ -538,11 +528,7 @@ pub fn debug_data(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeS
     let session = &mut runtime.session;
     let run_usage = Value::Object(session.run_usage.clone());
     let thread_id = session.client_thread_id.clone();
-    let prompt_cache_key = if !cfg.codex_prompt_cache_key.is_empty() {
-        cfg.codex_prompt_cache_key.clone()
-    } else {
-        thread_id.clone()
-    };
+    let prompt_cache_key = session.client.prompt_cache_key();
     let gm_summary = session.gm_summary.clone();
     let gm_messages_len = session.gm_messages.len() as i64;
     let loaded_gm_tools: Vec<Value> = session
@@ -685,7 +671,8 @@ pub fn debug_data(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeS
         "ok": true,
         "meta": {
             "model": model,
-            "backend": cfg.backend,
+            "backend": session.model_binding().connector_id().as_str(),
+            "model_binding": session.model_binding(),
             "turns": turn_count,
             "run_usage": run_usage,
             "context_usage": context,

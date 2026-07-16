@@ -48,7 +48,10 @@ fn slug_like_destinations_lose_stray_foreign_letters() {
         "pyer_ryadom_s_tavernoy"
     );
     // Pure-ascii slugs, pure-Cyrillic words and human phrases pass through.
-    assert_eq!(normalize_slug_like("doki_seroy_gavani"), "doki_seroy_gavani");
+    assert_eq!(
+        normalize_slug_like("doki_seroy_gavani"),
+        "doki_seroy_gavani"
+    );
     assert_eq!(normalize_slug_like("Пирс"), "Пирс");
     assert_eq!(normalize_slug_like("Рыночная площадь"), "Рыночная площадь");
 }

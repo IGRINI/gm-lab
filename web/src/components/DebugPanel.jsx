@@ -4,6 +4,23 @@ import MarkdownText from "./MarkdownText.jsx";
 import Modal from "./Modal.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { nameColor } from "../nameColor.js";
+import {
+  asObject,
+  numText,
+  mapFromRows,
+  namedListFromRows,
+  spellsFromRows,
+  slotsFromRows,
+  useMapRows,
+  useStringRows,
+  useSpellRows,
+  useSlotRows,
+  AbilitiesEditor,
+  MapRowsEditor,
+  NamedListEditor,
+  SpellsEditor,
+  SlotsEditor,
+} from "./sheetEditors.jsx";
 
 const actorColor = (actor, npcs) => {
   const a = String(actor || "").trim().toLowerCase();
@@ -230,6 +247,21 @@ function EditField({ label, children }) {
   );
 }
 
+// Правка числового ключа в объекте характеристик/ХП: пустое значение удаляет
+// ключ, не-базовые ключи объекта выживают (зеркалит updateAbility/updateHp
+// студии архитектора).
+function numKeyUpdater(setter) {
+  return (key, text) => {
+    const n = parseInt(text, 10);
+    setter((current) => {
+      const next = { ...current };
+      if (Number.isFinite(n)) next[key] = n;
+      else delete next[key];
+      return next;
+    });
+  };
+}
+
 // --- Правка сюжета и канона ---
 function StoryEditor({ story, onSave }) {
   const [d, setD] = useState(() => ({
@@ -379,12 +411,8 @@ function NpcEditor({ npc, statusLabels, onSave }) {
     habits: npc.habits || "", pressure_response: npc.pressure_response || "",
     boundaries: npc.boundaries || "", voice: npc.voice || "", goals: npc.goals || "",
     knowledge: npc.knowledge || "", secret: npc.secret || "",
-    abilities: prettyJson(mechanics.abilities),
-    skills: prettyJson(mechanics.skills),
-    saving_throws: prettyJson(mechanics.saving_throws),
     passive_perception: mechanics.passive_perception != null ? String(mechanics.passive_perception) : "",
     ac: mechanics.ac != null ? String(mechanics.ac) : "",
-    hp: prettyJson(mechanics.hp),
     speed: mechanics.speed || "",
     senses: mechanics.senses || "",
     languages: mechanics.languages || "",
@@ -394,8 +422,16 @@ function NpcEditor({ npc, statusLabels, onSave }) {
     wb_details: npc.whereabouts?.details || "",
     reset_memory: false,
   }));
+  // Характеристики/ХП правятся по ключам (структурные редакторы студии);
+  // навыки/спасброски — строковыми буферами, собираются на сохранении.
+  const [abilities, setAbilities] = useState(() => ({ ...(asObject(mechanics.abilities) || {}) }));
+  const [hp, setHp] = useState(() => ({ ...(asObject(mechanics.hp) || {}) }));
+  const skillRows = useMapRows(mechanics.skills);
+  const saveRows = useMapRows(mechanics.saving_throws);
   const [editError, setEditError] = useState("");
   const set = (patch) => setD((p) => ({ ...p, ...patch }));
+  const updateAbility = numKeyUpdater(setAbilities);
+  const updateHp = numKeyUpdater(setHp);
   const statusEntries = Object.entries(statusLabels || {});
   const secretChanged = d.secret !== (npc.secret || "");
   const presenceChanged = d.present !== !!npc.present;
@@ -410,11 +446,11 @@ function NpcEditor({ npc, statusLabels, onSave }) {
         condition: d.condition, persona: d.persona, personality: d.personality,
         values: d.values, habits: d.habits, pressure_response: d.pressure_response,
         boundaries: d.boundaries, voice: d.voice, goals: d.goals, knowledge: d.knowledge,
-        secret: d.secret, abilities: parseObjectField("Abilities", d.abilities),
-        skills: parseObjectField("Skills", d.skills),
-        saving_throws: parseObjectField("Saving throws", d.saving_throws),
-        passive_perception: parseIntegerField("Passive Perception", d.passive_perception),
-        ac: parseIntegerField("AC", d.ac), hp: parseObjectField("HP", d.hp),
+        secret: d.secret, abilities: { ...abilities },
+        skills: mapFromRows(skillRows.rows),
+        saving_throws: mapFromRows(saveRows.rows),
+        passive_perception: parseIntegerField("Пасс. восприятие", d.passive_perception),
+        ac: parseIntegerField("КД", d.ac), hp: { ...hp },
         speed: d.speed, senses: d.senses, languages: d.languages,
       };
       setEditError("");
@@ -467,20 +503,33 @@ function NpcEditor({ npc, statusLabels, onSave }) {
       <EditField label="Мотивы"><textarea rows={2} value={d.goals} onChange={(e) => set({ goals: e.target.value })} /></EditField>
       <EditField label="Что знает"><textarea rows={2} value={d.knowledge} onChange={(e) => set({ knowledge: e.target.value })} /></EditField>
       <EditField label="Секрет (в контекст ГМ не попадает)"><textarea rows={2} className="dbg-secret" value={d.secret} onChange={(e) => set({ secret: e.target.value })} /></EditField>
-      <div className="dbg-block">
-        <div className="dbg-block-head"><b>Механика</b><span className="dbg-badge">GM only</span></div>
-        <div className="dbg-edit-grid">
-          <EditField label="Abilities JSON"><textarea rows={4} value={d.abilities} onChange={(e) => set({ abilities: e.target.value })} /></EditField>
-          <EditField label="Skills JSON"><textarea rows={4} value={d.skills} onChange={(e) => set({ skills: e.target.value })} /></EditField>
-          <EditField label="Saves JSON"><textarea rows={3} value={d.saving_throws} onChange={(e) => set({ saving_throws: e.target.value })} /></EditField>
-          <EditField label="HP JSON"><textarea rows={3} value={d.hp} onChange={(e) => set({ hp: e.target.value })} /></EditField>
-          <EditField label="Passive Perception"><input type="number" value={d.passive_perception} onChange={(e) => set({ passive_perception: e.target.value })} /></EditField>
-          <EditField label="AC"><input type="number" value={d.ac} onChange={(e) => set({ ac: e.target.value })} /></EditField>
-          <EditField label="Speed"><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
-          <EditField label="Senses"><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
-          <EditField label="Languages"><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
-        </div>
+      <div className="dbg-block-head"><b>Механика</b><span className="dbg-badge">GM only</span></div>
+      <AbilitiesEditor abilities={abilities} onChange={updateAbility} />
+      <div className="dbg-edit-grid">
+        <EditField label="КД"><input type="number" value={d.ac} onChange={(e) => set({ ac: e.target.value })} /></EditField>
+        <EditField label="Пасс. восприятие"><input type="number" value={d.passive_perception} onChange={(e) => set({ passive_perception: e.target.value })} /></EditField>
+        <EditField label="ХП сейчас"><input type="number" value={numText(hp.current)} onChange={(e) => updateHp("current", e.target.value)} /></EditField>
+        <EditField label="ХП максимум"><input type="number" value={numText(hp.max)} onChange={(e) => updateHp("max", e.target.value)} /></EditField>
+        <EditField label="Скорость"><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
+        <EditField label="Чувства"><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
       </div>
+      <EditField label="Языки"><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
+      <MapRowsEditor
+        label="Навыки"
+        rows={skillRows.rows}
+        onEdit={skillRows.edit}
+        onAdd={skillRows.add}
+        onRemove={skillRows.remove}
+        keyPlaceholder="Навык"
+      />
+      <MapRowsEditor
+        label="Спасброски"
+        rows={saveRows.rows}
+        onEdit={saveRows.edit}
+        onAdd={saveRows.add}
+        onRemove={saveRows.remove}
+        keyPlaceholder="Спасбросок"
+      />
       {editError && <div className="err">{editError}</div>}
       {secretChanged && (
         <div className="dbg-danger-hint" role="alert">
@@ -544,33 +593,38 @@ function PlayerEditor({ player, onSave }) {
     personality: player.personality || "",
     values: player.values || "",
     gm_notes: player.gm_notes || "",
-    abilities: prettyJson(player.abilities),
-    skills: prettyJson(player.skills),
-    saving_throws: prettyJson(player.saving_throws),
     passive_perception: player.passive_perception != null ? String(player.passive_perception) : "",
     ac: player.ac != null ? String(player.ac) : "",
-    hp: prettyJson(player.hp),
     speed: player.speed || "",
     senses: player.senses || "",
     languages: player.languages || "",
-    inventory: listText(player.inventory),
-    equipment: listText(player.equipment),
-    features: listText(player.features),
-    spells: prettyJson(player.spells),
-    spell_slots: prettyJson(player.spell_slots),
-    spell_slots_max: prettyJson(player.spell_slots_max),
     concentration: player.concentration || "",
   }));
+  // Структурные редакторы студии архитектора (sheetEditors): характеристики/ХП
+  // правятся по ключам (не-базовые ключи объекта выживают), остальное —
+  // строковыми буферами, которые собираются в payload на сохранении.
+  const [abilities, setAbilities] = useState(() => ({ ...(asObject(player.abilities) || {}) }));
+  const [hp, setHp] = useState(() => ({ ...(asObject(player.hp) || {}) }));
+  const skillRows = useMapRows(player.skills);
+  const saveRows = useMapRows(player.saving_throws);
+  const invRows = useStringRows(player.inventory);
+  const equipRows = useStringRows(player.equipment);
+  const featRows = useStringRows(player.features);
+  const spellRows = useSpellRows(player.spells);
+  const slotRows = useSlotRows(player.spell_slots, player.spell_slots_max);
   const [editError, setEditError] = useState("");
   const set = (patch) => setD((p) => ({ ...p, ...patch }));
+  const updateAbility = numKeyUpdater(setAbilities);
+  const updateHp = numKeyUpdater(setHp);
   const save = () => {
     let fields;
     try {
+      const slotMaps = slotsFromRows(slotRows.rows);
       fields = {
         name: d.name,
         pronouns: d.pronouns,
         class_role: d.class_role,
-        level: parseIntegerField("Level", d.level),
+        level: parseIntegerField("Уровень", d.level),
         background: d.background,
         age: d.age,
         physical_type: d.physical_type,
@@ -581,21 +635,21 @@ function PlayerEditor({ player, onSave }) {
         personality: d.personality,
         values: d.values,
         gm_notes: d.gm_notes,
-        abilities: parseObjectField("Abilities", d.abilities),
-        skills: parseObjectField("Skills", d.skills),
-        saving_throws: parseObjectField("Saving throws", d.saving_throws),
-        passive_perception: parseIntegerField("Passive Perception", d.passive_perception),
-        ac: parseIntegerField("AC", d.ac),
-        hp: parseObjectField("HP", d.hp),
+        abilities: { ...abilities },
+        skills: mapFromRows(skillRows.rows),
+        saving_throws: mapFromRows(saveRows.rows),
+        passive_perception: parseIntegerField("Пасс. восприятие", d.passive_perception),
+        ac: parseIntegerField("КД", d.ac),
+        hp: { ...hp },
         speed: d.speed,
         senses: d.senses,
         languages: d.languages,
-        inventory: parseListField(d.inventory),
-        equipment: parseListField(d.equipment),
-        features: parseListField(d.features),
-        spells: parseArrayField("Spells", d.spells),
-        spell_slots: parseObjectField("Spell slots", d.spell_slots),
-        spell_slots_max: parseObjectField("Spell slots max", d.spell_slots_max),
+        inventory: namedListFromRows(invRows.rows),
+        equipment: namedListFromRows(equipRows.rows),
+        features: namedListFromRows(featRows.rows),
+        spells: spellsFromRows(spellRows.rows),
+        spell_slots: slotMaps.slots,
+        spell_slots_max: slotMaps.max,
         concentration: d.concentration,
       };
       setEditError("");
@@ -623,34 +677,71 @@ function PlayerEditor({ player, onSave }) {
       <EditField label="Характер"><textarea rows={2} value={d.personality} onChange={(e) => set({ personality: e.target.value })} /></EditField>
       <EditField label="Ценности"><textarea rows={2} value={d.values} onChange={(e) => set({ values: e.target.value })} /></EditField>
       <EditField label="Заметки ГМ"><textarea rows={2} className="dbg-secret" value={d.gm_notes} onChange={(e) => set({ gm_notes: e.target.value })} /></EditField>
-      <div className="dbg-block">
-        <div className="dbg-block-head"><b>Механика игрока</b><span className="dbg-badge">sheet</span></div>
-        <div className="dbg-edit-grid">
-          <EditField label="Abilities JSON"><textarea rows={4} value={d.abilities} onChange={(e) => set({ abilities: e.target.value })} /></EditField>
-          <EditField label="Skills JSON"><textarea rows={4} value={d.skills} onChange={(e) => set({ skills: e.target.value })} /></EditField>
-          <EditField label="Saves JSON"><textarea rows={3} value={d.saving_throws} onChange={(e) => set({ saving_throws: e.target.value })} /></EditField>
-          <EditField label="HP JSON"><textarea rows={3} value={d.hp} onChange={(e) => set({ hp: e.target.value })} /></EditField>
-          <EditField label="Passive Perception"><input type="number" value={d.passive_perception} onChange={(e) => set({ passive_perception: e.target.value })} /></EditField>
-          <EditField label="AC"><input type="number" value={d.ac} onChange={(e) => set({ ac: e.target.value })} /></EditField>
-          <EditField label="Speed"><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
-          <EditField label="Senses"><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
-          <EditField label="Languages"><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
-        </div>
-      </div>
+      <div className="dbg-block-head"><b>Механика игрока</b><span className="dbg-badge">sheet</span></div>
+      <AbilitiesEditor abilities={abilities} onChange={updateAbility} />
       <div className="dbg-edit-grid">
-        <EditField label="Инвентарь"><textarea rows={4} value={d.inventory} onChange={(e) => set({ inventory: e.target.value })} /></EditField>
-        <EditField label="Снаряжение"><textarea rows={4} value={d.equipment} onChange={(e) => set({ equipment: e.target.value })} /></EditField>
-        <EditField label="Особенности"><textarea rows={4} value={d.features} onChange={(e) => set({ features: e.target.value })} /></EditField>
+        <EditField label="КД"><input type="number" value={d.ac} onChange={(e) => set({ ac: e.target.value })} /></EditField>
+        <EditField label="Пасс. восприятие"><input type="number" value={d.passive_perception} onChange={(e) => set({ passive_perception: e.target.value })} /></EditField>
+        <EditField label="ХП сейчас"><input type="number" value={numText(hp.current)} onChange={(e) => updateHp("current", e.target.value)} /></EditField>
+        <EditField label="ХП максимум"><input type="number" value={numText(hp.max)} onChange={(e) => updateHp("max", e.target.value)} /></EditField>
+        <EditField label="Скорость"><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
+        <EditField label="Чувства"><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
       </div>
-      <div className="dbg-block">
-        <div className="dbg-block-head"><b>Заклинания</b><span className="dbg-badge">spells</span></div>
-        <EditField label="Spells JSON"><textarea rows={5} value={d.spells} onChange={(e) => set({ spells: e.target.value })} placeholder='[{"name":"Огненный снаряд","level":1,"concentration":false,"ritual":false,"effect":"..."}]' /></EditField>
-        <div className="dbg-edit-grid">
-          <EditField label="Spell slots JSON"><textarea rows={3} value={d.spell_slots} onChange={(e) => set({ spell_slots: e.target.value })} placeholder='{"1": 3, "2": 1}' /></EditField>
-          <EditField label="Spell slots max JSON"><textarea rows={3} value={d.spell_slots_max} onChange={(e) => set({ spell_slots_max: e.target.value })} placeholder='{"1": 4, "2": 2}' /></EditField>
-          <EditField label="Концентрация"><input value={d.concentration} onChange={(e) => set({ concentration: e.target.value })} /></EditField>
-        </div>
-      </div>
+      <EditField label="Языки"><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
+      <MapRowsEditor
+        label="Навыки"
+        rows={skillRows.rows}
+        onEdit={skillRows.edit}
+        onAdd={skillRows.add}
+        onRemove={skillRows.remove}
+        keyPlaceholder="Навык"
+      />
+      <MapRowsEditor
+        label="Спасброски"
+        rows={saveRows.rows}
+        onEdit={saveRows.edit}
+        onAdd={saveRows.add}
+        onRemove={saveRows.remove}
+        keyPlaceholder="Спасбросок"
+      />
+      <NamedListEditor
+        label="Инвентарь"
+        rows={invRows.rows}
+        onEdit={invRows.edit}
+        onAdd={invRows.add}
+        onRemove={invRows.remove}
+      />
+      <NamedListEditor
+        label="Снаряжение"
+        rows={equipRows.rows}
+        onEdit={equipRows.edit}
+        onAdd={equipRows.add}
+        onRemove={equipRows.remove}
+      />
+      <NamedListEditor
+        label="Особенности"
+        rows={featRows.rows}
+        onEdit={featRows.edit}
+        onAdd={featRows.add}
+        onRemove={featRows.remove}
+        descPlaceholder="Что даёт (необязательно)"
+      />
+      <SpellsEditor
+        rows={spellRows.rows}
+        openSet={spellRows.open}
+        onToggle={spellRows.toggle}
+        onEdit={spellRows.edit}
+        onAdd={spellRows.add}
+        onRemove={spellRows.remove}
+      />
+      <SlotsEditor
+        rows={slotRows.rows}
+        missing={slotRows.missing}
+        onEdit={slotRows.edit}
+        onAddLevel={slotRows.addLevel}
+        onRemove={slotRows.remove}
+      />
+      <EditField label="Концентрация"><input value={d.concentration} onChange={(e) => set({ concentration: e.target.value })} /></EditField>
       {editError && <div className="err">{editError}</div>}
       <div className="dbg-modal-actions">
         <button type="button" className="btn primary" onClick={save}>Сохранить</button>
@@ -719,16 +810,6 @@ function prettyJson(value) {
   if (!value || (typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length)) return "";
   if (Array.isArray(value) && !value.length) return "";
   return JSON.stringify(value, null, 2);
-}
-
-function parseObjectField(label, value) {
-  const raw = String(value || "").trim();
-  if (!raw) return {};
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${label}: нужен JSON-объект`);
-  }
-  return parsed;
 }
 
 function parseIntegerField(label, value) {

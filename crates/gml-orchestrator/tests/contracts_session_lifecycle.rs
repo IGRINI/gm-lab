@@ -22,7 +22,7 @@ use serde_json::{json, Map, Value};
 use gml_llm::backend::{
     Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
 };
-use gml_llm::{mock_stats, MockClient};
+use gml_mock::{mock_stats, MockClient};
 use gml_orchestrator::session::default_client_factory;
 use gml_orchestrator::Session;
 use gml_types::NpcBeat;
@@ -429,7 +429,7 @@ fn npc_organic_response_and_beats_survive_commit_and_payload_roundtrip() {
     let restored = Session::from_payload(
         &payload,
         Arc::new(MockClient::new()) as Arc<dyn Backend>,
-        default_client_factory(),
+        default_client_factory(Arc::new(MockClient::new())),
     )
     .expect("session payload should restore");
     let restored_event = restored
@@ -519,7 +519,7 @@ fn npc_last_contact_tracks_elapsed_world_time_and_persists() {
     let restored = Session::from_payload(
         &payload,
         Arc::new(MockClient::new()) as Arc<dyn Backend>,
-        default_client_factory(),
+        default_client_factory(Arc::new(MockClient::new())),
     )
     .expect("session payload should restore");
     assert_eq!(
@@ -687,6 +687,60 @@ impl Backend for IdentityClient {
 }
 
 #[test]
+fn branch_rotation_replaces_main_and_child_provider_identities() {
+    let counter = Arc::new(Mutex::new(0u32));
+    let next = counter.clone();
+    let factory: gml_orchestrator::ClientFactory = Arc::new(move || {
+        let mut n = next.lock().unwrap();
+        *n += 1;
+        Arc::new(IdentityClient::new(&format!("fresh-thread-{n}"))) as Arc<dyn Backend>
+    });
+
+    let main = Arc::new(IdentityClient::new("source-main-thread"));
+    main.set_session_identity(Some("source-main-session"), Some("source-main-thread"));
+    let world = gml_world::World::from_seed(&default_story_seed());
+    let mut session = Session::with_world(main, world, factory);
+    session.client_session_id = "source-main-session".to_string();
+    session.client_thread_id = "source-main-thread".to_string();
+    session.npc_client_state.insert(
+        "borin".to_string(),
+        gml_orchestrator::NpcClientState {
+            model: "mock".to_string(),
+            session_id: "source-npc-session".to_string(),
+            thread_id: "source-npc-thread".to_string(),
+        },
+    );
+    session.location_generator_client_state = gml_orchestrator::NpcClientState {
+        model: "mock".to_string(),
+        session_id: "source-location-session".to_string(),
+        thread_id: "source-location-thread".to_string(),
+    };
+    session.character_generator_client_state = gml_orchestrator::NpcClientState {
+        model: "mock".to_string(),
+        session_id: "source-character-session".to_string(),
+        thread_id: "source-character-thread".to_string(),
+    };
+
+    session.rotate_provider_identities_for_branch();
+
+    assert!(!session.client_session_id.is_empty());
+    assert_ne!(session.client_session_id, "source-main-session");
+    assert_ne!(session.client_thread_id, "source-main-thread");
+    assert_ne!(
+        session.npc_client_state["borin"].session_id,
+        "source-npc-session"
+    );
+    assert_ne!(
+        session.location_generator_client_state.thread_id,
+        "source-location-thread"
+    );
+    assert_ne!(
+        session.character_generator_client_state.thread_id,
+        "source-character-thread"
+    );
+}
+
+#[test]
 fn ensure_npc_client_restores_persisted_identity() {
     // Factory builds IdentityClients with a unique default thread per call.
     let counter = Arc::new(Mutex::new(0u32));
@@ -751,8 +805,8 @@ fn reset_npc_memory_drops_live_client_for_fresh_thread() {
 
 #[test]
 fn default_factory_is_constructible() {
-    // Sanity: the default (mock) NPC client factory builds a usable backend.
-    let f = default_client_factory();
+    // Compatibility factory reuses a caller-supplied usable backend.
+    let f = default_client_factory(Arc::new(MockClient::new()));
     let c = f();
     assert_eq!(c.model(), "mock");
 }

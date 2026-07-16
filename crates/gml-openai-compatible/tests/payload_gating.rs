@@ -1,6 +1,6 @@
 //! Payload field-gating + key-order tests for `OpenAICompatClient`.
 //!
-//! These exercise the public `gml_llm::build_payload` free function (the port of
+//! These exercise the connector's public `build_payload` free function (the port of
 //! Python `OpenAICompatClient._payload`) without a live server, asserting the
 //! exact request-body key set/order and the conditional gating that prompt-cache
 //! prefix byte-identity depends on.
@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use gml_config::{Config, Role, RuntimeSettings};
-use gml_llm::{build_payload, OpenAICompatClient};
+use gml_llm::Backend;
+use gml_openai_compatible::{build_payload, OpenAICompatClient};
 use serde_json::Value;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -144,6 +145,27 @@ fn payload_cache_keys_present_when_set() {
             "prompt_cache_retention"
         ]
     );
+}
+
+#[test]
+fn client_cache_namespace_rotates_only_when_model_changes() {
+    let mut cfg = base_cfg();
+    cfg.prompt_cache_key = "shared-prefix".to_string();
+    let (cfg, settings) = fixture(cfg);
+    let client = OpenAICompatClient::with_model(Arc::new(cfg), Arc::new(settings), "model-a");
+    client.set_session_identity(Some("session-a"), Some("thread-a"));
+
+    let first = client.payload(&messages(), None, None, None, false, "gm");
+    assert_eq!(first["prompt_cache_key"], "shared-prefix:thread-a");
+
+    client.set_model("model-b");
+    let rotated = client.payload(&messages(), None, None, None, false, "gm");
+    assert_ne!(rotated["prompt_cache_key"], first["prompt_cache_key"]);
+    let stable = rotated["prompt_cache_key"].clone();
+
+    client.set_model("model-b");
+    let unchanged = client.payload(&messages(), None, None, None, false, "gm");
+    assert_eq!(unchanged["prompt_cache_key"], stable);
 }
 
 #[test]

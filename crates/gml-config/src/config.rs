@@ -289,19 +289,19 @@ pub struct Config {
     // Resolved INDEPENDENTLY of `rag_cache_path` (NOT derived from its parent):
     // tests point the global cache into %TEMP% and must not drag the per-world
     // dir along; this dir also never lives under `library/` (export privacy).
-    pub rag_worlds_dir: String, // GM_RAG_WORLDS_DIR
-    pub rag_batch_size: i64,          // GM_RAG_BATCH_SIZE, 16
-    pub rag_timeout_seconds: f64,     // GM_RAG_TIMEOUT_SECONDS, 20
-    pub rag_top_k: i64,               // GM_RAG_TOP_K, 4 (final facts to the prompt)
-    pub rag_min_dense_score: f64,     // GM_RAG_MIN_DENSE_SCORE, 0.60
-    pub rag_rrf_k: i64,               // GM_RAG_RRF_K, 60
-    pub rag_keyword_tiebreak: f64,    // GM_RAG_KEYWORD_TIEBREAK, 0.002
-    pub rag_dense_tiebreak: f64,      // GM_RAG_DENSE_TIEBREAK, 0.001
-    pub rag_status_boost: f64,        // GM_RAG_STATUS_BOOST, 1.04
-    pub rag_fact_select_k: i64,       // GM_RAG_FACT_SELECT_K, 4
-    pub rag_rerank_url: String,       // GM_RAG_RERANK_URL (unified sidecar /rerank)
-    pub rag_rerank_model: String,     // GM_RAG_RERANK_MODEL
-    pub rag_rerank_enabled: bool,     // GM_RAG_RERANK_ENABLED, true
+    pub rag_worlds_dir: String,     // GM_RAG_WORLDS_DIR
+    pub rag_batch_size: i64,        // GM_RAG_BATCH_SIZE, 16
+    pub rag_timeout_seconds: f64,   // GM_RAG_TIMEOUT_SECONDS, 20
+    pub rag_top_k: i64,             // GM_RAG_TOP_K, 4 (final facts to the prompt)
+    pub rag_min_dense_score: f64,   // GM_RAG_MIN_DENSE_SCORE, 0.60
+    pub rag_rrf_k: i64,             // GM_RAG_RRF_K, 60
+    pub rag_keyword_tiebreak: f64,  // GM_RAG_KEYWORD_TIEBREAK, 0.002
+    pub rag_dense_tiebreak: f64,    // GM_RAG_DENSE_TIEBREAK, 0.001
+    pub rag_status_boost: f64,      // GM_RAG_STATUS_BOOST, 1.04
+    pub rag_fact_select_k: i64,     // GM_RAG_FACT_SELECT_K, 4
+    pub rag_rerank_url: String,     // GM_RAG_RERANK_URL (unified sidecar /rerank)
+    pub rag_rerank_model: String,   // GM_RAG_RERANK_MODEL
+    pub rag_rerank_enabled: bool,   // GM_RAG_RERANK_ENABLED, true
     pub rag_rerank_candidates: i64, // GM_RAG_RERANK_CANDIDATES, 64 (RRF top-N fed to the reranker)
     pub npc_dedup_enabled: bool,    // GM_NPC_DEDUP_ENABLED, true
     pub npc_dedup_threshold: f64, // GM_NPC_DEDUP_THRESHOLD, 0.3 (raw cosine [-1,1], jina rerank scale;

@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use gml_llm::{Backend, MockClient};
+use gml_llm::Backend;
+use gml_mock::MockClient;
 use gml_orchestrator::worldstate::{get_memory, note_memory, npc_memory_recall};
 use gml_orchestrator::{run_tool_collect, Session};
 
@@ -579,7 +580,7 @@ fn tool_search_returns_metadata_without_loading_tools() {
 }
 
 #[test]
-fn load_tool_schema_returns_schema_without_mutating_top_level_tools() {
+fn load_tool_schema_returns_schema_and_tracks_loaded_tool() {
     let mut s = session();
 
     let (_events, loaded) = tokio_block_on(run_tool_collect(
@@ -594,7 +595,7 @@ fn load_tool_schema_returns_schema_without_mutating_top_level_tools() {
     assert_eq!(loaded_full["invoke_tool"], "invoke_loaded_tool");
     assert!(loaded_full.get("loaded_tools").is_none());
     assert_eq!(loaded_full["schema"]["function"]["name"], "move_npc");
-    assert!(!s.loaded_gm_tools.contains("move_npc"));
+    assert!(s.loaded_gm_tools.contains("move_npc"));
     assert!(loaded.model.contains("LOAD TOOL SCHEMA"));
     assert!(loaded.model.contains("schema: {\"type\":\"function\""));
     assert!(loaded.model.contains("invoke_loaded_tool"));
@@ -610,7 +611,7 @@ fn load_tool_schema_returns_schema_without_mutating_top_level_tools() {
     assert!(repeat_full.get("loaded_tools").is_none());
     assert_eq!(repeat_full["already_loaded"], json!([]));
     assert_eq!(repeat_full["schema"]["function"]["name"], "move_npc");
-    assert!(!s.loaded_gm_tools.contains("move_npc"));
+    assert!(s.loaded_gm_tools.contains("move_npc"));
 
     let (_events, missing) = tokio_block_on(run_tool_collect(
         &mut s,
@@ -624,7 +625,7 @@ fn load_tool_schema_returns_schema_without_mutating_top_level_tools() {
 }
 
 #[test]
-fn invoke_loaded_tool_dispatches_without_mutating_loaded_tools() {
+fn invoke_loaded_tool_dispatches_and_keeps_loaded_tool_tracked() {
     let mut s = session();
 
     let (_events, loaded) = tokio_block_on(run_tool_collect(
@@ -635,7 +636,7 @@ fn invoke_loaded_tool_dispatches_without_mutating_loaded_tools() {
     let loaded_full: Value = serde_json::from_str(&loaded.full).expect("full is JSON");
     assert_eq!(loaded_full["status"], "loaded_schema");
     assert_eq!(loaded_full["loaded_schema"], "get_npc_profile");
-    assert!(!s.loaded_gm_tools.contains("get_npc_profile"));
+    assert!(s.loaded_gm_tools.contains("get_npc_profile"));
 
     let (_events, invoked) = tokio_block_on(run_tool_collect(
         &mut s,
@@ -653,7 +654,7 @@ fn invoke_loaded_tool_dispatches_without_mutating_loaded_tools() {
     let invoked_full: Value = serde_json::from_str(&invoked.full).expect("full is JSON");
     assert_eq!(invoked_full["npc_id"], "borin");
     assert!(invoked.model.contains("NPC PROFILE"));
-    assert!(!s.loaded_gm_tools.contains("get_npc_profile"));
+    assert!(s.loaded_gm_tools.contains("get_npc_profile"));
 }
 
 // =========================================================================

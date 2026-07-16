@@ -24,6 +24,7 @@ const P = {
   trash: <><path d="M4.5 7h15" /><path d="M9.5 7V5.5A1.5 1.5 0 0 1 11 4h2a1.5 1.5 0 0 1 1.5 1.5V7" /><path d="M6.5 7l.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12" /><path d="M10 11v5.5M14 11v5.5" /></>,
   pen: <path d="M17 3.5l3.5 3.5L8 19.5H4.5V16L17 3.5Z" />,
   refresh: <><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" /><path d="M19.8 3.8v4h-4" /></>,
+  branch: <><circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="18" cy="17" r="2" /><path d="M8 5h2a4 4 0 0 1 4 4v4a4 4 0 0 0 4 4M14 11v-1a3 3 0 0 1 3-3h1M6 7v12" /></>,
   download: <><path d="M12 4v10.5M7.2 10.7L12 15.5l4.8-4.8" /><path d="M4.5 19.5h15" /></>,
   upload: <><path d="M12 15V4.5M7.2 8.8L12 4l4.8 4.8" /><path d="M4.5 19.5h15" /></>,
   folder: <path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2.2h7.4a2 2 0 0 1 2 2v8.3a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7.5Z" />,

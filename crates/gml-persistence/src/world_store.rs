@@ -147,7 +147,11 @@ impl WorldStore {
     }
 
     /// Read an asset file's bytes. Returns `Ok(None)` when the file is absent.
-    pub fn read_asset(&self, world_id: &str, filename: &str) -> Result<Option<Vec<u8>>, StoreError> {
+    pub fn read_asset(
+        &self,
+        world_id: &str,
+        filename: &str,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
         let path = self.asset_path(world_id, filename);
         match std::fs::read(&path) {
             Ok(bytes) => Ok(Some(bytes)),
@@ -173,8 +177,9 @@ impl WorldStore {
             .map_err(|e| StoreError::Other(format!("create assets dir {world_id}: {e}")))?;
         let final_path = dir.join(filename);
         let tmp_path = dir.join(format!(".{filename}.{}.tmp", token_urlsafe(6)));
-        std::fs::write(&tmp_path, bytes)
-            .map_err(|e| StoreError::Other(format!("write temp asset {world_id}/{filename}: {e}")))?;
+        std::fs::write(&tmp_path, bytes).map_err(|e| {
+            StoreError::Other(format!("write temp asset {world_id}/{filename}: {e}"))
+        })?;
         if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(StoreError::Other(format!(
@@ -319,7 +324,10 @@ impl WorldStore {
         }
 
         if let Value::Object(payload) = &env.payload {
-            if LEGACY_ARCHITECT_KEYS.iter().any(|k| payload.contains_key(*k)) {
+            if LEGACY_ARCHITECT_KEYS
+                .iter()
+                .any(|k| payload.contains_key(*k))
+            {
                 let mut stripped = payload.clone();
                 for key in LEGACY_ARCHITECT_KEYS {
                     stripped.remove(key);
@@ -384,8 +392,8 @@ impl WorldStore {
         let _guard = self.write_lock.lock().expect("world write lock poisoned");
         let mut imported = 0usize;
         for row in rows {
-            let payload = serde_json::from_str::<Value>(&row.payload)
-                .unwrap_or(Value::Object(Map::new()));
+            let payload =
+                serde_json::from_str::<Value>(&row.payload).unwrap_or(Value::Object(Map::new()));
             let payload = normalize_world_payload(payload);
             let env = WorldEnvelope {
                 id: row.world_id.clone(),
@@ -460,11 +468,7 @@ impl WorldStore {
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(StoreError::Other(format!(
-                    "read world {world_id}: {e}"
-                )))
-            }
+            Err(e) => return Err(StoreError::Other(format!("read world {world_id}: {e}"))),
         };
         let value: Value = serde_json::from_str(&raw)
             .map_err(|e| StoreError::Payload(format!("parse world {world_id}: {e}")))?;
@@ -487,10 +491,7 @@ impl WorldStore {
             .map_err(|e| StoreError::Other(format!("write temp world {}: {e}", env.id)))?;
         if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
             let _ = std::fs::remove_file(&tmp_path);
-            return Err(StoreError::Other(format!(
-                "rename world {}: {e}",
-                env.id
-            )));
+            return Err(StoreError::Other(format!("rename world {}: {e}", env.id)));
         }
         Ok(())
     }

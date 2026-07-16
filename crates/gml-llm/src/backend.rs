@@ -1,9 +1,8 @@
 //! The [`Backend`] trait — the client interface the orchestrator drives.
 //!
-//! Faithful port of the duck-typed client surface that `orchestrator.py` calls
-//! on whatever `make_client()` returns (`OpenAICompatClient`, `MockClient`, or
-//! `CodexClient`). It is an `async_trait` so that `gml-codex` and `MockClient`
-//! can both implement it and the orchestrator can hold a `dyn Backend`.
+//! Provider-neutral port of the client surface that `orchestrator.py` calls.
+//! Connector crates implement it and the orchestrator holds a `dyn Backend`
+//! without knowing which provider owns the wire protocol.
 //!
 //! ## Message / tool / schema shapes
 //!
@@ -116,7 +115,7 @@ impl BackendError {
 }
 
 /// The client interface the orchestrator drives. Faithful port of the duck-typed
-/// surface of `OpenAICompatClient` / `MockClient` / `CodexClient`.
+/// surface required by the orchestrator.
 ///
 /// All `messages` / `tools` / `schema` / `response_format` are JSON values the
 /// agents layer constructs. `think` is `Option<bool>` to mirror Python's
@@ -125,6 +124,13 @@ impl BackendError {
 /// `reasoning_role` is the role string (`config.ROLE_GM` etc.).
 #[async_trait]
 pub trait Backend: Send + Sync {
+    /// Stable connector id that created this backend. Production histories pass
+    /// an explicit binding; this fallback keeps compatibility constructors free
+    /// from process-wide provider configuration.
+    fn connector_id(&self) -> &str {
+        "custom"
+    }
+
     /// The current model id (Python `@property model`).
     fn model(&self) -> String;
 
@@ -143,22 +149,28 @@ pub trait Backend: Send + Sync {
     /// uuid identity used for prompt-cache keys. Both are optional; an
     /// empty/absent value leaves the corresponding id untouched.
     ///
-    /// The OpenAI-compatible and mock backends do not key the cache on a
-    /// thread/session id (only Codex does), so they default to a no-op. Codex
-    /// overrides this.
+    /// Backends without provider cache identity keep the default no-op;
+    /// cache-aware connectors override it.
     fn set_session_identity(&self, _session_id: Option<&str>, _thread_id: Option<&str>) {}
 
     /// `self.session_id` — the per-client session id captured for persistence so
     /// prompt-cache keys survive save/restore. Empty for backends that do not key
-    /// the cache on a session id (OpenAI-compatible, mock); Codex overrides it.
+    /// the cache on a session id.
     fn session_id(&self) -> String {
         String::new()
     }
 
     /// `self.thread_id` — the per-client thread id (Codex `prompt_cache_key`
-    /// source). Empty for non-Codex backends; Codex overrides it.
+    /// source). Empty for backends without a provider thread/cache scope.
     fn thread_id(&self) -> String {
         String::new()
+    }
+
+    /// Effective provider prompt-cache key for diagnostics. Connectors with a
+    /// configured override expose it here; the generic fallback is the thread
+    /// cache scope.
+    fn prompt_cache_key(&self) -> String {
+        self.thread_id()
     }
 
     /// `list_models()` — available models as `[{id, name, supported}]`.

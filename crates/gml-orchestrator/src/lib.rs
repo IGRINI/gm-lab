@@ -31,7 +31,7 @@ pub mod turn;
 pub mod worldstate;
 
 pub use session::{ClientFactory, CompactionThresholds, NpcClientState, PendingDraft, Session};
-pub use turn::{run_tool_collect, run_turn, run_turn_into};
+pub use turn::{resume_turn_into, run_tool_collect, run_turn, run_turn_into, TurnOutcome};
 
 use serde_json::Value;
 

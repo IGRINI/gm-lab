@@ -28,6 +28,9 @@ futures = { workspace = true }
 # serialization — preserve_order so JSON object key order matches the Python dict
 serde_json = { workspace = true }
 
+# request ids for the real /turn idempotency contract
+uuid = { workspace = true }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

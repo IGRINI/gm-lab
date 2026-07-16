@@ -165,8 +165,7 @@
 .chat-search-block {
   position: relative;
   flex: none;
-  padding: 0 14px 11px;
-  border-bottom: 1px solid var(--border-0);
+  padding: 0 10px 8px;
 }
 
 .chat-search-controls {
@@ -176,20 +175,27 @@
   gap: 6px;
 }
 
-.chat-search-controls .search-field { flex: 1; }
+.chat-search-controls .search-field {
+  flex: 1;
+  min-height: 32px;
+  border-color: var(--border-0);
+  background: transparent;
+}
+
+.chat-search-controls .search-field:focus-within { box-shadow: 0 0 0 2px var(--brand-tint); }
 
 .chat-filter-trigger {
   position: relative;
   flex: none;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid var(--border-1);
+  border: 1px solid var(--border-0);
   border-radius: var(--r-sm);
-  background: var(--surface-0);
+  background: transparent;
   color: var(--text-3);
   cursor: pointer;
   transition:
@@ -230,27 +236,17 @@
 
 .chat-search-summary {
   display: block;
-  padding: 7px 2px 0;
+  padding: 5px 2px 0;
   color: var(--text-3);
   font: 500 11px/1.2 var(--font-ui);
   font-variant-numeric: tabular-nums;
-}
-
-.chat-row-context {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--brand-text);
-  font-size: 11px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .chat-filter-popover {
   position: absolute;
   z-index: 90;
   top: calc(100% - 3px);
-  left: 14px;
+  left: 10px;
   width: min(500px, calc(100vw - 32px));
   padding: 13px;
   border: 1px solid var(--border-1);
@@ -396,8 +392,15 @@
 .search-skeleton-line--body { width: 88%; }
 .search-skeleton-line--short { width: 42%; margin-top: auto; }
 
-.chat-list .search-skeleton--rows { padding: 0 2px; }
-.chat-list .search-skeleton-item { min-height: 58px; }
+.chat-list .search-skeleton--rows { gap: 1px; padding: 0 2px; }
+.chat-list .search-skeleton-item {
+  min-height: 48px;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+}
 .global-search-results .search-skeleton--rows { padding: 4px; }
 
 .search-skeleton > .visually-hidden {

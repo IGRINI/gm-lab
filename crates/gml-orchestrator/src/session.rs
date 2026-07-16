@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
-use gml_llm::{Backend, MockClient};
+use gml_llm::{Backend, ConnectorId, ModelBinding, SessionIdentity};
 use gml_types::NpcBeat;
 use gml_world::{MemoryTier, MemoryTruthStatus, MemoryUnit, World, WorldEvent, WorldSpec};
 
@@ -21,10 +21,52 @@ use crate::compact::{empty_usage, usage_from_payload};
 /// fresh client/thread (so each NPC has its own prompt-cache key).
 pub type ClientFactory = std::sync::Arc<dyn Fn() -> Arc<dyn Backend> + Send + Sync>;
 
-/// The default factory builds a [`MockClient`] (matches `GM_BACKEND=mock`).
-/// Real backends supply their own factory via [`Session::with_factory`].
-pub fn default_client_factory() -> ClientFactory {
-    std::sync::Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>)
+/// Compatibility factory for callers that do not need independent child cache
+/// scopes. Production histories receive a connector-owned factory through
+/// [`Session::new_bound`] or [`Session::with_world_binding`].
+pub fn default_client_factory(client: Arc<dyn Backend>) -> ClientFactory {
+    std::sync::Arc::new(move || client.clone())
+}
+
+fn fresh_branch_client(
+    factory: &ClientFactory,
+    model: &str,
+    had_provider_identity: bool,
+) -> Arc<dyn Backend> {
+    let client = factory();
+    if !model.trim().is_empty() {
+        client.set_model(model);
+    }
+    if had_provider_identity || !client.session_id().is_empty() || !client.thread_id().is_empty() {
+        let identity = SessionIdentity::new();
+        client.set_session_identity(
+            Some(identity.session_id().as_str()),
+            Some(identity.thread_id().as_str()),
+        );
+    }
+    client
+}
+
+fn rotated_branch_client_state(
+    factory: &ClientFactory,
+    state: &NpcClientState,
+    fallback_model: &str,
+) -> NpcClientState {
+    let model = if state.model.trim().is_empty() {
+        fallback_model.to_string()
+    } else {
+        state.model.clone()
+    };
+    let client = fresh_branch_client(
+        factory,
+        &model,
+        !state.session_id.is_empty() || !state.thread_id.is_empty(),
+    );
+    NpcClientState {
+        model,
+        session_id: client.session_id(),
+        thread_id: client.thread_id(),
+    }
 }
 
 fn compact_location_generator_request(request: &Value) -> Value {
@@ -171,10 +213,7 @@ fn compact_character_generator_result(generated: &Value) -> Value {
         insert_clipped_string(&mut out, key, generated.get(key));
     }
     insert_clipped_string_list(&mut out, "goals", generated.get("goals"));
-    if let Some(value) = generated
-        .get("attitude_to_player")
-        .filter(|v| !v.is_null())
-    {
+    if let Some(value) = generated.get("attitude_to_player").filter(|v| !v.is_null()) {
         out.insert("attitude_to_player".to_string(), value.clone());
     }
     Value::Object(out)
@@ -319,8 +358,9 @@ pub struct Session {
     pub client: Arc<dyn Backend>,
     /// Factory for per-NPC clients (Python `make_client`). Not persisted.
     pub npc_client_factory: ClientFactory,
-    pub client_backend: String,
-    pub client_model: String,
+    /// The connector is fixed for the lifetime of this history. Only the model
+    /// part may change between turns.
+    model_binding: ModelBinding,
     pub client_session_id: String,
     pub client_thread_id: String,
 
@@ -394,10 +434,25 @@ pub struct Session {
 
 impl Session {
     /// `Session(client, world=None)`. The default world is procedural canon.
-    /// Uses the default (mock) NPC client factory.
+    /// Reuses the supplied backend for compatibility. Production code uses
+    /// [`Session::new_bound`] so each child client comes from the connector.
     pub fn new(client: Arc<dyn Backend>) -> Self {
         let world = World::from_worldgen(&WorldSpec::default());
-        Self::with_world(client, world, default_client_factory())
+        let factory = default_client_factory(client.clone());
+        Self::with_world(client, world, factory)
+    }
+
+    pub fn new_bound(
+        client: Arc<dyn Backend>,
+        npc_client_factory: ClientFactory,
+        model_binding: ModelBinding,
+    ) -> Self {
+        let world = World::from_worldgen(&WorldSpec::default());
+        Self::with_world_binding(client, world, npc_client_factory, model_binding)
+    }
+
+    pub fn model_binding(&self) -> &ModelBinding {
+        &self.model_binding
     }
 
     /// `Session(client, world=...)` with an explicit NPC client factory.
@@ -406,12 +461,37 @@ impl Session {
         world: World,
         npc_client_factory: ClientFactory,
     ) -> Self {
-        let client_model = client.model();
+        let binding = Self::inferred_model_binding(client.as_ref());
+        Self::with_world_binding(client, world, npc_client_factory, binding)
+    }
+
+    pub(crate) fn inferred_model_binding(client: &dyn Backend) -> ModelBinding {
+        let model = client.model();
+        let connector_id = ConnectorId::new(client.connector_id())
+            .expect("a backend must expose a valid connector id");
+        ModelBinding::new(
+            connector_id,
+            if model.trim().is_empty() {
+                "default"
+            } else {
+                &model
+            },
+        )
+        .expect("the active model must be a valid model id")
+    }
+
+    /// Build a session with an explicit connector/model binding. This is the
+    /// canonical constructor for persisted and newly-created histories.
+    pub fn with_world_binding(
+        client: Arc<dyn Backend>,
+        world: World,
+        npc_client_factory: ClientFactory,
+        model_binding: ModelBinding,
+    ) -> Self {
         Session {
             client,
             npc_client_factory,
-            client_backend: backend_name(),
-            client_model,
+            model_binding,
             client_session_id: String::new(),
             client_thread_id: String::new(),
             npc_clients: HashMap::new(),
@@ -463,6 +543,58 @@ impl Session {
         }
     }
 
+    /// Give a newly forked history independent provider conversation and cache
+    /// scopes while preserving its model and gameplay state. This must be
+    /// applied both to the fork snapshot and to every inherited checkpoint so
+    /// a later rewind cannot restore identities owned by the source history.
+    pub fn rotate_provider_identities_for_branch(&mut self) {
+        for npc_id in self.npc_clients.keys().cloned().collect::<Vec<_>>() {
+            self.remember_npc_client(&npc_id);
+        }
+        self.remember_location_generator_client();
+        self.remember_character_generator_client();
+
+        let factory = self.npc_client_factory.clone();
+        let model = self.model_binding.model_id().to_string();
+        let had_main_identity = !self.client_session_id.is_empty()
+            || !self.client_thread_id.is_empty()
+            || !self.client.session_id().is_empty()
+            || !self.client.thread_id().is_empty();
+        let client = fresh_branch_client(&factory, &model, had_main_identity);
+        self.client_session_id = client.session_id();
+        self.client_thread_id = client.thread_id();
+        self.client = client;
+
+        self.npc_clients.clear();
+        for state in self.npc_client_state.values_mut() {
+            *state = rotated_branch_client_state(&factory, state, &model);
+        }
+
+        self.location_generator_client = None;
+        if !self.location_generator_client_state.model.is_empty()
+            || !self.location_generator_client_state.session_id.is_empty()
+            || !self.location_generator_client_state.thread_id.is_empty()
+        {
+            self.location_generator_client_state = rotated_branch_client_state(
+                &factory,
+                &self.location_generator_client_state,
+                &model,
+            );
+        }
+
+        self.character_generator_client = None;
+        if !self.character_generator_client_state.model.is_empty()
+            || !self.character_generator_client_state.session_id.is_empty()
+            || !self.character_generator_client_state.thread_id.is_empty()
+        {
+            self.character_generator_client_state = rotated_branch_client_state(
+                &factory,
+                &self.character_generator_client_state,
+                &model,
+            );
+        }
+    }
+
     pub fn reset_world_query_cache(&mut self) {
         self.world_query_seen = BTreeMap::new();
     }
@@ -484,6 +616,7 @@ impl Session {
         if name.is_empty() {
             return;
         }
+        self.loaded_gm_tools.insert(name.to_string());
         self.tool_loaded_turn.insert(name.to_string(), self.turn);
     }
 
@@ -513,8 +646,8 @@ impl Session {
                 // No record at all — a legacy/native-loaded tool. Keep it.
                 continue;
             }
-            let last_stale = last.map_or(true, |t| t < oldest_retained_turn);
-            let loaded_stale = loaded.map_or(true, |t| t < oldest_retained_turn);
+            let last_stale = last.is_none_or(|t| t < oldest_retained_turn);
+            let loaded_stale = loaded.is_none_or(|t| t < oldest_retained_turn);
             if last_stale && loaded_stale {
                 drop.push(name.clone());
             }
@@ -542,10 +675,8 @@ impl Session {
         let state = self.npc_client_state.entry(npc_id.to_string()).or_default();
         let model = if !state.model.is_empty() {
             state.model.clone()
-        } else if !self.client_model.is_empty() {
-            self.client_model.clone()
         } else {
-            client.model()
+            self.model_binding.model_id().to_string()
         };
         if !model.is_empty() {
             client.set_model(&model);
@@ -567,10 +698,8 @@ impl Session {
         let state = &mut self.location_generator_client_state;
         let model = if !state.model.is_empty() {
             state.model.clone()
-        } else if !self.client_model.is_empty() {
-            self.client_model.clone()
         } else {
-            client.model()
+            self.model_binding.model_id().to_string()
         };
         if !model.is_empty() {
             client.set_model(&model);
@@ -591,7 +720,7 @@ impl Session {
         let model = {
             let m = client.model();
             if m.is_empty() {
-                self.client_model.clone()
+                self.model_binding.model_id().to_string()
             } else {
                 m
             }
@@ -653,10 +782,8 @@ impl Session {
         let state = &mut self.character_generator_client_state;
         let model = if !state.model.is_empty() {
             state.model.clone()
-        } else if !self.client_model.is_empty() {
-            self.client_model.clone()
         } else {
-            client.model()
+            self.model_binding.model_id().to_string()
         };
         if !model.is_empty() {
             client.set_model(&model);
@@ -677,7 +804,7 @@ impl Session {
         let model = {
             let m = client.model();
             if m.is_empty() {
-                self.client_model.clone()
+                self.model_binding.model_id().to_string()
             } else {
                 m
             }
@@ -737,14 +864,13 @@ impl Session {
         let model = {
             let m = client.model();
             if m.is_empty() {
-                self.client_model.clone()
+                self.model_binding.model_id().to_string()
             } else {
                 m
             }
         };
-        // Capture the real per-NPC session/thread ids so the Codex prompt-cache
-        // key survives save/restore (orchestrator.py:2484-2488). Non-Codex
-        // backends return "" (their cache is not keyed on a thread id).
+        // Capture the connector's per-NPC cache identity so it survives
+        // save/restore. Backends without cache identity return empty strings.
         self.npc_client_state.insert(
             npc_id.to_string(),
             NpcClientState {
@@ -820,11 +946,16 @@ impl Session {
 
     pub fn set_model_for_all_clients(&mut self, model: &str) {
         let model = model.trim();
-        if model.is_empty() {
+        if model.is_empty() || self.model_binding.model_id() == model {
             return;
         }
-        self.client_model = model.to_string();
+        self.model_binding = self
+            .model_binding
+            .with_model(model)
+            .expect("a non-empty backend model must be a valid model id");
         self.client.set_model(model);
+        self.client_session_id = self.client.session_id();
+        self.client_thread_id = self.client.thread_id();
         for client in self.npc_clients.values() {
             client.set_model(model);
         }
@@ -836,9 +967,24 @@ impl Session {
         }
         for state in self.npc_client_state.values_mut() {
             state.model = model.to_string();
+            state.session_id.clear();
+            state.thread_id.clear();
         }
-        self.location_generator_client_state.model = model.to_string();
-        self.character_generator_client_state.model = model.to_string();
+        self.location_generator_client_state = NpcClientState {
+            model: model.to_string(),
+            ..NpcClientState::default()
+        };
+        self.character_generator_client_state = NpcClientState {
+            model: model.to_string(),
+            ..NpcClientState::default()
+        };
+
+        let npc_ids = self.npc_clients.keys().cloned().collect::<Vec<_>>();
+        for npc_id in npc_ids {
+            self.remember_npc_client(&npc_id);
+        }
+        self.remember_location_generator_client();
+        self.remember_character_generator_client();
     }
 
     pub fn set_run_usage(&mut self, usage: &Value) {
@@ -894,6 +1040,56 @@ impl Session {
         }
         self.run_usage = usage.clone();
         Value::Object(usage)
+    }
+
+    /// Remove one previously-accounted empty failed turn before replacing it
+    /// with a resumed attempt.
+    ///
+    /// This is deliberately strict: only a `meta_total` with no model/tool
+    /// calls and zero token/context counters is reversible. The caller should
+    /// perform this operation on a staged session so a second failed attempt can
+    /// still be discarded atomically. On rejection the usage map is unchanged.
+    pub fn remove_empty_failed_turn_usage(&mut self, failed_turn_total: &Value) -> bool {
+        let Some(total) = failed_turn_total.as_object() else {
+            return false;
+        };
+        if !matches!(total.get("calls"), Some(Value::Array(calls)) if calls.is_empty())
+            || ["in", "out", "cached", "tokens", "peak_context"]
+                .into_iter()
+                .any(|key| total.get(key).and_then(Value::as_i64) != Some(0))
+        {
+            return false;
+        }
+
+        let Some(failed_secs) = total.get("secs").and_then(Value::as_f64) else {
+            return false;
+        };
+        let Some(turns) = self.run_usage.get("turns").and_then(Value::as_i64) else {
+            return false;
+        };
+        let Some(run_secs) = self.run_usage.get("secs").and_then(Value::as_f64) else {
+            return false;
+        };
+        if turns <= 0
+            || !failed_secs.is_finite()
+            || failed_secs < 0.0
+            || !run_secs.is_finite()
+            || run_secs < failed_secs
+        {
+            return false;
+        }
+
+        let remaining_secs = crate::compact::round2(run_secs - failed_secs);
+        self.run_usage.insert("turns".to_string(), json!(turns - 1));
+        self.run_usage.insert(
+            "secs".to_string(),
+            json!(if remaining_secs == 0.0 {
+                0.0
+            } else {
+                remaining_secs
+            }),
+        );
+        true
     }
 
     /// `npc_history_text(npc_id, max_messages=8)`.
@@ -1606,12 +1802,6 @@ impl Session {
         }
         witnesses
     }
-}
-
-/// `config.BACKEND` — the active backend name. For the mock test harness this is
-/// "mock"; in production it comes from `GM_BACKEND` (read at process start).
-fn backend_name() -> String {
-    std::env::var("GM_BACKEND").unwrap_or_else(|_| "codex".to_string())
 }
 
 /// Add `delta` to the integer counter `key` in `usage`.

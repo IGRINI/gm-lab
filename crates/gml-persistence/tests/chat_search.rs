@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use gml_config::Config;
-use gml_llm::{Backend, MockClient};
+use gml_llm::Backend;
+use gml_mock::MockClient;
 use gml_orchestrator::ClientFactory;
 use gml_persistence::{ChatSearchQuery, ChatSearchScope, DialogStore};
 use serde_json::json;

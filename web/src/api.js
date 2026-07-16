@@ -5,10 +5,11 @@ async function getJSON(url, opts) {
   return r.json();
 }
 
-function _post(url, body) {
+function _post(url, body, opts = {}) {
   return getJSON(url, {
+    ...opts,
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { ...opts.headers, "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
   });
 }
@@ -31,6 +32,22 @@ export const api = {
   debug: () => getJSON("/debug"),
 
   models: () => getJSON("/models"),
+
+  connectors: () => getJSON("/connectors"),
+
+  connectorModels: (connectorId) =>
+    getJSON(`/connectors/${encodeURIComponent(connectorId)}/models`),
+
+  connectorAuthStatus: (connectorId, { signal } = {}) =>
+    getJSON(`/connectors/${encodeURIComponent(connectorId)}/auth/status`, { signal }),
+
+  connectorAuthStart: (connectorId, methodId, { signal } = {}) =>
+    _post(`/connectors/${encodeURIComponent(connectorId)}/auth/start`, {
+      method_id: methodId,
+    }, { signal }),
+
+  connectorAuthLogout: (connectorId, { signal } = {}) =>
+    _post(`/connectors/${encodeURIComponent(connectorId)}/auth/logout`, null, { signal }),
 
   settings: () => getJSON("/settings"),
 
@@ -110,6 +127,13 @@ export const api = {
 
   activateChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/activate`),
 
+  cancelTurn: (chatId, requestId, { signal } = {}) =>
+    _post(
+      `/turn/${encodeURIComponent(requestId)}/cancel`,
+      { chat_id: chatId },
+      { signal }
+    ),
+
   deleteChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/delete`),
 
   deleteWorld: (worldId) => _post(`/worlds/${encodeURIComponent(worldId)}/delete`),
@@ -173,9 +197,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ cmd, arg }),
     }),
-
-  codexLogin: () => getJSON("/codex/login", { method: "POST" }),
-  codexLogout: () => getJSON("/codex/logout", { method: "POST" }),
 
   // --- dev token counter (local tiktoken) + optional OpenAI key storage ---
   tokenize: (text, model) => _post("/debug/tokenize", { text, model }),
@@ -342,30 +363,144 @@ export function streamCharacterArchitect(body, onEvent) {
   return streamArchitectAt("/character-architect/chat", body, onEvent);
 }
 
-// Stream a player turn. `onEvent` is called for every SSE event object.
-// Returns when the stream ends. Throws on network error.
-export async function streamTurn(text, onEvent) {
+function responseErrorMessage(response, body, fallback) {
+  let message = "";
+  try {
+    const data = JSON.parse(body);
+    if (typeof data?.error === "string") message = data.error.trim();
+  } catch {
+    message = body.trim();
+  }
+  return message || `${fallback} (HTTP ${response.status})`;
+}
+
+function turnStreamError(message, retryable = true) {
+  const error = new Error(message);
+  error.retryable = retryable;
+  return error;
+}
+
+function retryableTurnStatus(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function takeSseFrame(buffer) {
+  const lf = buffer.indexOf("\n\n");
+  const crlf = buffer.indexOf("\r\n\r\n");
+  if (lf < 0 && crlf < 0) return null;
+  if (crlf >= 0 && (lf < 0 || crlf < lf)) {
+    return { frame: buffer.slice(0, crlf), rest: buffer.slice(crlf + 4) };
+  }
+  return { frame: buffer.slice(0, lf), rest: buffer.slice(lf + 2) };
+}
+
+function parseSseData(frame) {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line === "data" || line.startsWith("data:"))
+    .map((line) => line.slice(5).replace(/^ /, ""))
+    .join("\n");
+  if (!data) return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    throw new Error("Сервер прислал повреждённое событие хода");
+  }
+}
+
+export function createTurnRequestId() {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  if (typeof cryptoApi?.getRandomValues !== "function") {
+    throw new Error("Не удалось создать идентификатор хода");
+  }
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex
+    .slice(6, 8)
+    .join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
+// Stream one logical player turn. The caller owns `requestId` and MUST reuse it
+// for a manual retry: the backend uses it to return an already-committed turn
+// without executing model calls or tools twice.
+export async function streamTurn(
+  text,
+  requestId,
+  onEvent,
+  { signal, legacyResume = false, chatId = "", history = null } = {}
+) {
+  if (!requestId || typeof onEvent !== "function") {
+    throw turnStreamError("Некорректный запрос хода", false);
+  }
+  const body = { text, request_id: requestId };
+  if (legacyResume === true) body.legacy_resume = true;
+  if (String(chatId || "").trim()) body.chat_id = String(chatId).trim();
+  if (history && (history.kind === "edit" || history.kind === "branch")) {
+    body.history = {
+      kind: history.kind,
+      turn: history.turn,
+      ...(String(history.title || "").trim()
+        ? { title: String(history.title).trim() }
+        : {}),
+    };
+  }
   const resp = await fetch("/turn", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
+    signal,
   });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw turnStreamError(
+      responseErrorMessage(resp, body, "ход не выполнен"),
+      retryableTurnStatus(resp.status)
+    );
+  }
+  if (!resp.body) throw new Error("Сервер не открыл поток хода");
+
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
+  let terminal = null;
+
+  const acceptFrame = (frame) => {
+    const ev = parseSseData(frame);
+    if (!ev) return;
+    if (terminal) throw new Error("Сервер прислал событие после завершения хода");
+    if (ev.kind === "done") {
+      if (
+        typeof ev.ok !== "boolean" ||
+        typeof ev.retryable !== "boolean" ||
+        typeof ev.replayed !== "boolean"
+      ) {
+        throw new Error("Сервер не подтвердил результат хода");
+      }
+      if (!ev.request_id || String(ev.request_id) !== requestId) {
+        throw new Error("Сервер подтвердил другой ход");
+      }
+      terminal = ev;
+      return;
+    }
+    onEvent(ev);
+  };
+
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
-    let i;
-    while ((i = buf.indexOf("\n\n")) >= 0) {
-      const chunk = buf.slice(0, i);
-      buf = buf.slice(i + 2);
-      if (chunk.startsWith("data: ")) {
-        const ev = JSON.parse(chunk.slice(6));
-        if (ev.kind === "done") continue;
-        onEvent(ev);
-      }
+    for (;;) {
+      const part = takeSseFrame(buf);
+      if (!part) break;
+      buf = part.rest;
+      acceptFrame(part.frame);
     }
   }
+  buf += dec.decode();
+  if (buf.trim()) acceptFrame(buf);
+  if (!terminal) throw new Error("Соединение закрылось до подтверждения хода");
+  return terminal;
 }

@@ -1,0 +1,155 @@
+/* Generic connector/model controls shared by new histories and settings. */
+.connector-model-picker {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+}
+
+.connector-model-picker--compact {
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+}
+
+.connector-model-field {
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.connector-model-field--model { flex: 1; }
+
+.connector-model-field > span {
+  color: var(--text-3);
+  font: 600 10px/1.2 var(--font-ui);
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.connector-model-field select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 30px 0 9px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  outline: 0;
+  background: var(--surface-0);
+  color: var(--text-1);
+  font: 500 12px/1.2 var(--font-ui);
+}
+
+.connector-model-field select:focus {
+  border-color: var(--brand-line);
+  box-shadow: 0 0 0 3px var(--brand-tint);
+}
+
+.connector-model-field select:disabled { opacity: 0.62; cursor: default; }
+
+.connector-model-lock,
+.connector-model-error {
+  flex: none;
+  align-self: center;
+  color: var(--text-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.connector-model-error { color: var(--danger); }
+
+.connector-model-retry {
+  flex: none;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.connector-model-auth {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--warn);
+  font-size: 11px;
+}
+
+.connector-auth-prompt {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-sm);
+  background: var(--brand-tint);
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.connector-auth-prompt code {
+  padding: 4px 7px;
+  border-radius: var(--r-sm);
+  background: var(--surface-0);
+  color: var(--text-1);
+  font: 700 13px/1.2 var(--font-mono);
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+
+.connector-auth-prompt a {
+  margin-left: auto;
+  color: var(--brand);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.connector-settings-list { display: grid; gap: 10px; }
+
+.connector-settings-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-lg);
+  background: var(--surface-1);
+}
+
+.connector-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.connector-settings-head > div { min-width: 0; }
+.connector-settings-head h3 { margin: 0; }
+.connector-settings-head p { margin: 3px 0 0; }
+.connector-settings-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+
+.wiz > .connector-model-picker {
+  margin: 12px 16px 0;
+}
+
+.world-architect > .connector-model-picker {
+  margin: 0 12px 10px;
+}
+
+@media (max-width: 700px) {
+  .connector-model-picker { align-items: stretch; flex-direction: column; }
+  .connector-model-field { min-width: 0; }
+  .connector-model-auth { align-items: flex-start; flex-direction: column; }
+  .connector-auth-prompt { align-items: flex-start; flex-direction: column; }
+  .connector-auth-prompt a { margin-left: 0; white-space: normal; }
+  .connector-model-lock, .connector-model-error { align-self: flex-start; white-space: normal; }
+  .connector-model-retry { align-self: stretch; justify-content: space-between; }
+  .connector-settings-head { flex-direction: column; }
+}

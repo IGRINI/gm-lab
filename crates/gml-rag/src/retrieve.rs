@@ -261,7 +261,11 @@ pub fn retrieve_world_fact(
 /// purge the global cache. This keeps a chat-delete from sweeping every world's
 /// cache (RAG_PER_WORLD_TZ §2.4): a session's texts only ever live in its own
 /// world file (or the global file for built-in stories).
-pub fn purge_embeddings_for_texts(texts: &[String], config: &Config, world_id: Option<&str>) -> i64 {
+pub fn purge_embeddings_for_texts(
+    texts: &[String],
+    config: &Config,
+    world_id: Option<&str>,
+) -> i64 {
     if !config.rag_enabled {
         return 0;
     }

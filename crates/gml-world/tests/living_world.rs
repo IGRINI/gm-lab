@@ -449,8 +449,12 @@ fn npc_exists_outside_scene_and_can_be_elsewhere() {
     let mut world = World::from_worldgen_with_dice_seed(&WorldSpec::from_seed("camp5"), 5);
     let start = world.world_canon.player_place_id.clone();
     let gate_id = ids_place(&world.world_canon, "gate");
-    let npc_id =
-        gml_world::canon::ids::stable_id(&world.world_canon.world_seed, &gate_id, "actor", "warden");
+    let npc_id = gml_world::canon::ids::stable_id(
+        &world.world_canon.world_seed,
+        &gate_id,
+        "actor",
+        "warden",
+    );
 
     // Card first (resolve/whereabouts key off it), then the canon actor at the
     // gate via the validated engine path. Only the 7 non-defaulted card fields
@@ -516,7 +520,11 @@ fn npc_exists_outside_scene_and_can_be_elsewhere() {
         2,
     )
     .expect("move actor");
-    assert!(world.world_canon.actor(&warden.actor_id).unwrap().is_at(&dest));
+    assert!(world
+        .world_canon
+        .actor(&warden.actor_id)
+        .unwrap()
+        .is_at(&dest));
     assert!(
         world
             .world_canon

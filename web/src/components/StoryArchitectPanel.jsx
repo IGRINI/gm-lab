@@ -2,6 +2,8 @@ import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import Spoiler from "./Spoiler.jsx";
+import useConnectorModelBinding from "../useConnectorModelBinding.js";
+import { bindingReady } from "../connectorCatalog.js";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
@@ -248,6 +250,16 @@ export default function StoryArchitectPanel({
   worldId,
   worldTitle,
   locked,
+  connectors = [],
+  models = [],
+  connectorModelsLoadingIds = [],
+  onEnsureConnectorModels,
+  initialModelBinding = null,
+  connectorAuthBusyIds = [],
+  connectorAuthCancellingIds = [],
+  connectorAuthPrompts = {},
+  onConnectorAuthStart,
+  onConnectorAuthCancel,
   onArchitectStream,
   onPlayStory,
   onSaveProtagonist,
@@ -278,10 +290,24 @@ export default function StoryArchitectPanel({
   // for an existing story that means fetching its GM draft row on open, not just
   // when the id later changes.
   const loadedStoryIdRef = useRef(null);
+  const {
+    modelBinding,
+    setModelBinding,
+    connectorLocked,
+    bindingLoading,
+    setBindingLoading,
+    bindingLoadFailed,
+    setBindingLoadFailed,
+    lockConnector,
+    resetModelBinding,
+  } = useConnectorModelBinding(initialModelBinding, connectors, models);
+  const bindingContextPending = (textValue(story?.id) || null) !== loadedStoryIdRef.current;
 
   const draftPayload = useMemo(() => cleanStoryDraft(storyDraft), [storyDraft]);
   const ready = plotReady(storyDraft);
-  const architectLocked = locked || architectBusy;
+  const architectLocked =
+    locked || architectBusy || bindingContextPending || bindingLoading || bindingLoadFailed
+    || !bindingReady(modelBinding, connectors, models);
 
   // Reload the form + conversation only when the user opens a DIFFERENT story
   // (or switches from a fresh draft to a saved one). The story our own turn just
@@ -308,7 +334,9 @@ export default function StoryArchitectPanel({
     setArchitectUsage(EMPTY_ARCHITECT_USAGE);
     setArchitectDebug(null);
     setDebugOpen(false);
+    resetModelBinding(null);
     if (!id) return undefined;
+    setBindingLoading(true);
     // Fetch the GM draft row for an existing story. `cancelled` guards a stale
     // response when the user reopens a different story before this resolves.
     let cancelled = false;
@@ -321,9 +349,12 @@ export default function StoryArchitectPanel({
         }
         setStoryDraft(storyDraftFromSaved(data.story));
         setMessages(architectMessagesFromChat(data.architect));
+        resetModelBinding(data.architect?.model_binding);
       })
       .catch((error) => {
         if (cancelled || loadedStoryIdRef.current !== id) return;
+        setBindingLoading(false);
+        setBindingLoadFailed(true);
         setArchitectError(error?.message || "не удалось загрузить черновик истории");
       });
     return () => {
@@ -401,6 +432,7 @@ export default function StoryArchitectPanel({
     setMessages(visibleMessages);
     let adopted = false;
     let failure = "";
+    lockConnector();
     try {
       // The server owns the conversation (model history + cache ids live in the
       // package's architect.json). The body carries only the message, the target
@@ -410,6 +442,8 @@ export default function StoryArchitectPanel({
         {
           message: text,
           draft: draftPayload,
+          connector_id: modelBinding.connector_id,
+          model_id: modelBinding.model_id,
           // A create relies on world_id; an edit carries the resolved story_id.
           ...(currentStoryId ? { story_id: currentStoryId } : {}),
           ...(worldId ? { world_id: worldId } : {}),
@@ -436,6 +470,7 @@ export default function StoryArchitectPanel({
             }
           } else if (ev.kind === "architect_error") {
             failure = textValue(ev.data) || "Архитектор не ответил";
+            if (ev.model_binding) resetModelBinding(ev.model_binding);
             // The story is created BEFORE the model call; error events carry
             // the persisted story_id as a sibling of `data`. Pin it so a retry
             // edits that story instead of minting a duplicate package.
@@ -447,6 +482,7 @@ export default function StoryArchitectPanel({
           } else if (ev.kind === "architect_done") {
             adopted = true;
             const data = ev.data || {};
+            if (data.model_binding) resetModelBinding(data.model_binding);
             const usage = asObject(data.usage);
             if (usage) setArchitectUsage((current) => accumulateUsage(current, usage));
             setArchitectDebug(debugFromDone(data, usage));
@@ -550,6 +586,21 @@ export default function StoryArchitectPanel({
           onSend={sendArchitectMessage}
           onRetry={retryText ? retryArchitectTurn : undefined}
           locked={architectLocked}
+          connectors={connectors}
+          models={models}
+          connectorModelsLoadingIds={connectorModelsLoadingIds}
+          onEnsureConnectorModels={onEnsureConnectorModels}
+          modelBinding={modelBinding}
+          onModelBindingChange={setModelBinding}
+          connectorLocked={connectorLocked}
+          modelPickerDisabled={
+            locked || architectBusy || bindingContextPending || bindingLoading || bindingLoadFailed
+          }
+          connectorAuthBusyIds={connectorAuthBusyIds}
+          connectorAuthCancellingIds={connectorAuthCancellingIds}
+          connectorAuthPrompts={connectorAuthPrompts}
+          onConnectorAuthStart={onConnectorAuthStart}
+          onConnectorAuthCancel={onConnectorAuthCancel}
         />
 
         <section

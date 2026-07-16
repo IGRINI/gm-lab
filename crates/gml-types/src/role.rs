@@ -34,8 +34,13 @@ pub enum Role {
 }
 
 /// The reasoning roles, in declaration order.
-pub const REASONING_ROLES: [Role; 5] =
-    [Role::Gm, Role::Npc, Role::Compact, Role::Location, Role::Character];
+pub const REASONING_ROLES: [Role; 5] = [
+    Role::Gm,
+    Role::Npc,
+    Role::Compact,
+    Role::Location,
+    Role::Character,
+];
 
 impl Role {
     /// The canonical string for this role.

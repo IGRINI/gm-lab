@@ -2,6 +2,8 @@ import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import WorldDetailModal from "./WorldDetailModal.jsx";
+import useConnectorModelBinding from "../useConnectorModelBinding.js";
+import { bindingReady } from "../connectorCatalog.js";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
@@ -13,6 +15,24 @@ import {
   accumulateUsage,
   debugFromDone,
 } from "./architectShared.jsx";
+import {
+  asObject,
+  scalarText,
+  numText,
+  mapFromRows,
+  normalizeEntryString,
+  spellsFromRows,
+  slotsFromRows,
+  useMapRows,
+  useStringRows,
+  useSpellRows,
+  useSlotRows,
+  AbilitiesEditor,
+  MapRowsEditor,
+  NamedListEditor,
+  SpellsEditor,
+  SlotsEditor,
+} from "./sheetEditors.jsx";
 
 // The character architect panel (UI_REDESIGN_TZ §Студия персонажа). It is the
 // third sibling of WorldArchitectPanel / StoryArchitectPanel and shares their
@@ -71,12 +91,6 @@ function defaultArchitectMessages({
   ];
 }
 
-// D&D ability keys arrive from the model in English — localize the six core ones.
-const ABILITY_SHORT = { STR: "СИЛ", DEX: "ЛОВ", CON: "ТЕЛ", INT: "ИНТ", WIS: "МДР", CHA: "ХАР" };
-// The fixed order the six abilities render in (extra keys are preserved but not
-// shown — the editor only exposes the core six inputs).
-const ABILITY_ORDER = ["STR", "DEX", "CON", "INT", "WIS", "CHA"];
-
 // The stat maps that DEEP-merge key-by-key on a live draft_player_character call
 // (mirrors the backend's per-object merge); everything else overwrites.
 const DEEP_MERGE_KEYS = new Set([
@@ -88,36 +102,8 @@ const DEEP_MERGE_KEYS = new Set([
   "spell_slots_max",
 ]);
 
-function asObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-}
-
 function asArray(value) {
   return Array.isArray(value) ? value : [];
-}
-
-function abilityMod(score) {
-  const n = Number(score);
-  if (!Number.isFinite(n)) return null;
-  return Math.floor((n - 10) / 2);
-}
-
-function fmtMod(mod) {
-  return mod >= 0 ? `+${mod}` : String(mod);
-}
-
-// A scalar shown in a text input — strings pass through, arrays are joined so a
-// legacy list value (e.g. senses/languages authored as an array) stays editable.
-function scalarText(value) {
-  if (Array.isArray(value)) return value.filter((x) => x != null).join(", ");
-  if (value == null) return "";
-  return typeof value === "string" ? value : String(value);
-}
-
-// A number-input value: the number itself, or "" for an absent/blank field (so
-// the input clears instead of showing 0).
-function numText(value) {
-  return value == null || String(value).trim() === "" ? "" : value;
 }
 
 // Deterministic stringify (keys sorted) for dirty tracking — key order in the
@@ -131,52 +117,6 @@ function stableStringify(value) {
       .join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-// --- sheet ⇄ editable-row seeders (the map/list/spell/slot editors keep a local
-// row buffer so a key rename or an empty row never collapses under the object
-// store; the buffer is re-seeded from the sheet only on an EXTERNAL replace). ---
-function rowsFromMap(map) {
-  return Object.entries(asObject(map) || {}).map(([k, v]) => ({
-    k: String(k),
-    v: v == null ? "" : String(v),
-  }));
-}
-
-function stringRowsFrom(list) {
-  return asArray(list).map((v) => ({ text: typeof v === "string" ? v : v == null ? "" : String(v) }));
-}
-
-function spellRowsFrom(list) {
-  return asArray(list).map((sp) => {
-    const o = asObject(sp) || {};
-    return {
-      name: textValue(o.name) || (typeof sp === "string" ? sp : ""),
-      level: o.level == null ? "" : String(o.level),
-      effect: textValue(o.effect),
-      concentration: !!o.concentration,
-      ritual: !!o.ritual,
-    };
-  });
-}
-
-function slotRowsFrom(slots, max) {
-  const levels = new Set();
-  for (const m of [asObject(slots) || {}, asObject(max) || {}]) {
-    for (const key of Object.keys(m)) {
-      const n = parseInt(key, 10);
-      if (Number.isInteger(n) && n >= 1 && n <= 9) levels.add(n);
-    }
-  }
-  const cur = asObject(slots) || {};
-  const cap = asObject(max) || {};
-  return [...levels]
-    .sort((a, b) => a - b)
-    .map((level) => ({
-      level,
-      cur: cur[level] == null ? "" : String(cur[level]),
-      max: cap[level] == null ? "" : String(cap[level]),
-    }));
 }
 
 // Build the panel sheet from a saved character catalog row. The full sheet lives
@@ -200,22 +140,8 @@ function characterMessagesFromChat(architect, fallback) {
 // The sheet POSTed as `draft` (and, verbatim, as the direct-save body). The
 // backend REPLACES the whole player_character, so send the FULL sheet — only
 // truly-empty values (blank strings, empty lists / objects) are dropped as noise;
-// numbers, booleans and unknown keys pass through.
-// §И1 разделитель «имя — описание» (пробел + EM DASH + пробел, сплит по ПЕРВОМУ
-// вхождению — зеркалит gml-world helpers::item_head/item_tail).
-const ITEM_DESC_SEP = " — ";
-
-// Normalize an «имя — описание» entry at the payload boundary: the editors bind
-// RAW values while typing (trim in a controlled input eats the trailing space
-// the user just typed), so head/tail are trimmed only here.
-function normalizeEntryString(text) {
-  const idx = text.indexOf(ITEM_DESC_SEP);
-  if (idx < 0) return text.trim();
-  const head = text.slice(0, idx).trim();
-  const tail = text.slice(idx + ITEM_DESC_SEP.length).trim();
-  return tail ? `${head}${ITEM_DESC_SEP}${tail}` : head;
-}
-
+// numbers, booleans and unknown keys pass through. Строки инвентаря/снаряжения
+// нормализуются по §И1 «имя — описание» (см. sheetEditors normalizeEntryString).
 function cleanCharacterDraft(sheet) {
   const out = {};
   for (const [key, value] of Object.entries(asObject(sheet) || {})) {
@@ -279,6 +205,16 @@ export default function CharacterArchitectPanel({
   worldMissing = false,
   storyMissing = false,
   locked,
+  connectors = [],
+  models = [],
+  connectorModelsLoadingIds = [],
+  onEnsureConnectorModels,
+  initialModelBinding = null,
+  connectorAuthBusyIds = [],
+  connectorAuthCancellingIds = [],
+  connectorAuthPrompts = {},
+  onConnectorAuthStart,
+  onConnectorAuthCancel,
   onArchitectStream,
   onPlayCharacter,
   onCharacterPersisted,
@@ -310,18 +246,71 @@ export default function CharacterArchitectPanel({
   // Start as `null` (not the mount id) so the load effect ALWAYS runs on mount —
   // for an existing character that means restoring its conversation on open.
   const loadedCharacterIdRef = useRef(null);
+  const {
+    modelBinding,
+    setModelBinding,
+    connectorLocked,
+    bindingLoading,
+    setBindingLoading,
+    bindingLoadFailed,
+    setBindingLoadFailed,
+    lockConnector,
+    resetModelBinding,
+  } = useConnectorModelBinding(initialModelBinding, connectors, models);
+  const bindingContextPending =
+    (textValue(character?.id) || null) !== loadedCharacterIdRef.current;
 
-  // --- editable-row buffers for the list/map/spell/slot editors (see the seeder
-  // helpers above). Scalars, abilities and hp edit the sheet directly (fixed
-  // keys, no rename/add/remove), so they need no buffer. ---
-  const [skillRows, setSkillRows] = useState(() => rowsFromMap(sheet.skills));
-  const [saveRows, setSaveRows] = useState(() => rowsFromMap(sheet.saving_throws));
-  const [invRows, setInvRows] = useState(() => stringRowsFrom(sheet.inventory));
-  const [equipRows, setEquipRows] = useState(() => stringRowsFrom(sheet.equipment));
-  const [featRows, setFeatRows] = useState(() => stringRowsFrom(sheet.features));
-  const [spellRows, setSpellRows] = useState(() => spellRowsFrom(sheet.spells));
-  const [slotRows, setSlotRows] = useState(() => slotRowsFrom(sheet.spell_slots, sheet.spell_slots_max));
-  const [openSpells, setOpenSpells] = useState(() => new Set());
+  // --- editable-row buffers for the list/map/spell/slot editors (sheetEditors
+  // hooks). Scalars, abilities and hp edit the sheet directly (fixed keys, no
+  // rename/add/remove), so they need no buffer. Each commit rebuilds its sheet
+  // field from the NEXT row buffer; an empty result drops the key entirely. ---
+  const commitMapField = (field) => (rows) => {
+    setSheet((current) => {
+      const obj = mapFromRows(rows);
+      const next = { ...current };
+      if (Object.keys(obj).length > 0) next[field] = obj;
+      else delete next[field];
+      return next;
+    });
+  };
+  // RAW strings ride the sheet while typing — «имя — описание» normalization
+  // lives in cleanCharacterDraft at the payload boundary.
+  const commitListField = (field) => (rows) => {
+    setSheet((current) => {
+      const list = rows.map((r) => r.text).filter((t) => t.trim() !== "");
+      const next = { ...current };
+      if (list.length > 0) next[field] = list;
+      else delete next[field];
+      return next;
+    });
+  };
+  const commitSpellRows = (rows) => {
+    setSheet((current) => {
+      const list = spellsFromRows(rows);
+      const next = { ...current };
+      if (list.length > 0) next.spells = list;
+      else delete next.spells;
+      return next;
+    });
+  };
+  const commitSlotRows = (rows) => {
+    setSheet((current) => {
+      const { slots, max } = slotsFromRows(rows);
+      const next = { ...current };
+      if (Object.keys(slots).length > 0) next.spell_slots = slots;
+      else delete next.spell_slots;
+      if (Object.keys(max).length > 0) next.spell_slots_max = max;
+      else delete next.spell_slots_max;
+      return next;
+    });
+  };
+  const skillRows = useMapRows(sheet.skills, commitMapField("skills"));
+  const saveRows = useMapRows(sheet.saving_throws, commitMapField("saving_throws"));
+  const invRows = useStringRows(sheet.inventory, commitListField("inventory"));
+  const equipRows = useStringRows(sheet.equipment, commitListField("equipment"));
+  const featRows = useStringRows(sheet.features, commitListField("features"));
+  const spellRows = useSpellRows(sheet.spells, commitSpellRows);
+  const slotRows = useSlotRows(sheet.spell_slots, sheet.spell_slots_max, commitSlotRows);
 
   // A monotonic token bumped only when the sheet is REPLACED wholesale (load,
   // architect_done adopt, direct-save adopt) — the reseed effect below rebuilds
@@ -346,7 +335,9 @@ export default function CharacterArchitectPanel({
   const [saveError, setSaveError] = useState("");
 
   const ready = characterReady(sheet);
-  const architectLocked = locked || architectBusy;
+  const architectLocked =
+    locked || architectBusy || bindingContextPending || bindingLoading || bindingLoadFailed
+    || !bindingReady(modelBinding, connectors, models);
   // The manual editor is frozen while an architect turn is in flight (a turn
   // replaces the sheet on `done`) and while a direct save is round-tripping.
   const editDisabled = locked || architectBusy || saveBusy;
@@ -363,14 +354,14 @@ export default function CharacterArchitectPanel({
   // Reseed the row buffers whenever the sheet was replaced wholesale.
   useEffect(() => {
     const s = sheetRef.current;
-    setSkillRows(rowsFromMap(s.skills));
-    setSaveRows(rowsFromMap(s.saving_throws));
-    setInvRows(stringRowsFrom(s.inventory));
-    setEquipRows(stringRowsFrom(s.equipment));
-    setFeatRows(stringRowsFrom(s.features));
-    setSpellRows(spellRowsFrom(s.spells));
-    setSlotRows(slotRowsFrom(s.spell_slots, s.spell_slots_max));
-    setOpenSpells(new Set());
+    skillRows.reseed(s.skills);
+    saveRows.reseed(s.saving_throws);
+    invRows.reseed(s.inventory);
+    equipRows.reseed(s.equipment);
+    featRows.reseed(s.features);
+    spellRows.reseed(s.spells);
+    slotRows.reseed(s.spell_slots, s.spell_slots_max);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalRev]);
 
   // Reload the sheet + conversation only when the user opens a DIFFERENT character
@@ -398,7 +389,9 @@ export default function CharacterArchitectPanel({
     setArchitectUsage(EMPTY_ARCHITECT_USAGE);
     setArchitectDebug(null);
     setDebugOpen(false);
+    resetModelBinding(null);
     if (!id) return undefined;
+    setBindingLoading(true);
     // `cancelled` guards a stale response when the user reopens a different
     // character before this resolves.
     let cancelled = false;
@@ -410,9 +403,12 @@ export default function CharacterArchitectPanel({
           throw new Error(data?.error || "не удалось загрузить переписку персонажа");
         }
         setMessages(characterMessagesFromChat(data.architect, greeting));
+        resetModelBinding(data.architect?.model_binding);
       })
       .catch((error) => {
         if (cancelled || loadedCharacterIdRef.current !== id) return;
+        setBindingLoading(false);
+        setBindingLoadFailed(true);
         setArchitectError(error?.message || "не удалось загрузить переписку персонажа");
       });
     return () => {
@@ -473,157 +469,6 @@ export default function CharacterArchitectPanel({
     });
   };
 
-  // --- map editors (skills / saving_throws): a row buffer with a name + numeric
-  // modifier; the sheet object is rebuilt from the buffer on every edit. ---
-  const commitMap = (field, rows) => {
-    setSheet((current) => {
-      const obj = {};
-      for (const r of rows) {
-        const key = (r.k || "").trim();
-        if (!key) continue;
-        const n = parseInt(r.v, 10);
-        obj[key] = Number.isFinite(n) ? n : 0;
-      }
-      const next = { ...current };
-      if (Object.keys(obj).length > 0) next[field] = obj;
-      else delete next[field];
-      return next;
-    });
-  };
-  const mapHandlers = (field, rows, setRows) => ({
-    edit: (i, patch) => {
-      const next = rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
-      setRows(next);
-      commitMap(field, next);
-    },
-    add: () => setRows([...rows, { k: "", v: "" }]),
-    remove: (i) => {
-      const next = rows.filter((_, idx) => idx !== i);
-      setRows(next);
-      commitMap(field, next);
-    },
-  });
-
-  // --- string-list editors (inventory / equipment / features). ---
-  const commitList = (field, rows) => {
-    setSheet((current) => {
-      const list = rows.map((r) => r.text).filter((t) => t.trim() !== "");
-      const next = { ...current };
-      if (list.length > 0) next[field] = list;
-      else delete next[field];
-      return next;
-    });
-  };
-  const listHandlers = (field, rows, setRows) => ({
-    edit: (i, text) => {
-      const next = rows.map((r, idx) => (idx === i ? { text } : r));
-      setRows(next);
-      commitList(field, next);
-    },
-    add: () => setRows([...rows, { text: "" }]),
-    remove: (i) => {
-      const next = rows.filter((_, idx) => idx !== i);
-      setRows(next);
-      commitList(field, next);
-    },
-  });
-
-  // --- spell editor (5-field cards). ---
-  const commitSpells = (rows) => {
-    setSheet((current) => {
-      const list = [];
-      for (const r of rows) {
-        const name = (r.name || "").trim();
-        if (!name) continue;
-        const lvlN = parseInt(r.level, 10);
-        const level = Number.isFinite(lvlN) ? Math.max(0, Math.min(9, lvlN)) : 0;
-        const sp = { name, level, concentration: !!r.concentration, ritual: !!r.ritual };
-        const effect = (r.effect || "").trim();
-        if (effect) sp.effect = effect;
-        list.push(sp);
-      }
-      const next = { ...current };
-      if (list.length > 0) next.spells = list;
-      else delete next.spells;
-      return next;
-    });
-  };
-  const editSpell = (i, patch) => {
-    const next = spellRows.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
-    setSpellRows(next);
-    commitSpells(next);
-  };
-  const addSpell = () => {
-    const newIndex = spellRows.length;
-    setSpellRows([
-      ...spellRows,
-      { name: "", level: "0", effect: "", concentration: false, ritual: false },
-    ]);
-    setOpenSpells((prev) => new Set(prev).add(newIndex));
-  };
-  const removeSpell = (i) => {
-    const next = spellRows.filter((_, idx) => idx !== i);
-    setSpellRows(next);
-    commitSpells(next);
-    setOpenSpells((prev) => {
-      const out = new Set();
-      for (const idx of prev) {
-        if (idx < i) out.add(idx);
-        else if (idx > i) out.add(idx - 1);
-      }
-      return out;
-    });
-  };
-  const toggleSpell = (i) =>
-    setOpenSpells((prev) => {
-      const next = new Set(prev);
-      if (next.has(i)) next.delete(i);
-      else next.add(i);
-      return next;
-    });
-
-  // --- spell-slot editor (flat level→count maps; levels 1-9, no duplicates). ---
-  const commitSlots = (rows) => {
-    setSheet((current) => {
-      const slots = {};
-      const max = {};
-      for (const r of rows) {
-        if (!(Number.isInteger(r.level) && r.level >= 1 && r.level <= 9)) continue;
-        const c = parseInt(r.cur, 10);
-        const m = parseInt(r.max, 10);
-        if (Number.isFinite(c)) slots[String(r.level)] = c;
-        if (Number.isFinite(m)) max[String(r.level)] = m;
-      }
-      const next = { ...current };
-      if (Object.keys(slots).length > 0) next.spell_slots = slots;
-      else delete next.spell_slots;
-      if (Object.keys(max).length > 0) next.spell_slots_max = max;
-      else delete next.spell_slots_max;
-      return next;
-    });
-  };
-  const editSlot = (i, patch) => {
-    const next = slotRows.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
-    setSlotRows(next);
-    commitSlots(next);
-  };
-  const addSlot = (level) => {
-    const next = [...slotRows, { level, cur: "", max: "" }].sort((a, b) => a.level - b.level);
-    setSlotRows(next);
-    commitSlots(next);
-  };
-  const removeSlot = (i) => {
-    const next = slotRows.filter((_, idx) => idx !== i);
-    setSlotRows(next);
-    commitSlots(next);
-  };
-  const missingSlotLevels = useMemo(() => {
-    const present = new Set(slotRows.map((r) => r.level));
-    const out = [];
-    for (let l = 1; l <= 9; l += 1) if (!present.has(l)) out.push(l);
-    return out;
-  }, [slotRows]);
-
   // One architect turn. `appendUser=false` is the RETRY path: the visible chat
   // already carries the user message (and the failure note) from the failed
   // attempt, so only the request is repeated.
@@ -637,6 +482,7 @@ export default function CharacterArchitectPanel({
     setMessages(visibleMessages);
     let adopted = false;
     let failure = "";
+    lockConnector();
     try {
       // The server owns the conversation (model history + cache ids live in the
       // dialogs SQLite). The body carries only the message, the target id, and
@@ -646,6 +492,8 @@ export default function CharacterArchitectPanel({
         {
           message: text,
           draft: draftPayload,
+          connector_id: modelBinding.connector_id,
+          model_id: modelBinding.model_id,
           // A create sends no id; an edit carries the resolved character_id.
           // The base world/story ids ride ONLY with the create (the server pins
           // them into the new package; for an existing character it reads the
@@ -678,6 +526,7 @@ export default function CharacterArchitectPanel({
             }
           } else if (ev.kind === "architect_error") {
             failure = textValue(ev.data) || "Архитектор не ответил";
+            if (ev.model_binding) resetModelBinding(ev.model_binding);
             // The server creates the package (and saves the user message into
             // its conversation) BEFORE the model call, and its error events
             // carry the persisted character_id as a SIBLING of `data`. Pin it,
@@ -691,6 +540,7 @@ export default function CharacterArchitectPanel({
           } else if (ev.kind === "architect_done") {
             adopted = true;
             const data = ev.data || {};
+            if (data.model_binding) resetModelBinding(data.model_binding);
             const usage = asObject(data.usage);
             if (usage) setArchitectUsage((current) => accumulateUsage(current, usage));
             setArchitectDebug(debugFromDone(data, usage));
@@ -801,121 +651,7 @@ export default function CharacterArchitectPanel({
   };
 
   const heroName = textValue(sheet.name);
-  const abilitiesObj = asObject(sheet.abilities) || {};
   const hpObj = asObject(sheet.hp) || {};
-  const skillOps = mapHandlers("skills", skillRows, setSkillRows);
-  const saveOps = mapHandlers("saving_throws", saveRows, setSaveRows);
-  const invOps = listHandlers("inventory", invRows, setInvRows);
-  const equipOps = listHandlers("equipment", equipRows, setEquipRows);
-  const featOps = listHandlers("features", featRows, setFeatRows);
-
-  const renderMapEditor = (label, rows, ops, keyPlaceholder) => (
-    <div className="world-bible">
-      <div className="world-bible-fields">
-        <p className="world-bible-hint">{label}</p>
-        <div className="sheet-rows">
-          {rows.map((r, i) => (
-            <div className="sheet-map-row" key={i}>
-              <input
-                className="sheet-map-key"
-                value={r.k}
-                onChange={(e) => ops.edit(i, { k: e.target.value })}
-                placeholder={keyPlaceholder}
-                disabled={editDisabled}
-              />
-              <input
-                className="sheet-map-val"
-                type="number"
-                value={r.v}
-                onChange={(e) => ops.edit(i, { v: e.target.value })}
-                placeholder="±0"
-                disabled={editDisabled}
-              />
-              <button
-                type="button"
-                className="sheet-row-del"
-                onClick={() => ops.remove(i)}
-                disabled={editDisabled}
-                aria-label="Удалить строку"
-              >
-                <Icon name="x" size={12} />
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="sheet-add-btn"
-            onClick={ops.add}
-            disabled={editDisabled}
-          >
-            + добавить
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
-  // Two-field variant for the §И1 «имя — описание» string convention (space +
-  // EM DASH + space, split on the FIRST separator — mirrors gml-world
-  // helpers::item_head/item_tail/item_entry_string). The stored value stays a
-  // single string so the engine's head-matching keeps working; the editor only
-  // splits/joins for display. NO trim here: a trimmed controlled input eats the
-  // trailing space the user just typed — normalization lives in
-  // cleanCharacterDraft at the payload boundary.
-  const entryName = (text) => {
-    const idx = String(text).indexOf(ITEM_DESC_SEP);
-    return idx >= 0 ? String(text).slice(0, idx) : String(text);
-  };
-  const entryDesc = (text) => {
-    const idx = String(text).indexOf(ITEM_DESC_SEP);
-    return idx >= 0 ? String(text).slice(idx + ITEM_DESC_SEP.length) : "";
-  };
-  const entryJoin = (name, desc) => (desc ? `${name}${ITEM_DESC_SEP}${desc}` : name);
-  const renderNamedListEditor = (label, rows, ops, namePh, descPh) => (
-    <div className="world-bible">
-      <div className="world-bible-fields">
-        <p className="world-bible-hint">{label}</p>
-        <div className="sheet-rows">
-          {rows.map((r, i) => (
-            <div className="sheet-named-row" key={i}>
-              <input
-                className="sheet-list-input sheet-named-name"
-                value={entryName(r.text)}
-                onChange={(e) => ops.edit(i, entryJoin(e.target.value, entryDesc(r.text)))}
-                placeholder={namePh}
-                disabled={editDisabled}
-              />
-              <textarea
-                className="sheet-list-input sheet-named-desc"
-                value={entryDesc(r.text)}
-                onChange={(e) => ops.edit(i, entryJoin(entryName(r.text), e.target.value))}
-                placeholder={descPh}
-                disabled={editDisabled}
-                rows={1}
-              />
-              <button
-                type="button"
-                className="sheet-row-del"
-                onClick={() => ops.remove(i)}
-                disabled={editDisabled}
-                aria-label="Удалить строку"
-              >
-                <Icon name="x" size={12} />
-              </button>
-            </div>
-          ))}
-          <button
-            type="button"
-            className="sheet-add-btn"
-            onClick={ops.add}
-            disabled={editDisabled}
-          >
-            + добавить
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 
   return (
     <div className={`world-studio character-studio${className ? ` ${className}` : ""}`}>
@@ -986,6 +722,21 @@ export default function CharacterArchitectPanel({
           onSend={sendArchitectMessage}
           onRetry={retryText ? retryArchitectTurn : undefined}
           locked={architectLocked}
+          connectors={connectors}
+          models={models}
+          connectorModelsLoadingIds={connectorModelsLoadingIds}
+          onEnsureConnectorModels={onEnsureConnectorModels}
+          modelBinding={modelBinding}
+          onModelBindingChange={setModelBinding}
+          connectorLocked={connectorLocked}
+          modelPickerDisabled={
+            locked || architectBusy || bindingContextPending || bindingLoading || bindingLoadFailed
+          }
+          connectorAuthBusyIds={connectorAuthBusyIds}
+          connectorAuthCancellingIds={connectorAuthCancellingIds}
+          connectorAuthPrompts={connectorAuthPrompts}
+          onConnectorAuthStart={onConnectorAuthStart}
+          onConnectorAuthCancel={onConnectorAuthCancel}
         />
 
         <section
@@ -1102,33 +853,11 @@ export default function CharacterArchitectPanel({
             </label>
 
             {/* Характеристики — the six core abilities as number inputs. */}
-            <div className="world-bible">
-              <div className="world-bible-fields">
-                <p className="world-bible-hint">Характеристики</p>
-                <div className="character-abilities">
-                  {ABILITY_ORDER.map((key) => {
-                    const raw = abilitiesObj[key];
-                    const mod = abilityMod(raw);
-                    return (
-                      <label className="character-ability character-ability-edit" key={key}>
-                        <span className="character-ability-k">{ABILITY_SHORT[key]}</span>
-                        <input
-                          type="number"
-                          className="character-ability-input"
-                          value={numText(raw)}
-                          onChange={(e) => updateAbility(key, e.target.value)}
-                          placeholder="—"
-                          disabled={editDisabled}
-                        />
-                        <span className="character-ability-mod">
-                          {mod != null ? fmtMod(mod) : "—"}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
+            <AbilitiesEditor
+              abilities={sheet.abilities}
+              onChange={updateAbility}
+              disabled={editDisabled}
+            />
 
             {/* Боевые параметры — КД, ХП, пассивное восприятие, скорость, чувства, языки. */}
             <div className="world-bible">
@@ -1210,171 +939,70 @@ export default function CharacterArchitectPanel({
               </div>
             </div>
 
-            {renderMapEditor("Навыки", skillRows, skillOps, "Навык")}
-            {renderMapEditor("Спасброски", saveRows, saveOps, "Спасбросок")}
-            {renderNamedListEditor("Инвентарь", invRows, invOps, "Название", "Описание (необязательно)")}
-            {renderNamedListEditor("Снаряжение", equipRows, equipOps, "Название", "Описание (необязательно)")}
-            {renderNamedListEditor("Особенности", featRows, featOps, "Название", "Что даёт (необязательно)")}
+            <MapRowsEditor
+              label="Навыки"
+              rows={skillRows.rows}
+              onEdit={skillRows.edit}
+              onAdd={skillRows.add}
+              onRemove={skillRows.remove}
+              keyPlaceholder="Навык"
+              disabled={editDisabled}
+            />
+            <MapRowsEditor
+              label="Спасброски"
+              rows={saveRows.rows}
+              onEdit={saveRows.edit}
+              onAdd={saveRows.add}
+              onRemove={saveRows.remove}
+              keyPlaceholder="Спасбросок"
+              disabled={editDisabled}
+            />
+            <NamedListEditor
+              label="Инвентарь"
+              rows={invRows.rows}
+              onEdit={invRows.edit}
+              onAdd={invRows.add}
+              onRemove={invRows.remove}
+              disabled={editDisabled}
+            />
+            <NamedListEditor
+              label="Снаряжение"
+              rows={equipRows.rows}
+              onEdit={equipRows.edit}
+              onAdd={equipRows.add}
+              onRemove={equipRows.remove}
+              disabled={editDisabled}
+            />
+            <NamedListEditor
+              label="Особенности"
+              rows={featRows.rows}
+              onEdit={featRows.edit}
+              onAdd={featRows.add}
+              onRemove={featRows.remove}
+              descPlaceholder="Что даёт (необязательно)"
+              disabled={editDisabled}
+            />
 
             {/* Заклинания — 5-field cards, collapsed to «{name} · {level} круг». */}
-            <div className="world-bible">
-              <div className="world-bible-fields">
-                <p className="world-bible-hint">Заклинания</p>
-                <div className="sheet-rows">
-                  {spellRows.map((r, i) => {
-                    const open = openSpells.has(i);
-                    const lvlN = parseInt(r.level, 10);
-                    const lvl = Number.isFinite(lvlN) ? Math.max(0, Math.min(9, lvlN)) : 0;
-                    return (
-                      <div className={`spell-edit${open ? " open" : ""}`} key={i}>
-                        <div className="spell-edit-head">
-                          <button
-                            type="button"
-                            className="spell-edit-toggle"
-                            onClick={() => toggleSpell(i)}
-                          >
-                            <span className="mark"><Icon name={open ? "chevron-down" : "chevron-right"} size={11} /></span>
-                            <span className="spell-edit-label">
-                              {(r.name || "").trim() || "Без названия"} · {lvl} круг
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="sheet-row-del"
-                            onClick={() => removeSpell(i)}
-                            disabled={editDisabled}
-                            aria-label="Удалить заклинание"
-                          >
-                            <Icon name="x" size={12} />
-                          </button>
-                        </div>
-                        {open && (
-                          <div className="spell-edit-body">
-                            <div className="world-field-grid spell-name-grid">
-                              <label className="world-field">
-                                <span>Название</span>
-                                <input
-                                  value={r.name}
-                                  onChange={(e) => editSpell(i, { name: e.target.value })}
-                                  placeholder="Огненный снаряд"
-                                  disabled={editDisabled}
-                                />
-                              </label>
-                              <label className="world-field">
-                                <span>Круг (0–9)</span>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="9"
-                                  value={r.level}
-                                  onChange={(e) => editSpell(i, { level: e.target.value })}
-                                  placeholder="0"
-                                  disabled={editDisabled}
-                                />
-                              </label>
-                            </div>
-                            <label className="world-field">
-                              <span>Эффект</span>
-                              <AutoTextarea
-                                value={r.effect}
-                                onChange={(e) => editSpell(i, { effect: e.target.value })}
-                                placeholder="Что делает заклинание — коротко."
-                                disabled={editDisabled}
-                              />
-                            </label>
-                            <div className="spell-edit-flags">
-                              <label className="sheet-check">
-                                <input
-                                  type="checkbox"
-                                  checked={r.concentration}
-                                  onChange={(e) =>
-                                    editSpell(i, { concentration: e.target.checked })
-                                  }
-                                  disabled={editDisabled}
-                                />
-                                <span>Концентрация</span>
-                              </label>
-                              <label className="sheet-check">
-                                <input
-                                  type="checkbox"
-                                  checked={r.ritual}
-                                  onChange={(e) => editSpell(i, { ritual: e.target.checked })}
-                                  disabled={editDisabled}
-                                />
-                                <span>Ритуал</span>
-                              </label>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    className="sheet-add-btn"
-                    onClick={addSpell}
-                    disabled={editDisabled}
-                  >
-                    + добавить заклинание
-                  </button>
-                </div>
-              </div>
-            </div>
+            <SpellsEditor
+              rows={spellRows.rows}
+              openSet={spellRows.open}
+              onToggle={spellRows.toggle}
+              onEdit={spellRows.edit}
+              onAdd={spellRows.add}
+              onRemove={spellRows.remove}
+              disabled={editDisabled}
+            />
 
             {/* Слоты заклинаний — flat level→текущие/макс maps. */}
-            <div className="world-bible">
-              <div className="world-bible-fields">
-                <p className="world-bible-hint">Слоты заклинаний</p>
-                <div className="sheet-rows">
-                  {slotRows.map((r, i) => (
-                    <div className="slot-row" key={r.level}>
-                      <span className="slot-level">{r.level} круг</span>
-                      <input
-                        type="number"
-                        className="slot-num"
-                        value={r.cur}
-                        onChange={(e) => editSlot(i, { cur: e.target.value })}
-                        placeholder="тек."
-                        disabled={editDisabled}
-                      />
-                      <span className="slot-sep">/</span>
-                      <input
-                        type="number"
-                        className="slot-num"
-                        value={r.max}
-                        onChange={(e) => editSlot(i, { max: e.target.value })}
-                        placeholder="макс"
-                        disabled={editDisabled}
-                      />
-                      <button
-                        type="button"
-                        className="sheet-row-del"
-                        onClick={() => removeSlot(i)}
-                        disabled={editDisabled}
-                        aria-label="Удалить круг"
-                      >
-                        <Icon name="x" size={12} />
-                      </button>
-                    </div>
-                  ))}
-                  {missingSlotLevels.length > 0 && (
-                    <div className="slot-add">
-                      {missingSlotLevels.map((lvl) => (
-                        <button
-                          key={lvl}
-                          type="button"
-                          className="sheet-add-btn"
-                          onClick={() => addSlot(lvl)}
-                          disabled={editDisabled}
-                        >
-                          + круг {lvl}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+            <SlotsEditor
+              rows={slotRows.rows}
+              missing={slotRows.missing}
+              onEdit={slotRows.edit}
+              onAddLevel={slotRows.addLevel}
+              onRemove={slotRows.remove}
+              disabled={editDisabled}
+            />
 
             {/* gm_notes — GM-only scratch, not shown to the player in combat. */}
             <div className="world-bible">

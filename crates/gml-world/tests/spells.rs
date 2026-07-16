@@ -129,9 +129,15 @@ fn cast_cantrip_spends_no_slot() {
     let mut w = seeded_world();
     let slots_before = w.player_character.spell_slots.clone();
     let before_rev = w.player_character.card_revision;
-    let out = w.cast_spell("луч холода", None, "стреляю холодом").expect("cast ok");
+    let out = w
+        .cast_spell("луч холода", None, "стреляю холодом")
+        .expect("cast ok");
     assert_eq!(out["level"], json!(0));
-    assert_eq!(out["slot_spent_level"], Value::Null, "cantrip spends no slot");
+    assert_eq!(
+        out["slot_spent_level"],
+        Value::Null,
+        "cantrip spends no slot"
+    );
     assert_eq!(
         w.player_character.spell_slots, slots_before,
         "cantrip must not touch slots"
@@ -208,9 +214,7 @@ fn cast_missing_level_reads_as_zero_slots_and_rejects() {
 #[test]
 fn cast_concentration_sets_field_and_reports_started() {
     let mut w = seeded_world();
-    let out = w
-        .cast_spell("огненная хватка", None, "")
-        .expect("cast ok");
+    let out = w.cast_spell("огненная хватка", None, "").expect("cast ok");
     assert_eq!(out["concentration_started"], json!("Огненная хватка"));
     assert_eq!(out["concentration_ended"], Value::Null);
     assert_eq!(w.player_character.concentration, "Огненная хватка");
@@ -232,7 +236,8 @@ fn cast_concentration_swap_ends_previous() {
 #[test]
 fn cast_cantrip_leaves_concentration_untouched() {
     let mut w = seeded_world();
-    w.cast_spell("огненная хватка", None, "").expect("cast conc");
+    w.cast_spell("огненная хватка", None, "")
+        .expect("cast conc");
     // A cantrip (non-concentration) must NOT clear the held concentration.
     let out = w.cast_spell("луч холода", None, "").expect("cast cantrip");
     assert_eq!(out["concentration_started"], Value::Null);
@@ -269,9 +274,15 @@ fn context_renders_spells_slots_and_concentration() {
         "concentration mark: {ctx}"
     );
     // Slots line reflects the post-cast remaining/max: level 1 is now 2/4.
-    assert!(ctx.contains("Slots: 1-й: 2/4, 2-й: 1/2"), "slots line: {ctx}");
+    assert!(
+        ctx.contains("Slots: 1-й: 2/4, 2-й: 1/2"),
+        "slots line: {ctx}"
+    );
     // Active concentration line.
-    assert!(ctx.contains("Concentration: Огненная хватка"), "conc line: {ctx}");
+    assert!(
+        ctx.contains("Concentration: Огненная хватка"),
+        "conc line: {ctx}"
+    );
 }
 
 #[test]
@@ -284,7 +295,10 @@ fn context_omits_spell_lines_when_empty() {
     let ctx = w.player_character_context();
     assert!(!ctx.contains("Spells:"), "no spells line when empty");
     assert!(!ctx.contains("Slots:"), "no slots line when empty");
-    assert!(!ctx.contains("Concentration:"), "no concentration line when empty");
+    assert!(
+        !ctx.contains("Concentration:"),
+        "no concentration line when empty"
+    );
 }
 
 // --- back-compat: absent keys default cleanly ------------------------------

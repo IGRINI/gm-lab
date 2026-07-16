@@ -19,7 +19,10 @@ gml-world = { path = "crates/gml-world" }
 gml-stories = { path = "crates/gml-stories" }
 gml-rag = { path = "crates/gml-rag" }
 gml-llm = { path = "crates/gml-llm" }
+gml-openai-compatible = { path = "crates/gml-openai-compatible" }
+gml-mock = { path = "crates/gml-mock" }
 gml-codex = { path = "crates/gml-codex" }
+gml-supergrok = { path = "crates/gml-supergrok" }
 gml-agents = { path = "crates/gml-agents" }
 gml-orchestrator = { path = "crates/gml-orchestrator" }
 gml-persistence = { path = "crates/gml-persistence" }

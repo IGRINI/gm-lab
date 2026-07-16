@@ -141,25 +141,6 @@ pub fn stats(usage: Option<&Value>, timings: Option<&Value>) -> Map<String, Valu
     s
 }
 
-/// `_mock_stats()` — canned stats for the mock backend.
-///
-/// Python:
-/// ```python
-/// def _mock_stats():
-///     return {"prompt_eval_count": 760, "eval_count": 120, "prompt_eval_duration": 80_000_000,
-///             "eval_duration": 640_000_000, "total_duration": 730_000_000, "load_duration": 0}
-/// ```
-pub fn mock_stats() -> Map<String, Value> {
-    let mut s = Map::new();
-    s.insert("prompt_eval_count".to_string(), Value::from(760));
-    s.insert("eval_count".to_string(), Value::from(120));
-    s.insert("prompt_eval_duration".to_string(), Value::from(80_000_000));
-    s.insert("eval_duration".to_string(), Value::from(640_000_000));
-    s.insert("total_duration".to_string(), Value::from(730_000_000));
-    s.insert("load_duration".to_string(), Value::from(0));
-    s
-}
-
 /// `_proper_nouns_line(proper_nouns=None)` — build the proper-nouns guidance
 /// line for `summarize`. (Identical logic to `gml_prompts::gm_compact_proper_nouns_line`,
 /// re-implemented here to keep `llm_client.summarize` self-contained and exact.)
@@ -330,16 +311,6 @@ mod tests {
         });
         let s = stats(Some(&usage), None);
         assert_eq!(s.get("cached_tokens"), Some(&json!(3)));
-    }
-
-    #[test]
-    fn mock_stats_exact() {
-        let s = mock_stats();
-        let out = serde_json::to_string(&Value::Object(s)).unwrap();
-        assert_eq!(
-            out,
-            r#"{"prompt_eval_count":760,"eval_count":120,"prompt_eval_duration":80000000,"eval_duration":640000000,"total_duration":730000000,"load_duration":0}"#
-        );
     }
 
     #[test]

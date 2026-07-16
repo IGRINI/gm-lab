@@ -12,17 +12,15 @@
 //!     if (thread_id or "").strip():
 //!         self._thread_id = thread_id.strip()
 //! ```
-//! and the prompt-cache-key rule:
-//! ```python
-//! payload["prompt_cache_key"] = config.CODEX_PROMPT_CACHE_KEY or self._thread_id
-//! ```
+//! A configured prompt-cache key is treated as a stable namespace, while the
+//! restorable thread id remains the cache scope. This guarantees that model
+//! changes and history resets can rotate the effective provider cache key.
 //!
-//! The Codex backend lives in `gml-codex`, but the identity machinery is generic
-//! and is exposed here so that crate can reuse the exact, restorable behaviour
+//! Provider backends live in connector crates, while the identity machinery is
+//! generic so cache-aware connectors can share the same restorable behaviour
 //! (PORT_PLAN §4.5: "uuid4 per client, persisted and restored via
-//! `set_session_identity`"). The plain OpenAI-compatible / mock backends do not
-//! key the cache on a thread id, so they leave [`Backend::set_session_identity`]
-//! as the default no-op.
+//! `set_session_identity`"). Backends without provider cache identity keep the
+//! default no-op.
 
 use std::sync::Mutex;
 
@@ -90,13 +88,24 @@ impl SessionIdentity {
         }
     }
 
-    /// `prompt_cache_key`: `codex_prompt_cache_key or thread_id`. The configured
-    /// key wins when non-empty; otherwise the per-client `thread_id` is used.
+    /// Start a fresh provider cache scope while keeping the installation id.
+    /// Connectors call this when a model change invalidates model-specific
+    /// conversation or prompt-cache state.
+    pub fn reset_cache_scope(&self) {
+        *self.session_id.lock().expect("session_id lock") = new_uuid4();
+        *self.thread_id.lock().expect("thread_id lock") = new_uuid4();
+    }
+
+    /// Build the effective provider prompt-cache key. A configured value is a
+    /// namespace, not a global fixed cache id: the rotating thread scope is
+    /// always included so separate histories and models cannot share state.
     pub fn prompt_cache_key(&self, configured: &str) -> String {
+        let configured = configured.trim();
+        let thread_id = self.thread_id();
         if !configured.is_empty() {
-            configured.to_string()
+            format!("{configured}:{thread_id}")
         } else {
-            self.thread_id()
+            thread_id
         }
     }
 }
@@ -157,9 +166,36 @@ mod tests {
     #[test]
     fn prompt_cache_key_rule() {
         let id = SessionIdentity::new();
-        // configured non-empty wins
-        assert_eq!(id.prompt_cache_key("fixed-key"), "fixed-key");
+        let thread_id = id.thread_id();
+        assert_eq!(
+            id.prompt_cache_key(" fixed-key "),
+            format!("fixed-key:{thread_id}")
+        );
         // empty configured -> thread_id
-        assert_eq!(id.prompt_cache_key(""), id.thread_id());
+        assert_eq!(id.prompt_cache_key(""), thread_id);
+    }
+
+    #[test]
+    fn configured_cache_namespace_still_rotates_with_scope() {
+        let id = SessionIdentity::new();
+        let before = id.prompt_cache_key("fixed-key");
+
+        id.reset_cache_scope();
+
+        assert_ne!(id.prompt_cache_key("fixed-key"), before);
+    }
+
+    #[test]
+    fn reset_cache_scope_rotates_session_and_thread_only() {
+        let id = SessionIdentity::new();
+        let session = id.session_id();
+        let thread = id.thread_id();
+        let installation = id.installation_id();
+
+        id.reset_cache_scope();
+
+        assert_ne!(id.session_id(), session);
+        assert_ne!(id.thread_id(), thread);
+        assert_eq!(id.installation_id(), installation);
     }
 }

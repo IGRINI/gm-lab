@@ -664,7 +664,10 @@ fn story_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
         if !set.is_empty() {
             lines.push(format!(
                 "Поля обновлены: {}.",
-                set.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+                set.keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -677,9 +680,13 @@ fn story_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
     }
     if let Some(Value::Object(add)) = args.get("add") {
         for (key, value) in add {
-            let Some(items) = value.as_array() else { continue };
+            let Some(items) = value.as_array() else {
+                continue;
+            };
             let mut current = staged(&mut stage, key);
-            let Some(existing) = current.as_array_mut() else { continue };
+            let Some(existing) = current.as_array_mut() else {
+                continue;
+            };
             let mut added = 0usize;
             for item in items {
                 if !is_dup(existing, item) {
@@ -702,7 +709,9 @@ fn story_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
         for (key, value) in remove {
             let targets: Vec<Value> = value.as_array().cloned().unwrap_or_default();
             let mut current = staged(&mut stage, key);
-            let Some(existing) = current.as_array_mut() else { continue };
+            let Some(existing) = current.as_array_mut() else {
+                continue;
+            };
             let mut removed = 0usize;
             let mut misses: Vec<String> = Vec::new();
             for target in &targets {
@@ -834,7 +843,10 @@ fn plot_section_block(name: &str, value: &Value) -> Option<String> {
             if items.is_empty() {
                 return None;
             }
-            let bullets: Vec<String> = items.iter().map(|v| format!("- {}", plot_entry_text(v))).collect();
+            let bullets: Vec<String> = items
+                .iter()
+                .map(|v| format!("- {}", plot_entry_text(v)))
+                .collect();
             Some(format!(
                 "## {name} ({} записей)\n{}",
                 bullets.len(),
@@ -854,8 +866,7 @@ fn plot_section_block(name: &str, value: &Value) -> Option<String> {
                     Value::Number(n) => lines.push(format!("{key}: {n}")),
                     Value::Bool(b) => lines.push(format!("{key}: {b}")),
                     Value::Array(items) if !items.is_empty() => {
-                        let entries: Vec<String> =
-                            items.iter().map(plot_entry_text).collect();
+                        let entries: Vec<String> = items.iter().map(plot_entry_text).collect();
                         lines.push(format!("{key} ({}):", entries.len()));
                         for entry in entries {
                             lines.push(format!("  - {entry}"));
@@ -1116,14 +1127,19 @@ mod tests {
             "add": {"scene.items": [{"name": "записка", "portable": true}, {"name": "нож", "portable": true}]},
             "remove": {"npcs": ["marya", "нет_такого"]}
         });
-        let applied =
-            config.apply_tool("edit_story_plot", args.as_object().unwrap(), &mut working);
+        let applied = config.apply_tool("edit_story_plot", args.as_object().unwrap(), &mut working);
         assert!(applied.changed);
         assert!(applied.result.contains("Поля обновлены: hidden_truth."));
-        assert!(applied.result.contains("scene.items: добавлено 1"), "{}", applied.result);
+        assert!(
+            applied.result.contains("scene.items: добавлено 1"),
+            "{}",
+            applied.result
+        );
         assert!(applied.result.contains("пропущено как дубли"));
         assert!(applied.result.contains("npcs: удалено 1 (теперь 1)."));
-        assert!(applied.result.contains("НЕ найдено для удаления: «нет_такого»"));
+        assert!(applied
+            .result
+            .contains("НЕ найдено для удаления: «нет_такого»"));
         assert!(applied.result.contains("read_story_plot"));
     }
 

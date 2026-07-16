@@ -1,5 +1,5 @@
 import Icon from "./Icon.jsx";
-import { memo, useContext } from "react";
+import { memo, useCallback, useContext, useState } from "react";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
@@ -128,7 +128,129 @@ function NameTag({ name, roster }) {
   return <b style={{ color: nameColor(name, roster) }}>{name}</b>;
 }
 
-function Message({ m }) {
+function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
+  const [mode, setMode] = useState("");
+  const [draft, setDraft] = useState(m.text || "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const rewindable = m.rewindable === true && Number.isInteger(m.turn) && m.turn > 0;
+  const canEdit = rewindable && typeof onEditFrom === "function";
+  const canBranch = rewindable && typeof onBranchFrom === "function";
+
+  const begin = useCallback((nextMode) => {
+    setDraft(m.text || "");
+    setError("");
+    setMode(nextMode);
+  }, [m.text]);
+
+  const cancel = useCallback(() => {
+    if (submitting) return;
+    setMode("");
+    setError("");
+  }, [submitting]);
+
+  const submit = useCallback(async () => {
+    const text = String(draft || "").trim();
+    const action = mode === "edit" ? onEditFrom : onBranchFrom;
+    if (!text || typeof action !== "function" || submitting || historyBusy) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      await action(m.turn, text);
+      setMode("");
+    } catch (reason) {
+      setError(reason?.message || "Не удалось изменить историю");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [draft, historyBusy, m.turn, mode, onBranchFrom, onEditFrom, submitting]);
+
+  return (
+    <div className="player-message">
+      <div className="player">
+        <MarkdownText>{m.text}</MarkdownText>
+      </div>
+      {(canEdit || canBranch) && !mode ? (
+        <div className="player-message-actions" aria-label="Действия с сообщением">
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={() => begin("edit")}
+              disabled={historyBusy}
+              title="Изменить отсюда"
+              aria-label="Изменить сообщение и пересчитать хвост"
+            >
+              <Icon name="pen" size={13} />
+              <span>Изменить</span>
+            </button>
+          ) : null}
+          {canBranch ? (
+            <button
+              type="button"
+              onClick={() => begin("branch")}
+              disabled={historyBusy}
+              title="Ответвить в новый чат"
+              aria-label="Создать новую ветвь с этого сообщения"
+            >
+              <Icon name="branch" size={14} />
+              <span>Ответвить</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {mode ? (
+        <div className="player-message-editor">
+          <textarea
+            rows={3}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                void submit();
+              }
+            }}
+            disabled={submitting || historyBusy}
+            autoFocus
+            aria-label={mode === "edit" ? "Новый текст сообщения" : "Первое сообщение ветви"}
+          />
+          <div className="player-message-editor-note">
+            {mode === "edit"
+              ? "Текущий хвост будет удалён и построен заново."
+              : "Оригинальный чат сохранится, продолжение откроется в новой ветви."}
+          </div>
+          {error ? <div className="player-message-editor-error">{error}</div> : null}
+          <div className="player-message-editor-actions">
+            <button type="button" className="btn ghost" onClick={cancel} disabled={submitting}>
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void submit()}
+              disabled={!draft.trim() || submitting || historyBusy}
+            >
+              {submitting
+                ? "Подготавливаю…"
+                : mode === "edit"
+                ? "Изменить и продолжить"
+                : "Создать ветвь"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Message({
+  m,
+  onRetry,
+  retryBusy = false,
+  onEditFrom,
+  onBranchFrom,
+  historyBusy = false,
+}) {
   const roster = useContext(NpcRosterContext);
   const statusLabels = useContext(StatusLabelsContext);
   const vis = useContext(VisibilityContext);
@@ -136,9 +258,12 @@ function Message({ m }) {
   switch (m.type) {
     case "player":
       return (
-        <div className="player">
-          <MarkdownText>{m.text}</MarkdownText>
-        </div>
+        <PlayerMessage
+          m={m}
+          onEditFrom={onEditFrom}
+          onBranchFrom={onBranchFrom}
+          historyBusy={historyBusy}
+        />
       );
 
     case "narration":
@@ -292,7 +417,24 @@ function Message({ m }) {
       );
 
     case "error":
-      return <div className="err">⚠ {m.agent}: <MarkdownInline>{m.text}</MarkdownInline></div>;
+      return (
+        <div className={"err" + (onRetry ? " has-retry" : "")}>
+          <div className="turn-error-text">
+            ⚠ {m.agent}: <MarkdownInline>{m.text}</MarkdownInline>
+          </div>
+          {onRetry && (
+            <button
+              type="button"
+              className="turn-retry"
+              onClick={onRetry}
+              disabled={retryBusy}
+            >
+              <Icon name="refresh" size={14} />
+              {retryBusy ? "Повторяю…" : "Повторить"}
+            </button>
+          )}
+        </div>
+      );
 
     case "meta":
       if (!vis.messageTokens) return null;

@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect, createElement } from "react";
+import { useState, useRef, useLayoutEffect, useEffect, useId, createElement } from "react";
 import { createPortal } from "react-dom";
 import {
   computePosition,
@@ -49,6 +49,21 @@ export default function Tooltip({
   const refEl = useRef(null);
   const floatEl = useRef(null);
   const arrowEl = useRef(null);
+  const tipId = useId();
+
+  // WCAG 1.4.13 (dismissible): while a tip is open, Escape closes IT — captured
+  // on document ahead of the modals' bubble-phase listeners, so Esc does not
+  // also discard the whole wizard/panel underneath.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [open]);
 
   useLayoutEffect(() => {
     if (!open || !refEl.current || !floatEl.current) return;
@@ -95,6 +110,8 @@ export default function Tooltip({
     onMouseLeave: hide,
     onFocus: show,
     onBlur: hide,
+    // Screen readers only announce the tip when it is programmatically linked.
+    "aria-describedby": open ? tipId : undefined,
   };
   if (focusable) triggerProps.tabIndex = 0;
 
@@ -107,6 +124,7 @@ export default function Tooltip({
         createPortal(
           <div
             ref={floatEl}
+            id={tipId}
             className={["tip", "show", tipClassName].filter(Boolean).join(" ")}
             role="tooltip"
             style={{ visibility: "hidden" }}

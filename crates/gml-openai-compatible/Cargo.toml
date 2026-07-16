@@ -1,0 +1,18 @@
+[package]
+name = "gml-openai-compatible"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gml-config = { workspace = true }
+gml-prompts = { workspace = true }
+gml-llm = { workspace = true }
+
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

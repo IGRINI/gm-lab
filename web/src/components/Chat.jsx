@@ -23,7 +23,20 @@ const Footer = () => <div className="list-pad-bottom" />;
 
 const VComponents = { List, Header, Footer };
 
-export default function Chat({ messages, storyBrief, scene, npcs, entities, statusLabels }) {
+export default function Chat({
+  messages,
+  storyBrief,
+  scene,
+  npcs,
+  entities,
+  statusLabels,
+  onRetry,
+  retryErrorId = null,
+  retryBusy = false,
+  onEditFrom,
+  onBranchFrom,
+  historyBusy = false,
+}) {
   const virtuoso = useRef(null);
   const scrollerRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -106,7 +119,6 @@ export default function Chat({ messages, storyBrief, scene, npcs, entities, stat
   }, []);
 
   const context = useMemo(() => ({ storyBrief, scene, npcs }), [storyBrief, scene, npcs]);
-
   return (
     <ChatScrollContext.Provider value={scrollCtx}>
       <EntityRegistryContext.Provider value={entities}>
@@ -123,7 +135,18 @@ export default function Chat({ messages, storyBrief, scene, npcs, entities, stat
           computeItemKey={(_i, item) => item.id}
           itemContent={(_i, item) => (
             <div className="row">
-              <Message m={item} />
+              <Message
+                m={item}
+                onRetry={
+                  typeof onRetry === "function" && item.id === retryErrorId
+                    ? onRetry
+                    : undefined
+                }
+                retryBusy={item.id === retryErrorId && retryBusy}
+                onEditFrom={onEditFrom}
+                onBranchFrom={onBranchFrom}
+                historyBusy={historyBusy}
+              />
             </div>
           )}
           alignToBottom

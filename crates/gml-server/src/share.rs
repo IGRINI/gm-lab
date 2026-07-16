@@ -99,8 +99,7 @@ impl Archive {
     /// cap breach is a hard error and nothing is retained.
     pub fn from_zip_bytes(bytes: &[u8]) -> Result<Self, ShareError> {
         let reader = Cursor::new(bytes);
-        let mut zip =
-            ZipArchive::new(reader).map_err(|e| ShareError::Zip(e.to_string()))?;
+        let mut zip = ZipArchive::new(reader).map_err(|e| ShareError::Zip(e.to_string()))?;
         if zip.len() > MAX_ENTRY_COUNT {
             return Err(ShareError::Zip(format!(
                 "archive has too many entries ({} > {MAX_ENTRY_COUNT})",
@@ -210,9 +209,9 @@ impl Archive {
     /// All top-level entries (no `/` after the first segment is irrelevant — this
     /// returns the *first* path segment set). Used to detect a baked `world/`.
     pub fn has_baked_world(&self) -> bool {
-        self.entries
-            .keys()
-            .any(|k| k.starts_with("world/") && k.ends_with("world.json") && k == "world/world.json")
+        self.entries.keys().any(|k| {
+            k.starts_with("world/") && k.ends_with("world.json") && k == "world/world.json"
+        })
     }
 
     /// Extract the subset of entries whose path begins with `prefix` (a directory
@@ -234,7 +233,11 @@ impl Archive {
     /// dest-relative top of the package) into `dest_dir`. Used to materialize the
     /// package itself; the baked `world/` subtree is imported separately via
     /// [`Self::subtree`]. Creates parent directories as needed.
-    pub fn extract_excluding(&self, dest_dir: &Path, exclude_prefix: &str) -> Result<(), ShareError> {
+    pub fn extract_excluding(
+        &self,
+        dest_dir: &Path,
+        exclude_prefix: &str,
+    ) -> Result<(), ShareError> {
         for (rel, bytes) in &self.entries {
             if rel.starts_with(exclude_prefix) {
                 continue;
@@ -271,7 +274,8 @@ fn write_entry(dest_dir: &Path, rel: &str, bytes: &[u8]) -> Result<(), ShareErro
         std::fs::create_dir_all(parent).map_err(|e| ShareError::Io(e.to_string()))?;
     }
     let mut f = std::fs::File::create(&target).map_err(|e| ShareError::Io(e.to_string()))?;
-    f.write_all(bytes).map_err(|e| ShareError::Io(e.to_string()))?;
+    f.write_all(bytes)
+        .map_err(|e| ShareError::Io(e.to_string()))?;
     Ok(())
 }
 
@@ -317,7 +321,9 @@ fn safe_rel_path(name: &str) -> Result<String, ShareError> {
     }
     let cleaned = out.to_string_lossy().replace('\\', "/");
     if cleaned.is_empty() {
-        return Err(ShareError::Traversal(format!("path normalizes to empty: {name}")));
+        return Err(ShareError::Traversal(format!(
+            "path normalizes to empty: {name}"
+        )));
     }
     Ok(cleaned)
 }
@@ -332,8 +338,8 @@ pub fn zip_dir(dir: &Path, prefix: &str) -> Result<Vec<u8>, ShareError> {
     {
         let cursor = Cursor::new(&mut buf);
         let mut zip = ZipWriter::new(cursor);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         add_dir_recursive(&mut zip, dir, dir, prefix, &options)?;
         zip.finish().map_err(|e| ShareError::Zip(e.to_string()))?;
     }
@@ -352,8 +358,8 @@ pub fn zip_story_with_world(
     {
         let cursor = Cursor::new(&mut buf);
         let mut zip = ZipWriter::new(cursor);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         // Story package: everything except story.json verbatim, then our mutated
         // story.json copy.
         add_dir_recursive_filtered(
@@ -448,7 +454,8 @@ fn add_dir_recursive_filtered<W: Write + std::io::Seek>(
             zip.start_file(name, *options)
                 .map_err(|e| ShareError::Zip(e.to_string()))?;
             let bytes = std::fs::read(&path).map_err(|e| ShareError::Io(e.to_string()))?;
-            zip.write_all(&bytes).map_err(|e| ShareError::Io(e.to_string()))?;
+            zip.write_all(&bytes)
+                .map_err(|e| ShareError::Io(e.to_string()))?;
         }
     }
     Ok(())
@@ -492,7 +499,10 @@ mod tests {
         let names: Vec<&str> = arch.entries.keys().map(|s| s.as_str()).collect();
 
         assert!(names.contains(&"world.json"), "{names:?}");
-        assert!(names.contains(&"rag.sqlite3"), "rag.sqlite3 must ship: {names:?}");
+        assert!(
+            names.contains(&"rag.sqlite3"),
+            "rag.sqlite3 must ship: {names:?}"
+        );
         assert!(names.contains(&"nested/keep.json"), "{names:?}");
         for excluded in [
             "rag.sqlite3-wal",
@@ -521,8 +531,11 @@ mod tests {
     #[test]
     fn detect_kind_requires_known_format() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("world.json"), br#"{"format":"gmlab.world/1","id":"w"}"#)
-            .unwrap();
+        std::fs::write(
+            dir.path().join("world.json"),
+            br#"{"format":"gmlab.world/1","id":"w"}"#,
+        )
+        .unwrap();
         let bytes = zip_dir(dir.path(), "").unwrap();
         let arch = Archive::from_zip_bytes(&bytes).unwrap();
         assert_eq!(arch.detect_kind().unwrap(), PackageKind::World);
@@ -545,11 +558,18 @@ mod tests {
         let bytes = zip_dir(dir.path(), "").unwrap();
         let arch = Archive::from_zip_bytes(&bytes).unwrap();
         assert_eq!(arch.detect_kind().unwrap(), PackageKind::Character);
-        assert_eq!(arch.manifest_id(PackageKind::Character).as_deref(), Some("c"));
+        assert_eq!(
+            arch.manifest_id(PackageKind::Character).as_deref(),
+            Some("c")
+        );
 
         // Wrong format tag is rejected.
         let dir2 = tempfile::tempdir().unwrap();
-        std::fs::write(dir2.path().join("character.json"), br#"{"format":"bogus/9"}"#).unwrap();
+        std::fs::write(
+            dir2.path().join("character.json"),
+            br#"{"format":"bogus/9"}"#,
+        )
+        .unwrap();
         let bytes2 = zip_dir(dir2.path(), "").unwrap();
         let arch2 = Archive::from_zip_bytes(&bytes2).unwrap();
         assert!(arch2.detect_kind().is_err());
@@ -572,8 +592,11 @@ mod tests {
     #[test]
     fn roundtrip_dir_zip_unzip() {
         let src = tempfile::tempdir().unwrap();
-        std::fs::write(src.path().join("world.json"), br#"{"format":"gmlab.world/1","id":"w"}"#)
-            .unwrap();
+        std::fs::write(
+            src.path().join("world.json"),
+            br#"{"format":"gmlab.world/1","id":"w"}"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(src.path().join("assets")).unwrap();
         std::fs::write(src.path().join("assets").join("cover.png"), b"PNGDATA").unwrap();
         let bytes = zip_dir(src.path(), "").unwrap();
@@ -593,8 +616,11 @@ mod tests {
         // A single entry whose UNCOMPRESSED size exceeds the per-entry cap is
         // rejected — even though zeros compress to almost nothing (a zip bomb).
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("world.json"), br#"{"format":"gmlab.world/1","id":"w"}"#)
-            .unwrap();
+        std::fs::write(
+            dir.path().join("world.json"),
+            br#"{"format":"gmlab.world/1","id":"w"}"#,
+        )
+        .unwrap();
         let big = vec![0u8; (MAX_ENTRY_UNCOMPRESSED_BYTES + 1) as usize];
         std::fs::write(dir.path().join("payload.bin"), &big).unwrap();
         let bytes = zip_dir(dir.path(), "").unwrap();
@@ -632,10 +658,11 @@ mod tests {
         {
             let cursor = Cursor::new(&mut buf);
             let mut zip = ZipWriter::new(cursor);
-            let options = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
             // `start_file` keeps the supplied name verbatim in the archive.
-            zip.start_file(entry_name, options).expect("start malicious file");
+            zip.start_file(entry_name, options)
+                .expect("start malicious file");
             zip.write_all(bytes).expect("write malicious bytes");
             zip.finish().expect("finish malicious zip");
         }

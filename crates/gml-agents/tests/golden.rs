@@ -268,8 +268,14 @@ fn gm_world_snapshot_has_roster_and_facts_but_no_checklist_or_action() {
     // ACTION block (that is the bare per-turn user message).
     assert!(snapshot.contains("DYNAMIC NPC ROSTER"));
     assert!(snapshot.contains("CURRENT PUBLIC FACTS"));
-    assert!(!snapshot.contains("<system-reminder>"), "checklist moved to GM_SYSTEM");
-    assert!(!snapshot.contains("PLAYER ACTION"), "action is a separate bare message");
+    assert!(
+        !snapshot.contains("<system-reminder>"),
+        "checklist moved to GM_SYSTEM"
+    );
+    assert!(
+        !snapshot.contains("PLAYER ACTION"),
+        "action is a separate bare message"
+    );
 
     // The bare per-turn user message is action-only: no roster, no checklist.
     let action = agents::gm_user_message(PLAYER_TEXT);
@@ -285,7 +291,8 @@ fn gm_world_snapshot_has_roster_and_facts_but_no_checklist_or_action() {
 // reference JSON fixtures are re-blessed to this shape by the fixtures stage
 // (currently RED here; they also fold in the GM_SYSTEM edits that stage makes).
 fn snapshot_then_action(w: &mut World, opts: bool) -> Vec<Value> {
-    let snapshot = agents::gm_snapshot_message(&agents::gm_world_snapshot(w, &BTreeSet::new(), opts));
+    let snapshot =
+        agents::gm_snapshot_message(&agents::gm_world_snapshot(w, &BTreeSet::new(), opts));
     vec![snapshot, agents::gm_user_message(PLAYER_TEXT)]
 }
 

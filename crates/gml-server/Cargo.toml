@@ -12,7 +12,6 @@ gml-world = { workspace = true }
 gml-stories = { workspace = true }
 gml-rag = { workspace = true }
 gml-llm = { workspace = true }
-gml-codex = { workspace = true }
 gml-agents = { workspace = true }
 gml-orchestrator = { workspace = true }
 gml-persistence = { workspace = true }
@@ -49,12 +48,14 @@ thiserror = { workspace = true }
 urlencoding = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 # Phase 5 share UX: open OS file manager, zip export/import of packages.
 open = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
+gml-mock = { workspace = true }
 async-trait = { workspace = true }
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

@@ -18,10 +18,21 @@ use serde_json::{Map, Value};
 
 use gml_types::ParsedCall;
 
-use crate::backend::{
+use gml_llm::{
     channel, Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput,
 };
-use crate::parsing::mock_stats;
+
+/// Deterministic telemetry returned by the mock connector.
+pub fn mock_stats() -> Map<String, Value> {
+    let mut stats = Map::new();
+    stats.insert("prompt_eval_count".to_string(), Value::from(760));
+    stats.insert("eval_count".to_string(), Value::from(120));
+    stats.insert("prompt_eval_duration".to_string(), Value::from(80_000_000));
+    stats.insert("eval_duration".to_string(), Value::from(640_000_000));
+    stats.insert("total_duration".to_string(), Value::from(730_000_000));
+    stats.insert("load_duration".to_string(), Value::from(0));
+    stats
+}
 
 /// In-process deterministic backend.
 pub struct MockClient {
@@ -431,10 +442,7 @@ fn story_architect_chat_output() -> ChatOutput {
     let calls = vec![ParsedCall::new(
         "draft_story_plot",
         obj([
-            (
-                "title",
-                Value::String("Деревня у живой дороги".to_string()),
-            ),
+            ("title", Value::String("Деревня у живой дороги".to_string())),
             (
                 "description",
                 Value::String("Короткий пролог у пробуждающейся дороги.".to_string()),
@@ -452,9 +460,7 @@ fn story_architect_chat_output() -> ChatOutput {
             ),
             (
                 "hidden_truth",
-                Value::String(
-                    "Староста скормил дороге собственного сына ради урожая.".to_string(),
-                ),
+                Value::String("Староста скормил дороге собственного сына ради урожая.".to_string()),
             ),
             (
                 "player_character",
@@ -476,7 +482,10 @@ fn story_architect_chat_output() -> ChatOutput {
                         Value::String("Покосившиеся ворота у кромки живой дороги.".to_string()),
                     ),
                     ("present_npcs", arr(&["starosta"])),
-                    ("tension", Value::String("Дорога вот-вот проснётся.".to_string())),
+                    (
+                        "tension",
+                        Value::String("Дорога вот-вот проснётся.".to_string()),
+                    ),
                 ])),
             ),
             (
@@ -586,7 +595,12 @@ fn character_architect_chat_output() -> ChatOutput {
             ("languages", Value::String("Общий, Лесной".to_string())),
             (
                 "inventory",
-                arr(&["короткий лук", "колчан стрел", "охотничий нож", "плащ следопыта"]),
+                arr(&[
+                    "короткий лук",
+                    "колчан стрел",
+                    "охотничий нож",
+                    "плащ следопыта",
+                ]),
             ),
             (
                 "spells",
@@ -601,10 +615,7 @@ fn character_architect_chat_output() -> ChatOutput {
                     ),
                 ]))]),
             ),
-            (
-                "spell_slots",
-                Value::Object(obj([("1", Value::from(2))])),
-            ),
+            ("spell_slots", Value::Object(obj([("1", Value::from(2))]))),
             (
                 "spell_slots_max",
                 Value::Object(obj([("1", Value::from(2))])),
@@ -768,6 +779,10 @@ fn world_seed_json() -> Map<String, Value> {
 
 #[async_trait]
 impl Backend for MockClient {
+    fn connector_id(&self) -> &str {
+        "mock"
+    }
+
     fn model(&self) -> String {
         self.model.lock().expect("model lock").clone()
     }
@@ -1294,5 +1309,14 @@ mod tests {
         // Commas/colons inside strings are NOT spaced.
         let compact = r#"{"a":"x,y:z","b":1}"#;
         assert_eq!(insert_default_spaces(compact), r#"{"a": "x,y:z", "b": 1}"#);
+    }
+
+    #[test]
+    fn mock_stats_are_stable() {
+        let output = serde_json::to_string(&Value::Object(mock_stats())).unwrap();
+        assert_eq!(
+            output,
+            r#"{"prompt_eval_count":760,"eval_count":120,"prompt_eval_duration":80000000,"eval_duration":640000000,"total_duration":730000000,"load_duration":0}"#
+        );
     }
 }

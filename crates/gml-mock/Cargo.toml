@@ -1,0 +1,15 @@
+[package]
+name = "gml-mock"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+gml-types = { workspace = true }
+gml-llm = { workspace = true }
+
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

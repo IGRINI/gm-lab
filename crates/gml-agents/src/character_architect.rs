@@ -362,9 +362,7 @@ fn read_player_character_schema() -> Value {
 /// `PlayerCharacter` runtime contract. `name` is required (the minimum a
 /// launchable hero needs); everything else is optional.
 fn draft_player_character_schema() -> Value {
-    let str_arr = |description: &str| {
-        json!({"type": "array", "items": {"type": "string"}, "description": description})
-    };
+    let str_arr = |description: &str| json!({"type": "array", "items": {"type": "string"}, "description": description});
     // A number map (ability scores / skill mods / slot counts). additionalProperties
     // is a number so arbitrary keys are allowed under the strict Responses
     // conversion path stays valid — draft is non-strict anyway (see below).
@@ -393,39 +391,99 @@ fn draft_player_character_schema() -> Value {
     properties.insert("name".into(), json!({"type": "string", "description": "Character name (a real name, not a placeholder; Russian)."}));
     properties.insert("pronouns".into(), json!({"type": "string", "description": "Pronouns / grammatical gender (e.g. М, Ж, OTHER)."}));
     properties.insert("class_role".into(), json!({"type": "string", "description": "Class/role/archetype (e.g. воин-наёмник, странствующий жрец)."}));
-    properties.insert("level".into(), json!({"type": "integer", "description": "Character level (1+)."}));
-    properties.insert("background".into(), json!({"type": "string", "description": "One-to-two-line background (Russian)."}));
-    properties.insert("age".into(), json!({"type": "string", "description": "Age description (Russian)."}));
-    properties.insert("physical_type".into(), json!({"type": "string", "description": "Build/appearance (Russian)."}));
-    properties.insert("distinctive_features".into(), json!({"type": "string", "description": "Memorable visual/behavioral markers (Russian)."}));
-    properties.insert("personality".into(), json!({"type": "string", "description": "Personality traits (Russian)."}));
-    properties.insert("values".into(), json!({"type": "string", "description": "What the hero values / their drives (Russian)."}));
-    properties.insert("gm_notes".into(), json!({"type": "string", "description": "GM-only notes about the hero (Russian)."}));
+    properties.insert(
+        "level".into(),
+        json!({"type": "integer", "description": "Character level (1+)."}),
+    );
+    properties.insert(
+        "background".into(),
+        json!({"type": "string", "description": "One-to-two-line background (Russian)."}),
+    );
+    properties.insert(
+        "age".into(),
+        json!({"type": "string", "description": "Age description (Russian)."}),
+    );
+    properties.insert(
+        "physical_type".into(),
+        json!({"type": "string", "description": "Build/appearance (Russian)."}),
+    );
+    properties.insert(
+        "distinctive_features".into(),
+        json!({"type": "string", "description": "Memorable visual/behavioral markers (Russian)."}),
+    );
+    properties.insert(
+        "personality".into(),
+        json!({"type": "string", "description": "Personality traits (Russian)."}),
+    );
+    properties.insert(
+        "values".into(),
+        json!({"type": "string", "description": "What the hero values / their drives (Russian)."}),
+    );
+    properties.insert(
+        "gm_notes".into(),
+        json!({"type": "string", "description": "GM-only notes about the hero (Russian)."}),
+    );
     properties.insert("abilities".into(), num_map("Ability scores as a map: STR, DEX, CON, INT, WIS, CHA → integer (typically 8–18 at level 1)."));
-    properties.insert("skills".into(), num_map("Trained skills as a map: skill name → modifier (integer)."));
-    properties.insert("saving_throws".into(), num_map("Saving-throw proficiencies as a map: ability → modifier (integer)."));
-    properties.insert("passive_perception".into(), json!({"type": "integer", "description": "Passive Perception score."}));
-    properties.insert("ac".into(), json!({"type": "integer", "description": "Armor class."}));
-    properties.insert("hp".into(), json!({
-        "type": "object",
-        "additionalProperties": {"type": "number"},
-        "description": "Hit points as {current, max} (integers).",
-        "properties": {
-            "current": {"type": "integer", "description": "Current HP."},
-            "max": {"type": "integer", "description": "Maximum HP."}
-        }
-    }));
-    properties.insert("speed".into(), json!({"type": "string", "description": "Movement speed (e.g. '30 ft')."}));
+    properties.insert(
+        "skills".into(),
+        num_map("Trained skills as a map: skill name → modifier (integer)."),
+    );
+    properties.insert(
+        "saving_throws".into(),
+        num_map("Saving-throw proficiencies as a map: ability → modifier (integer)."),
+    );
+    properties.insert(
+        "passive_perception".into(),
+        json!({"type": "integer", "description": "Passive Perception score."}),
+    );
+    properties.insert(
+        "ac".into(),
+        json!({"type": "integer", "description": "Armor class."}),
+    );
+    properties.insert(
+        "hp".into(),
+        json!({
+            "type": "object",
+            "additionalProperties": {"type": "number"},
+            "description": "Hit points as {current, max} (integers).",
+            "properties": {
+                "current": {"type": "integer", "description": "Current HP."},
+                "max": {"type": "integer", "description": "Maximum HP."}
+            }
+        }),
+    );
+    properties.insert(
+        "speed".into(),
+        json!({"type": "string", "description": "Movement speed (e.g. '30 ft')."}),
+    );
     properties.insert("senses".into(), json!({"type": "string", "description": "Special senses (Russian; e.g. 'тёмное зрение 18 м')."}));
-    properties.insert("languages".into(), json!({"type": "string", "description": "Known languages (Russian)."}));
-    properties.insert("inventory".into(), str_arr("Carried items (Russian strings)."));
-    properties.insert("equipment".into(), str_arr("Worn/wielded equipment (Russian strings)."));
-    properties.insert("features".into(), str_arr("Class/race features and traits (Russian strings)."));
+    properties.insert(
+        "languages".into(),
+        json!({"type": "string", "description": "Known languages (Russian)."}),
+    );
+    properties.insert(
+        "inventory".into(),
+        str_arr("Carried items (Russian strings)."),
+    );
+    properties.insert(
+        "equipment".into(),
+        str_arr("Worn/wielded equipment (Russian strings)."),
+    );
+    properties.insert(
+        "features".into(),
+        str_arr("Class/race features and traits (Russian strings)."),
+    );
     properties.insert("spells".into(), json!({"type": "array", "items": spell_schema, "description": "Known spells (objects). Leave empty for a non-caster."}));
     properties.insert("spell_slots".into(), num_map("Remaining spell slots as a FLAT map: spell level (as a string key) → count, e.g. {\"1\": 3, \"2\": 1}."));
-    properties.insert("spell_slots_max".into(), num_map("Maximum spell slots as a FLAT map: spell level (as a string key) → count."));
+    properties.insert(
+        "spell_slots_max".into(),
+        num_map("Maximum spell slots as a FLAT map: spell level (as a string key) → count."),
+    );
     properties.insert("concentration".into(), json!({"type": "string", "description": "Name of the active concentration spell; empty = none."}));
-    properties.insert("life_status".into(), json!({"type": "string", "description": "Life status (usually 'alive')."}));
+    properties.insert(
+        "life_status".into(),
+        json!({"type": "string", "description": "Life status (usually 'alive')."}),
+    );
 
     json!({
         "type": "function",
@@ -737,7 +795,10 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
         if !set.is_empty() {
             lines.push(format!(
                 "Поля обновлены: {}.",
-                set.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+                set.keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
     }
@@ -750,9 +811,13 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
     }
     if let Some(Value::Object(add)) = args.get("add") {
         for (key, value) in add {
-            let Some(items) = value.as_array() else { continue };
+            let Some(items) = value.as_array() else {
+                continue;
+            };
             let mut current = staged(&mut stage, key);
-            let Some(existing) = current.as_array_mut() else { continue };
+            let Some(existing) = current.as_array_mut() else {
+                continue;
+            };
             let mut added = 0usize;
             for item in items {
                 if !is_dup(existing, item) {
@@ -775,7 +840,9 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
         for (key, value) in remove {
             let targets: Vec<Value> = value.as_array().cloned().unwrap_or_default();
             let mut current = staged(&mut stage, key);
-            let Some(existing) = current.as_array_mut() else { continue };
+            let Some(existing) = current.as_array_mut() else {
+                continue;
+            };
             let mut removed = 0usize;
             let mut misses: Vec<String> = Vec::new();
             for target in &targets {
@@ -921,8 +988,10 @@ fn pc_section_block(name: &str, value: &Value) -> Option<String> {
             if items.is_empty() {
                 return None;
             }
-            let bullets: Vec<String> =
-                items.iter().map(|v| format!("- {}", pc_entry_text(v))).collect();
+            let bullets: Vec<String> = items
+                .iter()
+                .map(|v| format!("- {}", pc_entry_text(v)))
+                .collect();
             Some(format!(
                 "## {name} ({} записей)\n{}",
                 bullets.len(),
@@ -1038,7 +1107,10 @@ mod tests {
         assert_eq!(props["spells"]["type"], "array");
         // No story/world fields leak in.
         for forbidden in ["scene", "npcs", "story_brief", "world_lore"] {
-            assert!(!props.contains_key(forbidden), "{forbidden} must not appear");
+            assert!(
+                !props.contains_key(forbidden),
+                "{forbidden} must not appear"
+            );
         }
     }
 
@@ -1142,7 +1214,9 @@ mod tests {
 
     #[test]
     fn edit_facts_report_hits_and_misses() {
-        let config = CharacterArchitectConfig { context_blocks: Vec::new() };
+        let config = CharacterArchitectConfig {
+            context_blocks: Vec::new(),
+        };
         let mut working = json!({
             "spells": [{"name": "Свет", "level": 0}],
             "inventory": ["меч", "щит"]
@@ -1152,14 +1226,23 @@ mod tests {
             "add": {"spells": [{"name": "Свет", "level": 0}, {"name": "Щит", "level": 1}]},
             "remove": {"inventory": ["меч", "нет_такого"]}
         });
-        let applied =
-            config.apply_tool("edit_player_character", args.as_object().unwrap(), &mut working);
+        let applied = config.apply_tool(
+            "edit_player_character",
+            args.as_object().unwrap(),
+            &mut working,
+        );
         assert!(applied.changed);
         assert!(applied.result.contains("Поля обновлены: ac."));
-        assert!(applied.result.contains("spells: добавлено 1"), "{}", applied.result);
+        assert!(
+            applied.result.contains("spells: добавлено 1"),
+            "{}",
+            applied.result
+        );
         assert!(applied.result.contains("пропущено как дубли"));
         assert!(applied.result.contains("inventory: удалено 1 (теперь 1)."));
-        assert!(applied.result.contains("НЕ найдено для удаления: «нет_такого»"));
+        assert!(applied
+            .result
+            .contains("НЕ найдено для удаления: «нет_такого»"));
         assert!(applied.result.contains("read_player_character"));
     }
 
@@ -1180,7 +1263,9 @@ mod tests {
 
     #[test]
     fn read_player_character_renders_plain_text_not_json() {
-        let config = CharacterArchitectConfig { context_blocks: Vec::new() };
+        let config = CharacterArchitectConfig {
+            context_blocks: Vec::new(),
+        };
         let mut working = json!({
             "name": "Ариан",
             "abilities": {"STR": 16, "DEX": 12},
@@ -1209,7 +1294,9 @@ mod tests {
         // section — including gm_notes / life_status / life_status_note /
         // condition, which the model can author and read by name. Dropping them
         // here would let the architect contradict notes it cannot see.
-        let config = CharacterArchitectConfig { context_blocks: Vec::new() };
+        let config = CharacterArchitectConfig {
+            context_blocks: Vec::new(),
+        };
         let mut working = json!({
             "name": "Ариан",
             "gm_notes": "Тайно служит культу.",
@@ -1234,14 +1321,17 @@ mod tests {
         // ONE system message — and the STANDALONE prompt variant, which spends
         // zero tokens on the base-block feature it is not using.
         let msgs = character_architect_messages(&[], &[], "Собери героя.");
-        let system_count = msgs
-            .iter()
-            .filter(|m| m["role"] == "system")
-            .count();
+        let system_count = msgs.iter().filter(|m| m["role"] == "system").count();
         assert_eq!(system_count, 1);
         let prompt = msgs[0]["content"].as_str().unwrap();
-        assert!(!prompt.contains("BASE WORLD"), "standalone prompt must not mention bases");
-        assert!(!prompt.contains("BASE STORY"), "standalone prompt must not mention bases");
+        assert!(
+            !prompt.contains("BASE WORLD"),
+            "standalone prompt must not mention bases"
+        );
+        assert!(
+            !prompt.contains("BASE STORY"),
+            "standalone prompt must not mention bases"
+        );
         assert!(prompt.contains("standalone"));
         assert_eq!(msgs.last().unwrap()["role"], "user");
         // All-blank blocks degrade to the same standalone prompt.
@@ -1265,16 +1355,28 @@ mod tests {
         );
         assert_eq!(msgs[0]["role"], "system");
         let prompt = msgs[0]["content"].as_str().unwrap();
-        assert!(prompt.contains("base reference"), "based prompt variant expected");
+        assert!(
+            prompt.contains("base reference"),
+            "based prompt variant expected"
+        );
         assert!(
             !prompt.contains("do NOT tie them"),
             "the standalone rule would contradict the base blocks"
         );
         // The based prompt is GENERIC: all world-/story-specific guidance lives
         // in the blocks, so a world-only base never carries story instructions.
-        assert!(!prompt.contains("public premise"), "story guidance belongs in the story block");
-        assert!(!prompt.contains("hidden answers"), "story guidance belongs in the story block");
-        assert!(!prompt.contains("proper nouns"), "world guidance belongs in the world block");
+        assert!(
+            !prompt.contains("public premise"),
+            "story guidance belongs in the story block"
+        );
+        assert!(
+            !prompt.contains("hidden answers"),
+            "story guidance belongs in the story block"
+        );
+        assert!(
+            !prompt.contains("proper nouns"),
+            "world guidance belongs in the world block"
+        );
         assert_eq!(msgs[1]["role"], "system");
         assert_eq!(msgs[1]["content"], json!(world_block));
         assert_eq!(msgs[2]["role"], "system");
@@ -1344,7 +1446,7 @@ mod tests {
         let note = character_architect_base_unavailable_block();
         assert!(note.contains("## BASE (reference unavailable)"));
         assert!(note.contains("Preserve the hero's existing ties"));
-        let msgs = character_architect_messages(&[], &[note.clone()], "Поправь лук.");
+        let msgs = character_architect_messages(&[], std::slice::from_ref(&note), "Поправь лук.");
         assert_eq!(msgs.iter().filter(|m| m["role"] == "system").count(), 2);
         let prompt = msgs[0]["content"].as_str().unwrap();
         assert!(prompt.contains("base reference"), "based prompt expected");

@@ -1101,10 +1101,7 @@ mod tests {
         let i_location = on_disk.find("location_reasoning_effort").unwrap();
         let i_npc = on_disk.find("npc_reasoning_effort").unwrap();
         assert!(
-            i_character < i_compact
-                && i_compact < i_gm
-                && i_gm < i_location
-                && i_location < i_npc
+            i_character < i_compact && i_compact < i_gm && i_gm < i_location && i_location < i_npc
         );
 
         // Reload into a fresh instance -> identical normalized map

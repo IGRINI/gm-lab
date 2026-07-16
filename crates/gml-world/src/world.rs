@@ -2125,7 +2125,11 @@ impl World {
     /// Full internal NPC roster (every card). Used by `read_state(roster)` for
     /// the complete list. Pure read — consumes no RNG and mutates nothing.
     pub fn full_roster_context(&self) -> String {
-        let lines: Vec<String> = self.npcs.values().map(|npc| self.roster_line(npc)).collect();
+        let lines: Vec<String> = self
+            .npcs
+            .values()
+            .map(|npc| self.roster_line(npc))
+            .collect();
         if lines.is_empty() {
             "(none)".to_string()
         } else {
@@ -4877,7 +4881,12 @@ impl World {
     /// 5. `card_revision` bumps; the `Ok` payload mirrors take_item/drop_item so
     ///    the orchestrator emits PLAYER_CHARACTER_UPDATE. `Err` carries a
     ///    validator-style `{code,error,…}` the handler renders as a tool error.
-    pub fn cast_spell(&mut self, name: &str, slot_level: Option<i64>, reason: &str) -> Result<Value, Value> {
+    pub fn cast_spell(
+        &mut self,
+        name: &str,
+        slot_level: Option<i64>,
+        reason: &str,
+    ) -> Result<Value, Value> {
         let needle = name.trim().to_lowercase();
         if needle.is_empty() {
             return Err(json!({
@@ -6037,7 +6046,10 @@ fn coerce_scene_exits(raw: Option<&Value>, default_dest: &str) -> Vec<SceneExit>
                 exits.push(SceneExit {
                     exit_id: safe_id(&get_str(m, "id"), &format!("exit_{i}")),
                     name,
-                    destination: crate::helpers::normalize_slug_like(&nonempty_or(get_str(m, "destination"), default_dest)),
+                    destination: crate::helpers::normalize_slug_like(&nonempty_or(
+                        get_str(m, "destination"),
+                        default_dest,
+                    )),
                     visible: m.get("visible").map(as_bool_pyish).unwrap_or(true),
                     blocked_by: get_str(m, "blocked_by"),
                 });
@@ -6683,7 +6695,15 @@ fn slot_int(v: Option<&Value>) -> i64 {
     match v {
         Some(Value::Number(n)) => n
             .as_i64()
-            .or_else(|| n.as_f64().and_then(|f| if f.fract() == 0.0 { Some(f as i64) } else { None }))
+            .or_else(|| {
+                n.as_f64().and_then(|f| {
+                    if f.fract() == 0.0 {
+                        Some(f as i64)
+                    } else {
+                        None
+                    }
+                })
+            })
             .unwrap_or(0),
         Some(Value::String(s)) => s.trim().parse::<i64>().ok().unwrap_or(0),
         _ => 0,

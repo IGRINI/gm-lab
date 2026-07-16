@@ -260,8 +260,7 @@ mod tests {
     // once-per-session WORLD SNAPSHOT + tool-result deltas + read_state re-read
     // contract, standing TURN RESOLUTION / PLAYER OPTION SUGGESTIONS policy, and
     // the WORLD SNAPSHOT / DYNAMIC NPC ROSTER labels.
-    const GM_SYSTEM_SHA: &str =
-    "bf71f83c8de4e45ca5dc1e514d12b77a98d3b6a8c787c7d07687f120d37dd751";
+    const GM_SYSTEM_SHA: &str = "bf71f83c8de4e45ca5dc1e514d12b77a98d3b6a8c787c7d07687f120d37dd751";
     const NPC_SYSTEM_STATIC_SHA: &str =
         "b9cff19d13db6dabd8510ab7685bbc9c7b903e1b867bc22f9ec781366250e4c9";
     const NPC_CARD_TEMPLATE_SHA: &str =

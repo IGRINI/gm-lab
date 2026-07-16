@@ -1596,6 +1596,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 name = "gml-agents"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "gml-config",
  "gml-llm",
  "gml-prompts",
@@ -1607,6 +1608,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1619,14 +1621,19 @@ dependencies = [
  "gml-codex",
  "gml-config",
  "gml-llm",
+ "gml-mock",
+ "gml-openai-compatible",
  "gml-orchestrator",
  "gml-persistence",
  "gml-server",
  "gml-stories",
+ "gml-supergrok",
  "open",
  "reqwest 0.12.28",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1701,18 +1708,26 @@ name = "gml-llm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures-util",
- "gml-config",
  "gml-prompts",
  "gml-types",
  "once_cell",
  "regex",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "gml-mock"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gml-llm",
+ "gml-types",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1728,6 +1743,21 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "uuid",
+]
+
+[[package]]
+name = "gml-openai-compatible"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "gml-config",
+ "gml-llm",
+ "gml-prompts",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1738,6 +1768,7 @@ dependencies = [
  "gml-agents",
  "gml-config",
  "gml-llm",
+ "gml-mock",
  "gml-prompts",
  "gml-rag",
  "gml-stories",
@@ -1759,6 +1790,7 @@ dependencies = [
  "getrandom 0.2.17",
  "gml-config",
  "gml-llm",
+ "gml-mock",
  "gml-orchestrator",
  "gml-rag",
  "gml-stories",
@@ -1810,9 +1842,9 @@ dependencies = [
  "futures",
  "gml-agents",
  "gml-audio",
- "gml-codex",
  "gml-config",
  "gml-llm",
+ "gml-mock",
  "gml-orchestrator",
  "gml-persistence",
  "gml-prompts",
@@ -1841,6 +1873,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "urlencoding",
+ "uuid",
  "zip",
 ]
 
@@ -1853,6 +1886,26 @@ dependencies = [
  "gml-world",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "gml-supergrok"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "directories",
+ "futures-util",
+ "gml-llm",
+ "gml-prompts",
+ "once_cell",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3602,6 +3655,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

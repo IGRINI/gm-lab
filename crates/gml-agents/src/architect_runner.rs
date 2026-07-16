@@ -205,7 +205,7 @@ pub async fn architect_turn(
         history,
         user_msg.clone(),
     );
-    let request_messages = Value::Array(messages.clone());
+    let request_messages = public_request_messages(&messages);
     let tools = Value::Array(config.tools());
 
     let mut visible_segments: Vec<Value> = Vec::new();
@@ -216,6 +216,7 @@ pub async fn architect_turn(
     let mut working_draft = config.normalize_draft(draft);
     let mut draft_changed = false;
     let mut reply = String::new();
+    let mut final_assistant_msg = None;
     let mut stats = Map::new();
 
     let mut hop = 0usize;
@@ -258,6 +259,7 @@ pub async fn architect_turn(
                     .push(json!({"role": "assistant", "content": content.clone(), "sid": sid}));
                 reply = content;
             }
+            final_assistant_msg = Some(output.assistant_msg.clone());
             messages.push(output.assistant_msg);
             break;
         }
@@ -297,7 +299,12 @@ pub async fn architect_turn(
         }
     }
 
-    let assistant_history_msg = json!({"role": "assistant", "content": reply});
+    // Persist the provider's original final message as an opaque value. Some
+    // connectors keep encrypted reasoning/cache state in unknown fields; the
+    // core must round-trip those fields rather than reconstructing the message.
+    let assistant_history_msg =
+        final_assistant_msg.unwrap_or_else(|| json!({"role": "assistant", "content": reply}));
+    let assistant_msg = json!({"role": "assistant", "content": reply});
     Ok(ArchitectOutput {
         reply,
         // The full draft after this turn's build/edits (None if nothing changed).
@@ -308,7 +315,7 @@ pub async fn architect_turn(
         },
         user_msg,
         assistant_history_msg: assistant_history_msg.clone(),
-        assistant_msg: assistant_history_msg,
+        assistant_msg,
         calls: all_calls,
         visible_segments,
         thinking: thinking_parts.join("\n\n"),
@@ -388,8 +395,200 @@ fn history_message(message: &Value) -> Option<Value> {
         return None;
     }
     let content = object.get("content").and_then(Value::as_str)?.trim();
-    if content.is_empty() {
+    let has_connector_state = role == "assistant"
+        && object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "role" | "content"));
+    if content.is_empty() && !has_connector_state {
         return None;
     }
+    if role == "assistant" {
+        // Provider-owned fields are opaque to the core. Preserve them exactly
+        // so connectors can restore encrypted reasoning and cache state on the
+        // next architect turn.
+        return Some(message.clone());
+    }
     Some(json!({"role": role, "content": content}))
+}
+
+fn public_request_messages(messages: &[Value]) -> Value {
+    Value::Array(
+        messages
+            .iter()
+            .filter_map(|message| {
+                let object = message.as_object()?;
+                let role = object.get("role").and_then(Value::as_str)?;
+                let content = object.get("content")?.clone();
+                Some(json!({"role": role, "content": content}))
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use gml_llm::{ChatOutput, ChatStreamOutput, JsonStreamOutput};
+
+    use super::*;
+
+    struct TestConfig;
+
+    impl ArchitectConfig for TestConfig {
+        fn system_prompt(&self) -> &str {
+            "test architect"
+        }
+
+        fn tools(&self) -> Vec<Value> {
+            Vec::new()
+        }
+
+        fn normalize_draft(&self, draft: &Value) -> Value {
+            draft.clone()
+        }
+
+        fn apply_tool(
+            &self,
+            _name: &str,
+            _args: &Map<String, Value>,
+            _working_draft: &mut Value,
+        ) -> ToolApplication {
+            unreachable!("the test backend never returns tool calls")
+        }
+
+        fn finalize_draft(&self, draft: Value) -> Value {
+            draft
+        }
+    }
+
+    struct OpaqueStateBackend {
+        received_messages: Mutex<Option<Value>>,
+        response: Value,
+    }
+
+    #[async_trait]
+    impl Backend for OpaqueStateBackend {
+        fn model(&self) -> String {
+            "test-model".to_string()
+        }
+
+        fn set_model(&self, _model: &str) {}
+
+        async fn list_models(&self) -> Vec<Value> {
+            Vec::new()
+        }
+
+        async fn chat(
+            &self,
+            _messages: &Value,
+            _tools: Option<&Value>,
+            _think: Option<bool>,
+            _reasoning_role: &str,
+        ) -> Result<ChatOutput, BackendError> {
+            Err(BackendError::new("unexpected chat call"))
+        }
+
+        async fn chat_json(
+            &self,
+            _messages: &Value,
+            _schema: &Value,
+            _think: Option<bool>,
+            _reasoning_role: &str,
+        ) -> Result<Map<String, Value>, BackendError> {
+            Err(BackendError::new("unexpected chat_json call"))
+        }
+
+        async fn summarize(
+            &self,
+            _text: &str,
+            _proper_nouns: &[String],
+        ) -> Result<String, BackendError> {
+            Err(BackendError::new("unexpected summarize call"))
+        }
+
+        async fn chat_stream(
+            &self,
+            messages: &Value,
+            _tools: Option<&Value>,
+            _think: Option<bool>,
+            _reasoning_role: &str,
+            _sink: &mut (dyn DeltaSink + Send),
+        ) -> Result<ChatStreamOutput, BackendError> {
+            *self
+                .received_messages
+                .lock()
+                .expect("received messages lock") = Some(messages.clone());
+            Ok(ChatStreamOutput {
+                thinking: String::new(),
+                content: "done".to_string(),
+                calls: Vec::new(),
+                assistant_msg: self.response.clone(),
+                stats: Map::new(),
+            })
+        }
+
+        async fn chat_json_stream(
+            &self,
+            _messages: &Value,
+            _schema: &Value,
+            _think: Option<bool>,
+            _reasoning_role: &str,
+            _sink: &mut (dyn DeltaSink + Send),
+        ) -> Result<JsonStreamOutput, BackendError> {
+            Err(BackendError::new("unexpected chat_json_stream call"))
+        }
+    }
+
+    #[tokio::test]
+    async fn architect_round_trips_connector_owned_assistant_state() {
+        let previous = json!({
+            "role": "assistant",
+            "content": "previous",
+            "_gml_xai_reasoning": {"items": [{"id": "rs_1", "encrypted_content": "cipher-1"}]}
+        });
+        let response = json!({
+            "role": "assistant",
+            "content": "done",
+            "_gml_xai_reasoning": {"items": [{"id": "rs_2", "encrypted_content": "cipher-2"}]}
+        });
+        let backend = OpaqueStateBackend {
+            received_messages: Mutex::new(None),
+            response: response.clone(),
+        };
+
+        let output = architect_turn(
+            &TestConfig,
+            &backend,
+            std::slice::from_ref(&previous),
+            &Value::Null,
+            "next",
+            &mut NullArchitectStream,
+        )
+        .await
+        .expect("architect turn");
+
+        let received = backend
+            .received_messages
+            .lock()
+            .expect("received messages lock")
+            .clone()
+            .expect("messages were captured");
+        assert!(received
+            .as_array()
+            .expect("messages array")
+            .contains(&previous));
+        assert_eq!(output.assistant_history_msg, response);
+        assert_eq!(
+            output.assistant_msg,
+            json!({"role": "assistant", "content": "done"})
+        );
+        assert!(output
+            .request_messages
+            .as_array()
+            .expect("public request messages")
+            .iter()
+            .all(|message| message.get("_gml_xai_reasoning").is_none()));
+    }
 }

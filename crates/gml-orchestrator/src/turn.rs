@@ -36,6 +36,46 @@ use crate::session::Session;
 const PRELUDE_CALLBRIEF_CHARS: usize = 4000;
 const NPC_TOOL_HOPS: usize = 3;
 
+/// Terminal result of one logical player turn.
+///
+/// Individual tool, prelude, and scene-sync errors remain ordinary streamed
+/// events because the GM can recover from them within the same turn. A
+/// [`TurnOutcome::Failed`] value is reserved for a terminal model/turn-contract
+/// failure (transport failure, exhausted tool-hop budget, or a missing required
+/// player-options call), where the server must discard the staged runtime
+/// instead of committing a partial turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum TurnOutcome {
+    /// The turn reached its normal commit boundary.
+    Completed,
+    /// The turn could not reach a commit boundary.
+    Failed {
+        /// Human-readable failure already emitted in the event stream.
+        message: String,
+        /// Whether repeating the same logical request is safe and useful.
+        retryable: bool,
+    },
+}
+
+impl TurnOutcome {
+    /// Whether the staged session may be persisted.
+    pub fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed)
+    }
+
+    /// Whether the UI may offer a manual retry for this outcome.
+    pub fn retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Failed {
+                retryable: true,
+                ..
+            }
+        )
+    }
+}
+
 /// `ev(kind, agent, data, sid)`.
 fn ev(kind: &str, agent: Option<&str>, data: Value, sid: Option<&str>) -> Event {
     Event::new(kind, agent.map(String::from), data, sid.map(String::from))
@@ -68,7 +108,7 @@ pub async fn run_turn(
     player_text: &str,
 ) -> Vec<Event> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
-    run_turn_into(session, settings, player_text, tx).await;
+    let _outcome = run_turn_into(session, settings, player_text, tx).await;
     let mut out = Vec::new();
     while let Some(e) = rx.recv().await {
         out.push(e);
@@ -92,12 +132,67 @@ pub async fn run_turn_into(
     settings: &RuntimeSettings,
     player_text: &str,
     tx: mpsc::UnboundedSender<Event>,
-) {
+) -> TurnOutcome {
     let sink = Sink { tx };
 
+    run_turn_with_entry(session, settings, player_text, TurnEntry::Fresh, &sink).await
+}
+
+/// Continue a legacy turn whose player action was already persisted before a
+/// terminal model transport failure.
+///
+/// Unlike [`run_turn_into`], this entry point does not start a new turn, append
+/// another GM user message, emit another player transcript event, inject a
+/// snapshot, or run pre-turn compaction. The caller must identify the already
+/// persisted player [`gml_world::WorldEvent`] by index. Invalid preconditions
+/// fail without mutating the session.
+pub async fn resume_turn_into(
+    session: &mut Session,
+    settings: &RuntimeSettings,
+    player_text: &str,
+    player_event_index: usize,
+    tx: mpsc::UnboundedSender<Event>,
+) -> TurnOutcome {
+    let sink = Sink { tx };
+    if let Err(message) = validate_resume_preconditions(session, player_text, player_event_index) {
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("ГМ"),
+            Value::String(message.clone()),
+            None,
+        ));
+        return TurnOutcome::Failed {
+            message,
+            retryable: false,
+        };
+    }
+
+    run_turn_with_entry(
+        session,
+        settings,
+        player_text,
+        TurnEntry::Resume { player_event_index },
+        &sink,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum TurnEntry {
+    Fresh,
+    Resume { player_event_index: usize },
+}
+
+async fn run_turn_with_entry(
+    session: &mut Session,
+    settings: &RuntimeSettings,
+    player_text: &str,
+    entry: TurnEntry,
+    sink: &Sink,
+) -> TurnOutcome {
     let t0 = Instant::now();
     let mut metas: Vec<Value> = Vec::new();
-    drive(session, settings, player_text, &mut metas, &sink).await;
+    let outcome = drive(session, settings, player_text, entry, &mut metas, sink).await;
     let total_secs = round2(t0.elapsed().as_secs_f64());
     let mut total = meta_total(&metas, total_secs);
     add_total_context(&mut total, context_usage(session));
@@ -106,6 +201,55 @@ pub async fn run_turn_into(
         m.insert("run".to_string(), run);
     }
     sink.emit(ev(event_kind::META_TOTAL, None, total, None));
+    outcome
+}
+
+fn validate_resume_preconditions(
+    session: &Session,
+    player_text: &str,
+    player_event_index: usize,
+) -> Result<(), String> {
+    let invalid = || {
+        "Нельзя безопасно продолжить сохранённый ход: состояние хода не совпадает с действием игрока."
+            .to_string()
+    };
+
+    if session.turn <= 0
+        || session.last_player_action != player_text
+        || !session.pending.is_empty()
+        || !session.turn_time_advances.is_empty()
+        || session
+            .turn_player_event
+            .is_some_and(|index| index != player_event_index)
+        || session.gm_messages.last() != Some(&gml_agents::gm_user_message(player_text))
+    {
+        return Err(invalid());
+    }
+
+    let Some(player_event) = session.events.get(player_event_index) else {
+        return Err(invalid());
+    };
+    if player_event.actor != "player"
+        || player_event.kind != "speech"
+        || player_event.turn != session.turn
+        || player_event.speech != player_text
+        || !player_event.action.is_empty()
+    {
+        return Err(invalid());
+    }
+
+    let current_turn_events = session
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.turn == session.turn)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if current_turn_events.as_slice() != [player_event_index] {
+        return Err(invalid());
+    }
+
+    Ok(())
 }
 
 // =========================================================================
@@ -116,52 +260,68 @@ async fn drive(
     session: &mut Session,
     settings: &RuntimeSettings,
     player_text: &str,
+    entry: TurnEntry,
     metas: &mut Vec<Value>,
     sink: &Sink,
-) {
-    let include_player_options_tool = settings.gm_suggest_options_enabled(None);
+) -> TurnOutcome {
+    let configured_player_options = settings.gm_suggest_options_enabled(None);
+    let include_player_options_tool = match entry {
+        TurnEntry::Fresh => configured_player_options,
+        TurnEntry::Resume { .. } => session
+            .snapshot_options_state
+            .unwrap_or(configured_player_options),
+    };
     let stream_gm_content = settings.stream_gm_content_enabled(None);
-    session.ensure_initial_tools(include_player_options_tool);
-    session.turn += 1;
-    session.last_player_action = player_text.to_string();
-    session.turn_player_event = None;
-    session.turn_time_advances = Vec::new();
     let mut turn_visible_output_seen = false;
-
-    // Snapshot-once: push the full world snapshot into gm_messages ONCE at
-    // session start (or lazily for a legacy save whose history predates
-    // snapshots). Compaction re-injects its own fresh snapshot.
-    if !gml_agents::gm_messages_have_snapshot(&session.gm_messages) {
-        let recent = session.recent_contact_ids();
-        let snapshot = gml_agents::gm_world_snapshot(
-            &mut session.world,
-            &recent,
-            include_player_options_tool,
-        );
-        session
-            .gm_messages
-            .push(gml_agents::gm_snapshot_message(&snapshot));
-        session.snapshot_options_state = Some(include_player_options_tool);
-    } else if session.snapshot_options_state != Some(include_player_options_tool) {
-        // Player-options setting toggled mid-session: append-only notice.
-        session
-            .gm_messages
-            .push(gml_agents::gm_options_notice_message(
-                include_player_options_tool,
-            ));
-        session.snapshot_options_state = Some(include_player_options_tool);
-    }
-    let gm_user = gml_agents::gm_user_message(player_text);
-    session.gm_messages.push(gm_user);
-    sink.emit(ev(
-        event_kind::PLAYER,
-        Some("Игрок"),
-        Value::String(player_text.to_string()),
-        None,
-    ));
-
     let client = session.client.clone();
-    maybe_compact(session, client.as_ref()).await;
+
+    match entry {
+        TurnEntry::Fresh => {
+            session.ensure_initial_tools(include_player_options_tool);
+            session.turn += 1;
+            session.last_player_action = player_text.to_string();
+            session.turn_player_event = None;
+            session.turn_time_advances = Vec::new();
+
+            // Snapshot-once: push the full world snapshot into gm_messages ONCE at
+            // session start (or lazily for a legacy save whose history predates
+            // snapshots). Compaction re-injects its own fresh snapshot.
+            if !gml_agents::gm_messages_have_snapshot(&session.gm_messages) {
+                let recent = session.recent_contact_ids();
+                let snapshot = gml_agents::gm_world_snapshot(
+                    &mut session.world,
+                    &recent,
+                    include_player_options_tool,
+                );
+                session
+                    .gm_messages
+                    .push(gml_agents::gm_snapshot_message(&snapshot));
+                session.snapshot_options_state = Some(include_player_options_tool);
+            } else if session.snapshot_options_state != Some(include_player_options_tool) {
+                // Player-options setting toggled mid-session: append-only notice.
+                session
+                    .gm_messages
+                    .push(gml_agents::gm_options_notice_message(
+                        include_player_options_tool,
+                    ));
+                session.snapshot_options_state = Some(include_player_options_tool);
+            }
+            session
+                .gm_messages
+                .push(gml_agents::gm_user_message(player_text));
+            sink.emit(ev(
+                event_kind::PLAYER,
+                Some("Игрок"),
+                Value::String(player_text.to_string()),
+                None,
+            ));
+
+            maybe_compact(session, client.as_ref()).await;
+        }
+        TurnEntry::Resume { player_event_index } => {
+            session.turn_player_event = Some(player_event_index);
+        }
+    }
 
     let mut fell_through = true;
     let max_tool_hops = settings.max_tool_hops(None);
@@ -202,14 +362,17 @@ async fn drive(
         } = match stream_result {
             Ok(out) => out,
             Err(e) => {
+                let message = format!("Ошибка вызова модели: {e}");
                 sink.emit(ev(
                     event_kind::ERROR,
                     Some("ГМ"),
-                    Value::String(format!("Ошибка вызова модели: {e}")),
+                    Value::String(message.clone()),
                     None,
                 ));
-                fell_through = false;
-                break;
+                return TurnOutcome::Failed {
+                    message,
+                    retryable: true,
+                };
             }
         };
 
@@ -349,23 +512,30 @@ async fn drive(
     }
 
     if fell_through {
+        let message = format!("Превышен лимит вызовов инструментов за ход: {max_tool_hops}.");
         sink.emit(ev(
             event_kind::ERROR,
             Some("ГМ"),
-            Value::String(format!(
-                "Превышен лимит вызовов инструментов за ход: {max_tool_hops}."
-            )),
+            Value::String(message.clone()),
             None,
         ));
+        return TurnOutcome::Failed {
+            message,
+            retryable: true,
+        };
     } else if include_player_options_tool && !player_options_shown {
+        let message =
+            "Модель завершила ход без ask_player, хотя варианты игрока включены.".to_string();
         sink.emit(ev(
             event_kind::ERROR,
             Some("ГМ"),
-            Value::String(
-                "Модель завершила ход без ask_player, хотя варианты игрока включены.".to_string(),
-            ),
+            Value::String(message.clone()),
             None,
         ));
+        return TurnOutcome::Failed {
+            message,
+            retryable: true,
+        };
     }
 
     if session.turn_player_event.is_none() {
@@ -376,6 +546,7 @@ async fn drive(
     let compact_client = session.client.clone();
     session.commit_turn_without_memory_consolidation();
     maybe_consolidate_memory_semantic(session, compact_client.as_ref()).await;
+    TurnOutcome::Completed
 }
 
 // =========================================================================
@@ -547,7 +718,7 @@ async fn sync_scene_delta(
         return;
     }
     let client = session.client.clone();
-    let delta =
+    let (delta, stats) =
         match gml_agents::extract_scene_delta(client.as_ref(), &mut session.world, narration).await
         {
             Ok(d) => d,
@@ -561,10 +732,9 @@ async fn sync_scene_delta(
                 return;
             }
         };
-    // The scene-delta call is a mock chat_json call which records a stats row.
-    // Python appends a "scene sync" meta from the client.call_log delta. The
-    // mock client surfaces stats via mock_stats(); replicate the single meta.
-    metas.push(meta("scene sync", &gml_llm::mock_stats(), "other"));
+    if !stats.is_empty() {
+        metas.push(meta("scene sync", &stats, "other"));
+    }
     let moves = match delta.get("moves") {
         Some(Value::Array(a)) => a.clone(),
         _ => Vec::new(),
@@ -1260,12 +1430,7 @@ fn run_advance_time(session: &mut Session, args: &Value, sink: &Sink) -> ToolExe
 /// and the TIME event). Returns the advance payload. `long_rest` reuses this so
 /// its +8h uses the exact same mechanics as `advance_time` rather than a
 /// duplicate clock write.
-fn apply_advance_time(
-    session: &mut Session,
-    minutes: &Value,
-    reason: &str,
-    sink: &Sink,
-) -> Value {
+fn apply_advance_time(session: &mut Session, minutes: &Value, reason: &str, sink: &Sink) -> Value {
     match session.world.advance_time(minutes, reason) {
         Ok(p) => {
             if p.get("ok").and_then(Value::as_bool).unwrap_or(false) {
@@ -1307,7 +1472,12 @@ fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     // Build the full-restore field batch from the CURRENT card, then apply it via
     // update_player_character (full-rewrite of spell_slots / hp; concentration is
     // a plain text field cleared to "").
-    let had_concentration = !session.world.player_character.concentration.trim().is_empty();
+    let had_concentration = !session
+        .world
+        .player_character
+        .concentration
+        .trim()
+        .is_empty();
     let mut fields = Map::new();
     if !session.world.player_character.spell_slots_max.is_empty() {
         fields.insert(
@@ -1353,7 +1523,11 @@ fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     let hp_text = if hp_cur.is_empty() && hp_max.is_empty() {
         String::new()
     } else {
-        format!(", ХП {}/{}", nonempty_string(hp_cur, "?"), nonempty_string(hp_max, "?"))
+        format!(
+            ", ХП {}/{}",
+            nonempty_string(hp_cur, "?"),
+            nonempty_string(hp_max, "?")
+        )
     };
     let mut restored_line = format!("восстановлено: слоты {slots_text}{hp_text}");
     if had_concentration {
@@ -2344,12 +2518,7 @@ fn run_cast_spell(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecu
                 .and_then(Value::as_str)
                 .unwrap_or("cast rejected");
             let msg = format!("cast_spell rejected: {message} ({code})");
-            sink.emit(ev(
-                event_kind::ERROR,
-                Some("ГМ"),
-                Value::String(msg),
-                None,
-            ));
+            sink.emit(ev(event_kind::ERROR, Some("ГМ"), Value::String(msg), None));
             let mut extra: Vec<(&str, Value)> = Vec::new();
             for key in ["name", "known_spells", "level"] {
                 if let Some(value) = rejection.get(key) {
@@ -2407,7 +2576,13 @@ fn item_move_rejection(tool: &str, rejection: &Value, sink: &Sink) -> ToolExecut
         None,
     ));
     let mut extra: Vec<(&str, Value)> = Vec::new();
-    for key in ["item_id", "name", "visible_items", "candidates", "inventory"] {
+    for key in [
+        "item_id",
+        "name",
+        "visible_items",
+        "candidates",
+        "inventory",
+    ] {
         if let Some(value) = rejection.get(key) {
             extra.push((key, value.clone()));
         }
@@ -3355,9 +3530,8 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
         })
         .count();
     if committed_this_turn >= max_npcs {
-        let msg = format!(
-            "generate_npc budget exhausted this turn ({committed_this_turn}/{max_npcs})."
-        );
+        let msg =
+            format!("generate_npc budget exhausted this turn ({committed_this_turn}/{max_npcs}).");
         sink.emit(ev(
             event_kind::ERROR,
             Some("ГМ"),
@@ -3623,10 +3797,7 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
     };
 
     let role_req = generated_str(request, "role");
-    let present = request
-        .get("present")
-        .map(crate::truthy)
-        .unwrap_or(true);
+    let present = request.get("present").map(crate::truthy).unwrap_or(true);
     let current_place_id = session.world.world_canon.player_place_id.clone();
     let requested_place_id = generated_str(request, "place_id");
     // Where the actor lives; when `present`, it appears in the current scene.
@@ -3667,8 +3838,7 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
     let base_id = ids::stable_id(&world_seed, &actor_place_id, "actor", &npc_id_slug(&name));
     let npc_id = {
         let taken = |id: &str| {
-            session.world.world_canon.actors.contains_key(id)
-                || session.world.npcs.contains_key(id)
+            session.world.world_canon.actors.contains_key(id) || session.world.npcs.contains_key(id)
         };
         if !taken(&base_id) {
             base_id
@@ -3689,7 +3859,11 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
     if present {
         effects.push(format!("present:{npc_id}"));
     }
-    let event_scope = if present { Scope::Player } else { Scope::GmPrivate };
+    let event_scope = if present {
+        Scope::Player
+    } else {
+        Scope::GmPrivate
+    };
     let actions: Vec<(Action, String)> = vec![
         (
             Action::CreateActor {
@@ -3847,10 +4021,7 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
             tier: MemoryTier::Raw,
             owner_scope: format!("actor:{npc_id}"),
             visibility_scopes: Vec::new(),
-            summary: format!(
-                "GM-заметка по персонажу {name}: {}",
-                hidden_parts[0]
-            ),
+            summary: format!("GM-заметка по персонажу {name}: {}", hidden_parts[0]),
             details: hidden_parts.join("\n"),
             source_event_ids: if event_id.is_empty() {
                 Vec::new()

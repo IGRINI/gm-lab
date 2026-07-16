@@ -59,7 +59,10 @@ impl LocalEmbeddingClient {
     /// routing seam. All client knobs come from `config`; only the cache file
     /// differs. `cache_path` is the per-world file (`world_cache_path`) or the
     /// global path (`rag_cache_path`) for the `None` sentinel.
-    pub fn from_config_at(config: &Config, cache_path: impl AsRef<std::path::Path>) -> Result<Self> {
+    pub fn from_config_at(
+        config: &Config,
+        cache_path: impl AsRef<std::path::Path>,
+    ) -> Result<Self> {
         let batch_size = std::cmp::max(1, config.rag_batch_size) as usize;
         Ok(LocalEmbeddingClient {
             url: config.rag_embeddings_url.clone(),

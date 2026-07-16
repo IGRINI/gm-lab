@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use gml_llm::{Backend, MockClient};
+use gml_llm::Backend;
+use gml_mock::MockClient;
 use gml_orchestrator::memory_crystals::maybe_consolidate_memory_semantic;
 use gml_orchestrator::Session;
 use gml_world::{MemoryInjectionState, MemoryTier, MemoryTruthStatus, MemoryUnit};

@@ -8,5 +8,6 @@ import "./styles-redesign.css";
 import "./styles-wizard.css";
 import "./styles-studio.css";
 import "./styles-search.css";
+import "./styles-connectors.css";
 
 createRoot(document.getElementById("root")).render(<App />);

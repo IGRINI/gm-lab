@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
-use gml_llm::{Backend, BackendError};
+use gml_llm::{Backend, BackendError, NullSink};
 use gml_types::Role;
 use gml_world::World;
 
@@ -414,7 +414,7 @@ pub async fn extract_scene_delta(
     client: &dyn Backend,
     world: &mut World,
     narration: &str,
-) -> Result<Map<String, Value>, BackendError> {
+) -> Result<(Map<String, Value>, Map<String, Value>), BackendError> {
     let roster: String = world
         .npcs
         .values()
@@ -454,12 +454,15 @@ return {\"moves\":[]}.";
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]);
-    client
-        .chat_json(
+    let mut sink = NullSink;
+    let output = client
+        .chat_json_stream(
             &messages,
             &scene_delta_schema(),
             Some(false),
             Role::Gm.as_str(),
+            &mut sink,
         )
-        .await
+        .await?;
+    Ok((output.data, output.stats))
 }

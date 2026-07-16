@@ -1,6 +1,14 @@
-import Icon from "./Icon.jsx";
 import { useMemo, useState } from "react";
 import Modal from "./Modal.jsx";
+import WizCard, {
+  storyDescription,
+  storyTip,
+  storyTitle,
+  worldMeta,
+  worldPreview,
+  worldTip,
+  worldTitle,
+} from "./WizCard.jsx";
 
 // BasePickerModal — the explicit "на чём строим?" step before a creation studio
 // opens. Two modes:
@@ -15,11 +23,8 @@ import Modal from "./Modal.jsx";
 // wizard's «Создать персонажа» ctx applies the same gate).
 // Purely presentational: onConfirm(kind, { worldId, storyId }) hands the choice
 // back to the integrator (App), which opens the matching studio. Reuses the
-// wizard's wiz-card/wiz-grid styles so the pick reads like the New-Game steps.
-
-function textValue(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
+// wizard's shared WizCard (incl. its hover tips) so the pick reads like the
+// New-Game steps.
 
 function idOf(value) {
   return value == null ? "" : String(value).trim();
@@ -27,53 +32,6 @@ function idOf(value) {
 
 function sameId(a, b) {
   return a != null && b != null && String(a) === String(b);
-}
-
-function worldTitle(world) {
-  return textValue(world?.title) || textValue(world?.world_lore?.name) || "Без названия";
-}
-
-function worldMeta(world) {
-  return [world?.genre, world?.tone].map((v) => textValue(v)).filter(Boolean).join(" · ");
-}
-
-function worldPreview(world) {
-  return textValue(world?.preview) || textValue(world?.public_premise) || "";
-}
-
-function storyTitle(story) {
-  return textValue(story?.title) || "Без названия";
-}
-
-function storyDescription(story) {
-  return textValue(story?.story_brief) || textValue(story?.description) || "";
-}
-
-function Card({ selected, disabled, onClick, kicker, title, badge, meta, desc }) {
-  return (
-    <button
-      type="button"
-      className={"wiz-card" + (selected ? " is-selected" : "")}
-      onClick={onClick}
-      disabled={disabled}
-      aria-pressed={selected}
-    >
-      {(kicker || badge) && (
-        <span className="wiz-card-top">
-          {kicker && <span className="wiz-card-kicker">{kicker}</span>}
-          {badge && <span className="wiz-badge">{badge}</span>}
-        </span>
-      )}
-      <span className="wiz-card-title">{title}</span>
-      {meta && <span className="wiz-card-meta">{meta}</span>}
-      {desc && <span className="wiz-card-desc">{desc}</span>}
-      {selected && (
-        <span className="wiz-card-check" aria-hidden="true">
-          <Icon name="check" size={13} strokeWidth={2.4} />
-        </span>
-      )}
-    </button>
-  );
 }
 
 export default function BasePickerModal({
@@ -174,7 +132,7 @@ export default function BasePickerModal({
           </p>
           <div className="wiz-grid">
             {!isStory && (
-              <Card
+              <WizCard
                 selected={!worldId && !storyId}
                 disabled={locked}
                 onClick={pickStandalone}
@@ -184,7 +142,7 @@ export default function BasePickerModal({
               />
             )}
             {worldList.map((w) => (
-              <Card
+              <WizCard
                 key={`w-${w.id}`}
                 selected={sameId(worldId, w.id)}
                 disabled={locked}
@@ -193,11 +151,12 @@ export default function BasePickerModal({
                 title={worldTitle(w)}
                 meta={worldMeta(w)}
                 desc={worldPreview(w)}
+                tip={worldTip(w)}
               />
             ))}
             {!isStory &&
               builtinStories.map((s) => (
-                <Card
+                <WizCard
                   key={`b-${s.id}`}
                   selected={builtinPicked && sameId(storyId, s.id)}
                   disabled={locked}
@@ -206,6 +165,7 @@ export default function BasePickerModal({
                   badge="встроенная классика"
                   title={storyTitle(s)}
                   desc={storyDescription(s)}
+                  tip={storyTip(s, { kicker: "встроенная классика" })}
                 />
               ))}
           </div>
@@ -234,7 +194,7 @@ export default function BasePickerModal({
               протагонистом.
             </p>
             <div className="wiz-grid">
-              <Card
+              <WizCard
                 selected={!storyId}
                 disabled={locked}
                 onClick={() => setStoryId("")}
@@ -243,7 +203,7 @@ export default function BasePickerModal({
                 desc="Опора только на мир — герой подойдёт любой его истории."
               />
               {worldStories.map((s) => (
-                <Card
+                <WizCard
                   key={`s-${s.id}`}
                   selected={sameId(storyId, s.id)}
                   disabled={locked}
@@ -251,6 +211,7 @@ export default function BasePickerModal({
                   kicker="история"
                   title={storyTitle(s)}
                   desc={storyDescription(s)}
+                  tip={storyTip(s)}
                 />
               ))}
             </div>
