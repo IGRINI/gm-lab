@@ -262,7 +262,7 @@ mod tests {
     // the WORLD SNAPSHOT / DYNAMIC NPC ROSTER labels.
     const GM_SYSTEM_SHA: &str = "bf71f83c8de4e45ca5dc1e514d12b77a98d3b6a8c787c7d07687f120d37dd751";
     const NPC_SYSTEM_STATIC_SHA: &str =
-        "b9cff19d13db6dabd8510ab7685bbc9c7b903e1b867bc22f9ec781366250e4c9";
+        "a4c157e782e4788868748bc7509ce626835328eb5ef8d96f5f4b6cd05ed5192b";
     const NPC_CARD_TEMPLATE_SHA: &str =
         "73cb6261b026b1d1b8682caf45047ca625b601f43147f48a6c9b0f3e2dd3a454";
     const NPC_COMPACT_SYSTEM_SHA: &str =
@@ -292,8 +292,8 @@ mod tests {
     fn npc_system_static_byte_identical() {
         assert_bytes_eq!(npc_system_static(), "NPC_SYSTEM_STATIC.txt");
         assert_eq!(sha256_hex(NPC_SYSTEM_STATIC), NPC_SYSTEM_STATIC_SHA);
-        assert_eq!(NPC_SYSTEM_STATIC.chars().count(), 7057);
-        assert_eq!(NPC_SYSTEM_STATIC.len(), 7129);
+        assert_eq!(NPC_SYSTEM_STATIC.chars().count(), 7051);
+        assert_eq!(NPC_SYSTEM_STATIC.len(), 7123);
     }
 
     #[test]
@@ -302,6 +302,19 @@ mod tests {
         assert_bytes_eq!(npc_system_template(), "NPC_SYSTEM_TEMPLATE.txt");
         assert_eq!(NPC_SYSTEM_TEMPLATE, NPC_SYSTEM_STATIC);
         assert_eq!(sha256_hex(NPC_SYSTEM_TEMPLATE), NPC_SYSTEM_STATIC_SHA);
+    }
+
+    #[test]
+    fn npc_system_output_example_is_valid_json() {
+        let example = NPC_SYSTEM_STATIC
+            .lines()
+            .last()
+            .expect("NPC system output example");
+        let parsed: serde_json::Value =
+            serde_json::from_str(example).expect("valid NPC output JSON example");
+        assert!(parsed.get("response").is_some());
+        assert!(parsed.get("beats").is_some());
+        assert!(parsed.get("claims").is_some());
     }
 
     #[test]

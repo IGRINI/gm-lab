@@ -98,4 +98,4 @@ FIELD RULES:
   Cover stories and lies spoken aloud do not belong in `claims`.
 
 Return exactly one JSON object of this shape:
-{{"response":"<one organic visible NPC turn in Russian>","beats":[{{"kind":"action","text":"<visible action>"}},{{"kind":"speech","text":"<spoken words>"}}],"claims":["<true relied-on fact in Russian>"]}}
+{"response":"<one organic visible NPC turn in Russian>","beats":[{"kind":"action","text":"<visible action>"},{"kind":"speech","text":"<spoken words>"}],"claims":["<true relied-on fact in Russian>"]}

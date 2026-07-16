@@ -12,9 +12,9 @@
 //!   `build_gm_tools_for_native_tool_search`, `search_gm_tools`,
 //!   `load_gm_tool_schema`, `initial_gm_tool_names`, `build_canon_gm_tools`,
 //!   `build_npc_tools`.
-//! - [`npc`] — `NPC_SCHEMA`, `npc_system_message`, `npc_card_block`,
+//! - [`npc`] — `npc_system_message`, `npc_card_block`,
 //!   `npc_user_message`, `_historical_npc_message`, `npc_request_messages`.
-//! - [`seed`] — `build_world_seed`, `extract_scene_delta` + schemas + helpers.
+//! - [`seed`] — `build_world_seed`, `extract_scene_delta`, and helpers.
 //! - [`coerce`] — `_text`, `_as_list`, `_claims`, `_norm_npc`.
 //!
 //! Messages are `serde_json::Value` objects shaped exactly like the Python
@@ -62,11 +62,11 @@ pub use gm::{
 pub use location::{generate_location, location_generator_messages};
 pub use npc::{
     historical_npc_message, is_npc_card_message, npc_card_block, npc_card_message,
-    npc_card_update_message, npc_messages_have_card, npc_request_messages, npc_schema,
-    npc_system_message, npc_user_message, npc_user_message_with_contact, NPC_CARD_HEADER,
-    NPC_CARD_UPDATE_HEADER, NPC_PERCEPTION_BRIEF_RULES,
+    npc_card_update_message, npc_messages_have_card, npc_request_messages, npc_system_message,
+    npc_user_message, npc_user_message_with_contact, NPC_CARD_HEADER, NPC_CARD_UPDATE_HEADER,
+    NPC_PERCEPTION_BRIEF_RULES,
 };
-pub use seed::{build_world_seed, extract_scene_delta, scene_delta_schema, world_seed_schema};
+pub use seed::{build_world_seed, extract_scene_delta};
 pub use story_architect::{
     story_architect_messages, story_architect_tools, story_architect_turn,
     story_architect_world_lore_block, StoryArchitectOutput, STORY_ARCHITECT_SYSTEM,
@@ -234,7 +234,7 @@ pub async fn npc_turn(
     );
     let msgs = Value::Array(npc_request_messages(npc, history, summary, &user_message));
     let data = client
-        .chat_json(&msgs, &npc_schema(), Some(true), Role::Npc.as_str())
+        .chat_json(&msgs, Some(true), Role::Npc.as_str())
         .await?;
     Ok(norm_npc(&Value::Object(data)))
 }
@@ -264,7 +264,7 @@ pub async fn npc_turn_stream(
     );
     let msgs = Value::Array(npc_request_messages(npc, history, summary, &user_message));
     let JsonStreamOutput { data, stats } = client
-        .chat_json_stream(&msgs, &npc_schema(), Some(true), Role::Npc.as_str(), sink)
+        .chat_json_stream(&msgs, Some(true), Role::Npc.as_str(), sink)
         .await?;
     Ok((norm_npc(&Value::Object(data)), stats))
 }

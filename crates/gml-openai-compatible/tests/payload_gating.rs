@@ -60,7 +60,7 @@ fn payload_base_keys_and_order_no_think() {
         &messages(),
         None,
         None,
-        None,
+        false,
         false,
         "gm",
     );
@@ -74,7 +74,7 @@ fn payload_base_keys_and_order_no_think() {
 #[test]
 fn payload_cache_keys_absent_when_empty() {
     let (cfg, rs) = fixture(base_cfg());
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, None, false, "gm");
+    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, false, false, "gm");
     let obj = p.as_object().unwrap();
     assert!(!obj.contains_key("prompt_cache_key"));
     assert!(!obj.contains_key("prompt_cache_retention"));
@@ -94,7 +94,7 @@ async fn openai_client_uses_compact_model_only_for_compact_role() {
         &messages(),
         None,
         Some(false),
-        None,
+        false,
         false,
         Role::Gm.as_str(),
     );
@@ -104,7 +104,7 @@ async fn openai_client_uses_compact_model_only_for_compact_role() {
         &messages(),
         None,
         Some(true),
-        None,
+        false,
         false,
         Role::Compact.as_str(),
     );
@@ -114,7 +114,7 @@ async fn openai_client_uses_compact_model_only_for_compact_role() {
         &messages(),
         None,
         Some(true),
-        None,
+        false,
         false,
         Role::Location.as_str(),
     );
@@ -127,7 +127,7 @@ fn payload_cache_keys_present_when_set() {
     cfg.prompt_cache_key = "thread-xyz".to_string();
     cfg.prompt_cache_retention = "24h".to_string();
     let (cfg, rs) = fixture(cfg);
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, None, false, "gm");
+    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, false, false, "gm");
     let obj = p.as_object().unwrap();
     assert_eq!(
         obj.get("prompt_cache_key"),
@@ -155,29 +155,29 @@ fn client_cache_namespace_rotates_only_when_model_changes() {
     let client = OpenAICompatClient::with_model(Arc::new(cfg), Arc::new(settings), "model-a");
     client.set_session_identity(Some("session-a"), Some("thread-a"));
 
-    let first = client.payload(&messages(), None, None, None, false, "gm");
+    let first = client.payload(&messages(), None, None, false, false, "gm");
     assert_eq!(first["prompt_cache_key"], "shared-prefix:thread-a");
 
     client.set_model("model-b");
-    let rotated = client.payload(&messages(), None, None, None, false, "gm");
+    let rotated = client.payload(&messages(), None, None, false, false, "gm");
     assert_ne!(rotated["prompt_cache_key"], first["prompt_cache_key"]);
     let stable = rotated["prompt_cache_key"].clone();
 
     client.set_model("model-b");
-    let unchanged = client.payload(&messages(), None, None, None, false, "gm");
+    let unchanged = client.payload(&messages(), None, None, false, false, "gm");
     assert_eq!(unchanged["prompt_cache_key"], stable);
 }
 
 #[test]
 fn payload_max_tokens_gating() {
     let (cfg, rs) = fixture(base_cfg());
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, None, false, "gm");
+    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, false, false, "gm");
     assert!(!p.as_object().unwrap().contains_key("max_tokens"));
 
     let mut m = serde_json::Map::new();
     m.insert("max_output_tokens".into(), Value::from(512));
     rs.update(Some(&m));
-    let p2 = build_payload(&cfg, &rs, "m", &messages(), None, None, None, false, "gm");
+    let p2 = build_payload(&cfg, &rs, "m", &messages(), None, None, false, false, "gm");
     assert_eq!(
         p2.as_object().unwrap().get("max_tokens"),
         Some(&Value::from(512))
@@ -195,7 +195,7 @@ fn payload_tools_block() {
         &messages(),
         Some(&tools),
         None,
-        None,
+        false,
         false,
         "gm",
     );
@@ -216,7 +216,7 @@ fn payload_tools_absent_when_empty() {
         &messages(),
         Some(&empty),
         None,
-        None,
+        false,
         false,
         "gm",
     );
@@ -240,7 +240,7 @@ fn payload_parallel_false_when_tool_choice_none() {
         &messages(),
         Some(&tools),
         None,
-        None,
+        false,
         false,
         "gm",
     );
@@ -261,7 +261,7 @@ fn payload_non_llama_sampling_subset() {
         &messages(),
         None,
         Some(true),
-        None,
+        false,
         false,
         "gm",
     );
@@ -288,7 +288,7 @@ fn payload_llama_full_sampling_and_cache_reuse_gating() {
         &messages(),
         None,
         Some(true),
-        None,
+        false,
         false,
         "gm",
     );
@@ -318,7 +318,7 @@ fn payload_n_cache_reuse_present_when_positive() {
         &messages(),
         None,
         Some(true),
-        None,
+        false,
         false,
         "gm",
     );
@@ -341,7 +341,7 @@ fn payload_n_cache_reuse_absent_when_not_llama_even_if_positive() {
         &messages(),
         None,
         Some(true),
-        None,
+        false,
         false,
         "gm",
     );
@@ -360,7 +360,7 @@ fn payload_min_p_is_integer_zero_in_wire_bytes() {
         &messages(),
         None,
         Some(false),
-        None,
+        false,
         false,
         "gm",
     );
@@ -385,7 +385,7 @@ fn payload_effective_think_disabled_uses_plain_sampling() {
         &messages(),
         None,
         Some(true),
-        None,
+        false,
         false,
         "compact",
     );
@@ -400,7 +400,7 @@ fn payload_effective_think_disabled_uses_plain_sampling() {
 #[test]
 fn payload_stream_options_when_stream() {
     let (cfg, rs) = fixture(base_cfg());
-    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, None, true, "gm");
+    let p = build_payload(&cfg, &rs, "m", &messages(), None, None, false, true, "gm");
     let obj = p.as_object().unwrap();
     assert_eq!(obj.get("stream"), Some(&Value::from(true)));
     assert_eq!(
@@ -410,9 +410,8 @@ fn payload_stream_options_when_stream() {
 }
 
 #[test]
-fn payload_response_format_present() {
+fn payload_json_mode_uses_json_object_response_format() {
     let (cfg, rs) = fixture(base_cfg());
-    let rf = serde_json::json!({"type": "json_object"});
     let p = build_payload(
         &cfg,
         &rs,
@@ -420,12 +419,15 @@ fn payload_response_format_present() {
         &messages(),
         None,
         Some(false),
-        Some(&rf),
+        true,
         false,
         "gm",
     );
     let obj = p.as_object().unwrap();
-    assert_eq!(obj.get("response_format"), Some(&rf));
+    assert_eq!(
+        obj.get("response_format"),
+        Some(&serde_json::json!({"type": "json_object"}))
+    );
 }
 
 #[test]
@@ -443,7 +445,7 @@ fn payload_full_key_order_with_tools_and_llama_thinking() {
         &messages(),
         Some(&tools),
         Some(true),
-        None,
+        false,
         true,
         "gm",
     );

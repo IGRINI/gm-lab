@@ -95,7 +95,7 @@ impl SuperGrokClient {
         &self,
         messages: &Value,
         tools: Option<&Value>,
-        schema: Option<&Value>,
+        json_mode: bool,
         reasoning_role: &str,
     ) -> Value {
         let prompt_cache_key = self.prompt_cache_key();
@@ -103,7 +103,7 @@ impl SuperGrokClient {
         self.payload_with_scope(
             messages,
             tools,
-            schema,
+            json_mode,
             reasoning_role,
             &prompt_cache_key,
             &reasoning_scope,
@@ -114,7 +114,7 @@ impl SuperGrokClient {
         &self,
         messages: &Value,
         tools: Option<&Value>,
-        schema: Option<&Value>,
+        json_mode: bool,
         reasoning_role: &str,
         prompt_cache_key: &str,
         reasoning_scope: &str,
@@ -123,7 +123,7 @@ impl SuperGrokClient {
             &self.model_for_role(reasoning_role),
             messages,
             tools,
-            schema,
+            json_mode,
             prompt_cache_key,
             reasoning_scope,
         )
@@ -528,7 +528,7 @@ impl Backend for SuperGrokClient {
         let payload = self.payload_with_scope(
             messages,
             tools,
-            None,
+            false,
             reasoning_role,
             &prompt_cache_key,
             &reasoning_scope,
@@ -542,11 +542,10 @@ impl Backend for SuperGrokClient {
     async fn chat_json(
         &self,
         messages: &Value,
-        schema: &Value,
         _think: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
-        let payload = self.payload(messages, None, Some(schema), reasoning_role);
+        let payload = self.payload(messages, None, true, reasoning_role);
         let mut sink = gml_llm::NullSink;
         let (result, elapsed_ms) = self.collect_stream(&payload, &mut sink, true).await?;
         self.remember("chat_json", result.usage.as_ref(), elapsed_ms);
@@ -600,7 +599,7 @@ impl Backend for SuperGrokClient {
         let payload = self.payload_with_scope(
             messages,
             tools,
-            None,
+            false,
             reasoning_role,
             &prompt_cache_key,
             &reasoning_scope,
@@ -620,12 +619,11 @@ impl Backend for SuperGrokClient {
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        schema: &Value,
         _think: Option<bool>,
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<JsonStreamOutput, BackendError> {
-        let payload = self.payload(messages, None, Some(schema), reasoning_role);
+        let payload = self.payload(messages, None, true, reasoning_role);
         let (result, elapsed_ms) = self.collect_stream(&payload, sink, true).await?;
         let stats = self.remember("chat_json_stream", result.usage.as_ref(), elapsed_ms);
         Ok(JsonStreamOutput {
@@ -938,7 +936,7 @@ mod tests {
         let payload = client.payload(
             &json!([{"role":"user","content":"hello"}]),
             None,
-            None,
+            false,
             "gm",
         );
         assert_eq!(payload["model"], "grok-test");

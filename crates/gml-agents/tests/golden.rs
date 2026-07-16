@@ -607,11 +607,6 @@ fn search_select_and_keyword() {
 // --- NPC contract ----------------------------------------------------------
 
 #[test]
-fn npc_schema_byte_identical() {
-    assert_json_indent2(&agents::npc_schema(), "npc_schema.json");
-}
-
-#[test]
 fn npc_system_message_byte_identical() {
     assert_json_indent2(&agents::npc_system_message(), "npc_system_message.json");
 }

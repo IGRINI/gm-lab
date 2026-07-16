@@ -75,7 +75,6 @@ impl Backend for MarkerCompactClient {
     async fn chat_json(
         &self,
         _messages: &Value,
-        _schema: &Value,
         _think: Option<bool>,
         _reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
@@ -107,7 +106,6 @@ impl Backend for MarkerCompactClient {
     async fn chat_json_stream(
         &self,
         _messages: &Value,
-        _schema: &Value,
         _think: Option<bool>,
         _reasoning_role: &str,
         _sink: &mut (dyn DeltaSink + Send),
@@ -386,7 +384,6 @@ fn gm_compaction_clips_summarize_input_by_chars() {
         async fn chat_json(
             &self,
             _m: &Value,
-            _s: &Value,
             _th: Option<bool>,
             _r: &str,
         ) -> Result<Map<String, Value>, BackendError> {
@@ -415,7 +412,6 @@ fn gm_compaction_clips_summarize_input_by_chars() {
         async fn chat_json_stream(
             &self,
             _m: &Value,
-            _s: &Value,
             _th: Option<bool>,
             _r: &str,
             _sink: &mut (dyn DeltaSink + Send),

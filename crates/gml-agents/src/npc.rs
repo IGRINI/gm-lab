@@ -19,28 +19,6 @@ pub const NPC_CARD_HEADER: &str = "CURRENT NPC CARD:";
 /// `card_revision` bump).
 pub const NPC_CARD_UPDATE_HEADER: &str = "NPC CARD UPDATED:";
 
-/// NPC JSON-output schema — `NPC_SCHEMA` (used for the grammar fallback).
-pub fn npc_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "response": {"type": "string"},
-            "beats": {"type": "array", "items": {
-                "type": "object",
-                "properties": {
-                    "kind": {"type": "string", "enum": ["speech", "action"]},
-                    "text": {"type": "string"}
-                },
-                "required": ["kind", "text"],
-                "additionalProperties": false
-            }},
-            "claims": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["response", "beats", "claims"],
-        "additionalProperties": false,
-    })
-}
-
 /// `_NPC_PERCEPTION_BRIEF_RULES` — verbatim.
 pub const NPC_PERCEPTION_BRIEF_RULES: &str = "NPC PERCEPTION BRIEF RULES:
 - CURRENT SITUATION is what this NPC can see/hear/know or plausibly infer right now, not

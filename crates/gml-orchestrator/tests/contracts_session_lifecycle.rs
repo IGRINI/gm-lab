@@ -646,7 +646,6 @@ impl Backend for IdentityClient {
     async fn chat_json(
         &self,
         _m: &Value,
-        _s: &Value,
         _th: Option<bool>,
         _r: &str,
     ) -> Result<Map<String, Value>, BackendError> {
@@ -674,7 +673,6 @@ impl Backend for IdentityClient {
     async fn chat_json_stream(
         &self,
         _m: &Value,
-        _s: &Value,
         _th: Option<bool>,
         _r: &str,
         _sink: &mut (dyn DeltaSink + Send),

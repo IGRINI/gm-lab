@@ -115,14 +115,14 @@ impl CodexClient {
             .prompt_cache_key(&self.cfg.codex_prompt_cache_key)
     }
 
-    /// `_payload(messages, tools, think, schema, reasoning_role)` — build the
+    /// `_payload(messages, tools, think, json_mode, reasoning_role)` — build the
     /// Responses request body. Public for testing the exact shape.
     pub fn payload(
         &self,
         messages: &Value,
         tools: Option<&Value>,
         think_flag: Option<bool>,
-        schema: Option<&Value>,
+        json_mode: bool,
         reasoning_role: &str,
     ) -> Value {
         let settings = self.settings.get();
@@ -134,7 +134,6 @@ impl CodexClient {
         // messages (the Responses API does not scan `instructions`, where the
         // system prompt lands). Append a trailing hint message when absent —
         // appending keeps the shared prompt-cache prefix byte-identical.
-        let json_mode = schema.map(is_truthy).unwrap_or(false);
         if json_mode && !input_items_mention_json(&input_items) {
             input_items.push(json!({
                 "type": "message",
@@ -229,9 +228,8 @@ impl CodexClient {
             text.insert("verbosity".into(), Value::String(verbosity.to_string()));
         }
         if json_mode {
-            // `if schema:` keeps the legacy call-site contract, but the wire
-            // request stays in loose JSON-object mode. The expected shape
-            // belongs in the prompt.
+            // The expected shape belongs in the prompt. The provider receives
+            // only loose JSON-object mode, never a response schema.
             let mut format = Map::new();
             format.insert("type".into(), Value::String("json_object".into()));
             text.insert("format".into(), Value::Object(format));
@@ -513,7 +511,7 @@ impl Backend for CodexClient {
         think_flag: Option<bool>,
         reasoning_role: &str,
     ) -> Result<ChatOutput, BackendError> {
-        let payload = self.payload(messages, tools, think_flag, None, reasoning_role);
+        let payload = self.payload(messages, tools, think_flag, false, reasoning_role);
         let mut sink = gml_llm::NullSink;
         let (result, elapsed_ms) = self
             .collect_stream(&payload, &mut sink, sse_channel::CONTENT)
@@ -531,11 +529,10 @@ impl Backend for CodexClient {
     async fn chat_json(
         &self,
         messages: &Value,
-        schema: &Value,
         think_flag: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
-        let payload = self.payload(messages, None, think_flag, Some(schema), reasoning_role);
+        let payload = self.payload(messages, None, think_flag, true, reasoning_role);
         let mut sink = gml_llm::NullSink;
         let (result, elapsed_ms) = self
             .collect_stream(&payload, &mut sink, sse_channel::CONTENT)
@@ -588,7 +585,7 @@ impl Backend for CodexClient {
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<ChatStreamOutput, BackendError> {
-        let payload = self.payload(messages, tools, think_flag, None, reasoning_role);
+        let payload = self.payload(messages, tools, think_flag, false, reasoning_role);
         let (result, elapsed_ms) = self
             .collect_stream(&payload, sink, sse_channel::CONTENT)
             .await?;
@@ -606,13 +603,12 @@ impl Backend for CodexClient {
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        schema: &Value,
         think_flag: Option<bool>,
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<JsonStreamOutput, BackendError> {
         // chat_json_stream forwards only "content" deltas (content_channel="content").
-        let payload = self.payload(messages, None, think_flag, Some(schema), reasoning_role);
+        let payload = self.payload(messages, None, think_flag, true, reasoning_role);
         // Wrap the sink to drop thinking deltas (Python only yields "content").
         let mut filtered = ContentOnlySink { inner: sink };
         let (result, elapsed_ms) = self
@@ -1022,7 +1018,7 @@ mod tests {
             {"role": "system", "content": "S2"},
             {"role": "user", "content": "hi"},
         ]);
-        let p = client.payload(&messages, None, Some(false), None, Role::Gm.as_str());
+        let p = client.payload(&messages, None, Some(false), false, Role::Gm.as_str());
         assert_eq!(p.get("model").unwrap(), "gpt-test");
         assert_eq!(p.get("instructions").unwrap(), "S1\n\nS2");
         assert_eq!(p.get("store").unwrap(), &Value::Bool(false));
@@ -1066,7 +1062,13 @@ mod tests {
             }
         }]);
 
-        let payload = client.payload(&messages, Some(&tools), Some(true), None, Role::Gm.as_str());
+        let payload = client.payload(
+            &messages,
+            Some(&tools),
+            Some(true),
+            false,
+            Role::Gm.as_str(),
+        );
 
         assert!(payload.get("instructions").is_none());
         assert!(payload.get("tools").is_none());
@@ -1108,7 +1110,7 @@ mod tests {
         let client = CodexClient::new(cfg, settings);
         let messages = serde_json::json!([{"role": "user", "content": "hello"}]);
 
-        let payload = client.payload(&messages, None, Some(false), None, Role::Npc.as_str());
+        let payload = client.payload(&messages, None, Some(false), false, Role::Npc.as_str());
 
         assert_eq!(payload.pointer("/reasoning/context").unwrap(), "all_turns");
         assert!(payload.pointer("/reasoning/effort").is_none());
@@ -1164,7 +1166,7 @@ mod tests {
             &messages,
             Some(&tools),
             Some(false),
-            None,
+            false,
             Role::Gm.as_str(),
         );
 
@@ -1193,10 +1195,10 @@ mod tests {
         let client = CodexClient::new(cfg, settings);
         let messages = serde_json::json!([{"role": "user", "content": "hi"}]);
 
-        let gm = client.payload(&messages, None, Some(false), None, Role::Gm.as_str());
+        let gm = client.payload(&messages, None, Some(false), false, Role::Gm.as_str());
         assert_eq!(gm.get("model").unwrap(), "gpt-main");
 
-        let compact = client.payload(&messages, None, Some(true), None, Role::Compact.as_str());
+        let compact = client.payload(&messages, None, Some(true), false, Role::Compact.as_str());
         assert_eq!(compact.get("model").unwrap(), "gpt-mini-compact");
     }
 
@@ -1210,20 +1212,20 @@ mod tests {
         let client = CodexClient::new(cfg, settings);
         let messages = serde_json::json!([{"role": "user", "content": "hi"}]);
         // think=true with GM role (default effort low) -> reasoning present
-        let p = client.payload(&messages, None, Some(true), None, Role::Gm.as_str());
+        let p = client.payload(&messages, None, Some(true), false, Role::Gm.as_str());
         assert!(p.get("reasoning").is_some());
         assert_eq!(
             p.get("include").unwrap(),
             &serde_json::json!(["reasoning.encrypted_content"])
         );
         // include empty when no reasoning (think=false)
-        let p2 = client.payload(&messages, None, Some(false), None, Role::Gm.as_str());
+        let p2 = client.payload(&messages, None, Some(false), false, Role::Gm.as_str());
         assert_eq!(p2.get("include").unwrap(), &serde_json::json!([]));
         assert!(p2.get("reasoning").is_none());
     }
 
     #[test]
-    fn payload_shape_hint_sets_json_object_text_format() {
+    fn payload_json_mode_sets_json_object_text_format() {
         let cfg = Arc::new(Config::from_env());
         let settings = Arc::new(RuntimeSettings::new(
             &cfg,
@@ -1231,14 +1233,7 @@ mod tests {
         ));
         let client = CodexClient::new(cfg, settings);
         let messages = serde_json::json!([{"role": "user", "content": "hi"}]);
-        let schema = serde_json::json!({"type": "object", "properties": {}});
-        let p = client.payload(
-            &messages,
-            None,
-            Some(true),
-            Some(&schema),
-            Role::Gm.as_str(),
-        );
+        let p = client.payload(&messages, None, Some(true), true, Role::Gm.as_str());
         assert_eq!(p.pointer("/text/format/type").unwrap(), "json_object");
         assert!(p.pointer("/text/format/name").is_none());
         assert!(p.pointer("/text/format/strict").is_none());
@@ -1270,20 +1265,13 @@ mod tests {
             {"role": "system", "content": "Return JSON only."},
             {"role": "user", "content": "Верни ответ как JSON-объект: {\"moves\":[]}"},
         ]);
-        let schema = serde_json::json!({"type": "object", "properties": {}});
-        let p = client.payload(
-            &messages,
-            None,
-            Some(false),
-            Some(&schema),
-            Role::Gm.as_str(),
-        );
+        let p = client.payload(&messages, None, Some(false), true, Role::Gm.as_str());
         let input = p.get("input").unwrap().as_array().unwrap();
         assert_eq!(input.len(), 1);
     }
 
     #[test]
-    fn payload_without_schema_never_appends_json_hint() {
+    fn payload_without_json_mode_never_appends_json_hint() {
         let cfg = Arc::new(Config::from_env());
         let settings = Arc::new(RuntimeSettings::new(
             &cfg,
@@ -1291,7 +1279,7 @@ mod tests {
         ));
         let client = CodexClient::new(cfg, settings);
         let messages = serde_json::json!([{"role": "user", "content": "hi"}]);
-        let p = client.payload(&messages, None, Some(false), None, Role::Gm.as_str());
+        let p = client.payload(&messages, None, Some(false), false, Role::Gm.as_str());
         let input = p.get("input").unwrap().as_array().unwrap();
         assert_eq!(input.len(), 1);
     }

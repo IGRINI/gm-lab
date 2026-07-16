@@ -147,7 +147,7 @@ impl OpenAICompatClient {
         messages: &Value,
         tools: Option<&Value>,
         think_flag: Option<bool>,
-        response_format: Option<&Value>,
+        json_mode: bool,
         stream: bool,
         reasoning_role: &str,
     ) -> Value {
@@ -159,7 +159,7 @@ impl OpenAICompatClient {
             messages,
             tools,
             think_flag,
-            response_format,
+            json_mode,
             stream,
             reasoning_role,
         );
@@ -380,7 +380,7 @@ pub fn build_payload(
     messages: &Value,
     tools: Option<&Value>,
     think_flag: Option<bool>,
-    response_format: Option<&Value>,
+    json_mode: bool,
     stream: bool,
     reasoning_role: &str,
 ) -> Value {
@@ -429,11 +429,11 @@ pub fn build_payload(
         p.insert("parallel_tool_calls".to_string(), Value::Bool(parallel));
     }
 
-    // if response_format: p["response_format"] = response_format
-    if let Some(rf) = response_format {
-        if is_truthy(rf) {
-            p.insert("response_format".to_string(), rf.clone());
-        }
+    if json_mode {
+        p.insert(
+            "response_format".to_string(),
+            serde_json::json!({"type": "json_object"}),
+        );
     }
 
     // if think is not None: ...
@@ -653,7 +653,7 @@ impl Backend for OpenAICompatClient {
         think_flag: Option<bool>,
         reasoning_role: &str,
     ) -> Result<ChatOutput, BackendError> {
-        let payload = self.payload(messages, tools, think_flag, None, false, reasoning_role);
+        let payload = self.payload(messages, tools, think_flag, false, false, reasoning_role);
         let data = self.post(&payload).await?;
         self.remember(
             "chat",
@@ -680,14 +680,12 @@ impl Backend for OpenAICompatClient {
     async fn chat_json(
         &self,
         messages: &Value,
-        _schema: &Value,
         think_flag: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
         // First attempt: JSON object mode, think as given. The expected shape is
         // prompt-described; schemas are deliberately not sent to the model.
-        let rf = serde_json::json!({"type": "json_object"});
-        let payload = self.payload(messages, None, think_flag, Some(&rf), false, reasoning_role);
+        let payload = self.payload(messages, None, think_flag, true, false, reasoning_role);
         let data = self.post(&payload).await?;
         self.remember(
             "chat_json",
@@ -707,14 +705,7 @@ impl Backend for OpenAICompatClient {
             return Ok(out);
         }
         // Fallback: same json_object mode, think=False.
-        let payload2 = self.payload(
-            messages,
-            None,
-            Some(false),
-            Some(&rf),
-            false,
-            reasoning_role,
-        );
+        let payload2 = self.payload(messages, None, Some(false), true, false, reasoning_role);
         let data2 = self.post(&payload2).await?;
         self.remember(
             "chat_json_fallback",
@@ -765,7 +756,7 @@ impl Backend for OpenAICompatClient {
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<ChatStreamOutput, BackendError> {
-        let payload = self.payload(messages, tools, think_flag, None, true, reasoning_role);
+        let payload = self.payload(messages, tools, think_flag, false, true, reasoning_role);
 
         let mut t_parts: Vec<String> = Vec::new();
         let mut c_parts: Vec<String> = Vec::new();
@@ -863,13 +854,11 @@ impl Backend for OpenAICompatClient {
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        schema: &Value,
         think_flag: Option<bool>,
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<JsonStreamOutput, BackendError> {
-        let rf = serde_json::json!({"type": "json_object"});
-        let payload = self.payload(messages, None, think_flag, Some(&rf), true, reasoning_role);
+        let payload = self.payload(messages, None, think_flag, true, true, reasoning_role);
 
         let mut parts: Vec<String> = Vec::new();
         let mut usage: Option<Value> = None;
@@ -906,13 +895,12 @@ impl Backend for OpenAICompatClient {
             timings.as_ref(),
             *self.last_stream_elapsed_ms.lock().expect("elapsed lock"),
         );
-        // if not data: data = self.chat_json(messages, schema, reasoning_role=...)
+        // If streaming produced no object, retry once through the non-streaming
+        // JSON-object path.
         if data.is_empty() {
             // Python fallback passes think defaulted (True) — chat_json default
             // think=True; only reasoning_role is overridden.
-            data = self
-                .chat_json(messages, schema, Some(true), reasoning_role)
-                .await?;
+            data = self.chat_json(messages, Some(true), reasoning_role).await?;
         }
         Ok(JsonStreamOutput { data, stats })
     }

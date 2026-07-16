@@ -6,11 +6,21 @@ pub(crate) fn build_request(
     model: &str,
     messages: &Value,
     tools: Option<&Value>,
-    schema: Option<&Value>,
+    json_mode: bool,
     prompt_cache_key: &str,
     reasoning_scope: &str,
 ) -> Value {
-    let (instructions, input) = split_messages(messages, Some(reasoning_scope));
+    let (instructions, mut input) = split_messages(messages, Some(reasoning_scope));
+    // Responses JSON mode expects an explicit JSON instruction in the input,
+    // while system messages are serialized separately as `instructions`.
+    // Append the hint so the cacheable prefix remains unchanged.
+    if json_mode && !input_items_mention_json(&input) {
+        input.push(message_item(
+            "user",
+            "input_text",
+            "Return the result strictly as a JSON object.",
+        ));
+    }
     let mut request = Map::new();
     request.insert("model".into(), Value::String(model.to_string()));
     if !instructions.is_empty() {
@@ -36,18 +46,11 @@ pub(crate) fn build_request(
         request.insert("tool_choice".into(), Value::String("auto".to_string()));
         request.insert("parallel_tool_calls".into(), Value::Bool(true));
     }
-    if let Some(schema) = schema {
-        request.insert(
-            "text".into(),
-            json!({
-                "format": {
-                    "type": "json_schema",
-                    "name": "gm_lab_response",
-                    "strict": true,
-                    "schema": strict_schema(schema),
-                }
-            }),
-        );
+    if json_mode {
+        // Output shapes belong in the prompt. Provider-side JSON Schema has
+        // subtly different subsets and strictness rules across connectors; the
+        // common `chat_json` contract only asks for a syntactically valid object.
+        request.insert("text".into(), json!({"format": {"type": "json_object"}}));
     }
     Value::Object(request)
 }
@@ -227,6 +230,24 @@ fn message_item(role: &str, content_type: &str, text: &str) -> Value {
         "type": "message",
         "role": role,
         "content": [{"type": content_type, "text": text}],
+    })
+}
+
+fn input_items_mention_json(items: &[Value]) -> bool {
+    items.iter().any(|item| {
+        if item
+            .get("output")
+            .and_then(Value::as_str)
+            .is_some_and(|output| output.to_ascii_lowercase().contains("json"))
+        {
+            return true;
+        }
+        item.get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .any(|text| text.to_ascii_lowercase().contains("json"))
     })
 }
 
@@ -489,7 +510,7 @@ mod tests {
                 {"role":"user","content":"hello"}
             ]),
             None,
-            None,
+            false,
             "conversation-1",
             "conversation-1",
         );
@@ -498,6 +519,46 @@ mod tests {
         assert_eq!(request["store"], false);
         assert_eq!(request["stream"], true);
         assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    #[test]
+    fn json_response_uses_json_object_without_provider_schema() {
+        let request = build_request(
+            "grok-test",
+            &json!([{"role":"user","content":"Return JSON only."}]),
+            None,
+            true,
+            "conversation-1",
+            "conversation-1",
+        );
+
+        assert_eq!(request.pointer("/text/format/type").unwrap(), "json_object");
+        assert!(request.pointer("/text/format/schema").is_none());
+        assert!(request.pointer("/text/format/name").is_none());
+        assert!(request.pointer("/text/format/strict").is_none());
+        assert_eq!(request["input"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn json_response_appends_input_hint_when_only_system_mentions_json() {
+        let request = build_request(
+            "grok-test",
+            &json!([
+                {"role":"system","content":"Return JSON only."},
+                {"role":"user","content":"Draft the result now."}
+            ]),
+            None,
+            true,
+            "conversation-1",
+            "conversation-1",
+        );
+
+        assert_eq!(request.pointer("/text/format/type").unwrap(), "json_object");
+        assert_eq!(request["input"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            request.pointer("/input/1/content/0/text").unwrap(),
+            "Return the result strictly as a JSON object."
+        );
     }
 
     #[test]
@@ -520,7 +581,7 @@ mod tests {
             "grok-test",
             &Value::Array(vec![assistant.clone()]),
             None,
-            None,
+            false,
             "fixed-cache-key",
             "thread-a",
         );
@@ -539,7 +600,7 @@ mod tests {
             "grok-test",
             &Value::Array(vec![assistant]),
             None,
-            None,
+            false,
             "fixed-cache-key",
             "thread-b",
         );
@@ -560,7 +621,7 @@ mod tests {
             "grok-test",
             &json!([assistant]),
             None,
-            None,
+            false,
             "thread",
             "thread",
         );
@@ -617,7 +678,7 @@ mod tests {
             "grok-test",
             &restored,
             None,
-            None,
+            false,
             "fixed-cache-key",
             "thread",
         );

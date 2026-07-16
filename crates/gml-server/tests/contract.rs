@@ -108,7 +108,6 @@ impl Backend for IdentitySpyBackend {
     async fn chat_json(
         &self,
         _messages: &Value,
-        _schema: &Value,
         _think: Option<bool>,
         _reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
@@ -150,7 +149,6 @@ impl Backend for IdentitySpyBackend {
     async fn chat_json_stream(
         &self,
         _messages: &Value,
-        _schema: &Value,
         _think: Option<bool>,
         _reasoning_role: &str,
         _sink: &mut (dyn DeltaSink + Send),
@@ -215,13 +213,10 @@ impl Backend for FailFirstTurnBackend {
     async fn chat_json(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
-        self.inner
-            .chat_json(messages, schema, think, reasoning_role)
-            .await
+        self.inner.chat_json(messages, think, reasoning_role).await
     }
 
     async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
@@ -248,13 +243,12 @@ impl Backend for FailFirstTurnBackend {
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<JsonStreamOutput, BackendError> {
         self.inner
-            .chat_json_stream(messages, schema, think, reasoning_role, sink)
+            .chat_json_stream(messages, think, reasoning_role, sink)
             .await
     }
 }
@@ -323,13 +317,10 @@ impl Backend for PendingTurnBackend {
     async fn chat_json(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
-        self.inner
-            .chat_json(messages, schema, think, reasoning_role)
-            .await
+        self.inner.chat_json(messages, think, reasoning_role).await
     }
 
     async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
@@ -352,13 +343,12 @@ impl Backend for PendingTurnBackend {
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<JsonStreamOutput, BackendError> {
         self.inner
-            .chat_json_stream(messages, schema, think, reasoning_role, sink)
+            .chat_json_stream(messages, think, reasoning_role, sink)
             .await
     }
 }

@@ -4,13 +4,15 @@
 //! Connector crates implement it and the orchestrator holds a `dyn Backend`
 //! without knowing which provider owns the wire protocol.
 //!
-//! ## Message / tool / schema shapes
+//! ## Message and tool shapes
 //!
-//! Python passes plain dicts/lists around (`messages`, `tools`, `schema`,
-//! `response_format`). We keep them as [`serde_json::Value`] so the exact JSON
-//! shapes the agents layer assembles are preserved byte-for-byte (key order via
-//! the `preserve_order` serde feature). The orchestrator owns the construction
-//! of these values; the backend only forwards/serializes them.
+//! Python passes plain dicts/lists around for `messages` and `tools`. We keep
+//! them as [`serde_json::Value`] so the exact JSON shapes the agents layer
+//! assembles are preserved (key order via the `preserve_order` serde feature).
+//! Tool schemas belong to native function calling and connectors serialize them
+//! for their provider. Structured JSON methods deliberately carry no response
+//! schema: connectors request loose JSON-object mode, while the expected output
+//! shape remains part of the prompt.
 //!
 //! ## Streaming
 //!
@@ -117,11 +119,11 @@ impl BackendError {
 /// The client interface the orchestrator drives. Faithful port of the duck-typed
 /// surface required by the orchestrator.
 ///
-/// All `messages` / `tools` / `schema` / `response_format` are JSON values the
-/// agents layer constructs. `think` is `Option<bool>` to mirror Python's
-/// tri-state (`think=None` disables the reasoning/sampling block entirely in
-/// `_payload`; `chat` passes `think=False`, `chat_json` passes `think=True`).
-/// `reasoning_role` is the role string (`config.ROLE_GM` etc.).
+/// `messages` and tool definitions are values the agents layer constructs.
+/// `think` is `Option<bool>` to mirror Python's tri-state (`think=None`
+/// disables the reasoning/sampling block entirely in `_payload`; `chat` passes
+/// `think=False`, `chat_json` passes `think=True`). `reasoning_role` is the role
+/// string (`config.ROLE_GM` etc.).
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// Stable connector id that created this backend. Production histories pass
@@ -186,11 +188,13 @@ pub trait Backend: Send + Sync {
         reasoning_role: &str,
     ) -> Result<ChatOutput, BackendError>;
 
-    /// `chat_json(messages, schema, think, reasoning_role)` -> parsed dict.
+    /// `chat_json(messages, think, reasoning_role)` -> parsed dict.
+    ///
+    /// Implementations request loose JSON-object mode. Response shapes belong
+    /// in prompts and must not become provider-side response schemas.
     async fn chat_json(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError>;
@@ -210,12 +214,13 @@ pub trait Backend: Send + Sync {
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<ChatStreamOutput, BackendError>;
 
-    /// `chat_json_stream(messages, schema, think, reasoning_role)` — yields
-    /// content deltas via `sink`, returns the final `(parsed_dict, stats)`.
+    /// `chat_json_stream(messages, think, reasoning_role)` — yields content
+    /// deltas via `sink`, returns the final `(parsed_dict, stats)`.
+    ///
+    /// This has the same loose JSON-object contract as [`Backend::chat_json`].
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),

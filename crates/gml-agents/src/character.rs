@@ -146,12 +146,7 @@ pub async fn generate_character(
         history,
     ));
     client
-        .chat_json(
-            &messages,
-            &Value::Null,
-            Some(true),
-            Role::Character.as_str(),
-        )
+        .chat_json(&messages, Some(true), Role::Character.as_str())
         .await
 }
 

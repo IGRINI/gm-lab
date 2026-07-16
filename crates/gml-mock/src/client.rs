@@ -814,7 +814,6 @@ impl Backend for MockClient {
     async fn chat_json(
         &self,
         messages: &Value,
-        _schema: &Value,
         _think: Option<bool>,
         _reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
@@ -995,7 +994,6 @@ impl Backend for MockClient {
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        _schema: &Value,
         _think: Option<bool>,
         _reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
@@ -1152,10 +1150,7 @@ mod tests {
         let messages = serde_json::json!([
             {"role": "system", "content": "Generate the starting scene for this WorldSeed."}
         ]);
-        let out = mc
-            .chat_json(&messages, &Value::Null, Some(true), "gm")
-            .await
-            .unwrap();
+        let out = mc.chat_json(&messages, Some(true), "gm").await.unwrap();
         assert!(out.contains_key("public_intro"));
         assert_eq!(
             out.get("hidden_truth"),
@@ -1174,10 +1169,7 @@ mod tests {
         let messages = serde_json::json!([
             {"role": "system", "content": "Report current-scene NPC roster changes as moves."}
         ]);
-        let out = mc
-            .chat_json(&messages, &Value::Null, Some(true), "gm")
-            .await
-            .unwrap();
+        let out = mc.chat_json(&messages, Some(true), "gm").await.unwrap();
         assert_eq!(out.get("moves"), Some(&Value::Array(Vec::new())));
         assert_eq!(out.len(), 1);
     }
@@ -1189,10 +1181,7 @@ mod tests {
             {"role": "system", "content": "You are an NPC."},
             {"role": "user", "content": "Игрок обвиняет тебя."}
         ]);
-        let out = mc
-            .chat_json(&messages, &Value::Null, Some(false), "npc")
-            .await
-            .unwrap();
+        let out = mc.chat_json(&messages, Some(false), "npc").await.unwrap();
         assert_eq!(
             out.get("action").and_then(|v| v.as_str()),
             Some("пытается незаметно выскользнуть через заднюю дверь трактира")
@@ -1208,10 +1197,7 @@ mod tests {
             {"role": "system", "content": "You are an NPC."},
             {"role": "user", "content": "Замечание ГМ: REDO this, no back door."}
         ]);
-        let out = mc
-            .chat_json(&messages, &Value::Null, Some(false), "npc")
-            .await
-            .unwrap();
+        let out = mc.chat_json(&messages, Some(false), "npc").await.unwrap();
         assert_eq!(
             out.get("speech").and_then(|v| v.as_str()),
             Some("Сейчас, дружище, эль принесу, обожди-ка.")
@@ -1291,7 +1277,7 @@ mod tests {
             c2.lock().unwrap().push(delta.to_string());
         };
         let out = mc
-            .chat_json_stream(&messages, &Value::Null, Some(true), "gm", &mut sink)
+            .chat_json_stream(&messages, Some(true), "gm", &mut sink)
             .await
             .unwrap();
         assert!(out.data.contains_key("public_intro"));

@@ -120,7 +120,7 @@ pub async fn generate_location(
         history,
     ));
     client
-        .chat_json(&messages, &Value::Null, Some(true), Role::Location.as_str())
+        .chat_json(&messages, Some(true), Role::Location.as_str())
         .await
 }
 

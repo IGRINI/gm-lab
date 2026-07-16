@@ -131,7 +131,6 @@ impl Backend for IdentityBackend {
     async fn chat_json(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
     ) -> Result<Map<String, Value>, BackendError> {
@@ -143,9 +142,7 @@ impl Backend for IdentityBackend {
         if let Some(scripted_json) = &self.scripted_json {
             return Ok(scripted_json.clone());
         }
-        self.inner
-            .chat_json(messages, schema, think, reasoning_role)
-            .await
+        self.inner.chat_json(messages, think, reasoning_role).await
     }
 
     async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
@@ -168,13 +165,12 @@ impl Backend for IdentityBackend {
     async fn chat_json_stream(
         &self,
         messages: &Value,
-        schema: &Value,
         think: Option<bool>,
         reasoning_role: &str,
         sink: &mut (dyn DeltaSink + Send),
     ) -> Result<JsonStreamOutput, BackendError> {
         self.inner
-            .chat_json_stream(messages, schema, think, reasoning_role, sink)
+            .chat_json_stream(messages, think, reasoning_role, sink)
             .await
     }
 }

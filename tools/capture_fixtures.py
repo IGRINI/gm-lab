@@ -364,7 +364,6 @@ def capture_agents() -> None:
     (agents_dir / "gm_tools.compact.json").write_text(raw_tools, encoding="utf-8", newline="")
     _write(agents_dir / "initial_gm_tool_names.json", sorted(agents.initial_gm_tool_names(False)))
     _write(agents_dir / "initial_gm_tool_names_with_player.json", sorted(agents.initial_gm_tool_names(True)))
-    _write(agents_dir / "npc_schema.json", agents.NPC_SCHEMA)
 
     # NPC ordering check: Python dict insertion order vs sorted(id).
     npc_ids_insertion = list(w.npcs.keys())

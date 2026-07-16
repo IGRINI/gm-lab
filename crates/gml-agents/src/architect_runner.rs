@@ -493,7 +493,6 @@ mod tests {
         async fn chat_json(
             &self,
             _messages: &Value,
-            _schema: &Value,
             _think: Option<bool>,
             _reasoning_role: &str,
         ) -> Result<Map<String, Value>, BackendError> {
@@ -532,7 +531,6 @@ mod tests {
         async fn chat_json_stream(
             &self,
             _messages: &Value,
-            _schema: &Value,
             _think: Option<bool>,
             _reasoning_role: &str,
             _sink: &mut (dyn DeltaSink + Send),
