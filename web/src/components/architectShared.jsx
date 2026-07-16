@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useTranslation } from "react-i18next";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import ConnectorModelPicker from "./ConnectorModelPicker.jsx";
 import Modal from "./Modal.jsx";
@@ -123,15 +124,34 @@ export function useLiveSegments() {
   return { liveSegments, liveSegmentsRef, appendLiveDelta, pushLiveTool, clearLive };
 }
 
+// Keep the UI-only greeting in sync with the selected interface language (and,
+// for characters, with a newly resolved base title) without rewriting a real
+// conversation. Persisted architect/model messages are deliberately untouched.
+export function useLocalizedFallbackMessage(setMessages, fallbackText) {
+  const previousTextRef = useRef(fallbackText);
+  useEffect(() => {
+    const previousText = previousTextRef.current;
+    previousTextRef.current = fallbackText;
+    if (previousText === fallbackText) return;
+    setMessages((current) => {
+      if (!current.some((message) => message.uiFallback === true)) return current;
+      return current.map((message) =>
+        message.uiFallback === true ? { ...message, content: fallbackText } : message
+      );
+    });
+  }, [fallbackText, setMessages]);
+}
+
 // One renderer for both the committed log and the in-flight segments, so the
 // live view and the reloaded history look identical: reasoning → spoiler, tool →
 // detailed card, user/assistant → bubble (with a caret while streaming).
-export function ArchitectSegment({ message, live = false, thinkLabel = "🧠 Архитектор рассуждает" }) {
+export function ArchitectSegment({ message, live = false, thinkLabel = "" }) {
+  const { t } = useTranslation("studio");
   const vis = useContext(VisibilityContext);
   if (message.role === "think") {
     return (
       <div className="world-architect-step">
-        <Spoiler label={thinkLabel}>
+        <Spoiler label={thinkLabel || t("architect.thinking")}>
           <MarkdownText>{textValue(message.content) || "—"}</MarkdownText>
         </Spoiler>
       </div>
@@ -159,7 +179,7 @@ export function ArchitectChatPane({
   helpTitle,
   helpSubtitle,
   helpNote,
-  usageTitle = "Токены архитектора",
+  usageTitle,
   thinkLabel,
   placeholder,
   messages,
@@ -189,6 +209,7 @@ export function ArchitectChatPane({
   onConnectorAuthStart,
   onConnectorAuthCancel,
 }) {
+  const { t } = useTranslation("studio");
   const vis = useContext(VisibilityContext);
   const logRef = useRef(null);
   const inputRef = useRef(null);
@@ -224,19 +245,22 @@ export function ArchitectChatPane({
               tipClassName="ui-tip-wrap"
               content={
                 <TipContent
-                  title={usageTitle}
-                  subtitle={`вызовов: ${usage.calls}`}
+                  title={usageTitle || t("architect.usage.title")}
+                  subtitle={t("architect.usage.calls", { count: usage.calls })}
                   rows={[
-                    ["ввод", `${usage.in}`],
-                    ["вывод", `${usage.out}`],
-                    ["кэш", `${usage.cached}`],
-                    ["всего", `${usage.tokens}`],
+                    [t("architect.usage.input"), `${usage.in}`],
+                    [t("architect.usage.output"), `${usage.out}`],
+                    [t("architect.usage.cached"), `${usage.cached}`],
+                    [t("architect.usage.total"), `${usage.tokens}`],
                   ]}
                 />
               }
             >
               <span className="world-architect-usage">
-                {fmtK(usage.tokens)} ток · кэш {fmtK(usage.cached)}
+                {t("architect.usage.compact", {
+                  tokens: fmtK(usage.tokens),
+                  cached: fmtK(usage.cached),
+                })}
               </span>
             </Tooltip>
           )}
@@ -247,7 +271,7 @@ export function ArchitectChatPane({
               onClick={onOpenDebug}
               disabled={!debug}
             >
-              debug
+              {t("architect.debug.open")}
             </button>
           )}
           <Tooltip
@@ -274,7 +298,7 @@ export function ArchitectChatPane({
         authPrompts={connectorAuthPrompts}
         onAuthStart={onConnectorAuthStart}
         onAuthCancel={onConnectorAuthCancel}
-        ariaLabel={`Коннектор и модель: ${headTitle}`}
+        ariaLabel={t("architect.connectorModel", { title: headTitle })}
       />
       <div ref={logRef} className="world-architect-log" aria-live="polite">
         {messages.map((message, index) => (
@@ -295,7 +319,11 @@ export function ArchitectChatPane({
               <i />
               <i />
             </span>
-            <span>Архитектор печатает…{elapsed > 0 ? ` ${elapsed} с` : ""}</span>
+            <span>
+              {elapsed > 0
+                ? t("architect.typingElapsed", { seconds: elapsed })
+                : t("architect.typing")}
+            </span>
           </div>
         )}
       </div>
@@ -315,7 +343,7 @@ export function ArchitectChatPane({
           disabled={locked}
         />
         <button type="button" className="btn" onClick={onSend} disabled={locked || !input.trim()}>
-          Спросить
+          {t("architect.ask")}
         </button>
       </div>
       {error && (
@@ -328,7 +356,7 @@ export function ArchitectChatPane({
               onClick={onRetry}
               disabled={locked}
             >
-              Повторить
+              {t("architect.retry")}
             </button>
           )}
         </div>
@@ -340,41 +368,47 @@ export function ArchitectChatPane({
 // The shared architect debug modal (last model call). Both panels open it from
 // the chat pane's "debug" button.
 export function ArchitectDebugModal({ debug, onClose }) {
+  const { t } = useTranslation("studio");
   if (!debug) return null;
   return (
-    <Modal title="Debug · архитектор" subtitle="последний вызов модели" wide onClose={onClose}>
+    <Modal
+      title={t("architect.debug.title")}
+      subtitle={t("architect.debug.subtitle")}
+      wide
+      onClose={onClose}
+    >
       <div className="arch-debug">
         <section className="arch-debug-sec">
-          <h4>Токены</h4>
+          <h4>{t("architect.debug.tokens")}</h4>
           <div className="arch-debug-usage">
-            <span>ввод <b>{debug.usage?.in ?? "—"}</b></span>
-            <span>вывод <b>{debug.usage?.out ?? "—"}</b></span>
-            <span>кэш <b>{debug.usage?.cached ?? "—"}</b></span>
-            <span>всего <b>{debug.usage?.tokens ?? "—"}</b></span>
+            <span>{t("architect.usage.input")} <b>{debug.usage?.in ?? "—"}</b></span>
+            <span>{t("architect.usage.output")} <b>{debug.usage?.out ?? "—"}</b></span>
+            <span>{t("architect.usage.cached")} <b>{debug.usage?.cached ?? "—"}</b></span>
+            <span>{t("architect.usage.total")} <b>{debug.usage?.tokens ?? "—"}</b></span>
           </div>
         </section>
         {debug.thinking && (
           <section className="arch-debug-sec">
-            <h4>Рассуждение</h4>
+            <h4>{t("architect.debug.thinking")}</h4>
             <pre>{debug.thinking}</pre>
           </section>
         )}
         <section className="arch-debug-sec">
-          <h4>Ответ модели</h4>
+          <h4>{t("architect.debug.modelResponse")}</h4>
           <pre>{JSON.stringify(debug.response, null, 2)}</pre>
         </section>
         {debug.calls?.length > 0 && (
           <section className="arch-debug-sec">
-            <h4>Tool calls</h4>
+            <h4>{t("architect.debug.toolCalls")}</h4>
             <pre>{JSON.stringify(debug.calls, null, 2)}</pre>
           </section>
         )}
         <section className="arch-debug-sec">
-          <h4>Запрос (messages)</h4>
+          <h4>{t("architect.debug.request")}</h4>
           <pre>{JSON.stringify(debug.request, null, 2)}</pre>
         </section>
         <section className="arch-debug-sec">
-          <h4>Stats (raw _meta)</h4>
+          <h4>{t("architect.debug.stats")}</h4>
           <pre>{JSON.stringify(debug.stats, null, 2)}</pre>
         </section>
       </div>

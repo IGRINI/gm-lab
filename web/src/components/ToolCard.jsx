@@ -1,5 +1,6 @@
 import Icon from "./Icon.jsx";
 import { useContext } from "react";
+import { useTranslation } from "react-i18next";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip from "./Tooltip.jsx";
@@ -34,65 +35,23 @@ const ACCENT = {
 // World-state record namespaces (update_world_state / query_world_state items).
 // Russian labels + tone keyed by the backend type enum — presentation only.
 const WS_TYPE = {
-  fact: { label: "факт", tone: "ok" },
-  rumor: { label: "слух", tone: "warn" },
-  npc_memory: { label: "память NPC", tone: "" },
-  relationship: { label: "отношение", tone: "" },
-  goal: { label: "цель", tone: "" },
-  public_lookup: { label: "публичный факт", tone: "ok" },
+  fact: "ok",
+  rumor: "warn",
+  npc_memory: "",
+  relationship: "",
+  goal: "",
+  public_lookup: "ok",
 };
 const WS_OP = {
-  add: { label: "добавить", tone: "ok" },
-  update: { label: "изменить", tone: "warn" },
-  delete: { label: "удалить", tone: "redo" },
-};
-const WS_SCOPE = {
-  public: "публично",
-  gm: "ГМ",
-  npc: "только NPC",
-  shared: "общее",
-  player: "игрок",
-};
-const PROFILE_PRESET = {
-  visible: "видимое",
-  social: "социальное",
-  mechanics: "механика",
-  status: "состояние",
-  identity: "личность",
+  add: "ok",
+  update: "warn",
+  delete: "redo",
 };
 
 // Status LABELS come from the backend via StatusLabelsContext (single source).
 // Tone (badge style) and help (tooltip copy) are presentation-only and keyed by
 // the same status enum — defined once here, not duplicated across the app.
 const STATUS_TONE = { known: "ok", likely: "warn", rumored: "muted", unknown: "muted" };
-const STATUS_HELP = {
-  known: "Местонахождение установлено как рабочий факт текущей истории.",
-  likely: "Это вероятное местонахождение, но не железное подтверждение.",
-  rumored: "Это слух или непроверенная зацепка.",
-  unknown: "Точное местонахождение не установлено.",
-  present: "Персонаж находится в текущей сцене.",
-};
-const TOOL_HELP = {
-  ask_npc: "ГМ спрашивает отдельного персонажа, что тот говорит или делает. Это нужно, чтобы ГМ не придумывал личную реакцию персонажа сам.",
-  move_npc: "Обновляет присутствие персонажа в текущей сцене: вошёл, вышел, виден, слышит или нет.",
-  set_npc_presence: "Обновляет присутствие персонажа в текущей сцене: вошёл, вышел, виден, слышит или нет.",
-  set_npc_whereabouts: "Запоминает, где искать отсутствующего персонажа. Это не добавляет его в текущую сцену.",
-  set_scene: "Заменяет текущую сцену, когда персонаж игрока реально пришёл в новое место.",
-  roll_dice: "Бросок по D&D 5e для действия с неопределённым исходом.",
-  get_world_fact: "Проверка памяти мира: факты, слухи, показания и уже установленные сведения.",
-  ask_player: "ГМ предлагает игроку быстрые варианты действий. Кнопки появляются над полем ввода; свободный ввод по-прежнему доступен.",
-  query_world_state: "Поиск по памяти мира в нужной области видимости (игрок / NPC / ГМ) перед записью или решением.",
-  update_world_state: "Запись долговременной памяти мира: факты, слухи, память NPC, отношения и цели.",
-  update_player_character: "Обновление листа персонажа игрока: HP, AC, навыки, инвентарь, состояние.",
-  advance_time: "Сдвигает скрытые часы мира на прошедшие минуты этого хода.",
-  get_npc_profile: "Запрос отдельных безопасных полей карточки NPC для броска, описания или социальной оценки.",
-  tool_search: "ГМ догружает скрытый инструмент по ключевым словам.",
-  draft_world_bible: "Архитектор мира создаёт или обновляет структурированную библию мира (черновик): жанр, тон, размер, население, публичная предпосылка и разделы лора.",
-  edit_world_bible: "Архитектор точечно правит библию мира: меняет отдельные поля или добавляет/убирает/заменяет записи в разделах, не переписывая весь черновик.",
-};
-
-// Labels for edit_world_bible patch ops.
-const OP_LABEL = { add: "Добавлено", remove: "Убрано", replace: "Заменено" };
 
 // Tooltip body for a bible-section chip: header + the actual entries.
 function bibleTip(label, items) {
@@ -110,68 +69,51 @@ function bibleTip(label, items) {
 
 // Lore sections shown as count chips in the draft_world_bible card (dev view).
 const BIBLE_SECTIONS = [
-  ["dogmas", "догматы"],
-  ["world_laws", "законы мира"],
-  ["inhabitants", "народы"],
-  ["creatures", "существа"],
-  ["regions", "регионы"],
-  ["power_centers", "власть"],
-  ["religions", "вера"],
-  ["gods", "боги"],
-  ["cultures", "культуры"],
-  ["history", "история"],
-  ["economy", "экономика"],
-  ["daily_life", "быт"],
-  ["story_hooks", "зацепки"],
-  ["hidden_secrets", "секреты"],
-  ["location_rules", "правила локаций"],
-  ["prohibited_elements", "запреты"],
+  "dogmas",
+  "world_laws",
+  "inhabitants",
+  "creatures",
+  "regions",
+  "power_centers",
+  "religions",
+  "gods",
+  "cultures",
+  "history",
+  "economy",
+  "daily_life",
+  "story_hooks",
+  "hidden_secrets",
+  "location_rules",
+  "prohibited_elements",
 ];
 const BIBLE_VISUAL_PROMPTS = [
-  ["world_image_prompt_en", "Prompt изображения мира (EN)"],
-  ["world_map_prompt_en", "Prompt карты мира (EN)"],
+  "world_image_prompt_en",
+  "world_map_prompt_en",
 ];
-const BIBLE_SET_LABELS = Object.fromEntries([
-  ["title", "Название"],
-  ["genre", "Жанр"],
-  ["tone", "Тон"],
-  ["world_size", "Размер мира"],
-  ["population", "Население"],
-  ["public_premise", "Публичная предпосылка"],
-  ["hidden_premise", "Скрытая предпосылка (GM)"],
-  ...BIBLE_VISUAL_PROMPTS,
-]);
-const FIELD_HELP = {
-  "Ситуация": "Коротко и нейтрально описывает, что персонаж видит/слышит и на что должен отреагировать.",
-  "Правка ГМ": "Почему предыдущий ответ персонажа был отправлен на переделку.",
-  "Где": "Позиция или место персонажа относительно текущей сцены.",
-  "Занятие": "Что персонаж сейчас делает видимо для игрока.",
-  "Настрой": "Видимый настрой/отношение персонажа в этой сцене.",
-  "Почему": "Причина, по которой ГМ меняет состояние мира или вызывает инструмент.",
-  "Источник": "Откуда взялась информация о местонахождении.",
-  "Детали": "Дополнительная видимая или известная информация.",
-  "В сцене": "Именованные персонажи, которые присутствуют в новой сцене.",
-  "Выходы": "Видимые пути, куда игрок может пойти из текущей сцены.",
-  "Предметы": "Видимые объекты сцены, с которыми потенциально можно взаимодействовать.",
-  "Ограничения": "Физические или ситуационные рамки сцены.",
-  "Напряжение": "Текущий тон давления в сцене.",
-  "Зачем": "Какой неопределённый исход проверяет бросок.",
-};
 
-function toolHelp(name) {
-  return TOOL_HELP[name] || "Служебный инструмент ГМ. Подробности видны в сыром JSON ниже.";
+function toolHelp(t, name) {
+  return t(`tools.help.${name}`, { defaultValue: t("tools.help.default") });
+}
+
+function fieldProps(t, key) {
+  return {
+    label: t(`fields.${key}.label`),
+    tip: t(`fields.${key}.help`, { defaultValue: "" }),
+  };
 }
 
 export function useNpcResolver() {
+  const { t } = useTranslation("developer");
   const roster = useContext(NpcRosterContext);
   return (id) => {
     const n = (roster || []).find((x) => x.id === id);
-    const name = n?.name || id || "персонаж";
+    const name = n?.name || id || t("references.character");
     return { name, c: n?.color || "var(--entity-unknown)", role: n?.role || "", pronouns: n?.pronouns || "", id };
   };
 }
 
 export function NpcRef({ id }) {
+  const { t } = useTranslation("developer");
   const resolve = useNpcResolver();
   const { name, c, role, pronouns } = resolve(id);
   return (
@@ -180,8 +122,8 @@ export function NpcRef({ id }) {
       tipClassName="tool-tip"
       content={[
         name,
-        role ? `роль: ${role}` : "",
-        pronouns ? `род: ${pronouns}` : "",
+        role ? t("references.role", { value: role }) : "",
+        pronouns ? t("references.pronouns", { value: pronouns }) : "",
         id ? `id: ${id}` : "",
       ].filter(Boolean).join("\n")}
     >
@@ -192,7 +134,7 @@ export function NpcRef({ id }) {
 }
 
 export function Field({ label, tip, children }) {
-  const help = tip || FIELD_HELP[label] || "";
+  const help = tip || "";
   return (
     <div className="tc-field">
       {help ? (
@@ -219,7 +161,8 @@ export function Badge({ tone, tip, children }) {
 }
 
 export function ActorRef({ id }) {
-  if (id === "player") return <Badge tone="muted">игрок</Badge>;
+  const { t } = useTranslation("developer");
+  if (id === "player") return <Badge tone="muted">{t("references.player")}</Badge>;
   return <NpcRef id={id} />;
 }
 
@@ -257,7 +200,7 @@ function diceTarget(args) {
 
 // Builds { icon, accent, title, body } for one tool call. NpcRef is a component,
 // so it can appear in the returned JSX without violating the rules of hooks.
-function toolView(name, args, statusLabels) {
+function toolView(name, args, statusLabels, t) {
   switch (name) {
     case "ask_npc": {
       const redo = nonEmpty(args.correction);
@@ -266,19 +209,19 @@ function toolView(name, args, statusLabels) {
         accent: redo ? ACCENT.ask_npc_redo : ACCENT.ask_npc,
         title: (
           <>
-            {redo ? "Возврат ответа — " : "Запрос к персонажу — "}
+            {redo ? t("tools.askNpc.redoTitle") : t("tools.askNpc.title")}
             <NpcRef id={args.npc_id} />
           </>
         ),
         body: (
           <>
             {nonEmpty(args.situation) && (
-              <Field label="Ситуация">
+              <Field {...fieldProps(t, "situation")}>
                 <TextBlock>{args.situation}</TextBlock>
               </Field>
             )}
             {redo && (
-              <Field label="Правка ГМ">
+              <Field {...fieldProps(t, "gmCorrection")}>
                 <TextBlock tone="redo">{args.correction}</TextBlock>
               </Field>
             )}
@@ -295,24 +238,24 @@ function toolView(name, args, statusLabels) {
         accent: ACCENT.move_npc,
         title: (
           <>
-            Присутствие в сцене — <NpcRef id={args.npc_id} />
+            {t("tools.npcPresence.title")}<NpcRef id={args.npc_id} />
           </>
         ),
         body: (
           <>
             <div className="tc-chips">
-              {present === true && <Badge tone="ok" tip="Персонаж добавлен в текущую сцену. Теперь он может быть видимым участником сцены.">входит в сцену</Badge>}
-              {present === false && <Badge tone="muted" tip="Персонаж убран из текущей сцены. После этого он не должен отвечать без нового появления.">покидает сцену</Badge>}
-              {args.visible === true && <Badge tip="Игрок и сцена могут видеть персонажа.">виден</Badge>}
-              {args.visible === false && <Badge tone="muted" tip="Персонаж присутствует неявно или вне видимости игрока.">скрыт</Badge>}
-              {args.can_hear === true && <Badge tip="Персонаж находится в зоне слышимости текущей сцены.">слышит</Badge>}
-              {args.can_hear === false && <Badge tone="muted" tip="Персонаж не слышит текущую сцену и не должен реагировать на разговор.">не слышит</Badge>}
+              {present === true && <Badge tone="ok" tip={t("tools.npcPresence.presentHelp")}>{t("tools.npcPresence.present")}</Badge>}
+              {present === false && <Badge tone="muted" tip={t("tools.npcPresence.absentHelp")}>{t("tools.npcPresence.absent")}</Badge>}
+              {args.visible === true && <Badge tip={t("tools.npcPresence.visibleHelp")}>{t("tools.npcPresence.visible")}</Badge>}
+              {args.visible === false && <Badge tone="muted" tip={t("tools.npcPresence.hiddenHelp")}>{t("tools.npcPresence.hidden")}</Badge>}
+              {args.can_hear === true && <Badge tip={t("tools.npcPresence.hearsHelp")}>{t("tools.npcPresence.hears")}</Badge>}
+              {args.can_hear === false && <Badge tone="muted" tip={t("tools.npcPresence.deafHelp")}>{t("tools.npcPresence.deaf")}</Badge>}
             </div>
-            {nonEmpty(args.location) && <Field label="Где"><MarkdownInline>{args.location}</MarkdownInline></Field>}
-            {nonEmpty(args.activity) && <Field label="Занятие"><MarkdownInline>{args.activity}</MarkdownInline></Field>}
-            {nonEmpty(args.attitude) && <Field label="Настрой"><MarkdownInline>{args.attitude}</MarkdownInline></Field>}
+            {nonEmpty(args.location) && <Field {...fieldProps(t, "location")}><MarkdownInline>{args.location}</MarkdownInline></Field>}
+            {nonEmpty(args.activity) && <Field {...fieldProps(t, "activity")}><MarkdownInline>{args.activity}</MarkdownInline></Field>}
+            {nonEmpty(args.attitude) && <Field {...fieldProps(t, "attitude")}><MarkdownInline>{args.attitude}</MarkdownInline></Field>}
             {nonEmpty(args.reason) && (
-              <Field label="Почему">
+              <Field {...fieldProps(t, "reason")}>
                 <TextBlock>{args.reason}</TextBlock>
               </Field>
             )}
@@ -328,20 +271,20 @@ function toolView(name, args, statusLabels) {
         accent: ACCENT.set_npc_whereabouts,
         title: (
           <>
-            Местонахождение — <NpcRef id={args.npc_id} />
+            {t("tools.whereabouts.title")}<NpcRef id={args.npc_id} />
           </>
         ),
         body: (
           <>
             <div className="tc-chips">
-              <Badge tone={STATUS_TONE[args.status] || "muted"} tip={STATUS_HELP[args.status] || "Статус уверенности по местонахождению персонажа."}>
-                {statusLabels[args.status] || args.status || "неизвестно"}
+              <Badge tone={STATUS_TONE[args.status] || "muted"} tip={t(`status.help.${args.status}`, { defaultValue: t("status.help.default") })}>
+                {statusLabels[args.status] || args.status || t("status.unknown")}
               </Badge>
-              {nonEmpty(place) && <Badge tip="Место, где персонажа можно искать по текущим сведениям.">{place}</Badge>}
+              {nonEmpty(place) && <Badge tip={t("tools.whereabouts.placeHelp")}>{place}</Badge>}
             </div>
-            {nonEmpty(args.source) && <Field label="Источник"><MarkdownInline>{args.source}</MarkdownInline></Field>}
+            {nonEmpty(args.source) && <Field {...fieldProps(t, "source")}><MarkdownInline>{args.source}</MarkdownInline></Field>}
             {nonEmpty(args.details) && (
-              <Field label="Детали">
+              <Field {...fieldProps(t, "details")}>
                 <TextBlock>{args.details}</TextBlock>
               </Field>
             )}
@@ -358,24 +301,24 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="map" size={14} />,
         accent: ACCENT.set_scene,
-        title: "Смена сцены",
+        title: t("tools.setScene.title"),
         body: (
           <>
             {nonEmpty(args.title) && (
-              <Tooltip className="tc-scene-title" tipClassName="tool-tip" content="Название новой текущей сцены.">
+              <Tooltip className="tc-scene-title" tipClassName="tool-tip" content={t("tools.setScene.titleHelp")}>
                 {args.title}
               </Tooltip>
             )}
             {nonEmpty(args.description) && <TextBlock>{args.description}</TextBlock>}
             {npcs.length > 0 && (
-              <Field label="В сцене">
+              <Field {...fieldProps(t, "inScene")}>
                 <div className="tc-chips">
                   {npcs.map((id) => <NpcRef key={id} id={id} />)}
                 </div>
               </Field>
             )}
             {exits.length > 0 && (
-              <Field label="Выходы">
+              <Field {...fieldProps(t, "exits")}>
                 <div className="tc-list">
                   {exits.map((e, i) => (
                     <Tooltip
@@ -384,54 +327,54 @@ function toolView(name, args, statusLabels) {
                       tipClassName="tool-tip"
                       content={[
                         e.id ? `id: ${e.id}` : "",
-                        e.destination ? `куда ведёт: ${e.destination}` : "",
-                        e.visible === false ? "сейчас не виден" : "видимый выход",
-                        e.blocked_by ? `заблокирован: ${e.blocked_by}` : "",
+                        e.destination ? t("tools.setScene.exitDestination", { value: e.destination }) : "",
+                        e.visible === false ? t("tools.setScene.exitHidden") : t("tools.setScene.exitVisible"),
+                        e.blocked_by ? t("tools.setScene.exitBlocked", { value: e.blocked_by }) : "",
                       ].filter(Boolean).join("\n")}
                       key={e.id || i}
                     >
-                      <span>{e.name || e.id || "выход"}</span>
+                      <span>{e.name || e.id || t("tools.setScene.exit")}</span>
                       {nonEmpty(e.destination) && (
                         <>
                           <span className="arr">→</span>
                           <span>{e.destination}</span>
                         </>
                       )}
-                      {nonEmpty(e.blocked_by) && <Badge tone="redo" tip="Почему этот выход сейчас нельзя использовать свободно.">{e.blocked_by}</Badge>}
+                      {nonEmpty(e.blocked_by) && <Badge tone="redo" tip={t("tools.setScene.blockedHelp")}>{e.blocked_by}</Badge>}
                     </Tooltip>
                   ))}
                 </div>
               </Field>
             )}
             {items.length > 0 && (
-              <Field label="Предметы">
+              <Field {...fieldProps(t, "items")}>
                 <div className="tc-chips">
                   {items.map((it, i) => (
                     <Badge
                       key={it.id || i}
                       tip={[
                         it.id ? `id: ${it.id}` : "",
-                        it.location ? `где: ${it.location}` : "",
-                        it.owner ? `владелец: ${it.owner}` : "",
-                        it.portable === true ? "можно взять" : it.portable === false ? "не переносится как обычный предмет" : "",
+                        it.location ? t("tools.setScene.itemLocation", { value: it.location }) : "",
+                        it.owner ? t("tools.setScene.itemOwner", { value: it.owner }) : "",
+                        it.portable === true ? t("tools.setScene.itemPortable") : it.portable === false ? t("tools.setScene.itemFixed") : "",
                         it.details || "",
                       ].filter(Boolean).join("\n")}
                     >
-                      {it.name || it.id || "предмет"}
+                      {it.name || it.id || t("tools.setScene.item")}
                     </Badge>
                   ))}
                 </div>
               </Field>
             )}
             {constraints.length > 0 && (
-              <Field label="Ограничения">
+              <Field {...fieldProps(t, "constraints")}>
                 <div className="tc-list">
                   {constraints.map((c, i) => (
                     <Tooltip
                       as="div"
                       className="tc-exit"
                       tipClassName="tool-tip"
-                      content="Ограничение сцены: физическое, социальное или ситуационное правило, которое ГМ должен учитывать."
+                      content={t("tools.setScene.constraintHelp")}
                       key={i}
                     >
                       · <MarkdownInline>{c}</MarkdownInline>
@@ -440,9 +383,9 @@ function toolView(name, args, statusLabels) {
                 </div>
               </Field>
             )}
-            {nonEmpty(args.tension) && <Field label="Напряжение"><MarkdownInline>{args.tension}</MarkdownInline></Field>}
+            {nonEmpty(args.tension) && <Field {...fieldProps(t, "tension")}><MarkdownInline>{args.tension}</MarkdownInline></Field>}
             {nonEmpty(args.reason) && (
-              <Field label="Почему">
+              <Field {...fieldProps(t, "reason")}>
                 <TextBlock>{args.reason}</TextBlock>
               </Field>
             )}
@@ -456,31 +399,31 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="d20" size={14} />,
         accent: ACCENT.roll_dice,
-        title: "Бросок кубика",
+        title: t("tools.rollDice.title"),
         body: (
           <>
             <div className="tc-dice">
-              <Tooltip className="tc-notation" tipClassName="tool-tip" content="Формула броска. Например, 1d20 или 2d20kh1 для преимущества.">
+              <Tooltip className="tc-notation" tipClassName="tool-tip" content={t("tools.rollDice.notationHelp")}>
                 {args.notation || "—"}
               </Tooltip>
               {nonEmpty(args.roll_kind) && (
-                <Tooltip className="tc-badge" tipClassName="tool-tip" content="Тип броска, выбранный до результата.">
+                <Tooltip className="tc-badge" tipClassName="tool-tip" content={t("tools.rollDice.kindHelp")}>
                   {args.roll_kind}
                 </Tooltip>
               )}
               {nonEmpty(target) && (
-                <Tooltip className="tc-badge warn" tipClassName="tool-tip" content="Целевое число зафиксировано до броска.">
+                <Tooltip className="tc-badge warn" tipClassName="tool-tip" content={t("tools.rollDice.targetHelp")}>
                   {target}
                 </Tooltip>
               )}
             </div>
             {nonEmpty(args.check_name) && (
-              <Field label="Проверка">
+              <Field label={t("fields.check.label")}>
                 <MarkdownInline>{args.check_name}</MarkdownInline>
               </Field>
             )}
             {nonEmpty(args.reason) && (
-              <Field label="Зачем">
+              <Field {...fieldProps(t, "purpose")}>
                 <TextBlock>{args.reason}</TextBlock>
               </Field>
             )}
@@ -493,9 +436,9 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="book" size={14} />,
         accent: ACCENT.get_world_fact,
-        title: "Запрос к памяти мира",
+        title: t("tools.getWorldFact.title"),
         body: (
-          <Tooltip className="tc-query" tipClassName="tool-tip" content="Запрос к памяти мира. ГМ должен проверять факты, а не придумывать их из головы.">
+          <Tooltip className="tc-query" tipClassName="tool-tip" content={t("tools.getWorldFact.queryHelp")}>
             <MarkdownInline>{args.query || "—"}</MarkdownInline>
           </Tooltip>
         ),
@@ -507,11 +450,11 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="target" size={14} />,
         accent: ACCENT.ask_player,
-        title: "Варианты для игрока",
+        title: t("tools.askPlayer.title"),
         body: (
           <>
             {nonEmpty(args.question) && (
-              <Tooltip className="tc-ask-q" tipClassName="tool-tip" content="Вопрос-подсказка над кнопками быстрых ответов.">
+              <Tooltip className="tc-ask-q" tipClassName="tool-tip" content={t("tools.askPlayer.questionHelp")}>
                 <MarkdownInline>{args.question}</MarkdownInline>
               </Tooltip>
             )}
@@ -519,7 +462,7 @@ function toolView(name, args, statusLabels) {
               <div className="tc-options">
                 {options.map((o, i) => (
                   <div className="tc-option" key={i}>
-                    <span className="tc-option-label">{nonEmpty(o.label) ? o.label : `вариант ${i + 1}`}</span>
+                    <span className="tc-option-label">{nonEmpty(o.label) ? o.label : t("tools.askPlayer.option", { number: i + 1 })}</span>
                     {nonEmpty(o.message) && (
                       <span className="tc-option-msg"><MarkdownInline>{o.message}</MarkdownInline></span>
                     )}
@@ -537,33 +480,35 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="sparkles" size={14} />,
         accent: ACCENT.update_world_state,
-        title: "Запись в память мира",
+        title: t("tools.updateWorldState.title"),
         body: items.length ? (
           <div className="tc-ws-list">
             {items.map((it, i) => {
-              const op = WS_OP[it.op || "add"] || WS_OP.add;
-              const typ = WS_TYPE[it.type] || { label: it.type || "запись", tone: "" };
+              const opName = it.op || "add";
+              const opTone = WS_OP[opName] || WS_OP.add;
+              const typeName = it.type || "record";
+              const typeTone = WS_TYPE[it.type] || "";
               return (
                 <div className="tc-ws-item" key={i}>
                   <div className="tc-chips">
-                    <Badge tone={op.tone}>{op.label}</Badge>
-                    <Badge tone={typ.tone}>{typ.label}</Badge>
-                    {nonEmpty(it.scope) && <Badge tone="muted">{WS_SCOPE[it.scope] || it.scope}</Badge>}
+                    <Badge tone={opTone}>{t(`worldState.operations.${opName}`, { defaultValue: opName })}</Badge>
+                    <Badge tone={typeTone}>{t(`worldState.types.${typeName}`, { defaultValue: typeName })}</Badge>
+                    {nonEmpty(it.scope) && <Badge tone="muted">{t(`worldState.scopes.${it.scope}`, { defaultValue: it.scope })}</Badge>}
                     {nonEmpty(it.npc_id) && <NpcRef id={it.npc_id} />}
                     {nonEmpty(it.target) && (
-                      <span className="tc-arrow-to">→ {it.target === "player" ? "игрок" : <NpcRef id={it.target} />}</span>
+                      <span className="tc-arrow-to">→ {it.target === "player" ? t("references.player") : <NpcRef id={it.target} />}</span>
                     )}
                     <ParticipantChips ids={it.participants} />
                     {nonEmpty(it.importance) && <Badge tone="warn">{it.importance}</Badge>}
                   </div>
                   {nonEmpty(it.text) && <TextBlock>{it.text}</TextBlock>}
-                  {nonEmpty(it.known_name) && <Field label="Известное имя"><MarkdownInline>{it.known_name}</MarkdownInline></Field>}
+                  {nonEmpty(it.known_name) && <Field label={t("fields.knownName.label")}><MarkdownInline>{it.known_name}</MarkdownInline></Field>}
                 </div>
               );
             })}
           </div>
         ) : (
-          <div className="tc-text">нет записей</div>
+          <div className="tc-text">{t("tools.updateWorldState.empty")}</div>
         ),
       };
     }
@@ -572,14 +517,14 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="search" size={14} />,
         accent: ACCENT.query_world_state,
-        title: "Поиск в памяти мира",
+        title: t("tools.queryWorldState.title"),
         body: (
           <>
             <div className="tc-chips">
-              {nonEmpty(args.scope) && <Badge tone="muted" tip="Область видимости, в которой ищет ГМ.">{WS_SCOPE[args.scope] || args.scope}</Badge>}
+              {nonEmpty(args.scope) && <Badge tone="muted" tip={t("tools.queryWorldState.scopeHelp")}>{t(`worldState.scopes.${args.scope}`, { defaultValue: args.scope })}</Badge>}
               {nonEmpty(args.npc_id) && <NpcRef id={args.npc_id} />}
             </div>
-            <Tooltip className="tc-query" tipClassName="tool-tip" content="Поисковый запрос ГМ к памяти мира.">
+            <Tooltip className="tc-query" tipClassName="tool-tip" content={t("tools.queryWorldState.queryHelp")}>
               <MarkdownInline>{args.query || "—"}</MarkdownInline>
             </Tooltip>
           </>
@@ -593,7 +538,7 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="shield" size={14} />,
         accent: ACCENT.update_player_character,
-        title: "Лист персонажа игрока",
+        title: t("tools.updatePlayer.title"),
         body: (
           <>
             {keys.length ? (
@@ -605,9 +550,9 @@ function toolView(name, args, statusLabels) {
                 </Field>
               ))
             ) : (
-              <div className="tc-text">нет изменений</div>
+              <div className="tc-text">{t("common.noChanges")}</div>
             )}
-            {nonEmpty(args.reason) && <Field label="Почему"><TextBlock>{args.reason}</TextBlock></Field>}
+            {nonEmpty(args.reason) && <Field {...fieldProps(t, "reason")}><TextBlock>{args.reason}</TextBlock></Field>}
           </>
         ),
       };
@@ -617,13 +562,13 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="clock" size={14} />,
         accent: ACCENT.advance_time,
-        title: "Сдвиг времени",
+        title: t("tools.advanceTime.title"),
         body: (
           <>
             <div className="tc-chips">
-              <Badge tone="warn" tip="Сколько внутриигровых минут прошло за этот ход.">+{args.minutes ?? 0} мин</Badge>
+              <Badge tone="warn" tip={t("tools.advanceTime.minutesHelp")}>{t("time.plusMinutes", { count: args.minutes ?? 0 })}</Badge>
             </div>
-            {nonEmpty(args.reason) && <Field label="Почему"><TextBlock>{args.reason}</TextBlock></Field>}
+            {nonEmpty(args.reason) && <Field {...fieldProps(t, "reason")}><TextBlock>{args.reason}</TextBlock></Field>}
           </>
         ),
       };
@@ -636,12 +581,12 @@ function toolView(name, args, statusLabels) {
         accent: ACCENT.get_npc_profile,
         title: (
           <>
-            Карточка персонажа — <NpcRef id={args.npc_id} />
+            {t("tools.getNpcProfile.title")}<NpcRef id={args.npc_id} />
           </>
         ),
         body: (
           <div className="tc-chips">
-            <Badge tone="muted" tip="Группа полей карточки, которую запросил ГМ.">{PROFILE_PRESET[args.preset || "visible"] || args.preset}</Badge>
+            <Badge tone="muted" tip={t("tools.getNpcProfile.presetHelp")}>{t(`profilePresets.${args.preset || "visible"}`, { defaultValue: args.preset })}</Badge>
             {fields.map((f) => <Badge key={f}>{f}</Badge>)}
           </div>
         ),
@@ -652,9 +597,9 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="sliders" size={14} />,
         accent: ACCENT.tool_search,
-        title: "Поиск инструмента ГМ",
+        title: t("tools.toolSearch.title"),
         body: (
-          <Tooltip className="tc-query" tipClassName="tool-tip" content="Запрос ГМ на загрузку скрытого инструмента.">
+          <Tooltip className="tc-query" tipClassName="tool-tip" content={t("tools.toolSearch.queryHelp")}>
             <MarkdownInline>{args.query || "—"}</MarkdownInline>
           </Tooltip>
         ),
@@ -664,8 +609,8 @@ function toolView(name, args, statusLabels) {
     case "draft_world_bible": {
       const lore = args.world_lore && typeof args.world_lore === "object" ? args.world_lore : {};
       const sections = BIBLE_SECTIONS
-        .map(([field, label]) => [
-          label,
+        .map((field) => [
+          field,
           Array.isArray(lore[field])
             ? lore[field].filter((item) => typeof item === "string" && item.trim())
             : [],
@@ -674,11 +619,11 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="scroll" size={14} />,
         accent: ACCENT.draft_world_bible,
-        title: "Черновик мира",
+        title: t("tools.draftBible.title"),
         body: (
           <>
             {nonEmpty(args.title) && (
-              <Tooltip className="tc-scene-title" tipClassName="tool-tip" content="Название мира в черновике.">
+              <Tooltip className="tc-scene-title" tipClassName="tool-tip" content={t("tools.draftBible.titleHelp")}>
                 {args.title}
               </Tooltip>
             )}
@@ -686,27 +631,27 @@ function toolView(name, args, statusLabels) {
               {nonEmpty(args.genre) && <Badge tone="muted">{args.genre}</Badge>}
               {nonEmpty(args.tone) && <Badge tone="muted">{args.tone}</Badge>}
             </div>
-            {nonEmpty(args.world_size) && <Field label="Размер мира"><TextBlock>{args.world_size}</TextBlock></Field>}
-            {nonEmpty(args.population) && <Field label="Население"><TextBlock>{args.population}</TextBlock></Field>}
+            {nonEmpty(args.world_size) && <Field label={t("bible.set.world_size")}><TextBlock>{args.world_size}</TextBlock></Field>}
+            {nonEmpty(args.population) && <Field label={t("bible.set.population")}><TextBlock>{args.population}</TextBlock></Field>}
             {nonEmpty(args.public_premise) && (
-              <Field label="Публичная предпосылка"><TextBlock>{args.public_premise}</TextBlock></Field>
+              <Field label={t("bible.set.public_premise")}><TextBlock>{args.public_premise}</TextBlock></Field>
             )}
             {nonEmpty(lore.hidden_premise) && (
-              <Field label="Скрытая предпосылка (GM)"><TextBlock tone="redo">{lore.hidden_premise}</TextBlock></Field>
+              <Field label={t("bible.set.hidden_premise")}><TextBlock tone="redo">{lore.hidden_premise}</TextBlock></Field>
             )}
-            {BIBLE_VISUAL_PROMPTS.map(([field, label]) =>
+            {BIBLE_VISUAL_PROMPTS.map((field) =>
               nonEmpty(lore[field]) ? (
-                <Field key={field} label={label}>
+                <Field key={field} label={t(`bible.set.${field}`)}>
                   <TextBlock>{lore[field]}</TextBlock>
                 </Field>
               ) : null
             )}
             {sections.length > 0 && (
-              <Field label="Разделы лора">
+              <Field label={t("bible.sectionsLabel")}>
                 <div className="tc-chips">
-                  {sections.map(([label, items]) => (
-                    <Badge key={label} tip={bibleTip(label, items)}>
-                      {label}: {items.length}
+                  {sections.map(([field, items]) => (
+                    <Badge key={field} tip={bibleTip(t(`bible.sections.${field}`), items)}>
+                      {t(`bible.sections.${field}`)}: {items.length}
                     </Badge>
                   ))}
                 </div>
@@ -734,28 +679,28 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="pen" size={14} />,
         accent: ACCENT.edit_world_bible,
-        title: "Правка мира",
+        title: t("tools.editBible.title"),
         body: (
           <>
             {setKeys.map((k) => (
-              <Field key={`set-${k}`} label={BIBLE_SET_LABELS[k] || k}>
+              <Field key={`set-${k}`} label={t(`bible.set.${k}`, { defaultValue: k })}>
                 <TextBlock>{String(set[k])}</TextBlock>
               </Field>
             ))}
             {ops.map(([op, entries]) =>
               entries.length === 0 ? null : (
-                <Field key={op} label={OP_LABEL[op]}>
+                <Field key={op} label={t(`bible.operations.${op}`)}>
                   <div className="tc-chips">
                     {entries.map(([section, items]) => (
-                      <Badge key={section} tip={bibleTip(section, items)}>
-                        {section}: {items.length}
+                      <Badge key={section} tip={bibleTip(t(`bible.sections.${section}`, { defaultValue: section }), items)}>
+                        {t(`bible.sections.${section}`, { defaultValue: section })}: {items.length}
                       </Badge>
                     ))}
                   </div>
                 </Field>
               )
             )}
-            {empty && <div className="tc-text">нет изменений</div>}
+            {empty && <div className="tc-text">{t("common.noChanges")}</div>}
           </>
         ),
       };
@@ -766,7 +711,7 @@ function toolView(name, args, statusLabels) {
       return {
         icon: <Icon name="sliders" size={14} />,
         accent: ACCENT._,
-        title: <>ГМ вызвал инструмент <code>{name}</code></>,
+        title: <>{t("tools.fallback.title")} <code>{name}</code></>,
         body: entries.length ? (
           entries.map(([k, v]) => (
             <Field key={k} label={k}>
@@ -774,7 +719,7 @@ function toolView(name, args, statusLabels) {
             </Field>
           ))
         ) : (
-          <div className="tc-text">нет аргументов</div>
+          <div className="tc-text">{t("tools.fallback.noArguments")}</div>
         ),
       };
     }
@@ -782,21 +727,22 @@ function toolView(name, args, statusLabels) {
 }
 
 // Player-friendly minutes → "1 дн 2 ч 30 мин" (compact, no zero parts).
-function prettyElapsed(minutes) {
+function prettyElapsed(minutes, t) {
   const m = Math.max(0, Math.round(Number(minutes) || 0));
-  if (m === 0) return "меньше минуты";
+  if (m === 0) return t("time.lessThanMinute");
   const days = Math.floor(m / 1440);
   const hours = Math.floor((m % 1440) / 60);
   const mins = m % 60;
   const parts = [];
-  if (days) parts.push(days + " дн");
-  if (hours) parts.push(hours + " ч");
-  if (mins) parts.push(mins + " мин");
+  if (days) parts.push(t("time.daysShort", { count: days }));
+  if (hours) parts.push(t("time.hoursShort", { count: hours }));
+  if (mins) parts.push(t("time.minutesShort", { count: mins }));
   return parts.join(" ");
 }
 
 // Compact, player-facing time advance (used when tool internals are hidden).
 function PlayerTimeCard({ payload }) {
+  const { t } = useTranslation("developer");
   const p = payload || {};
   const current = p.current && typeof p.current === "object" ? p.current : {};
   const now = [current.current_date_label, current.time_of_day].filter(nonEmpty).join(" · ");
@@ -804,7 +750,7 @@ function PlayerTimeCard({ payload }) {
     <div className="play-card time" style={{ "--tc": "var(--md-em)" }}>
       <span className="play-ico" aria-hidden="true"><Icon name="clock" size={16} /></span>
       <span className="play-main">
-        <b>Прошло {prettyElapsed(p.elapsed_minutes)}</b>
+        <b>{t("playerCards.timeElapsed", { value: prettyElapsed(p.elapsed_minutes, t) })}</b>
         {nonEmpty(now) && <span className="play-sub">{now}</span>}
       </span>
     </div>
@@ -813,13 +759,14 @@ function PlayerTimeCard({ payload }) {
 
 // Compact, player-facing character-sheet update.
 function PlayerSheetCard({ payload }) {
+  const { t } = useTranslation("developer");
   const p = payload || {};
   const updated = Array.isArray(p.updated) ? p.updated : [];
   return (
     <div className="play-card sheet" style={{ "--tc": "var(--player)" }}>
       <span className="play-ico" aria-hidden="true"><Icon name="shield" size={16} /></span>
       <span className="play-main">
-        <b>Лист персонажа обновлён</b>
+        <b>{t("playerCards.sheetUpdated")}</b>
         {updated.length > 0 && <span className="play-sub">{updated.join(", ")}</span>}
       </span>
     </div>
@@ -833,8 +780,9 @@ function PlayerSheetCard({ payload }) {
 //   'result' — header + result only (no request, no raw call JSON)
 //   'player' — compact, player-facing result (dice / time / sheet)
 export default function ToolCard({ name, args = {}, result, resultLive, rollId, mode = "full" }) {
+  const { t } = useTranslation("developer");
   const statusLabels = useContext(StatusLabelsContext);
-  const view = toolView(name, args || {}, statusLabels);
+  const view = toolView(name, args || {}, statusLabels, t);
   const hasResult = result != null;
   const isDice = name === "roll_dice" && hasResult;
   const accent = isDice ? gradeAccent(result.grade) : view.accent;
@@ -860,32 +808,32 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId, 
   return (
     <div className={"tool-card" + (hasResult ? " has-result" : "")} style={{ "--tc": accent }}>
       <div className="tc-hd">
-        <Tooltip className="tc-ico" tipClassName="tool-tip" content={toolHelp(name)}>
+        <Tooltip className="tc-ico" tipClassName="tool-tip" content={toolHelp(t, name)}>
           {view.icon}
         </Tooltip>
         <span className="tc-title">{view.title}</span>
         {showRaw && (
-          <Tooltip className="tc-name" tipClassName="tool-tip" content={`Сырое имя инструмента модели: ${name}\n${toolHelp(name)}`}>
+          <Tooltip className="tc-name" tipClassName="tool-tip" content={`${t("raw.toolName", { name })}\n${toolHelp(t, name)}`}>
             {name}
           </Tooltip>
         )}
       </div>
       {showBody && <div className="tc-body">{view.body}</div>}
       {showRaw && (
-        <Spoiler label="сырой вызов (JSON)">
+        <Spoiler label={t("raw.callJson")}>
           <MarkdownText>{"```json\n" + JSON.stringify(args, null, 2) + "\n```"}</MarkdownText>
         </Spoiler>
       )}
       {hasResult && (
         <div className="tc-result-sec">
-          <div className="tc-result-divider">результат</div>
+          <div className="tc-result-divider">{t("common.result")}</div>
           {isDice ? (
             <DiceBody roll={result} animate={resultLive} rollId={rollId} />
           ) : (
             <>
               <div className="tc-body"><ToolResultBody name={name} payload={result} /></div>
               {showRaw && (
-                <Spoiler label="сырой результат (JSON)">
+                <Spoiler label={t("raw.resultJson")}>
                   <MarkdownText>{"```json\n" + JSON.stringify(result, null, 2) + "\n```"}</MarkdownText>
                 </Spoiler>
               )}

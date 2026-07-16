@@ -1,6 +1,13 @@
 import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
+import {
+  availableLanguages,
+  DEFAULT_LANGUAGE,
+  resolveUiLanguage,
+  setUiLanguage,
+} from "../i18n/index.js";
 import TokenCounter from "./TokenCounter.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { ConnectorAuthPrompt } from "./ConnectorModelPicker.jsx";
@@ -16,54 +23,81 @@ import {
   normalizeModelBinding,
 } from "../connectorCatalog.js";
 
-function fmtExpiry(raw) {
+function fmtExpiry(raw, t, language) {
   const ms = raw > 0 && raw < 1_000_000_000_000 ? raw * 1000 : raw;
   const left = ms - Date.now();
-  const when = new Date(ms).toLocaleString("ru-RU", {
+  const when = new Intl.DateTimeFormat(language, {
     day: "2-digit",
     month: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  });
+  }).format(new Date(ms));
   let rel;
-  if (left <= 0) rel = "истёк";
-  else if (left < 60 * 60 * 1000) rel = `через ${Math.max(1, Math.round(left / 60000))} мин`;
-  else if (left < 24 * 60 * 60 * 1000) rel = `через ${Math.round(left / 3600000)} ч`;
-  else rel = `через ${Math.round(left / 86400000)} дн`;
+  if (left <= 0) rel = t("connectors:auth.expiredRelative");
+  else if (left < 60 * 60 * 1000) {
+    rel = t("connectors:auth.expiresIn", {
+      duration: t("common:duration.minutes", { count: Math.max(1, Math.round(left / 60000)) }),
+    });
+  } else if (left < 24 * 60 * 60 * 1000) {
+    rel = t("connectors:auth.expiresIn", {
+      duration: t("common:duration.hours", { count: Math.round(left / 3600000) }),
+    });
+  } else {
+    rel = t("connectors:auth.expiresIn", {
+      duration: t("common:duration.days", { count: Math.round(left / 86400000) }),
+    });
+  }
   return `${when} (${rel})`;
 }
 
-function connectorStatus(connector) {
+function connectorStatus(connector, t, language) {
   if (!connector) return null;
   const name = connectorName(connector);
   const methods = authMethods(connector);
   const auth = connector.auth || {};
   if (methods.length === 0) {
-    return { level: "ok", title: `${name} доступен`, rows: [], note: "Авторизация не требуется." };
+    return {
+      level: "ok",
+      title: t("connectors:auth.available", { name }),
+      rows: [],
+      note: t("connectors:auth.notRequired"),
+    };
   }
   const msg = auth.message || "";
   const exp = typeof auth.expires_at === "number" ? auth.expires_at : null;
   const rows = [];
-  if (auth.account_id) rows.push({ k: "Аккаунт", v: String(auth.account_id) });
-  if (auth.account_label) rows.push({ k: "Аккаунт", v: String(auth.account_label) });
-  if (auth.email) rows.push({ k: "Почта", v: String(auth.email) });
+  if (auth.account_id) rows.push({ k: t("connectors:auth.account"), v: String(auth.account_id) });
+  if (auth.account_label) rows.push({ k: t("connectors:auth.account"), v: String(auth.account_label) });
+  if (auth.email) rows.push({ k: t("connectors:auth.email"), v: String(auth.email) });
 
   if (connectorAuthenticated(connector)) {
-    if (exp != null) rows.push({ k: "Токен", v: fmtExpiry(exp) });
-    return { level: "ok", title: `${name} подключён`, rows, note: msg };
+    if (exp != null) {
+      rows.push({ k: t("connectors:auth.token"), v: fmtExpiry(exp, t, language) });
+    }
+    return { level: "ok", title: t("connectors:auth.connected", { name }), rows, note: msg };
   }
 
   const status = String(auth.state || auth.status || "").toLowerCase();
   if (status === "pending" || status === "authorizing") {
-    return { level: "warn", title: `${name}: подключение…`, rows, note: msg };
+    return { level: "warn", title: t("connectors:auth.connecting", { name }), rows, note: msg };
   }
   if (status === "expired") {
-    return { level: "error", title: `${name}: вход не завершён`, rows, note: msg || "Срок авторизации истёк." };
+    return {
+      level: "error",
+      title: t("connectors:auth.notCompleted", { name }),
+      rows,
+      note: msg || t("connectors:auth.expired"),
+    };
   }
-  if (/invalid|ошиб|error/i.test(msg)) {
-    return { level: "error", title: `${name}: ошибка авторизации`, rows, note: msg };
+  if (["denied", "error", "failed", "invalid"].includes(status)) {
+    return { level: "error", title: t("connectors:auth.error", { name }), rows, note: msg };
   }
-  return { level: "off", title: `${name} не подключён`, rows, note: msg || "Требуется подключение." };
+  return {
+    level: "off",
+    title: t("connectors:auth.disconnected", { name }),
+    rows,
+    note: msg || t("connectors:auth.required"),
+  };
 }
 
 function ConnTooltip({ status }) {
@@ -88,18 +122,19 @@ function ConnTooltip({ status }) {
   );
 }
 
-function fmtElapsed(ms) {
+function fmtElapsed(ms, t) {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "";
   const sec = Math.round(ms / 1000);
-  if (sec < 60) return `${sec} с`;
+  if (sec < 60) return t("common:duration.seconds", { count: sec });
   const min = Math.floor(sec / 60);
   const rest = sec % 60;
-  return rest ? `${min} мин ${rest} с` : `${min} мин`;
+  const minutes = t("common:duration.minutes", { count: min });
+  return rest ? `${minutes} ${t("common:duration.seconds", { count: rest })}` : minutes;
 }
 
-function componentLine(component, fallback) {
-  if (!component?.enabled) return `${fallback}: выкл`;
-  const label = component.up ? "готов" : "загрузка";
+function componentLine(component, fallback, t) {
+  if (!component?.enabled) return `${fallback}: ${t("settings:sidecar.off")}`;
+  const label = component.up ? t("settings:sidecar.ready") : t("settings:sidecar.loading");
   const model = component.model ? ` · ${component.model}` : "";
   const models = Array.isArray(component.models) && component.models.length
     ? ` · ${component.models.join(", ")}`
@@ -108,9 +143,13 @@ function componentLine(component, fallback) {
   return `${fallback}: ${label}${model}${models}${quant}`;
 }
 
-function imageComponentLine(component) {
-  if (!component?.enabled) return "Image: выкл";
-  const label = component.up ? "готов" : component.runtime_ready ? "прогрев" : "загрузка";
+function imageComponentLine(component, t) {
+  if (!component?.enabled) return `Image: ${t("settings:sidecar.off")}`;
+  const label = component.up
+    ? t("settings:sidecar.ready")
+    : component.runtime_ready
+      ? t("settings:sidecar.warming")
+      : t("settings:sidecar.loading");
   const models = Array.isArray(component.models) && component.models.length
     ? ` · ${component.models.join(", ")}`
     : "";
@@ -118,7 +157,7 @@ function imageComponentLine(component) {
   return `Image: ${label}${models}${comfy}`;
 }
 
-function sidecarUiStatus(status) {
+function sidecarUiStatus(status, t) {
   if (!status || status.enabled === false) return null;
   const c = status.components || {};
   const hasRag = !!(c.embedder?.enabled || c.reranker?.enabled);
@@ -128,36 +167,42 @@ function sidecarUiStatus(status) {
   if (hasRag) parts.push("RAG");
   if (hasTts) parts.push("TTS");
   if (hasImage) parts.push("Image");
-  const name = parts.join("/") || "Инференс";
+  const name = parts.join("/") || t("settings:sidecar.inference");
   if (status.ready) {
-    return { level: "ok", label: name, title: "Инференс готов" };
+    return { level: "ok", label: name, title: t("settings:sidecar.readyTitle") };
   }
   if (status.state === "failed") {
-    return { level: "error", label: name, title: "Инференс не загрузился" };
+    return { level: "error", label: name, title: t("settings:sidecar.failedTitle") };
   }
   if (status.state === "unavailable") {
-    return { level: "warn", label: name, title: "Статус инференса недоступен" };
+    return { level: "warn", label: name, title: t("settings:sidecar.unavailableTitle") };
   }
-  return { level: "warn", label: name, title: "Инференс загружается" };
+  return { level: "warn", label: name, title: t("settings:sidecar.loadingTitle") };
 }
 
 function SidecarTooltip({ status, ui }) {
+  const { t } = useTranslation(["common", "settings"]);
   const c = status?.components || {};
-  const elapsed = fmtElapsed(status?.elapsed_ms);
-  const timeout = fmtElapsed(status?.ready_timeout_ms);
+  const elapsed = fmtElapsed(status?.elapsed_ms, t);
+  const timeout = fmtElapsed(status?.ready_timeout_ms, t);
   const rows = [
-    status?.base_url ? { k: "URL", v: status.base_url } : null,
-    status?.pid ? { k: "PID", v: String(status.pid) } : null,
-    elapsed ? { k: "Прошло", v: timeout ? `${elapsed} из ${timeout}` : elapsed } : null,
-    status?.manager_state ? { k: "Состояние", v: status.manager_state } : null,
+    status?.base_url ? { k: t("settings:sidecar.url"), v: status.base_url } : null,
+    status?.pid ? { k: t("settings:sidecar.pid"), v: String(status.pid) } : null,
+    elapsed
+      ? {
+          k: t("settings:sidecar.elapsed"),
+          v: timeout ? t("settings:sidecar.elapsedOf", { elapsed, timeout }) : elapsed,
+        }
+      : null,
+    status?.manager_state ? { k: t("settings:sidecar.state"), v: status.manager_state } : null,
   ].filter(Boolean);
   const note =
     status?.error ||
     [
-      componentLine(c.embedder, "Эмбеддер"),
-      componentLine(c.reranker, "Реранкер"),
-      componentLine(c.tts, "TTS"),
-      imageComponentLine(c.image),
+      componentLine(c.embedder, t("settings:sidecar.embedder"), t),
+      componentLine(c.reranker, t("settings:sidecar.reranker"), t),
+      componentLine(c.tts, "TTS", t),
+      imageComponentLine(c.image, t),
     ].join("\n");
 
   return (
@@ -182,39 +227,13 @@ function SidecarTooltip({ status, ui }) {
 }
 
 const ROLE_CONFIG = [
-  {
-    key: "gm",
-    title: "Гейм-мастер",
-    note: "Решает, что происходит в сцене, какие тулы вызвать и что сказать игроку.",
-  },
-  {
-    key: "npc",
-    title: "Персонажи",
-    note: "Отыгрывает конкретного персонажа: речь, действия, память и скрытые мотивы.",
-  },
-  {
-    key: "compact",
-    title: "Компакт",
-    note: "Сжимает старую историю. Обычно сюда не нужен высокий reasoning.",
-  },
+  { key: "gm" },
+  { key: "npc" },
+  { key: "compact" },
 ];
 
-const LABELS = {
-  none: "выкл",
-  minimal: "минимум",
-  low: "низкая",
-  medium: "средняя",
-  high: "высокая",
-  xhigh: "очень высокая",
-  auto: "авто",
-  concise: "кратко",
-  detailed: "подробно",
-  default: "по умолчанию",
-  required: "обязательно",
-};
-
-function settingLabel(value) {
-  return LABELS[value] || value;
+function settingLabel(value, t) {
+  return t(`settings:values.${value}`, { defaultValue: value });
 }
 
 function effortFromItem(item) {
@@ -253,6 +272,7 @@ function roleField(role, field) {
 }
 
 function RoleReasoningFields({ role, draft, settingsOptions, currentModel, setRole }) {
+  const { t } = useTranslation("settings");
   const effortKey = roleField(role, "effort");
   const summaryKey = roleField(role, "summary");
   const effort = draft[effortKey] || "none";
@@ -274,7 +294,7 @@ function RoleReasoningFields({ role, draft, settingsOptions, currentModel, setRo
   return (
     <>
       <label className="field">
-        <span>Думалка</span>
+        <span>{t("reasoning.effort")}</span>
         <select
           value={effortValue}
           onChange={(e) => {
@@ -286,20 +306,20 @@ function RoleReasoningFields({ role, draft, settingsOptions, currentModel, setRo
           }}
         >
           {effortOptions.map((value) => (
-            <option key={value} value={value}>{settingLabel(value)}</option>
+            <option key={value} value={value}>{settingLabel(value, t)}</option>
           ))}
         </select>
       </label>
 
       <label className="field">
-        <span>Заметки думалки</span>
+        <span>{t("reasoning.summary")}</span>
         <select
           value={summaryValue}
           disabled={effortValue === "none"}
           onChange={(e) => setRole(role, { summary: e.target.value })}
         >
           {summaryOptions.map((value) => (
-            <option key={value} value={value}>{settingLabel(value)}</option>
+            <option key={value} value={value}>{settingLabel(value, t)}</option>
           ))}
         </select>
       </label>
@@ -328,9 +348,10 @@ function ConnectorSettingsCard({
   onAuthCancel,
   onLogout,
 }) {
+  const { i18n, t } = useTranslation(["common", "connectors"]);
   const methods = authMethods(connector);
   const authenticated = connectorAuthenticated(connector);
-  const status = connectorStatus(connector);
+  const status = connectorStatus(connector, t, resolveUiLanguage(i18n.resolvedLanguage || i18n.language));
   return (
     <article className="connector-settings-card">
       <div className="connector-settings-head">
@@ -341,7 +362,7 @@ function ConnectorSettingsCard({
         <span className="conn-status-line">
           <span className={`conn-dot ${status?.level || "off"}`} />
           <span className={`conn-status ${status?.level || "off"}`}>
-            {status?.title || "Состояние неизвестно"}
+            {status?.title || t("connectors:auth.unknown")}
           </span>
         </span>
       </div>
@@ -355,7 +376,7 @@ function ConnectorSettingsCard({
             disabled={cancelling || typeof onAuthCancel !== "function"}
             onClick={() => onAuthCancel?.(connectorIdOf(connector))}
           >
-            {cancelling ? "Отменяю…" : "Отменить подключение"}
+            {cancelling ? t("connectors:auth.cancelling") : t("connectors:auth.cancelConnection")}
           </button>
         ) : !authenticated && methods.map((method) => (
           <button
@@ -364,7 +385,9 @@ function ConnectorSettingsCard({
             className="btn primary"
             onClick={() => onAuthStart?.(connectorIdOf(connector), method.id)}
           >
-            {methods.length === 1 ? "Подключить" : `Подключить · ${method.name}`}
+            {methods.length === 1
+              ? t("common:actions.connect")
+              : t("connectors:auth.connectMethod", { method: method.name })}
           </button>
         ))}
         {authenticated && methods.length > 0 && (
@@ -374,7 +397,7 @@ function ConnectorSettingsCard({
             disabled={busy}
             onClick={() => onLogout?.(connectorIdOf(connector))}
           >
-            {busy ? "Отключение…" : "Выйти"}
+            {busy ? t("connectors:auth.disconnecting") : t("common:actions.logout")}
           </button>
         )}
       </div>
@@ -397,9 +420,19 @@ function SettingsModal({
   onConnectorAuthCancel,
   onConnectorLogout,
 }) {
+  const { i18n, t } = useTranslation(["common", "connectors", "settings"]);
   const [draft, setDraft] = useState(settings);
   const dev = useDevSettings();
   const [tab, setTab] = useState("model");
+  const interfaceLanguage = resolveUiLanguage(i18n.resolvedLanguage || i18n.language);
+  const rawResponseLanguage = String(draft.response_language || DEFAULT_LANGUAGE);
+  const installedResponseLanguage = availableLanguages.find(
+    (language) => language.code.toLowerCase() === rawResponseLanguage.toLowerCase()
+  );
+  const responseLanguage = installedResponseLanguage?.code || rawResponseLanguage;
+  const responseLanguages = installedResponseLanguage
+    ? availableLanguages
+    : [...availableLanguages, { code: rawResponseLanguage, name: rawResponseLanguage }];
 
   useEffect(() => {
     setDraft(settings);
@@ -429,10 +462,12 @@ function SettingsModal({
   };
 
   const tabs = [
-    { id: "model", label: "Модель" },
-    { id: "view", label: "Интерфейс" },
-    ...((connectors || []).length > 0 ? [{ id: "connection", label: "Подключения" }] : []),
-    ...(dev.developerMode ? [{ id: "debug", label: "Дебаг-вид" }] : []),
+    { id: "model", label: t("settings:tabs.model") },
+    { id: "view", label: t("settings:tabs.interface") },
+    ...((connectors || []).length > 0
+      ? [{ id: "connection", label: t("connectors:settings.tab") }]
+      : []),
+    ...(dev.developerMode ? [{ id: "debug", label: t("settings:tabs.debug") }] : []),
   ];
 
   const activeTab = tabs.find((t) => t.id === tab) || tabs[0];
@@ -441,8 +476,8 @@ function SettingsModal({
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <form className="settings-modal" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-side">
-          <div className="settings-side-head">Настройки</div>
-          <nav className="settings-tabs" role="tablist" aria-label="Разделы настроек">
+          <div className="settings-side-head">{t("settings:title")}</div>
+          <nav className="settings-tabs" role="tablist" aria-label={t("settings:sectionsAria")}>
             {tabs.map((t) => (
               <button
                 key={t.id}
@@ -461,54 +496,74 @@ function SettingsModal({
         <div className="settings-main">
         <div className="settings-main-head">
           <h2>{activeTab.label}</h2>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onClose}
+            aria-label={t("settings:closeAria")}
+          >
             <Icon name="x" size={15} />
           </button>
         </div>
 
         <div className="settings-main-body">
         {tab === "view" && (
+          <>
           <section className="settings-section">
-            <h3>Режим разработчика</h3>
-            <p>
-              Выключен — чистый вид для игрока: без счётчиков токенов, вызовов
-              инструментов, мыслей ГМ и персонажей, операций с памятью мира и
-              панели дебага истории. Включи, чтобы видеть всю «кухню».
-            </p>
+            <h3>{t("settings:language.section")}</h3>
+            <label className="field">
+              <span className="toggle-label">
+                {t("settings:language.interface")}
+                <small>{t("settings:language.interfaceHint")}</small>
+              </span>
+              <select
+                value={interfaceLanguage}
+                onChange={(event) => void setUiLanguage(event.target.value)}
+              >
+                {availableLanguages.map((language) => (
+                  <option key={language.code} value={language.code}>{language.name}</option>
+                ))}
+              </select>
+            </label>
+          </section>
+          <section className="settings-section">
+            <h3>{t("settings:developer.section")}</h3>
+            <p>{t("settings:developer.description")}</p>
             <ToggleField
-              label="Режим разработчика"
-              hint="По умолчанию выключен."
+              label={t("settings:developer.label")}
+              hint={t("settings:developer.hint")}
               checked={dev.developerMode}
               onChange={setDeveloperMode}
             />
             {dev.developerMode && (
               <p className="settings-note">
-                Что именно показывать — на вкладке «Дебаг-вид». Переключатели применяются сразу.
+                {t("settings:developer.debugNote")}
               </p>
             )}
           </section>
+          </>
         )}
 
         {tab === "debug" && dev.developerMode && (
           <>
             <section className="settings-section">
-              <h3>Что показывать</h3>
-              <p>Тонкая настройка видимости интерфейса. Изменения применяются в реальном времени.</p>
+              <h3>{t("settings:debug.visibilitySection")}</h3>
+              <p>{t("settings:debug.visibilityDescription")}</p>
               {FLAG_META.map((flag) => (
                 <ToggleField
                   key={flag.key}
-                  label={flag.label}
-                  hint={flag.hint}
+                  label={t(`settings:debug.flags.${flag.key}.label`)}
+                  hint={t(`settings:debug.flags.${flag.key}.hint`)}
                   checked={dev.flags[flag.key] !== false}
                   onChange={(on) => setFlag(flag.key, on)}
                 />
               ))}
             </section>
             <section className="settings-section">
-              <h3>Инструменты</h3>
-              <p>Подсчёт токенов текста через OpenAI API (нужен сохранённый API-ключ).</p>
+              <h3>{t("settings:debug.toolsSection")}</h3>
+              <p>{t("settings:debug.toolsDescription")}</p>
               <button type="button" className="btn" onClick={() => onOpenTokenCounter?.()}>
-                🔢 Подсчёт токенов
+                {t("settings:debug.tokenCounter")}
               </button>
             </section>
           </>
@@ -516,7 +571,7 @@ function SettingsModal({
 
         {tab === "connection" && (
           <section className="settings-section">
-            <p>Каждый коннектор сам управляет способом входа и своими моделями.</p>
+            <p>{t("connectors:settings.description")}</p>
             <div className="connector-settings-list">
               {(connectors || []).map((connector) => (
                 <ConnectorSettingsCard
@@ -538,8 +593,8 @@ function SettingsModal({
         <>
         {ROLE_CONFIG.map((role) => (
           <section className="settings-section" key={role.key}>
-            <h3>{role.title}</h3>
-            <p>{role.note}</p>
+            <h3>{t(`settings:roles.${role.key}.title`)}</h3>
+            <p>{t(`settings:roles.${role.key}.note`)}</p>
             <RoleReasoningFields
               role={role.key}
               draft={draft}
@@ -551,35 +606,50 @@ function SettingsModal({
         ))}
 
         <section className="settings-section">
-          <h3>Общее</h3>
-          <p>Эти параметры применяются ко всем запросам модели.</p>
+          <h3>{t("settings:general.section")}</h3>
+          <p>{t("settings:general.description")}</p>
 
         <label className="field">
-          <span>Многословность текста</span>
+          <span className="toggle-label">
+            {t("settings:language.response")}
+            <small>{t("settings:language.responseHint")}</small>
+          </span>
+          <select
+            value={responseLanguage}
+            onChange={(event) => set({ response_language: event.target.value })}
+          >
+            {responseLanguages.map((language) => (
+              <option key={language.code} value={language.code}>{language.name}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>{t("settings:general.verbosity")}</span>
           <select
             value={draft.text_verbosity || "default"}
             onChange={(e) => set({ text_verbosity: e.target.value })}
           >
             {(settingsOptions.text_verbosities || []).map((value) => (
-              <option key={value} value={value}>{settingLabel(value)}</option>
+              <option key={value} value={value}>{settingLabel(value, t)}</option>
             ))}
           </select>
         </label>
 
         <label className="field">
-          <span>Тулы</span>
+          <span>{t("settings:general.tools")}</span>
           <select
             value={draft.tool_choice || "auto"}
             onChange={(e) => set({ tool_choice: e.target.value })}
           >
             {(settingsOptions.tool_choices || []).map((value) => (
-              <option key={value} value={value}>{settingLabel(value)}</option>
+              <option key={value} value={value}>{settingLabel(value, t)}</option>
             ))}
           </select>
         </label>
 
         <label className="field check-field">
-          <span>Стримить текст ГМ</span>
+          <span>{t("settings:general.streamGm")}</span>
           <input
             type="checkbox"
             checked={draft.stream_gm_content !== false}
@@ -588,7 +658,7 @@ function SettingsModal({
         </label>
 
         <label className="field check-field">
-          <span>Параллельные тулы</span>
+          <span>{t("settings:general.parallelTools")}</span>
           <input
             type="checkbox"
             checked={!!draft.parallel_tool_calls}
@@ -597,7 +667,7 @@ function SettingsModal({
         </label>
 
         <label className="field check-field">
-          <span>ГМ будет предлагать варианты</span>
+          <span>{t("settings:general.suggestOptions")}</span>
           <input
             type="checkbox"
             checked={!!draft.gm_suggest_options}
@@ -606,7 +676,7 @@ function SettingsModal({
         </label>
 
         <label className="field check-field">
-          <span>Озвучка реплик (TTS)</span>
+          <span>{t("settings:general.tts")}</span>
           <input
             type="checkbox"
             checked={!!draft.tts_enabled}
@@ -615,7 +685,7 @@ function SettingsModal({
         </label>
 
         <label className="field check-field">
-          <span>Автовоспроизведение озвучки (по очереди)</span>
+          <span>{t("settings:general.ttsAutoplay")}</span>
           <input
             type="checkbox"
             checked={!!draft.tts_autoplay}
@@ -624,7 +694,7 @@ function SettingsModal({
         </label>
 
         <label className="field check-field">
-          <span>Генерация картинок</span>
+          <span>{t("settings:general.images")}</span>
           <input
             type="checkbox"
             checked={draft.image_enabled !== false}
@@ -633,17 +703,17 @@ function SettingsModal({
         </label>
 
         <label className="field">
-          <span>Лимит tool-hop</span>
+          <span>{t("settings:general.toolHopLimit")}</span>
           <Tooltip
             className="tooltip-block"
             tipClassName="ui-tip-wrap"
             focusable={false}
             content={
               <TipContent
-                title="Лимит tool-hop"
-                subtitle="Сколько внутренних инструментов ГМ может вызвать за один ход."
-                rows={[["0", "без ограничения"]]}
-                note="Поставь число, если нужно жёстко остановить слишком длинную цепочку действий."
+                title={t("settings:general.toolHopLimit")}
+                subtitle={t("settings:general.toolHopSubtitle")}
+                rows={[["0", t("settings:general.unlimited")]]}
+                note={t("settings:general.toolHopNote")}
               />
             }
           >
@@ -659,7 +729,7 @@ function SettingsModal({
         </label>
 
         <label className="field">
-          <span>Лимит ответа</span>
+          <span>{t("settings:general.outputLimit")}</span>
           <input
             type="number"
             min="0"
@@ -677,9 +747,11 @@ function SettingsModal({
 
         <div className="modal-actions">
           <button type="button" className="btn" onClick={onClose}>
-            {tab === "model" ? "Отмена" : "Закрыть"}
+            {tab === "model" ? t("common:actions.cancel") : t("common:actions.close")}
           </button>
-          {tab === "model" && <button type="submit" className="btn primary">Сохранить</button>}
+          {tab === "model" && (
+            <button type="submit" className="btn primary">{t("common:actions.save")}</button>
+          )}
         </div>
         </div>
       </form>
@@ -715,8 +787,10 @@ export default function Header({
   onConnectorAuthCancel,
   onConnectorLogout,
 }) {
+  const { i18n, t } = useTranslation(["common", "connectors", "settings"]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tokenCounterOpen, setTokenCounterOpen] = useState(false);
+  const interfaceLanguage = resolveUiLanguage(i18n.resolvedLanguage || i18n.language);
 
   const binding = normalizeModelBinding(modelBinding || {
     connector_id: srv.backend,
@@ -741,8 +815,8 @@ export default function Header({
   );
 
   const chip = activeConnector ? connectorName(activeConnector) : binding.connector_id || "…";
-  const conn = connectorStatus(activeConnector);
-  const sidecar = sidecarUiStatus(sidecarStatus);
+  const conn = connectorStatus(activeConnector, t, interfaceLanguage);
+  const sidecar = sidecarUiStatus(sidecarStatus, t);
 
   // Nav highlight: the studios (world/story/character) live inside Библиотека.
   const isGame = mainView === "chat";
@@ -760,8 +834,8 @@ export default function Header({
           disabled={chatsOpen}
           content={
             <TipContent
-              title={chatsOpen ? "Скрыть чаты и миры" : "Показать чаты и миры"}
-              note={chatsOpen ? "Освободит место для текущей сцены и диалога." : "Откроет боковую панель с чатами и мирами."}
+              title={t(chatsOpen ? "common:sidebar.hide" : "common:sidebar.show")}
+              note={t(chatsOpen ? "common:sidebar.hideNote" : "common:sidebar.showNote")}
             />
           }
         >
@@ -773,7 +847,7 @@ export default function Header({
               (isGame ? "" : " chat-toggle--offgame")
             }
             onClick={onToggleChats}
-            aria-label={chatsOpen ? "Свернуть чаты и миры" : "Развернуть чаты и миры"}
+            aria-label={t(chatsOpen ? "common:sidebar.collapse" : "common:sidebar.expand")}
             aria-expanded={chatsOpen}
             aria-controls="chat-history-sidebar"
           >
@@ -788,7 +862,7 @@ export default function Header({
         <span>GM-<b>Lab</b></span>
       </h1>
       </div>
-      <nav className="header-nav" aria-label="Разделы">
+      <nav className="header-nav" aria-label={t("common:nav.sections")}>
         <button
           type="button"
           className={"header-nav-btn" + (isGame ? " active" : "")}
@@ -796,7 +870,7 @@ export default function Header({
           aria-current={isGame ? "page" : undefined}
         >
           <Icon name="d20" size={14} />
-          <span>Игра</span>
+          <span>{t("common:nav.game")}</span>
         </button>
         <button
           type="button"
@@ -805,7 +879,7 @@ export default function Header({
           aria-current={isLibrary ? "page" : undefined}
         >
           <Icon name="book" size={14} />
-          <span>Библиотека</span>
+          <span>{t("common:nav.library")}</span>
         </button>
         {imageLabEnabled && (
           <button
@@ -815,7 +889,7 @@ export default function Header({
             aria-current={isImage ? "page" : undefined}
           >
             <Icon name="image" size={14} />
-            <span>Image Lab</span>
+            <span>{t("common:nav.imageLab")}</span>
           </button>
         )}
       </nav>
@@ -825,11 +899,11 @@ export default function Header({
           type="button"
           className="header-search-trigger"
           onClick={onOpenSearch}
-          aria-label="Открыть общий поиск"
+          aria-label={t("common:search.open")}
           aria-keyshortcuts="Control+K Meta+K"
         >
           <Icon name="search" size={15} />
-          <span>Поиск</span>
+          <span>{t("common:search.label")}</span>
           <kbd>Ctrl K</kbd>
         </button>
       )}
@@ -861,9 +935,9 @@ export default function Header({
         focusable={false}
         content={
           <TipContent
-            title="Модель"
-            subtitle="Какая модель отвечает за следующий ход."
-            note="Смена применяется к новым запросам, уже идущий ответ не переключается."
+            title={t("common:model.label")}
+            subtitle={t("common:model.tooltip")}
+            note={t("common:model.changeNote")}
           />
         }
       >
@@ -871,7 +945,7 @@ export default function Header({
           className="model-select"
           value={binding.model_id}
           onChange={(e) => onModelChange(e.target.value)}
-          aria-label="Модель"
+          aria-label={t("common:model.label")}
           disabled={!binding.connector_id || options.length === 0}
         >
           {options.map((o) => (
@@ -886,14 +960,19 @@ export default function Header({
           className="tooltip-wrap"
           tipClassName="ui-tip-wrap"
           focusable={false}
-          content={<TipContent title="Обновить модели" note="Повторно запросит список у текущего коннектора." />}
+          content={
+            <TipContent
+              title={t("common:model.refresh")}
+              note={t("common:model.refreshNote")}
+            />
+          }
         >
           <button
             type="button"
             className="icon-btn"
             disabled={connectorModelsLoading || typeof onEnsureConnectorModels !== "function"}
             onClick={() => onEnsureConnectorModels?.(binding.connector_id, { force: true })}
-            aria-label="Обновить модели"
+            aria-label={t("common:model.refresh")}
           >
             <Icon name="refresh" size={15} />
           </button>
@@ -905,9 +984,18 @@ export default function Header({
           tipClassName="ui-tip-wrap"
           focusable={false}
           disabled={settingsOpen}
-          content={<TipContent title="Настройки" note="Модель, интерфейс, озвучка и подключения." />}
+          content={
+            <TipContent
+              title={t("settings:tooltip.title")}
+              note={t("settings:tooltip.note")}
+            />
+          }
         >
-          <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Настройки">
+          <button
+            className="icon-btn"
+            onClick={() => setSettingsOpen(true)}
+            aria-label={t("settings:title")}
+          >
             <Icon name="sliders" size={16} />
           </button>
         </Tooltip>

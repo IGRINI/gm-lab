@@ -1,5 +1,6 @@
 import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import SearchField from "./SearchField.jsx";
 import SearchSkeleton from "./SearchSkeleton.jsx";
 import useAsyncSearch from "../useAsyncSearch.js";
@@ -23,10 +24,10 @@ import useAsyncSearch from "../useAsyncSearch.js";
 //   onReveal()                    open the library folder on disk
 
 const FILTERS = [
-  { key: "all", label: "Все" },
-  { key: "worlds", label: "Миры" },
-  { key: "stories", label: "Истории" },
-  { key: "characters", label: "Персонажи" },
+  "all",
+  "worlds",
+  "stories",
+  "characters",
 ];
 
 const FILTER_TYPES = {
@@ -36,22 +37,20 @@ const FILTER_TYPES = {
   characters: ["character"],
 };
 
-const KIND_LABELS = { world: "Мир", story: "История", character: "Персонаж" };
-
 function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function worldTitle(world) {
-  return textValue(world?.title) || "Новый мир";
+function worldTitle(world, t) {
+  return textValue(world?.title) || t("defaults.newWorld");
 }
 
-function storyTitle(story) {
-  return textValue(story?.title) || textValue(story?.name) || "Новая история";
+function storyTitle(story, t) {
+  return textValue(story?.title) || textValue(story?.name) || t("defaults.newStory");
 }
 
-function characterTitle(character) {
-  return textValue(character?.title) || "Персонаж";
+function characterTitle(character, t) {
+  return textValue(character?.title) || t("entities.character");
 }
 
 function worldMeta(world) {
@@ -72,16 +71,18 @@ function characterPc(character) {
   return pc && typeof pc === "object" ? pc : {};
 }
 
-function characterMeta(character) {
+function characterMeta(character, t) {
   const pc = characterPc(character);
   const role = textValue(pc.class_role);
   const level = pc.level;
   const parts = [];
   if (role) parts.push(role);
-  if (Number.isFinite(Number(level)) && Number(level) > 0) parts.push(`уровень ${Number(level)}`);
+  if (Number.isFinite(Number(level)) && Number(level) > 0) {
+    parts.push(t("meta.level", { level: Number(level) }));
+  }
   if (parts.length > 0) return parts.join(" · ");
   const preview = textValue(character?.preview);
-  return preview && preview !== characterTitle(character) ? preview : "";
+  return preview && preview !== characterTitle(character, t) ? preview : "";
 }
 
 function characterPreview(character) {
@@ -147,6 +148,7 @@ function DropMenu({ label, ariaLabel, items, disabled, align = "right", buttonCl
 }
 
 function LibraryCard({ kind, title, badge, meta, preview, playLabel, studioLabel, onPlay, onOpenStudio, menuItems, locked }) {
+  const { t } = useTranslation("library");
   return (
     <article className="lib-card">
       <div className="lib-card-main">
@@ -157,7 +159,7 @@ function LibraryCard({ kind, title, badge, meta, preview, playLabel, studioLabel
         {meta && <div className="lib-card-meta">{meta}</div>}
         {preview
           ? <p className="lib-card-preview">{preview}</p>
-          : <p className="lib-card-preview lib-card-preview--empty">Без описания</p>}
+          : <p className="lib-card-preview lib-card-preview--empty">{t("cards.noDescription")}</p>}
       </div>
       <div className="lib-card-actions">
         <button type="button" className="btn primary lib-card-play" disabled={locked} onClick={onPlay}>
@@ -166,7 +168,13 @@ function LibraryCard({ kind, title, badge, meta, preview, playLabel, studioLabel
         <button type="button" className="btn lib-card-studio" disabled={locked} onClick={onOpenStudio}>
           <Icon name="pen" size={13} /> {studioLabel}
         </button>
-        <DropMenu label={<Icon name="dots" size={15} />} ariaLabel={`Ещё · ${title}`} align="right" items={menuItems} disabled={locked} />
+        <DropMenu
+          label={<Icon name="dots" size={15} />}
+          ariaLabel={t("cards.more", { title })}
+          align="right"
+          items={menuItems}
+          disabled={locked}
+        />
       </div>
     </article>
   );
@@ -209,6 +217,7 @@ export default function LibraryScreen({
   onImport,
   onReveal,
 }) {
+  const { t } = useTranslation("library");
   const [filter, setFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [confirmTarget, setConfirmTarget] = useState(null); // { entity, kind }
@@ -274,7 +283,7 @@ export default function LibraryScreen({
     const refId = story?.world_ref?.id;
     if (refId == null) return "";
     const world = worldsById.get(String(refId));
-    const label = world ? worldTitle(world) : textValue(story?.world_ref?.title);
+    const label = world ? worldTitle(world, t) : textValue(story?.world_ref?.title);
     return label ? `→ ${label}` : "";
   };
 
@@ -293,20 +302,20 @@ export default function LibraryScreen({
     const worldRefId = character?.world_ref?.id;
     if (worldRefId != null) {
       const world = worldsById.get(String(worldRefId));
-      parts.push(world ? worldTitle(world) : "мир недоступен");
+      parts.push(world ? worldTitle(world, t) : t("cards.worldUnavailable"));
     }
     const storyRefId = character?.story_ref?.id;
     if (storyRefId != null) {
       const story = storiesById.get(String(storyRefId));
-      parts.push(story ? storyTitle(story) : "история недоступна");
+      parts.push(story ? storyTitle(story, t) : t("cards.storyUnavailable"));
     }
     return parts.length > 0 ? `→ ${parts.join(" · ")}` : "";
   };
 
   const createItems = [
-    { key: "world", label: "Мир", onClick: () => onCreate?.("world") },
-    { key: "story", label: "Историю", onClick: () => onCreate?.("story") },
-    { key: "character", label: "Персонажа", onClick: () => onCreate?.("character") },
+    { key: "world", label: t("create.world"), onClick: () => onCreate?.("world") },
+    { key: "story", label: t("create.story"), onClick: () => onCreate?.("story") },
+    { key: "character", label: t("create.character"), onClick: () => onCreate?.("character") },
   ];
 
   const askDelete = (entity, kind) => setConfirmTarget({ entity, kind });
@@ -355,10 +364,10 @@ export default function LibraryScreen({
     // Full noun + participle per kind so the gender agrees («История импортирована»).
     const label =
       data?.kind === "story"
-        ? "История импортирована"
+        ? t("import.successStory")
         : data?.kind === "character"
-          ? "Персонаж импортирован"
-          : "Мир импортирован";
+          ? t("import.successCharacter")
+          : t("import.successWorld");
     setImportNotice(`${label}${data?.id ? `: ${data.id}` : ""}`);
   };
   const onImportFile = async (event) => {
@@ -374,15 +383,15 @@ export default function LibraryScreen({
       if (
         isCollision(error) &&
         typeof window !== "undefined" &&
-        window.confirm("Пакет с таким id уже существует. Заменить?")
+        window.confirm(t("import.replaceConfirm"))
       ) {
         try {
           await runImport(file, true);
         } catch (retryError) {
-          setImportError(retryError?.message || "импорт не выполнен");
+          setImportError(retryError?.message || t("import.failed"));
         }
       } else {
-        setImportError(error?.message || "импорт не выполнен");
+        setImportError(error?.message || t("import.failed"));
       }
     } finally {
       setImporting(false);
@@ -392,30 +401,30 @@ export default function LibraryScreen({
   const confirmKind = confirmTarget?.kind || "";
   const confirmName =
     confirmKind === "world"
-      ? worldTitle(confirmTarget?.entity)
+      ? worldTitle(confirmTarget?.entity, t)
       : confirmKind === "story"
-        ? storyTitle(confirmTarget?.entity)
-        : characterTitle(confirmTarget?.entity);
+        ? storyTitle(confirmTarget?.entity, t)
+        : characterTitle(confirmTarget?.entity, t);
 
   const renderCard = (entity, kind, match = null) => {
-    const badge = filter === "all" ? KIND_LABELS[kind] : "";
+    const badge = filter === "all" ? t(`entities.${kind}`) : "";
     if (kind === "world") {
       return (
         <LibraryCard
           key={`world:${entity.id}`}
           kind="world"
-          title={worldTitle(entity)}
+          title={worldTitle(entity, t)}
           badge={badge}
           meta={worldMeta(entity)}
           preview={textValue(match?.snippet) || worldPreview(entity)}
-          playLabel="Играть"
-          studioLabel="Студия"
+          playLabel={t("actions.play")}
+          studioLabel={t("actions.studio")}
           locked={locked}
           onPlay={() => onPlay?.(entity, "world")}
           onOpenStudio={() => onOpenStudio?.(entity, "world")}
           menuItems={[
-            { key: "export", label: "Экспорт", onClick: () => onExport?.(entity, "world") },
-            { key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(entity, "world") },
+            { key: "export", label: t("actions.export"), onClick: () => onExport?.(entity, "world") },
+            { key: "delete", label: t("actions.delete"), danger: true, onClick: () => askDelete(entity, "world") },
           ]}
         />
       );
@@ -425,42 +434,42 @@ export default function LibraryScreen({
         <LibraryCard
           key={`story:${entity.id}`}
           kind="story"
-          title={storyTitle(entity)}
+          title={storyTitle(entity, t)}
           badge={badge}
           meta={storyWorldLabel(entity)}
           preview={textValue(match?.snippet) || storyPreview(entity)}
-          playLabel="Играть"
-          studioLabel="Студия"
+          playLabel={t("actions.play")}
+          studioLabel={t("actions.studio")}
           locked={locked}
           onPlay={() => onPlay?.(entity, "story")}
           onOpenStudio={() => onOpenStudio?.(entity, "story")}
           menuItems={[
-            { key: "export", label: "Экспорт", onClick: () => onExport?.(entity, "story") },
-            { key: "export-world", label: "Экспорт с миром", onClick: () => onExport?.(entity, "story", { bake: true }) },
-            { key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(entity, "story") },
+            { key: "export", label: t("actions.export"), onClick: () => onExport?.(entity, "story") },
+            { key: "export-world", label: t("actions.exportWithWorld"), onClick: () => onExport?.(entity, "story", { bake: true }) },
+            { key: "delete", label: t("actions.delete"), danger: true, onClick: () => askDelete(entity, "story") },
           ]}
         />
       );
     }
 
     const menuItems = [
-      { key: "export", label: "Экспорт", onClick: () => onExport?.(entity, "character") },
+      { key: "export", label: t("actions.export"), onClick: () => onExport?.(entity, "character") },
     ];
     if (onRename) {
-      menuItems.push({ key: "rename", label: "Переименовать", onClick: () => onRename?.(entity, "character") });
+      menuItems.push({ key: "rename", label: t("actions.rename"), onClick: () => onRename?.(entity, "character") });
     }
-    menuItems.push({ key: "delete", label: "Удалить", danger: true, onClick: () => askDelete(entity, "character") });
-    const meta = [characterMeta(entity), characterBaseLabel(entity)].filter(Boolean).join(" · ");
+    menuItems.push({ key: "delete", label: t("actions.delete"), danger: true, onClick: () => askDelete(entity, "character") });
+    const meta = [characterMeta(entity, t), characterBaseLabel(entity)].filter(Boolean).join(" · ");
     return (
       <LibraryCard
         key={`character:${entity.id}`}
         kind="character"
-        title={characterTitle(entity)}
+        title={characterTitle(entity, t)}
         badge={badge}
         meta={meta}
         preview={textValue(match?.snippet) || characterPreview(entity)}
-        playLabel="Играть"
-        studioLabel="Студия"
+        playLabel={t("actions.play")}
+        studioLabel={t("actions.studio")}
         locked={locked}
         onPlay={() => onPlay?.(entity, "character")}
         onOpenStudio={() => onOpenStudio?.(entity, "character")}
@@ -491,8 +500,8 @@ export default function LibraryScreen({
         return (
           <EmptyState
             icon="search"
-            title="Ничего не найдено"
-            text={`В ${filter === "all" ? "библиотеке" : "этой вкладке"} нет совпадений. Попробуйте другое слово.`}
+            title={t("search.nothingFound")}
+            text={t(filter === "all" ? "search.noMatchesLibrary" : "search.noMatchesTab")}
           />
         );
       }
@@ -513,9 +522,9 @@ export default function LibraryScreen({
         return (
           <EmptyState
             icon="book"
-            title="Библиотека пока пуста"
-            text="Создайте первый мир — затем на его основе можно собрать историю и персонажей."
-            ctaLabel="+ Создать мир"
+            title={t("empty.libraryTitle")}
+            text={t("empty.libraryText")}
+            ctaLabel={t("actions.createWorld")}
             onCta={() => onCreate?.("world")}
             locked={locked}
           />
@@ -529,9 +538,9 @@ export default function LibraryScreen({
         return (
           <EmptyState
             icon="globe"
-            title="Создайте первый мир"
-            text="Миров пока нет — создайте в студии или импортируйте пакет."
-            ctaLabel="+ Создать мир"
+            title={t("empty.worldsTitle")}
+            text={t("empty.worldsText")}
+            ctaLabel={t("actions.createWorld")}
             onCta={() => onCreate?.("world")}
             locked={locked}
           />
@@ -545,9 +554,9 @@ export default function LibraryScreen({
         return (
           <EmptyState
             icon="scroll"
-            title="Создайте первую историю"
-            text="Историй пока нет — создайте в студии сюжета над одним из миров."
-            ctaLabel="+ Создать историю"
+            title={t("empty.storiesTitle")}
+            text={t("empty.storiesText")}
+            ctaLabel={t("actions.createStory")}
             onCta={() => onCreate?.("story")}
             locked={locked}
           />
@@ -560,9 +569,9 @@ export default function LibraryScreen({
       return (
         <EmptyState
           icon="user"
-          title="Создайте первого персонажа"
-          text="Персонажей пока нет — создайте в студии или импортируйте .gmchar."
-          ctaLabel="+ Создать персонажа"
+          title={t("empty.charactersTitle")}
+          text={t("empty.charactersText")}
+          ctaLabel={t("actions.createCharacter")}
           onCta={() => onCreate?.("character")}
           locked={locked}
         />
@@ -574,35 +583,35 @@ export default function LibraryScreen({
   return (
     <div className="library-screen">
       <div className="library-screen-head">
-        <div className="lib-filters" role="tablist" aria-label="Библиотека">
+        <div className="lib-filters" role="tablist" aria-label={t("title")}>
           {FILTERS.map((tab) => (
             <button
-              key={tab.key}
+              key={tab}
               type="button"
               role="tab"
-              aria-selected={filter === tab.key}
-              className={"lib-pill" + (filter === tab.key ? " active" : "")}
-              onClick={() => setFilter(tab.key)}
+              aria-selected={filter === tab}
+              className={"lib-pill" + (filter === tab ? " active" : "")}
+              onClick={() => setFilter(tab)}
             >
-              {tab.label}
-              <span className="lib-pill-count">{counts[tab.key]}</span>
+              {t(`filters.${tab}`)}
+              <span className="lib-pill-count">{counts[tab]}</span>
             </button>
           ))}
         </div>
         <div className="lib-toolbar-actions">
           <DropMenu
-            label={<><Icon name="plus" size={14} /> Создать</>}
-            ariaLabel="Создать пакет"
+            label={<><Icon name="plus" size={14} /> {t("actions.create")}</>}
+            ariaLabel={t("create.packageAria")}
             align="right"
             buttonClassName="primary"
             items={createItems}
             disabled={locked}
           />
           <button type="button" className="btn" onClick={triggerImport} disabled={locked || importing}>
-            <Icon name="upload" size={14} /> {importing ? "Импорт…" : "Импорт"}
+            <Icon name="upload" size={14} /> {importing ? t("import.inProgress") : t("import.action")}
           </button>
           <button type="button" className="btn" onClick={() => onReveal?.()}>
-            <Icon name="folder" size={14} /> Открыть папку
+            <Icon name="folder" size={14} /> {t("actions.openFolder")}
           </button>
           <input
             ref={importInputRef}
@@ -619,13 +628,17 @@ export default function LibraryScreen({
         <SearchField
           value={searchQuery}
           onChange={setSearchQuery}
-          placeholder={filter === "all" ? "Искать по всей библиотеке" : `Искать: ${FILTERS.find((tab) => tab.key === filter)?.label.toLowerCase() || "вкладка"}`}
-          ariaLabel="Поиск по библиотеке"
+          placeholder={
+            filter === "all"
+              ? t("search.placeholderAll")
+              : t("search.placeholderFilter", { filter: t(`filters.${filter}`).toLocaleLowerCase() })
+          }
+          ariaLabel={t("search.ariaLabel")}
           loading={librarySearch.revalidating}
         />
         {searchActive && !librarySearch.initialLoading && !librarySearch.error && (
           <span className="library-search-count">
-            {librarySearch.total} найдено
+            {t("search.found", { count: librarySearch.total })}
           </span>
         )}
       </div>
@@ -648,22 +661,22 @@ export default function LibraryScreen({
             <div className="confirm-icon" aria-hidden="true"><Icon name="trash" size={19} /></div>
             <h3 id="lib-confirm-title">
               {confirmKind === "world"
-                ? "Удалить мир?"
+                ? t("delete.worldTitle")
                 : confirmKind === "story"
-                  ? "Удалить историю?"
-                  : "Удалить персонажа?"}
+                  ? t("delete.storyTitle")
+                  : t("delete.characterTitle")}
             </h3>
             <p className="confirm-name">«{confirmName}»</p>
             <p id="lib-confirm-note" className="confirm-note">
               {confirmKind === "world"
-                ? "Мир удалится из библиотеки. Игровые чаты и текущая сессия не изменятся; истории и персонажи, созданные на этом мире, сохранятся, но потеряют его материал как основу. Это действие нельзя отменить."
+                ? t("delete.worldNote")
                 : confirmKind === "story"
-                  ? "История удалится из библиотеки. Сохранённые игры не изменятся; персонажи, созданные под эту историю, сохранятся, но потеряют её материал как основу. Это действие нельзя отменить."
-                  : "Персонаж удалится из библиотеки. Сохранённые игры не изменятся — их снапшот самодостаточен. Это действие нельзя отменить."}
+                  ? t("delete.storyNote")
+                  : t("delete.characterNote")}
             </p>
             <div className="confirm-actions">
               <button type="button" className="btn" onClick={cancelDelete} disabled={deleting} autoFocus>
-                Отмена
+                {t("actions.cancel")}
               </button>
               <button
                 type="button"
@@ -671,7 +684,7 @@ export default function LibraryScreen({
                 onClick={confirmDelete}
                 disabled={deleting}
               >
-                {deleting ? "Удаляю…" : "Удалить"}
+                {deleting ? t("delete.inProgress") : t("actions.delete")}
               </button>
             </div>
           </div>

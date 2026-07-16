@@ -1,0 +1,46 @@
+{
+  "catalog": {
+    "fallbackName": "Коннектор",
+    "experimental": "экспериментальная"
+  },
+  "auth": {
+    "notRequired": "Авторизация не требуется.",
+    "required": "Требуется подключение.",
+    "account": "Аккаунт",
+    "email": "Почта",
+    "token": "Токен",
+    "available": "{{name}} доступен",
+    "connected": "{{name}} подключён",
+    "connecting": "{{name}}: подключение…",
+    "notCompleted": "{{name}}: вход не завершён",
+    "expired": "Срок авторизации истёк.",
+    "expiredRelative": "истёк",
+    "expiresIn": "через {{duration}}",
+    "error": "{{name}}: ошибка авторизации",
+    "disconnected": "{{name}} не подключён",
+    "unknown": "Состояние неизвестно",
+    "cancelling": "Отменяю…",
+    "cancelConnection": "Отменить подключение",
+    "disconnecting": "Отключение…",
+    "connectMethod": "Подключить · {{method}}",
+    "devicePrompt": "Откройте страницу и подтвердите код:",
+    "browserPrompt": "Завершите вход в браузере.",
+    "openLogin": "Открыть страницу входа"
+  },
+  "settings": {
+    "tab": "Подключения",
+    "description": "Каждый коннектор сам управляет способом входа и своими моделями."
+  },
+  "picker": {
+    "ariaLabel": "Коннектор и модель",
+    "connector": "Коннектор",
+    "model": "Модель",
+    "unavailable": "недоступна",
+    "lockedTitle": "Коннектор закреплён за этой историей",
+    "locked": "Коннектор закреплён",
+    "notConnected": "{{name}} не подключён",
+    "connectorUnavailable": "Коннектор недоступен",
+    "loadingModels": "Загружаю модели…",
+    "noModel": "У коннектора нет доступной модели"
+  }
+}

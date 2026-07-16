@@ -1,5 +1,11 @@
 // Thin wrappers around the GM-Lab Rust backend (gml-server).
 
+import { runtimeText } from "./i18n/runtime.js";
+
+function apiText(key, defaultValue, options = {}) {
+  return runtimeText(`app:api.${key}`, { defaultValue, ...options });
+}
+
 async function getJSON(url, opts) {
   const r = await fetch(url, opts);
   return r.json();
@@ -168,7 +174,9 @@ export const api = {
       /* fall through to the generic error below */
     }
     if (!r.ok || !data.ok) {
-      const err = new Error(data.error || `импорт не выполнен (${r.status})`);
+      const err = new Error(
+        data.error || apiText("importFailed", `импорт не выполнен (${r.status})`, { status: r.status })
+      );
       err.status = r.status;
       // 409 is the backend's distinct id-collision-without-overwrite signal.
       err.collision = r.status === 409;
@@ -241,7 +249,9 @@ export const api = {
       } catch {
         /* fall through to the generic error below */
       }
-      throw new Error(data.error || `экспорт не выполнен (${r.status})`);
+      throw new Error(
+        data.error || apiText("exportFailed", `экспорт не выполнен (${r.status})`, { status: r.status })
+      );
     }
     const blob = await r.blob();
     const name = filenameFromContentDisposition(r.headers.get("Content-Disposition")) || fallbackName;
@@ -288,7 +298,11 @@ export async function transcribeAudio(blob) {
     /* fall through to the generic error below */
   }
   if (!resp.ok || !data.ok) {
-    throw new Error(data.error || `Ошибка распознавания (${resp.status})`);
+    throw new Error(
+      data.error || apiText("transcriptionFailed", `Ошибка распознавания (${resp.status})`, {
+        status: resp.status,
+      })
+    );
   }
   return String(data.text || "");
 }
@@ -320,7 +334,11 @@ async function streamArchitectAt(endpoint, body, onEvent) {
     } catch {
       // non-JSON error body — fall through to the status line
     }
-    throw new Error(message || `архитектор недоступен (HTTP ${resp.status})`);
+    throw new Error(
+      message || apiText("architectUnavailable", `архитектор недоступен (HTTP ${resp.status})`, {
+        status: resp.status,
+      })
+    );
   }
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
@@ -404,7 +422,7 @@ function parseSseData(frame) {
   try {
     return JSON.parse(data);
   } catch {
-    throw new Error("Сервер прислал повреждённое событие хода");
+    throw new Error(apiText("invalidTurnEvent", "Сервер прислал повреждённое событие хода"));
   }
 }
 
@@ -412,7 +430,7 @@ export function createTurnRequestId() {
   const cryptoApi = globalThis.crypto;
   if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
   if (typeof cryptoApi?.getRandomValues !== "function") {
-    throw new Error("Не удалось создать идентификатор хода");
+    throw new Error(apiText("requestIdFailed", "Не удалось создать идентификатор хода"));
   }
   const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -433,7 +451,7 @@ export async function streamTurn(
   { signal, legacyResume = false, chatId = "", history = null } = {}
 ) {
   if (!requestId || typeof onEvent !== "function") {
-    throw turnStreamError("Некорректный запрос хода", false);
+    throw turnStreamError(apiText("invalidTurnRequest", "Некорректный запрос хода"), false);
   }
   const body = { text, request_id: requestId };
   if (legacyResume === true) body.legacy_resume = true;
@@ -456,11 +474,13 @@ export async function streamTurn(
   if (!resp.ok) {
     const body = await resp.text();
     throw turnStreamError(
-      responseErrorMessage(resp, body, "ход не выполнен"),
+      responseErrorMessage(resp, body, apiText("turnFailed", "ход не выполнен")),
       retryableTurnStatus(resp.status)
     );
   }
-  if (!resp.body) throw new Error("Сервер не открыл поток хода");
+  if (!resp.body) {
+    throw new Error(apiText("turnStreamMissing", "Сервер не открыл поток хода"));
+  }
 
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
@@ -470,17 +490,19 @@ export async function streamTurn(
   const acceptFrame = (frame) => {
     const ev = parseSseData(frame);
     if (!ev) return;
-    if (terminal) throw new Error("Сервер прислал событие после завершения хода");
+    if (terminal) {
+      throw new Error(apiText("eventAfterTurn", "Сервер прислал событие после завершения хода"));
+    }
     if (ev.kind === "done") {
       if (
         typeof ev.ok !== "boolean" ||
         typeof ev.retryable !== "boolean" ||
         typeof ev.replayed !== "boolean"
       ) {
-        throw new Error("Сервер не подтвердил результат хода");
+        throw new Error(apiText("turnResultUnconfirmed", "Сервер не подтвердил результат хода"));
       }
       if (!ev.request_id || String(ev.request_id) !== requestId) {
-        throw new Error("Сервер подтвердил другой ход");
+        throw new Error(apiText("wrongTurnConfirmed", "Сервер подтвердил другой ход"));
       }
       terminal = ev;
       return;
@@ -501,6 +523,10 @@ export async function streamTurn(
   }
   buf += dec.decode();
   if (buf.trim()) acceptFrame(buf);
-  if (!terminal) throw new Error("Соединение закрылось до подтверждения хода");
+  if (!terminal) {
+    throw new Error(
+      apiText("connectionClosedBeforeTurn", "Соединение закрылось до подтверждения хода")
+    );
+  }
   return terminal;
 }

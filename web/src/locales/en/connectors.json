@@ -1,0 +1,46 @@
+{
+  "catalog": {
+    "fallbackName": "Connector",
+    "experimental": "experimental"
+  },
+  "auth": {
+    "notRequired": "No authorization required.",
+    "required": "A connection is required.",
+    "account": "Account",
+    "email": "Email",
+    "token": "Token",
+    "available": "{{name}} is available",
+    "connected": "{{name}} is connected",
+    "connecting": "{{name}}: connecting…",
+    "notCompleted": "{{name}}: sign-in not completed",
+    "expired": "Authorization has expired.",
+    "expiredRelative": "expired",
+    "expiresIn": "in {{duration}}",
+    "error": "{{name}}: authorization error",
+    "disconnected": "{{name}} is not connected",
+    "unknown": "Status unknown",
+    "cancelling": "Cancelling…",
+    "cancelConnection": "Cancel connection",
+    "disconnecting": "Disconnecting…",
+    "connectMethod": "Connect · {{method}}",
+    "devicePrompt": "Open the page and confirm this code:",
+    "browserPrompt": "Complete sign-in in your browser.",
+    "openLogin": "Open sign-in page"
+  },
+  "settings": {
+    "tab": "Connections",
+    "description": "Each connector manages its own sign-in method and models."
+  },
+  "picker": {
+    "ariaLabel": "Connector and model",
+    "connector": "Connector",
+    "model": "Model",
+    "unavailable": "unavailable",
+    "lockedTitle": "The connector is fixed for this story",
+    "locked": "Connector fixed",
+    "notConnected": "{{name}} is not connected",
+    "connectorUnavailable": "Connector unavailable",
+    "loadingModels": "Loading models…",
+    "noModel": "The connector has no available model"
+  }
+}

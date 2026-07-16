@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal.jsx";
 import WizCard, {
   storyDescription,
@@ -43,6 +44,7 @@ export default function BasePickerModal({
   onCreateWorld, // empty-library escape hatch → world studio
   onClose,
 }) {
+  const { t } = useTranslation("library");
   const isStory = kind === "story";
   // Character mode selection, as a (worldId, storyId) pair: ("", "") = «без
   // основы»; (id, "") = world; (id, sid) = world + its authored story;
@@ -105,11 +107,11 @@ export default function BasePickerModal({
   const footer = (
     <div className="wiz-foot">
       <button type="button" className="btn" onClick={onClose} disabled={locked}>
-        Отмена
+        {t("actions.cancel")}
       </button>
       <div className="wiz-foot-right">
         <button type="button" className="btn primary" onClick={confirm} disabled={!canConfirm}>
-          В студию →
+          {t("basePicker.toStudio")}
         </button>
       </div>
     </div>
@@ -117,8 +119,8 @@ export default function BasePickerModal({
 
   return (
     <Modal
-      title={isStory ? "Новая история" : "Новый персонаж"}
-      subtitle={isStory ? "выберите мир-основу" : "выберите основу"}
+      title={t(isStory ? "basePicker.newStory" : "basePicker.newCharacter")}
+      subtitle={t(isStory ? "basePicker.chooseWorldBase" : "basePicker.chooseBase")}
       onClose={locked ? () => {} : onClose}
       className="wiz-modal"
       footer={footer}
@@ -127,8 +129,8 @@ export default function BasePickerModal({
         <div className="wiz-panel">
           <p className="wiz-lead">
             {isStory
-              ? "История строится над миром: его канон станет библией сюжета."
-              : "Персонаж может быть сам по себе, под конкретный мир или под встроенную классику — тогда архитектор будет опираться на её публичный канон."}
+              ? t("basePicker.storyLead")
+              : t("basePicker.characterLead")}
           </p>
           <div className="wiz-grid">
             {!isStory && (
@@ -136,9 +138,9 @@ export default function BasePickerModal({
                 selected={!worldId && !storyId}
                 disabled={locked}
                 onClick={pickStandalone}
-                kicker="основа"
-                title="Без основы"
-                desc="Переносимый герой, не привязанный к миру, — подойдёт для любой истории."
+                kicker={t("entities.baseLower")}
+                title={t("basePicker.noBase")}
+                desc={t("basePicker.noBaseDescription")}
               />
             )}
             {worldList.map((w) => (
@@ -147,11 +149,11 @@ export default function BasePickerModal({
                 selected={sameId(worldId, w.id)}
                 disabled={locked}
                 onClick={() => pickWorld(idOf(w.id))}
-                kicker="мир"
-                title={worldTitle(w)}
+                kicker={t("entities.worldLower")}
+                title={worldTitle(w, t)}
                 meta={worldMeta(w)}
                 desc={worldPreview(w)}
-                tip={worldTip(w)}
+                tip={worldTip(w, t)}
               />
             ))}
             {!isStory &&
@@ -161,11 +163,11 @@ export default function BasePickerModal({
                   selected={builtinPicked && sameId(storyId, s.id)}
                   disabled={locked}
                   onClick={() => pickBuiltin(s.id)}
-                  kicker="история"
-                  badge="встроенная классика"
-                  title={storyTitle(s)}
+                  kicker={t("entities.storyLower")}
+                  badge={t("badges.builtinClassic")}
+                  title={storyTitle(s, t)}
                   desc={storyDescription(s)}
-                  tip={storyTip(s, { kicker: "встроенная классика" })}
+                  tip={storyTip(s, t, { kicker: t("badges.builtinClassic") })}
                 />
               ))}
           </div>
@@ -173,13 +175,16 @@ export default function BasePickerModal({
             <div className="wiz-empty-cta">
               <p className="wiz-empty">
                 {isStory
-                  ? "Миров пока нет — сначала создайте мир, история строится над ним."
-                  : "Миров пока нет — персонажа можно создать без основы" +
-                    (builtinStories.length > 0 ? " или на встроенной классике." : ".")}
+                  ? t("basePicker.noWorldsForStory")
+                  : t(
+                      builtinStories.length > 0
+                        ? "basePicker.noWorldsCharacterWithBuiltin"
+                        : "basePicker.noWorldsCharacter"
+                    )}
               </p>
               {onCreateWorld && (
                 <button type="button" className="btn" onClick={onCreateWorld} disabled={locked}>
-                  + Создать мир
+                  {t("actions.createWorld")}
                 </button>
               )}
             </div>
@@ -189,18 +194,18 @@ export default function BasePickerModal({
         {!isStory && worldId && (
           <div className="wiz-panel">
             <p className="wiz-lead">
-              Опционально: история мира «
-              {worldTitle(worldList.find((w) => sameId(w.id, worldId)))}» — герой станет её
-              протагонистом.
+              {t("basePicker.optionalStory", {
+                world: worldTitle(worldList.find((w) => sameId(w.id, worldId)), t),
+              })}
             </p>
             <div className="wiz-grid">
               <WizCard
                 selected={!storyId}
                 disabled={locked}
                 onClick={() => setStoryId("")}
-                kicker="история"
-                title="Без истории"
-                desc="Опора только на мир — герой подойдёт любой его истории."
+                kicker={t("entities.storyLower")}
+                title={t("basePicker.noStory")}
+                desc={t("basePicker.noStoryDescription")}
               />
               {worldStories.map((s) => (
                 <WizCard
@@ -208,15 +213,15 @@ export default function BasePickerModal({
                   selected={sameId(storyId, s.id)}
                   disabled={locked}
                   onClick={() => setStoryId(idOf(s.id))}
-                  kicker="история"
-                  title={storyTitle(s)}
+                  kicker={t("entities.storyLower")}
+                  title={storyTitle(s, t)}
                   desc={storyDescription(s)}
-                  tip={storyTip(s)}
+                  tip={storyTip(s, t)}
                 />
               ))}
             </div>
             {worldStories.length === 0 && (
-              <p className="wiz-empty">У этого мира пока нет авторских историй.</p>
+              <p className="wiz-empty">{t("basePicker.noAuthoredStories")}</p>
             )}
           </div>
         )}

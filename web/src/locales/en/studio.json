@@ -1,0 +1,612 @@
+{
+  "common": {
+    "untitled": "Untitled"
+  },
+  "architect": {
+    "kicker": "architect",
+    "helpSubtitle": "A separate AI workflow used before the game starts.",
+    "thinking": "🧠 Architect is thinking",
+    "typing": "Architect is typing…",
+    "typingElapsed": "Architect is typing… {{seconds}}s",
+    "ask": "Ask",
+    "retry": "Retry",
+    "connectorModel": "Connector and model: {{title}}",
+    "errors": {
+      "noResponse": "The architect did not respond",
+      "callFailed": "Could not call the architect"
+    },
+    "usage": {
+      "title": "Architect tokens",
+      "calls": "calls: {{count}}",
+      "input": "input",
+      "output": "output",
+      "cached": "cache",
+      "total": "total",
+      "compact": "{{tokens}} tok · cache {{cached}}"
+    },
+    "debug": {
+      "open": "debug",
+      "title": "Debug · architect",
+      "subtitle": "latest model call",
+      "tokens": "Tokens",
+      "thinking": "Reasoning",
+      "modelResponse": "Model response",
+      "toolCalls": "Tool calls",
+      "request": "Request (messages)",
+      "stats": "Stats (raw _meta)"
+    }
+  },
+  "world": {
+    "kicker": "world creation",
+    "title": "World Studio",
+    "subtitle": "Build the world's lore and rules with the architect, or fill them in manually without starting a game chat.",
+    "readiness": {
+      "notReady": "draft not ready",
+      "ready": "ready to save"
+    },
+    "architect": {
+      "title": "Build world lore",
+      "helpTitle": "World architect",
+      "helpNote": "It asks questions and builds the world bible: laws, faith, history, regions, powers, secrets, and location-generation rules.",
+      "placeholder": "For example: a dark isekai about oaths, debtor gods, and living roads… (Enter to send)",
+      "intro": "Describe the world freely, or give me a direction and I will build out the details.\n\nEspecially useful details:\n\n1. Genre and mood.\n2. The approximate size and population of the world.\n3. Who inhabits it: people, ancestries, species, cultures, factions.\n4. Which laws of reality apply: magic, technology, gods, death, roads.\n5. What the world must contain.\n6. What must not be added without a reason.\n7. Which hidden truths only the GM should know.\n\nWe are not creating the opening scene, player role, or quest yet; those belong to the story step."
+    },
+    "errors": {
+      "loadArchitect": "could not load the architect conversation",
+      "imageUnavailable": "image generation is unavailable",
+      "imageNotGenerated": "the image was not generated",
+      "imageMissingUrl": "the sidecar did not return an image URL",
+      "imageFailed": "could not generate the image",
+      "updateFailed": "Could not update the world: {{message}}"
+    },
+    "inspector": {
+      "ariaLabel": "World settings",
+      "kicker": "settings"
+    },
+    "presets": {
+      "title": "World presets",
+      "ariaLabel": "Quick world presets",
+      "machine": {
+        "label": "Machine post-apocalypse",
+        "description": "Ruins, autonomous nodes, water, energy, drones, and survivor communities."
+      },
+      "isekai": {
+        "label": "Fantasy isekai",
+        "description": "Oaths, local spirits, the price of magic, summoned outsiders, and local debts."
+      },
+      "frontier": {
+        "label": "The frontier",
+        "description": "Roads, factions, rumors, ancient sites, and settlements with real functions."
+      }
+    },
+    "fields": {
+      "title": {
+        "label": "World name",
+        "placeholder": "For example: Threshold of the Second Sky"
+      },
+      "genre": {
+        "label": "Genre",
+        "placeholder": "for example: fantasy, isekai"
+      },
+      "tone": {
+        "label": "Tone",
+        "placeholder": "for example: tense"
+      },
+      "worldSize": {
+        "label": "World size",
+        "placeholder": "For example: one continent; a school within a vast magical society; a galactic sector with dozens of planets."
+      },
+      "population": {
+        "label": "Population",
+        "placeholder": "For example: tens of millions, 5 sapient species, hundreds of cultures."
+      },
+      "publicPremise": {
+        "label": "Public world description",
+        "placeholder": "What can safely be told to the player without revealing the opening quest or GM secrets."
+      }
+    },
+    "visual": {
+      "galleryAriaLabel": "World images",
+      "galleryTitle": "World images",
+      "seed": "seed {{seed}}",
+      "status": {
+        "generating": "Generating…",
+        "queued": "Queued…",
+        "ready": "Ready",
+        "pending": "Waiting to generate",
+        "noPrompt": "No prompt"
+      },
+      "worldImage": {
+        "promptLabel": "World image prompt (EN)",
+        "promptPlaceholder": "English prompt for a world overview image: how the world looks, key landscapes, settlements, peoples, magic/technology cues, mood.",
+        "outputLabel": "World image"
+      },
+      "worldMap": {
+        "promptLabel": "World map prompt (EN)",
+        "promptPlaceholder": "English prompt for a readable world map: geography, regions, borders, routes, settlements, labels, cartography style.",
+        "outputLabel": "World map"
+      }
+    },
+    "lore": {
+      "title": "World bible",
+      "filled": "filled in — ready to edit",
+      "empty": "manually or with the architect",
+      "hint": "Fill it in yourself or wait for the architect. Put each item on a new line.",
+      "listPlaceholder": "one item per line",
+      "hiddenPremise": {
+        "label": "Hidden premise (GM secret)",
+        "placeholder": "What only the GM knows and the player must not be told."
+      },
+      "fields": {
+        "dogmas": "Dogmas",
+        "worldLaws": "World laws",
+        "inhabitants": "Peoples/species",
+        "creatures": "Creatures/threats",
+        "powerSources": "Powers/magic/technology",
+        "technologies": "Material culture",
+        "taboos": "Taboos/laws",
+        "conflicts": "Conflicts",
+        "inspirations": "References",
+        "regions": "Regions",
+        "powerCenters": "Centers of power",
+        "religions": "Faith",
+        "gods": "Gods/powers",
+        "cultures": "Cultures",
+        "history": "History",
+        "economy": "Economy",
+        "dailyLife": "Daily life",
+        "storyHooks": "Tensions for future stories",
+        "hiddenSecrets": "GM secrets",
+        "locationRules": "Location rules",
+        "prohibitedElements": "Requires justification"
+      }
+    },
+    "actions": {
+      "save": "Save world",
+      "play": "▶ Play in this world",
+      "createStory": "+ Create story"
+    },
+    "saveNote": "A name, genre, tone, world size, population, and either a public description or world bible are required. Saving does not start a chat."
+  },
+  "story": {
+    "kicker": "story creation",
+    "title": "Story Studio",
+    "subtitle": "Build a story premise on top of the world with the architect. The draft is saved automatically at every step.",
+    "subtitleWithWorld": "Build a story premise in “{{world}}” with the architect. The draft is saved automatically at every step.",
+    "readiness": {
+      "ready": "ready to launch",
+      "notReady": "draft not ready"
+    },
+    "architect": {
+      "title": "Build the plot",
+      "usageTitle": "Story architect tokens",
+      "helpTitle": "Story architect",
+      "helpNote": "It builds the premise of one story in an existing world: the story brief, public introduction, hidden GM truth, opening scene, NPCs, facts, and a suggested protagonist. No chapters, objectives, or endings—the engine does not track them yet.",
+      "placeholder": "For example: intrigue in a port city where inspectors vanish and the player is the new investigator… (Enter to send)",
+      "intro": "Describe the story you want in this world, or give me a direction and I will build the premise.\n\nEspecially useful details:\n\n1. What the story is about and what drives the player (story brief).\n2. The public introduction—what the player sees and knows at the start.\n3. The story's hidden truth (GM-only secret).\n4. The opening scene: place, nearby characters, and the source of tension.\n5. Who the player will meet (NPCs) and which facts the world already knows.\n6. What the suggested protagonist might be like (the player can replace them at launch).\n\nI only write the premise of one story on top of the world's canon—no chapters, objectives, or endings."
+    },
+    "errors": {
+      "loadDraft": "could not load the story draft",
+      "updateFailed": "Could not update the story: {{message}}"
+    },
+    "inspector": {
+      "ariaLabel": "Story settings",
+      "kicker": "plot"
+    },
+    "fields": {
+      "title": {
+        "label": "Story title",
+        "placeholder": "For example: Inspection at Salt Port"
+      },
+      "description": {
+        "label": "Short description (for the story list)",
+        "placeholder": "One line for the story list."
+      },
+      "storyBrief": {
+        "label": "Player premise (story brief)",
+        "placeholder": "Who the player is and what draws them into the story, in a few sentences."
+      },
+      "publicIntro": {
+        "label": "Public introduction",
+        "placeholder": "What the player sees and knows at the start, without GM secrets."
+      },
+      "hiddenTruth": {
+        "label": "Hidden truth (GM secret)",
+        "placeholder": "What lies behind the story and must not be revealed directly to the player."
+      },
+      "time": {
+        "label": "Starting time (minutes after midnight; for example, 480 = 08:00)"
+      }
+    },
+    "protagonist": {
+      "hint": "Suggested protagonist (the player can replace them at launch).",
+      "name": {
+        "label": "Name",
+        "placeholder": "For example: Mira"
+      },
+      "classRole": {
+        "label": "Role/archetype",
+        "placeholder": "For example: harbor inspector"
+      },
+      "pronouns": {
+        "label": "Pronouns",
+        "placeholder": "she/her"
+      },
+      "background": {
+        "label": "Background (one line)",
+        "placeholder": "What ties the hero to this story."
+      }
+    },
+    "scene": {
+      "hint": "The opening scene—where the player enters the story.",
+      "title": {
+        "label": "Scene title",
+        "placeholder": "For example: Gates of Salt Port"
+      },
+      "description": {
+        "label": "Scene description",
+        "placeholder": "What the player sees at the start, in concrete sensory detail."
+      },
+      "locationId": "Location ID",
+      "tension": {
+        "label": "Scene tension",
+        "placeholder": "What makes this a scene rather than a lobby."
+      },
+      "lists": {
+        "presentNpcs": "NPCs in the scene (one id per line)",
+        "exits": "Exits (name -> destination, one per line)",
+        "items": "Items (name — details, one per line)",
+        "constraints": "Constraints (one per line)"
+      },
+      "listPlaceholder": "one item per line"
+    },
+    "properNouns": {
+      "label": "Proper nouns (one per line)",
+      "placeholder": "Names that must be written consistently, one per line."
+    },
+    "objectSections": {
+      "npcs": "NPCs (opening cast)",
+      "publicFacts": "Public facts",
+      "stateRecords": "Initial states"
+    },
+    "actions": {
+      "saveProtagonistTitle": "Save the story protagonist as a portable .gmchar package",
+      "saveProtagonist": "Save protagonist as package",
+      "play": "▶ Launch story"
+    },
+    "saveNote": "The draft is saved automatically after every architect response. A story brief and public introduction are required to launch. Launching opens the game chat for this story."
+  },
+  "character": {
+    "defaultTitle": "Character",
+    "kicker": "character creation",
+    "title": "Character Studio",
+    "subtitle": "Build a portable character sheet with the architect, or edit every field manually and save the sheet directly.",
+    "unnamed": "Unnamed",
+    "readiness": {
+      "ready": "ready to launch",
+      "notReady": "draft not ready"
+    },
+    "base": {
+      "world": "world “{{world}}”",
+      "worldMissing": "world (package unavailable)",
+      "story": "story “{{story}}”",
+      "storyMissing": "story (package unavailable)",
+      "summaryAvailable": "Base: {{bases}} — the architect uses {{scope}} public canon.",
+      "summaryMissing": "Base: {{bases}} — the source material is unavailable; the architect will preserve the sheet's recorded links.",
+      "scope": {
+        "both": "their",
+        "story": "its",
+        "world": "its"
+      }
+    },
+    "architect": {
+      "title": "Build a character",
+      "usageTitle": "Character architect tokens",
+      "helpTitle": "Character architect",
+      "helpNote": "It builds one portable character sheet: name and role, abilities, skills, HP, inventory, equipment, and spells. Without a base, the hero is universal; with a base, the architect uses its public canon. The sheet remains portable either way, and the hero can be launched in another story (with a warning if the worlds differ).",
+      "placeholder": "For example: a stern half-elf ranger raised in the marshes, skilled with bows and herbs… (Enter to send)",
+      "intro": "Describe the character you want, or give me a direction and I will build the sheet.\n\nEspecially useful details:\n\n1. Name, role or class, and level.\n2. Personality, values, background, and appearance.\n3. Abilities (strength, dexterity, and so on) and key skills.\n4. HP, armor class, equipment, and inventory.\n5. Spells and slots, if the character uses them.\n\n{{closing}}",
+      "closing": {
+        "story": "I will build a hero for the story “{{story}}” using its public premise, while keeping the sheet portable.",
+        "world": "I will build a hero for the world “{{world}}” using its public canon, while keeping the sheet portable.",
+        "missing": "The hero's base is recorded in the package, but its material is currently unavailable; I will preserve the sheet's existing links.",
+        "standalone": "I am building one portable character sheet that can be launched in any story."
+      }
+    },
+    "errors": {
+      "loadChat": "could not load the character conversation",
+      "updateFailed": "Could not update the character: {{message}}",
+      "saveSheet": "could not save the sheet",
+      "createCharacter": "could not create the character"
+    },
+    "inspector": {
+      "ariaLabel": "Character sheet",
+      "kicker": "character"
+    },
+    "fields": {
+      "name": {
+        "label": "Name",
+        "placeholder": "For example: Kara Vent"
+      },
+      "classRole": {
+        "label": "Role / class",
+        "placeholder": "For example: ranger"
+      },
+      "pronouns": {
+        "label": "Pronouns",
+        "placeholder": "she/her"
+      },
+      "level": {
+        "label": "Level"
+      },
+      "age": {
+        "label": "Age",
+        "placeholder": "For example: 27"
+      },
+      "appearance": {
+        "label": "Appearance",
+        "placeholder": "Build, features, and overall appearance."
+      },
+      "features": {
+        "label": "Distinctive features",
+        "placeholder": "Scars, tattoos, or anything memorable."
+      },
+      "background": {
+        "label": "Background",
+        "placeholder": "Where the hero comes from and what shaped them."
+      },
+      "personality": {
+        "label": "Personality",
+        "placeholder": "How the hero behaves and what drives them."
+      },
+      "values": {
+        "label": "Values",
+        "placeholder": "What they believe in and will not compromise."
+      }
+    },
+    "combat": {
+      "title": "Combat stats",
+      "armorClass": "AC",
+      "passivePerception": "Passive perception",
+      "hpCurrent": "Current HP",
+      "hpMax": "Maximum HP",
+      "speed": {
+        "label": "Speed",
+        "placeholder": "For example: 30 ft"
+      },
+      "senses": {
+        "label": "Senses",
+        "placeholder": "Darkvision 60 ft"
+      },
+      "languages": {
+        "label": "Languages",
+        "placeholder": "Common, Elvish"
+      }
+    },
+    "editors": {
+      "skills": {
+        "label": "Skills",
+        "placeholder": "Skill"
+      },
+      "savingThrows": {
+        "label": "Saving throws",
+        "placeholder": "Saving throw"
+      },
+      "inventory": "Inventory",
+      "equipment": "Equipment",
+      "features": "Features",
+      "featureDescription": "What it does (optional)"
+    },
+    "gmNotes": {
+      "label": "Hero secret (GM-only; the public persona remains a legend)",
+      "placeholder": "Private notes for the GM."
+    },
+    "save": {
+      "saving": "Saving…",
+      "action": "Save sheet",
+      "dirty": "There are unsaved changes",
+      "saved": "Everything is saved"
+    },
+    "actions": {
+      "sheet": "Character sheet",
+      "play": "▶ Play as this character"
+    },
+    "saveNote": "Edit the sheet manually and select “Save sheet,” or continue the conversation with the architect: the draft is sent with every message. A name is required to launch."
+  },
+  "sheet": {
+    "untitled": "Untitled",
+    "abilities": {
+      "title": "Abilities",
+      "short": {
+        "STR": "STR",
+        "DEX": "DEX",
+        "CON": "CON",
+        "INT": "INT",
+        "WIS": "WIS",
+        "CHA": "CHA"
+      }
+    },
+    "rows": {
+      "remove": "Remove row",
+      "add": "+ add"
+    },
+    "namedList": {
+      "namePlaceholder": "Name",
+      "descriptionPlaceholder": "Description (optional)"
+    },
+    "spells": {
+      "title": "Spells",
+      "summary": "{{name}} · level {{level}}",
+      "remove": "Remove spell",
+      "name": "Name",
+      "namePlaceholder": "Fire Bolt",
+      "level": "Level (0–9)",
+      "effect": "Effect",
+      "effectPlaceholder": "A short description of what the spell does.",
+      "concentration": "Concentration",
+      "ritual": "Ritual",
+      "add": "+ add spell"
+    },
+    "slots": {
+      "title": "Spell slots",
+      "level": "Level {{level}}",
+      "currentPlaceholder": "current",
+      "maxPlaceholder": "max",
+      "remove": "Remove level",
+      "addLevel": "+ level {{level}}"
+    }
+  },
+  "imageLab": {
+    "kicker": "developer image lab",
+    "title": "Image generation",
+    "promptLabel": "Prompt",
+    "promptPlaceholder": "English prompt...",
+    "generate": "Generate",
+    "generating": "Generating…",
+    "elapsed": "{{seconds}}s",
+    "generatedAlt": "Generated image",
+    "generatedCaption": "Generated image",
+    "empty": "The image will appear here",
+    "status": {
+      "disabled": "Image disabled",
+      "ready": "Image ready",
+      "warming": "Image warming up",
+      "failed": "Image error",
+      "loading": "Image loading"
+    },
+    "errors": {
+      "notGenerated": "the image was not generated",
+      "missingUrl": "the sidecar did not return an image URL",
+      "failed": "could not generate the image"
+    }
+  },
+  "worldDetail": {
+    "abilities": {
+      "subtitle": "Character ability",
+      "value": "value",
+      "modifier": "modifier",
+      "short": {
+        "STR": "STR",
+        "DEX": "DEX",
+        "CON": "CON",
+        "INT": "INT",
+        "WIS": "WIS",
+        "CHA": "CHA"
+      },
+      "full": {
+        "STR": "Strength",
+        "DEX": "Dexterity",
+        "CON": "Constitution",
+        "INT": "Intelligence",
+        "WIS": "Wisdom",
+        "CHA": "Charisma"
+      }
+    },
+    "skills": {
+      "acrobatics": "Acrobatics",
+      "animalHandling": "Animal Handling",
+      "arcana": "Arcana",
+      "athletics": "Athletics",
+      "deception": "Deception",
+      "history": "History",
+      "insight": "Insight",
+      "intimidation": "Intimidation",
+      "investigation": "Investigation",
+      "medicine": "Medicine",
+      "nature": "Nature",
+      "perception": "Perception",
+      "performance": "Performance",
+      "persuasion": "Persuasion",
+      "religion": "Religion",
+      "sleightOfHand": "Sleight of Hand",
+      "stealth": "Stealth",
+      "survival": "Survival"
+    },
+    "pronouns": {
+      "M": "masculine",
+      "F": "feminine",
+      "N": "neuter",
+      "PL": "plural",
+      "HE": "he",
+      "SHE": "she",
+      "THEY": "they",
+      "IT": "it",
+      "OTHER": "other"
+    },
+    "lifeStatus": {
+      "alive": "alive",
+      "dead": "dead",
+      "unconscious": "unconscious",
+      "dying": "dying",
+      "wounded": "wounded",
+      "injured": "injured",
+      "stable": "stable"
+    },
+    "whereaboutsStatus": {
+      "present": "in the scene",
+      "known": "location known",
+      "likely": "likely",
+      "rumored": "rumored",
+      "unknown": "unknown",
+      "left_scene": "left the scene"
+    },
+    "units": {
+      "feetShort": "ft"
+    },
+    "spells": {
+      "level": "level {{level}}",
+      "cantrip": "cantrip",
+      "concentrationShort": "conc.",
+      "ritual": "ritual",
+      "slot": "Level {{level}}: {{current}}/{{max}}",
+      "slotsPrefix": "Slots.",
+      "concentrationPrefix": "Concentration."
+    },
+    "location": {
+      "title": "Location",
+      "character": "character",
+      "unknown": "unknown",
+      "presentCharacters": "Characters in the scene",
+      "offscreenCharacters": "Where to find the others",
+      "placeUnknown": "location not established",
+      "exits": "Exits",
+      "exit": "exit",
+      "blocked": "blocked: {{reason}}",
+      "items": "Items",
+      "item": "item",
+      "empty": "No location details are available yet."
+    },
+    "character": {
+      "armorClass": "Armor class",
+      "hp": "HP",
+      "passivePerception": "Passive perception",
+      "speed": "Speed",
+      "about": "About the character",
+      "pronouns": "Pronouns",
+      "classRole": "Class / role",
+      "level": "Level",
+      "levelShort": "level {{level}}",
+      "age": "Age",
+      "life": "Life",
+      "background": "Background",
+      "appearance": "Appearance",
+      "features": "Distinctive features",
+      "condition": "Condition",
+      "statusNote": "Status note",
+      "personalitySection": "Personality",
+      "personalityPrefix": "Personality.",
+      "valuesPrefix": "Values.",
+      "abilities": "Abilities",
+      "skills": "Skills",
+      "savingThrows": "Saving throws",
+      "sensesAndLanguages": "Senses and languages",
+      "senses": "Senses",
+      "languages": "Languages",
+      "inventory": "Inventory",
+      "equipment": "Equipment",
+      "traits": "Features",
+      "spells": "Spells",
+      "playerCharacter": "Player character"
+    }
+  }
+}

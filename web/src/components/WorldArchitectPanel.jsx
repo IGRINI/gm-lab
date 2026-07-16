@@ -1,5 +1,6 @@
 import Icon from "./Icon.jsx";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api.js";
 import ImageThumbnail from "./ImagePreview.jsx";
 import useConnectorModelBinding from "../useConnectorModelBinding.js";
@@ -10,6 +11,7 @@ import {
   normalizeVisibleMessage,
   AutoTextarea,
   useLiveSegments,
+  useLocalizedFallbackMessage,
   ArchitectChatPane,
   ArchitectDebugModal,
   accumulateUsage,
@@ -19,8 +21,8 @@ import {
 const WORLD_PRESETS = [
   {
     id: "machine",
-    label: "Машинный постапокалипсис",
-    description: "Руины, автономные узлы, вода, энергия, дроны и выжившие общины.",
+    labelKey: "machine.label",
+    descriptionKey: "machine.description",
     values: {
       title: "Пепельный Узел",
       genre: "postapocalyptic machine world",
@@ -43,8 +45,8 @@ const WORLD_PRESETS = [
   },
   {
     id: "isekai",
-    label: "Фентезийный иссекай",
-    description: "Клятвы, духи мест, цена магии, призванные чужаки и местные долги.",
+    labelKey: "isekai.label",
+    descriptionKey: "isekai.description",
     values: {
       title: "Порог Второго Неба",
       genre: "fantasy isekai",
@@ -66,8 +68,8 @@ const WORLD_PRESETS = [
   },
   {
     id: "frontier",
-    label: "Пограничье",
-    description: "Дороги, фракции, слухи, старые места и поселения с реальной функцией.",
+    labelKey: "frontier.label",
+    descriptionKey: "frontier.description",
     values: {
       title: "Край Старых Дорог",
       genre: "frontier fantasy",
@@ -97,58 +99,43 @@ const DEFAULT_WORLD_DRAFT = {
   worldLore: null,
 };
 
-const DEFAULT_ARCHITECT_MESSAGES = [
-  {
-    role: "assistant",
-    content:
-      "Опиши мир свободно — или дай направление, а детали я соберу сам.\n\nЧто особенно полезно:\n\n1. Жанр и настроение.\n2. Насколько большой мир и сколько в нём жителей примерно.\n3. Кто его населяет: люди, расы, виды, культуры, фракции.\n4. Какие законы реальности работают: магия, технологии, боги, смерть, дороги.\n5. Что в мире точно должно быть.\n6. Чего нельзя добавлять без причины.\n7. Какие скрытые истины должен знать только GM.\n\nСтартовую сцену, роль игрока и квест сейчас не придумываем — это будет отдельный шаг истории.",
-  },
-];
-
 const LORE_PREVIEW_FIELDS = [
-  ["dogmas", "Догматы"],
-  ["world_laws", "Законы мира"],
-  ["inhabitants", "Народы/виды"],
-  ["creatures", "Существа/угрозы"],
-  ["power_sources", "Силы/магия/технологии"],
-  ["technologies", "Материальная культура"],
-  ["taboos", "Табу/законы"],
-  ["conflicts", "Конфликты"],
-  ["inspirations", "Референсы"],
-  ["regions", "Регионы"],
-  ["power_centers", "Власть"],
-  ["religions", "Вера"],
-  ["gods", "Боги/силы"],
-  ["cultures", "Культуры"],
-  ["history", "История"],
-  ["economy", "Экономика"],
-  ["daily_life", "Быт"],
-  ["story_hooks", "Напряжения для будущих историй"],
-  ["hidden_secrets", "Секреты GM"],
-  ["location_rules", "Правила локаций"],
-  ["prohibited_elements", "Нельзя без причины"],
+  ["dogmas", "dogmas"],
+  ["world_laws", "worldLaws"],
+  ["inhabitants", "inhabitants"],
+  ["creatures", "creatures"],
+  ["power_sources", "powerSources"],
+  ["technologies", "technologies"],
+  ["taboos", "taboos"],
+  ["conflicts", "conflicts"],
+  ["inspirations", "inspirations"],
+  ["regions", "regions"],
+  ["power_centers", "powerCenters"],
+  ["religions", "religions"],
+  ["gods", "gods"],
+  ["cultures", "cultures"],
+  ["history", "history"],
+  ["economy", "economy"],
+  ["daily_life", "dailyLife"],
+  ["story_hooks", "storyHooks"],
+  ["hidden_secrets", "hiddenSecrets"],
+  ["location_rules", "locationRules"],
+  ["prohibited_elements", "prohibitedElements"],
 ];
 
 const VISUAL_PROMPT_FIELDS = [
   [
     "world_image_prompt_en",
-    "Prompt изображения мира (EN)",
-    "English prompt for a world overview image: how the world looks, key landscapes, settlements, peoples, magic/technology cues, mood.",
+    "worldImage",
     "world_image_url",
-    "Изображение мира",
   ],
   [
     "world_map_prompt_en",
-    "Prompt карты мира (EN)",
-    "English prompt for a readable world map: geography, regions, borders, routes, settlements, labels, cartography style.",
+    "worldMap",
     "world_map_url",
-    "Карта мира",
   ],
 ];
-const VISUAL_OUTPUT_FIELDS = VISUAL_PROMPT_FIELDS.map(([, , , outputField, outputLabel]) => [
-  outputField,
-  outputLabel,
-]);
+const VISUAL_OUTPUT_FIELDS = VISUAL_PROMPT_FIELDS.map(([, , outputField]) => [outputField]);
 
 function cleanWorldDraft(draft) {
   return {
@@ -181,10 +168,12 @@ function worldDraftFromSaved(world) {
 // Restore the visible conversation from the server's architect block
 // (`GET /worlds/{id}/architect` → `{architect: {messages}}`). The chat lives in
 // the package's architect.json now — never inside the world row.
-function architectMessagesFromChat(architect) {
+function architectMessagesFromChat(architect, t) {
   const raw = Array.isArray(architect?.messages) ? architect.messages : [];
   const messages = raw.map(normalizeVisibleMessage).filter(Boolean);
-  return messages.length > 0 ? messages : DEFAULT_ARCHITECT_MESSAGES;
+  return messages.length > 0
+    ? messages
+    : [{ role: "assistant", content: t("world.architect.intro"), uiFallback: true }];
 }
 
 function mergeArchitectDraft(current, draft) {
@@ -215,22 +204,6 @@ function normalizeWorldLore(lore, draft) {
 
 function loreArray(value) {
   return Array.isArray(value) ? value.map(textValue).filter(Boolean) : [];
-}
-
-function lorePreviewRows(lore) {
-  if (!lore || typeof lore !== "object") return [];
-  const rows = [];
-  if (textValue(lore.public_premise)) rows.push(["Публично", textValue(lore.public_premise)]);
-  if (textValue(lore.hidden_premise)) rows.push(["Скрыто", textValue(lore.hidden_premise)]);
-  for (const [field, label] of VISUAL_PROMPT_FIELDS) {
-    const prompt = textValue(lore[field]);
-    if (prompt) rows.push([label, prompt]);
-  }
-  for (const [field, label] of LORE_PREVIEW_FIELDS) {
-    const values = loreArray(lore[field]);
-    if (values.length > 0) rows.push([label, values.join("; ")]);
-  }
-  return rows;
 }
 
 function applyPresetValues(current, preset) {
@@ -296,7 +269,7 @@ function finalizeWorldLore(payload) {
 }
 
 function visualPromptSnapshot(lore) {
-  return VISUAL_PROMPT_FIELDS.map(([promptField, , , outputField]) => ({
+  return VISUAL_PROMPT_FIELDS.map(([promptField, , outputField]) => ({
     promptField,
     outputField,
     prompt: textValue(lore?.[promptField]),
@@ -304,12 +277,12 @@ function visualPromptSnapshot(lore) {
   }));
 }
 
-function visualJobLabel(job, prompt, imageUrl) {
-  if (job?.loading) return "Генерация...";
-  if (job?.queued) return "В очереди...";
-  if (imageUrl) return "Готово";
-  if (prompt) return "Ожидает генерации";
-  return "Нет prompt";
+function visualJobLabel(job, prompt, imageUrl, t) {
+  if (job?.loading) return t("world.visual.status.generating");
+  if (job?.queued) return t("world.visual.status.queued");
+  if (imageUrl) return t("world.visual.status.ready");
+  if (prompt) return t("world.visual.status.pending");
+  return t("world.visual.status.noPrompt");
 }
 
 export default function WorldArchitectPanel({
@@ -332,10 +305,12 @@ export default function WorldArchitectPanel({
   onCreateStory,
   className = "",
 }) {
+  const { t } = useTranslation("studio");
   // The model history and prompt-cache ids are SERVER-side (the package's
   // architect.json); the panel holds only the visible conversation.
   const [worldDraft, setWorldDraft] = useState(() => worldDraftFromSaved(world));
-  const [messages, setMessages] = useState(() => architectMessagesFromChat(null));
+  const [messages, setMessages] = useState(() => architectMessagesFromChat(null, t));
+  useLocalizedFallbackMessage(setMessages, t("world.architect.intro"));
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
@@ -404,7 +379,7 @@ export default function WorldArchitectPanel({
     loadedWorldIdRef.current = id;
     const nextDraft = worldDraftFromSaved(world);
     setWorldDraft(nextDraft);
-    setMessages(architectMessagesFromChat(null));
+    setMessages(architectMessagesFromChat(null, t));
     clearLive();
     setInput("");
     setArchitectError("");
@@ -431,16 +406,16 @@ export default function WorldArchitectPanel({
       .then((data) => {
         if (cancelled || loadedWorldIdRef.current !== id) return;
         if (!data?.ok) {
-          throw new Error(data?.error || "не удалось загрузить переписку архитектора");
+          throw new Error(data?.error || t("world.errors.loadArchitect"));
         }
-        setMessages(architectMessagesFromChat(data.architect));
+        setMessages(architectMessagesFromChat(data.architect, t));
         resetModelBinding(data.architect?.model_binding);
       })
       .catch((error) => {
         if (cancelled || loadedWorldIdRef.current !== id) return;
         setBindingLoading(false);
         setBindingLoadFailed(true);
-        setArchitectError(error?.message || "не удалось загрузить переписку архитектора");
+        setArchitectError(error?.message || t("world.errors.loadArchitect"));
       });
     return () => {
       cancelled = true;
@@ -514,7 +489,7 @@ export default function WorldArchitectPanel({
     setScopedImageJob({ queued: false, loading: true, error: "" });
     try {
       if (typeof onGenerateImage !== "function") {
-        throw new Error("генерация картинок недоступна");
+        throw new Error(t("world.errors.imageUnavailable"));
       }
       const isMap = outputField === "world_map_url";
       const data = await onGenerateImage({
@@ -523,10 +498,10 @@ export default function WorldArchitectPanel({
         width: isMap ? 1536 : 1024,
         height: 1024,
       });
-      if (!data.ok) throw new Error(data.error || "картинка не сгенерирована");
+      if (!data.ok) throw new Error(data.error || t("world.errors.imageNotGenerated"));
       const image = Array.isArray(data.images) ? data.images.find((item) => textValue(item?.url)) : null;
       const url = textValue(image?.url);
-      if (!url) throw new Error("sidecar не вернул URL картинки");
+      if (!url) throw new Error(t("world.errors.imageMissingUrl"));
       if (!isCurrentScope() || imagePromptLatestRef.current[promptField] !== prompt) {
         releaseAutoRequest();
         setScopedImageJob({ queued: false, loading: false });
@@ -538,10 +513,10 @@ export default function WorldArchitectPanel({
       setScopedImageJob({
         queued: false,
         loading: false,
-        error: error?.message || "не удалось сгенерировать картинку",
+        error: error?.message || t("world.errors.imageFailed"),
       });
     }
-  }, [onGenerateImage, setImageJob, updateWorldLore]);
+  }, [onGenerateImage, setImageJob, t, updateWorldLore]);
 
   const drainVisualQueue = useCallback(async () => {
     if (imageQueueRunningRef.current) return;
@@ -667,7 +642,7 @@ export default function WorldArchitectPanel({
               setWorldDraft((current) => mergeArchitectDraft(current, args));
             }
           } else if (ev.kind === "architect_error") {
-            failure = textValue(ev.data) || "Архитектор не ответил";
+            failure = textValue(ev.data) || t("architect.errors.noResponse");
             if (ev.model_binding) resetModelBinding(ev.model_binding);
           } else if (ev.kind === "architect_done") {
             adopted = true;
@@ -697,7 +672,7 @@ export default function WorldArchitectPanel({
       if (failure) throw new Error(failure);
       setRetryText("");
     } catch (error) {
-      const message = error?.message || "Не удалось вызвать архитектора";
+      const message = error?.message || t("architect.errors.callFailed");
       setArchitectError(message);
       setRetryText(text);
       if (!adopted) {
@@ -705,7 +680,7 @@ export default function WorldArchitectPanel({
         setMessages((current) => [
           ...current,
           ...liveSegmentsRef.current,
-          { role: "assistant", content: `Не получилось обновить мир: ${message}` },
+          { role: "assistant", content: t("world.errors.updateFailed", { message }) },
         ]);
         clearLive();
       }
@@ -735,27 +710,27 @@ export default function WorldArchitectPanel({
         <div className="world-studio-id">
           <span className="world-studio-emblem" aria-hidden="true"><Icon name="globe" size={18} /></span>
           <div className="world-studio-title">
-            <span className="world-studio-kicker">создание мира</span>
-            <b>Студия миров</b>
+            <span className="world-studio-kicker">{t("world.kicker")}</span>
+            <b>{t("world.title")}</b>
             <p className="world-studio-sub">
-              Соберите лор и правила мира с архитектором или заполните вручную — без старта игрового чата.
+              {t("world.subtitle")}
             </p>
           </div>
         </div>
         <span className={`world-studio-chip${worldCreateLocked ? "" : " ready"}`}>
-          {worldCreateLocked ? "черновик не готов" : "готово к сохранению"}
+          {worldCreateLocked ? t("world.readiness.notReady") : t("world.readiness.ready")}
         </span>
       </header>
 
       <div className="world-studio-body">
         <ArchitectChatPane
-          headKicker="архитектор"
-          headTitle="Собрать лор мира"
-          helpTitle="Архитектор мира"
-          helpSubtitle="Отдельный AI-контур до старта игры."
-          helpNote="Он задаёт вопросы и собирает библию мира: законы, веру, историю, регионы, власти, секреты и правила генерации локаций."
-          thinkLabel="🧠 Архитектор рассуждает"
-          placeholder="Например: хочу тёмный иссекай про клятвы, богов-должников и живые дороги… (Enter — отправить)"
+          headKicker={t("architect.kicker")}
+          headTitle={t("world.architect.title")}
+          helpTitle={t("world.architect.helpTitle")}
+          helpSubtitle={t("architect.helpSubtitle")}
+          helpNote={t("world.architect.helpNote")}
+          thinkLabel={t("architect.thinking")}
+          placeholder={t("world.architect.placeholder")}
           messages={messages}
           liveSegments={liveSegments}
           busy={architectBusy}
@@ -788,17 +763,17 @@ export default function WorldArchitectPanel({
 
         <section
           className={`world-studio-pane world-inspector${loreReady ? " is-live" : ""}`}
-          aria-label="Параметры мира"
+          aria-label={t("world.inspector.ariaLabel")}
         >
           <div className="world-inspector-head">
-            <span className="world-inspector-kicker">параметры</span>
-            <b>{textValue(worldPayload.worldLore?.name) || worldDraft.title || "Без названия"}</b>
+            <span className="world-inspector-kicker">{t("world.inspector.kicker")}</span>
+            <b>{textValue(worldPayload.worldLore?.name) || worldDraft.title || t("common.untitled")}</b>
           </div>
 
           <div className="world-inspector-body">
             <div className="world-inspector-section">
-              <span className="world-inspector-label">Пресеты мира</span>
-              <div className="world-manager-presets" aria-label="Быстрые пресеты мира">
+              <span className="world-inspector-label">{t("world.presets.title")}</span>
+              <div className="world-manager-presets" aria-label={t("world.presets.ariaLabel")}>
                 {WORLD_PRESETS.map((preset) => (
                   <button
                     key={preset.id}
@@ -807,90 +782,91 @@ export default function WorldArchitectPanel({
                     onClick={() => applyPreset(preset)}
                     disabled={locked}
                   >
-                    <b>{preset.label}</b>
-                    <span>{preset.description}</span>
+                    <b>{t(`world.presets.${preset.labelKey}`)}</b>
+                    <span>{t(`world.presets.${preset.descriptionKey}`)}</span>
                   </button>
                 ))}
               </div>
             </div>
 
             <label className="world-field">
-              <span>Название мира</span>
+              <span>{t("world.fields.title.label")}</span>
               <input
                 value={worldDraft.title}
                 onChange={(event) => updateWorldDraft("title", event.target.value)}
-                placeholder="Например: Порог Второго Неба"
+                placeholder={t("world.fields.title.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <div className="world-field-grid">
               <label className="world-field">
-                <span>Жанр</span>
+                <span>{t("world.fields.genre.label")}</span>
                 <input
                   value={worldDraft.genre}
                   onChange={(event) => updateWorldDraft("genre", event.target.value)}
-                  placeholder="fantasy isekai"
+                  placeholder={t("world.fields.genre.placeholder")}
                   disabled={locked}
                 />
               </label>
               <label className="world-field">
-                <span>Тон</span>
+                <span>{t("world.fields.tone.label")}</span>
                 <input
                   value={worldDraft.tone}
                   onChange={(event) => updateWorldDraft("tone", event.target.value)}
-                  placeholder="tense"
+                  placeholder={t("world.fields.tone.placeholder")}
                   disabled={locked}
                 />
               </label>
             </div>
 
             <label className="world-field">
-              <span>Размер мира</span>
+              <span>{t("world.fields.worldSize.label")}</span>
               <AutoTextarea
                 value={worldDraft.worldSize}
                 onChange={(event) => updateWorldDraft("worldSize", event.target.value)}
-                placeholder="Например: один континент; школа внутри большого магического общества; сектор галактики с десятками планет."
+                placeholder={t("world.fields.worldSize.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Население</span>
+              <span>{t("world.fields.population.label")}</span>
               <AutoTextarea
                 value={worldDraft.population}
                 onChange={(event) => updateWorldDraft("population", event.target.value)}
-                placeholder="Например: десятки миллионов, 5 разумных видов, сотни культур."
+                placeholder={t("world.fields.population.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Публичное описание мира</span>
+              <span>{t("world.fields.publicPremise.label")}</span>
               <AutoTextarea
                 value={worldDraft.publicPremise}
                 onChange={(event) => updateWorldDraft("publicPremise", event.target.value)}
-                placeholder="Что можно безопасно рассказать игроку о мире без стартового квеста и скрытых секретов GM."
+                placeholder={t("world.fields.publicPremise.placeholder")}
                 disabled={locked}
               />
             </label>
 
             {visualPromptSnapshot(worldDraft.worldLore).some(({ prompt, imageUrl }) => prompt || imageUrl) && (
-              <div className="world-visual-gallery" aria-label="Изображения мира">
+              <div className="world-visual-gallery" aria-label={t("world.visual.galleryAriaLabel")}>
                 <div className="world-visual-gallery-head">
-                  <span className="world-inspector-label">Изображения мира</span>
+                  <span className="world-inspector-label">{t("world.visual.galleryTitle")}</span>
                 </div>
                 <div className="world-visual-gallery-grid">
-                  {VISUAL_PROMPT_FIELDS.map(([field, , , outputField, outputLabel]) => {
+                  {VISUAL_PROMPT_FIELDS.map(([field, visualKey, outputField]) => {
                     const prompt = textValue(worldDraft.worldLore?.[field]);
                     const imageUrl = textValue(worldDraft.worldLore?.[outputField]);
                     const job = imageJobs[field] || {};
+                    const outputLabel = t(`world.visual.${visualKey}.outputLabel`);
                     if (!prompt && !imageUrl && !job.loading && !job.error) return null;
                     return (
                       <div key={field} className="world-visual-card">
                         <div className="world-visual-card-head">
                           <b>{outputLabel}</b>
-                          <span className="world-visual-state">{visualJobLabel(job, prompt, imageUrl)}</span>
+                          <span className="world-visual-state">{visualJobLabel(job, prompt, imageUrl, t)}</span>
                         </div>
                         {imageUrl ? (
                           <ImageThumbnail
@@ -901,10 +877,14 @@ export default function WorldArchitectPanel({
                           />
                         ) : (
                           <div className="world-visual-pending">
-                            {visualJobLabel(job, prompt, imageUrl)}
+                            {visualJobLabel(job, prompt, imageUrl, t)}
                           </div>
                         )}
-                        {job.seed != null && <span className="world-visual-seed">seed {job.seed}</span>}
+                        {job.seed != null && (
+                          <span className="world-visual-seed">
+                            {t("world.visual.seed", { seed: job.seed })}
+                          </span>
+                        )}
                         {job.error && <div className="world-visual-error">{job.error}</div>}
                       </div>
                     );
@@ -922,29 +902,34 @@ export default function WorldArchitectPanel({
                 disabled={locked}
               >
                 <span className="world-bible-toggle-label">
-                  <b>Библия мира</b>
-                  <small>{loreFilled ? "заполнена — можно править" : "вручную или через архитектора"}</small>
+                  <b>{t("world.lore.title")}</b>
+                  <small>
+                    {loreFilled ? t("world.lore.filled") : t("world.lore.empty")}
+                  </small>
                 </span>
                 <span className="world-bible-caret" aria-hidden="true"><Icon name={bibleOpen ? "chevron-down" : "chevron-right"} size={12} /></span>
               </button>
               {bibleOpen && (
                 <div className="world-bible-fields">
                   <p className="world-bible-hint">
-                    Заполни сам или дождись архитектора. Каждый пункт — с новой строки.
+                    {t("world.lore.hint")}
                   </p>
                   <label className="world-field">
-                    <span>Скрытая предпосылка (секрет GM)</span>
+                    <span>{t("world.lore.hiddenPremise.label")}</span>
                     <AutoTextarea
                       value={worldDraft.worldLore?.hidden_premise || ""}
                       onChange={(event) => updateLoreText("hidden_premise", event.target.value)}
-                      placeholder="То, что знает только GM и чего не должен знать игрок."
+                      placeholder={t("world.lore.hiddenPremise.placeholder")}
                       disabled={locked}
                     />
                   </label>
-                  {VISUAL_PROMPT_FIELDS.map(([field, label, placeholder, outputField, outputLabel]) => {
+                  {VISUAL_PROMPT_FIELDS.map(([field, visualKey, outputField]) => {
                     const prompt = textValue(worldDraft.worldLore?.[field]);
                     const imageUrl = textValue(worldDraft.worldLore?.[outputField]);
                     const job = imageJobs[field] || {};
+                    const label = t(`world.visual.${visualKey}.promptLabel`);
+                    const placeholder = t(`world.visual.${visualKey}.promptPlaceholder`);
+                    const outputLabel = t(`world.visual.${visualKey}.outputLabel`);
                     return (
                       <div key={field} className="world-visual-field">
                         <label className="world-field">
@@ -957,8 +942,12 @@ export default function WorldArchitectPanel({
                           />
                         </label>
                         <div className="world-visual-actions">
-                          <span className="world-visual-state">{visualJobLabel(job, prompt, imageUrl)}</span>
-                          {job.seed != null && <span className="world-visual-seed">seed {job.seed}</span>}
+                          <span className="world-visual-state">{visualJobLabel(job, prompt, imageUrl, t)}</span>
+                          {job.seed != null && (
+                            <span className="world-visual-seed">
+                              {t("world.visual.seed", { seed: job.seed })}
+                            </span>
+                          )}
                         </div>
                         {job.error && <div className="world-visual-error">{job.error}</div>}
                         {imageUrl && (
@@ -972,13 +961,13 @@ export default function WorldArchitectPanel({
                       </div>
                     );
                   })}
-                  {LORE_PREVIEW_FIELDS.map(([field, label]) => (
+                  {LORE_PREVIEW_FIELDS.map(([field, labelKey]) => (
                     <label key={field} className="world-field">
-                      <span>{label}</span>
+                      <span>{t(`world.lore.fields.${labelKey}`)}</span>
                       <AutoTextarea
                         value={loreFieldText(worldDraft.worldLore, field)}
                         onChange={(event) => updateLoreList(field, event.target.value)}
-                        placeholder="по пункту на строку"
+                        placeholder={t("world.lore.listPlaceholder")}
                         disabled={locked}
                       />
                     </label>
@@ -990,7 +979,7 @@ export default function WorldArchitectPanel({
 
           <div className="world-inspector-foot">
             <button type="submit" className="btn primary world-create-btn" disabled={worldCreateLocked}>
-              Сохранить мир
+              {t("world.actions.save")}
             </button>
             {world?.id && (
               <div className="world-inspector-launch">
@@ -1000,7 +989,7 @@ export default function WorldArchitectPanel({
                   onClick={() => onPlayWorld?.(world.id)}
                   disabled={locked}
                 >
-                  ▶ Играть в этом мире
+                  {t("world.actions.play")}
                 </button>
                 <button
                   type="button"
@@ -1008,12 +997,12 @@ export default function WorldArchitectPanel({
                   onClick={() => onCreateStory?.(world.id)}
                   disabled={locked}
                 >
-                  + Создать историю
+                  {t("world.actions.createStory")}
                 </button>
               </div>
             )}
             <p className="world-manager-note">
-              Нужны название, жанр, тон, размер мира, население и публичное описание или библия мира. Сохранение не запускает чат.
+              {t("world.saveNote")}
             </p>
           </div>
         </section>

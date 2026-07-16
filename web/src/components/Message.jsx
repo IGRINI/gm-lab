@@ -21,6 +21,7 @@ import {
   npcSegments,
   genderVoice,
 } from "../ttsStore.js";
+import { useTranslation } from "react-i18next";
 
 // Resolve an NPC's voice from the roster (by id, falling back to the shown name),
 // since historical messages may lack npc_id.
@@ -34,6 +35,7 @@ function npcVoice(roster, npc_id, name) {
 // again stops. One message plays at a time. `segments` is a list of {text, body};
 // NPC cards prefer ordered visible beats and fall back to older speech/action rows.
 function TtsButton({ msgKey, segments }) {
+  const { t } = useTranslation("game");
   const st = useTtsState(msgKey);
   if (!(segments || []).some((s) => s && s.text && s.text.trim())) return null;
   const status = st.status;
@@ -44,35 +46,35 @@ function TtsButton({ msgKey, segments }) {
       <span className="tts-ctl">
         {status === "playing" ? (
           <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
-            content={<TipContent title="Пауза" note="Приостановить текущую озвучку." />}>
+            content={<TipContent title={t("tts.pause")} note={t("tts.pauseNote")} />}>
             <button type="button" className="tts-btn is-playing" onClick={() => ttsPause(msgKey)}
-              aria-label="Пауза"><Icon name="pause" size={14} /></button>
+              aria-label={t("tts.pause")}><Icon name="pause" size={14} /></button>
           </Tooltip>
         ) : (
           <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
-            content={<TipContent title="Продолжить" note="Возобновить озвучку с места паузы." />}>
+            content={<TipContent title={t("tts.resume")} note={t("tts.resumeNote")} />}>
             <button type="button" className="tts-btn is-playing" onClick={() => ttsResume(msgKey)}
-              aria-label="Продолжить"><Icon name="play" size={14} /></button>
+              aria-label={t("tts.resume")}><Icon name="play" size={14} /></button>
           </Tooltip>
         )}
         <Tooltip className="tooltip-wrap" tipClassName="ui-tip-wrap" focusable={false}
-          content={<TipContent title="Стоп" note="Остановить озвучку этого сообщения." />}>
+          content={<TipContent title={t("tts.stop")} note={t("tts.stopNote")} />}>
           <button type="button" className="tts-btn" onClick={() => ttsStop(msgKey)}
-            aria-label="Стоп"><Icon name="square" size={13} /></button>
+            aria-label={t("tts.stop")}><Icon name="square" size={13} /></button>
         </Tooltip>
       </span>
     );
   }
 
   const icon = status === "error" ? <Icon name="alert" size={14} /> : <Icon name="volume" size={14} />;
-  const title = status === "error" ? "Ошибка озвучки — повторить" : "Озвучить";
+  const title = status === "error" ? t("tts.errorRetry") : t("tts.play");
   return (
     <span className="tts-ctl">
       <Tooltip
         className="tooltip-wrap"
         tipClassName="ui-tip-wrap"
         focusable={false}
-        content={<TipContent title={title} note="Сгенерировать и воспроизвести аудио для видимого текста." />}
+        content={<TipContent title={title} note={t("tts.playNote")} />}
       >
         <button
           type="button"
@@ -98,22 +100,28 @@ function ListBody({ items }) {
   );
 }
 
-function metaText(d) {
-  const cached = d.cached ? ` · ${fmtK(d.cached)}↻ кэш` : "";
-  return `⏱ ${d.secs}s · ${d.tps} tok/s · ${fmtK(d.in)}↑ ${fmtK(d.out)}↓ ток${cached}`;
+function metaText(d, t) {
+  const cached = d.cached ? ` · ${t("message.meta.cached", { count: fmtK(d.cached) })}` : "";
+  return t("message.meta.line", {
+    seconds: d.secs,
+    tps: d.tps,
+    input: fmtK(d.in),
+    output: fmtK(d.out),
+    cached,
+  });
 }
-function metaTitle(d) {
+function metaTitle(d, t) {
   return (
-    `${d.label}\nввод: ${d.in} ток / ${d.prompt_secs}s` +
-    (d.cached ? `\nиз кэша: ${d.cached} ток` : "") +
-    `\nвывод: ${d.out} ток / ${d.eval_secs}s` +
-    (d.load_secs > 0 ? `\nзагрузка модели: ${d.load_secs}s` : "")
+    `${d.label}\n${t("message.meta.input", { count: d.in, seconds: d.prompt_secs })}` +
+    (d.cached ? `\n${t("message.meta.fromCache", { count: d.cached })}` : "") +
+    `\n${t("message.meta.output", { count: d.out, seconds: d.eval_secs })}` +
+    (d.load_secs > 0 ? `\n${t("message.meta.modelLoad", { seconds: d.load_secs })}` : "")
   );
 }
-function metaTotalTitle(d) {
+function metaTotalTitle(d, t) {
   return (
     d.calls.map((m) => `${m.label}: ${m.in}↑ ${m.out}↓  ${m.tps} tok/s  ${m.secs}s`).join("\n") +
-    `\n— — —\n≈ системный промпт ГМ: ~${d.sys_estimate} ток (оценка, входит в «ввод»)`
+    `\n— — —\n${t("message.meta.systemPrompt", { count: d.sys_estimate })}`
   );
 }
 
@@ -128,7 +136,15 @@ function NameTag({ name, roster }) {
   return <b style={{ color: nameColor(name, roster) }}>{name}</b>;
 }
 
+function agentLabel(agent, t) {
+  const value = String(agent || "").trim();
+  return ["gm", "GM", "ГМ", "Гейм-мастер"].includes(value)
+    ? t("message.gameMaster")
+    : value;
+}
+
 function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
+  const { t } = useTranslation("game");
   const [mode, setMode] = useState("");
   const [draft, setDraft] = useState(m.text || "");
   const [submitting, setSubmitting] = useState(false);
@@ -159,11 +175,11 @@ function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
       await action(m.turn, text);
       setMode("");
     } catch (reason) {
-      setError(reason?.message || "Не удалось изменить историю");
+      setError(reason?.message || t("message.history.changeFailed"));
     } finally {
       setSubmitting(false);
     }
-  }, [draft, historyBusy, m.turn, mode, onBranchFrom, onEditFrom, submitting]);
+  }, [draft, historyBusy, m.turn, mode, onBranchFrom, onEditFrom, submitting, t]);
 
   return (
     <div className="player-message">
@@ -171,17 +187,17 @@ function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
         <MarkdownText>{m.text}</MarkdownText>
       </div>
       {(canEdit || canBranch) && !mode ? (
-        <div className="player-message-actions" aria-label="Действия с сообщением">
+        <div className="player-message-actions" aria-label={t("message.history.actionsAria")}>
           {canEdit ? (
             <button
               type="button"
               onClick={() => begin("edit")}
               disabled={historyBusy}
-              title="Изменить отсюда"
-              aria-label="Изменить сообщение и пересчитать хвост"
+              title={t("message.history.editTitle")}
+              aria-label={t("message.history.editAria")}
             >
               <Icon name="pen" size={13} />
-              <span>Изменить</span>
+              <span>{t("message.history.edit")}</span>
             </button>
           ) : null}
           {canBranch ? (
@@ -189,11 +205,11 @@ function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
               type="button"
               onClick={() => begin("branch")}
               disabled={historyBusy}
-              title="Ответвить в новый чат"
-              aria-label="Создать новую ветвь с этого сообщения"
+              title={t("message.history.branchTitle")}
+              aria-label={t("message.history.branchAria")}
             >
               <Icon name="branch" size={14} />
-              <span>Ответвить</span>
+              <span>{t("message.history.branch")}</span>
             </button>
           ) : null}
         </div>
@@ -212,17 +228,17 @@ function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
             }}
             disabled={submitting || historyBusy}
             autoFocus
-            aria-label={mode === "edit" ? "Новый текст сообщения" : "Первое сообщение ветви"}
+            aria-label={mode === "edit" ? t("message.history.editInputAria") : t("message.history.branchInputAria")}
           />
           <div className="player-message-editor-note">
             {mode === "edit"
-              ? "Текущий хвост будет удалён и построен заново."
-              : "Оригинальный чат сохранится, продолжение откроется в новой ветви."}
+              ? t("message.history.editNote")
+              : t("message.history.branchNote")}
           </div>
           {error ? <div className="player-message-editor-error">{error}</div> : null}
           <div className="player-message-editor-actions">
             <button type="button" className="btn ghost" onClick={cancel} disabled={submitting}>
-              Отмена
+              {t("actions.cancel")}
             </button>
             <button
               type="button"
@@ -231,10 +247,10 @@ function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
               disabled={!draft.trim() || submitting || historyBusy}
             >
               {submitting
-                ? "Подготавливаю…"
+                ? t("message.history.preparing")
                 : mode === "edit"
-                ? "Изменить и продолжить"
-                : "Создать ветвь"}
+                ? t("message.history.editContinue")
+                : t("message.history.createBranch")}
             </button>
           </div>
         </div>
@@ -251,6 +267,7 @@ function Message({
   onBranchFrom,
   historyBusy = false,
 }) {
+  const { t } = useTranslation("game");
   const roster = useContext(NpcRosterContext);
   const statusLabels = useContext(StatusLabelsContext);
   const vis = useContext(VisibilityContext);
@@ -270,7 +287,7 @@ function Message({
       return (
         <div className="narration has-tts">
           <TtsButton msgKey={`${m.sid}:narration`} segments={gmSegments(m.text)} />
-          <div className="who">Гейм-мастер</div>
+          <div className="who">{t("message.gameMaster")}</div>
           <MarkdownText>{m.text}</MarkdownText>
         </div>
       );
@@ -279,7 +296,7 @@ function Message({
       if (!vis.gmThoughts) return null;
       return (
         <div className="step think">
-          <Spoiler label="🧠 ГМ думает"><MarkdownText>{m.text || "—"}</MarkdownText></Spoiler>
+          <Spoiler label={t("message.gmThinking")}><MarkdownText>{m.text || "—"}</MarkdownText></Spoiler>
         </div>
       );
 
@@ -306,20 +323,20 @@ function Message({
             {m.revealed ? (
               <span className="txt"><MarkdownInline>{m.response || m.speech}</MarkdownInline></span>
             ) : (
-              <span className="typing">печатает…</span>
+              <span className="typing">{t("message.typing")}</span>
             )}
           </div>
           {vis.npcInternals && m.hidden != null && (
-            <Spoiler label="🧠 Скрытые мысли (игрок не видит)"><MarkdownText>{m.hidden}</MarkdownText></Spoiler>
+            <Spoiler label={t("message.hiddenThoughts")}><MarkdownText>{m.hidden}</MarkdownText></Spoiler>
           )}
           {vis.npcInternals && Array.isArray(m.beats) && m.beats.length > 0 && (
-            <Spoiler label="Видимые шаги">
+            <Spoiler label={t("message.visibleSteps")}>
               <ListBody items={m.beats.map((beat) => `${beat.kind}: ${beat.text}`)} />
             </Spoiler>
           )}
           {!m.response && m.action && <div className="action">— <MarkdownInline>{m.action}</MarkdownInline></div>}
           {vis.npcInternals && m.claims != null && (
-            <Spoiler label="📌 Опора ответа">
+            <Spoiler label={t("message.responseBasis")}>
               <ListBody items={m.claims} />
             </Spoiler>
           )}
@@ -352,7 +369,7 @@ function Message({
       if (!vis.memoryOps) return null;
       return (
         <div className="step">
-          <Spoiler label="📖 факт мира (ГМ запросил)"><MarkdownText>{m.text}</MarkdownText></Spoiler>
+          <Spoiler label={t("message.worldFact")}><MarkdownText>{m.text}</MarkdownText></Spoiler>
         </div>
       );
 
@@ -366,9 +383,11 @@ function Message({
       if (m.title || m.scene_id) {
         return (
           <div className="step">
-          <div className="pill ok">Сцена: {m.title || m.scene_id}</div>
+          <div className="pill ok">{t("message.sceneUpdate.title", { title: m.title || m.scene_id })}</div>
           <div className="step-note">
-              <MarkdownText>{`Сейчас в сцене: ${presentNames.join(", ") || "нет именованных персонажей"}`}</MarkdownText>
+              <MarkdownText>{t("message.sceneUpdate.present", {
+                names: presentNames.join(", ") || t("scene.noNamedCharacters"),
+              })}</MarkdownText>
           </div>
           </div>
         );
@@ -376,24 +395,28 @@ function Message({
       return (
         <div className="step">
           <div className="pill ok">
-            Сцена: <NameTag name={m.name} roster={roster} /> теперь {m.present ? "в сцене" : "вне сцены"}
+            {t("message.sceneUpdate.prefix")} <NameTag name={m.name} roster={roster} /> {m.present ? t("message.sceneUpdate.inScene") : t("message.sceneUpdate.outsideScene")}
           </div>
           <div className="step-note">
-            <MarkdownText>{`Сейчас в сцене: ${presentNames.join(", ") || "нет именованных персонажей"}`}</MarkdownText>
+            <MarkdownText>{t("message.sceneUpdate.present", {
+              names: presentNames.join(", ") || t("scene.noNamedCharacters"),
+            })}</MarkdownText>
           </div>
         </div>
       );
 
     case "npc_whereabouts": {
       const w = m.whereabouts || {};
-      const status = statusLabels[w.status] || w.status || "неизвестно";
-      const place = w.location_name || w.location_id || "место не установлено";
+      const status = ["present", "known", "likely", "rumored", "unknown", "left_scene"].includes(w.status)
+        ? t(`scene.statuses.${w.status}`)
+        : statusLabels[w.status] || w.status || t("scene.unknown");
+      const place = w.location_name || w.location_id || t("scene.placeUnknown");
       return (
         <div className="step">
-          <div className="pill ok">Местонахождение: <NameTag name={m.name} roster={roster} /> — {status}</div>
+          <div className="pill ok">{t("message.whereabouts.title")} <NameTag name={m.name} roster={roster} /> — {status}</div>
           <div className="step-note">
             <MarkdownText>
-              {`**Где искать:** ${place}${w.details ? `\n\n${w.details}` : ""}`}
+              {`**${t("message.whereabouts.whereToFind")}:** ${place}${w.details ? `\n\n${w.details}` : ""}`}
             </MarkdownText>
           </div>
         </div>
@@ -411,8 +434,8 @@ function Message({
       if (!vis.gmThoughts) return null;
       return (
         <div className="step">
-          <div className="pill redo">✗ ГМ вернул действие <NameTag name={m.name} roster={roster} /> на переделку</div>
-          <div className="reason">Замечание ГМ: <MarkdownInline>{m.reason}</MarkdownInline></div>
+          <div className="pill redo">{t("message.reject.prefix")} <NameTag name={m.name} roster={roster} /> {t("message.reject.suffix")}</div>
+          <div className="reason">{t("message.reject.note")} <MarkdownInline>{m.reason}</MarkdownInline></div>
         </div>
       );
 
@@ -420,7 +443,7 @@ function Message({
       return (
         <div className={"err" + (onRetry ? " has-retry" : "")}>
           <div className="turn-error-text">
-            ⚠ {m.agent}: <MarkdownInline>{m.text}</MarkdownInline>
+            ⚠ {agentLabel(m.agent, t)}: <MarkdownInline>{m.text}</MarkdownInline>
           </div>
           {onRetry && (
             <button
@@ -430,7 +453,7 @@ function Message({
               disabled={retryBusy}
             >
               <Icon name="refresh" size={14} />
-              {retryBusy ? "Повторяю…" : "Повторить"}
+              {retryBusy ? t("message.retrying") : t("actions.retry")}
             </button>
           )}
         </div>
@@ -439,21 +462,26 @@ function Message({
     case "meta":
       if (!vis.messageTokens) return null;
       return (
-        <Tooltip as="div" className="meta" content={metaTitle(m.data)}>
-          {metaText(m.data)}
+        <Tooltip as="div" className="meta" content={metaTitle(m.data, t)}>
+          {metaText(m.data, t)}
         </Tooltip>
       );
 
     case "meta_total": {
       if (!vis.messageTokens) return null;
       const d = m.data;
-      const cached = d.cached ? ` · ${fmtK(d.cached)}↻ кэш` : "";
+      const cached = d.cached ? ` · ${t("message.meta.cached", { count: fmtK(d.cached) })}` : "";
       return (
-        <Tooltip as="div" className="meta-total" content={metaTotalTitle(d)}>
-          <b>Σ за ход: </b>
+        <Tooltip as="div" className="meta-total" content={metaTotalTitle(d, t)}>
+          <b>{t("message.meta.turnTotal")} </b>
           {`⏱ ${d.secs}s · `}
-          <span className="tok">{fmtK(d.tokens)} токенов</span>
-          {` (${fmtK(d.in)}↑ ввод / ${fmtK(d.out)}↓ вывод)${cached} · ${d.calls.length} вызовов`}
+          <span className="tok">{t("message.meta.tokenCount", { count: fmtK(d.tokens) })}</span>
+          {t("message.meta.totalDetails", {
+            input: fmtK(d.in),
+            output: fmtK(d.out),
+            cached,
+            calls: d.calls.length,
+          })}
         </Tooltip>
       );
     }

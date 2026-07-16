@@ -1,4 +1,5 @@
 import Icon from "./Icon.jsx";
+import { useTranslation } from "react-i18next";
 import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip from "./Tooltip.jsx";
@@ -6,71 +7,48 @@ import { NpcRef, Field, Badge, TextBlock, nonEmpty, ActorRef, ParticipantChips }
 
 // Presentation-only maps mirroring the request-card vocabulary in ToolCard.jsx.
 const FACT_STATUS = {
-  known: { label: "известно", tone: "ok" },
-  likely: { label: "вероятно", tone: "warn" },
-  rumored: { label: "слух", tone: "warn" },
-  confirmed: { label: "подтверждено", tone: "ok" },
-  unknown: { label: "неизвестно", tone: "muted" },
+  known: "ok",
+  likely: "warn",
+  rumored: "warn",
+  confirmed: "ok",
+  unknown: "muted",
 };
 const WS_TYPE = {
-  fact: { label: "факт", tone: "ok" },
-  rumor: { label: "слух", tone: "warn" },
-  npc_memory: { label: "память NPC", tone: "" },
-  relationship: { label: "отношение", tone: "" },
-  goal: { label: "цель", tone: "" },
-  public_lookup: { label: "публичный факт", tone: "ok" },
+  fact: "ok",
+  rumor: "warn",
+  npc_memory: "",
+  relationship: "",
+  goal: "",
+  public_lookup: "ok",
 };
 const WS_OP = {
-  add: { label: "добавлено", tone: "ok" },
-  update: { label: "изменено", tone: "warn" },
-  delete: { label: "удалено", tone: "redo" },
-};
-const WS_SCOPE = {
-  public: "публично",
-  gm: "ГМ",
-  npc: "только NPC",
-  shared: "общее",
-  player: "игрок",
-};
-const PROFILE_PRESET = {
-  visible: "видимое",
-  social: "социальное",
-  mechanics: "механика",
-  status: "состояние",
-  identity: "личность",
+  add: "ok",
+  update: "warn",
+  delete: "redo",
 };
 // query_world_state rows carry varied kinds across scopes (state_* prefixes plus
 // canon/public/hidden). Normalise to a friendly Russian label + tone.
 const QUERY_KIND = {
-  public_lookup: { label: "публичный факт", tone: "ok" },
-  public_intro: { label: "публичный факт", tone: "ok" },
-  gm_canon: { label: "канон ГМ", tone: "" },
-  hidden_event: { label: "скрытое событие", tone: "warn" },
+  public_lookup: "ok",
+  public_intro: "ok",
+  gm_canon: "",
+  hidden_event: "warn",
 };
 function queryKind(kind) {
   const k = String(kind || "");
-  if (QUERY_KIND[k]) return QUERY_KIND[k];
+  if (Object.hasOwn(QUERY_KIND, k)) return { kind: k, tone: QUERY_KIND[k] };
   const bare = k.replace(/^state_/, "");
-  if (WS_TYPE[bare]) return WS_TYPE[bare];
-  return { label: bare || "запись", tone: "" };
+  if (Object.hasOwn(WS_TYPE, bare)) return { kind: bare, tone: WS_TYPE[bare] };
+  return { kind: bare || "record", tone: "" };
 }
-
-const RESULT_HELP = {
-  get_world_fact: "Что память мира вернула на запрос ГМ.",
-  query_world_state: "Что нашёл поиск ГМ по памяти мира.",
-  update_world_state: "Итог записи в память мира: что сохранено и что отклонено.",
-  get_npc_profile: "Поля карточки NPC, которые вернул запрос.",
-  advance_time: "Новое состояние часов мира после сдвига.",
-  update_player_character: "Какие поля листа персонажа изменились.",
-  tool_search: "Какие скрытые инструменты загрузил ГМ.",
-};
 
 // id: stable concurrency key the model uses; short and monospace for the eye.
 function ShortId({ id }) {
+  const { t } = useTranslation("developer");
   if (!nonEmpty(id)) return null;
   const s = String(id);
   return (
-    <Tooltip className="tc-id" tipClassName="tool-tip" content={`id записи: ${s}`}>
+    <Tooltip className="tc-id" tipClassName="tool-tip" content={t("results.recordId", { id: s })}>
       {s.length > 14 ? s.slice(0, 13) + "…" : s}
     </Tooltip>
   );
@@ -80,28 +58,29 @@ function Target({ id }) {
   return <span className="tc-arrow-to">→ <ActorRef id={id} /></span>;
 }
 
-export function resultView(name, p) {
+export function resultView(name, p, t) {
   const payload = p || {};
   switch (name) {
     case "get_world_fact": {
-      const st = FACT_STATUS[payload.status] || { label: payload.status || "—", tone: "muted" };
+      const statusName = payload.status || "unknown";
+      const statusTone = FACT_STATUS[payload.status] || "muted";
       const sources = Array.isArray(payload.sources) ? payload.sources : [];
       const delivered = Number(payload.already_delivered || 0);
       return {
         icon: <Icon name="book" size={14} />,
         accent: "var(--md-link)",
-        title: "Память мира — ответ",
+        title: t("results.worldFact.title"),
         body: (
           <>
             <div className="tc-chips">
-              <Badge tone={payload.status === "already_delivered" ? "muted" : st.tone}>
-                {payload.status === "already_delivered" ? "нового нет" : st.label}
+              <Badge tone={payload.status === "already_delivered" ? "muted" : statusTone}>
+                {payload.status === "already_delivered" ? t("results.noNew") : t(`factStatus.${statusName}`, { defaultValue: payload.status || "—" })}
               </Badge>
-              {delivered > 0 && <Badge tone="muted">{`уже было: ${delivered}`}</Badge>}
+              {delivered > 0 && <Badge tone="muted">{t("results.alreadyDelivered", { count: delivered })}</Badge>}
             </div>
             {nonEmpty(payload.text) && <TextBlock>{payload.text}</TextBlock>}
             {sources.length > 0 && (
-              <Field label="Источники">
+              <Field label={t("results.sources.label")}>
                 <div className="tc-list">
                   {sources.map((s, i) => (
                     <Tooltip
@@ -110,10 +89,10 @@ export function resultView(name, p) {
                       tipClassName="tool-tip"
                       key={s.n ?? i}
                       content={[
-                        s.kind ? `тип: ${s.kind}` : "",
-                        s.status ? `статус: ${s.status}` : "",
-                        s.source ? `источник: ${s.source}` : "",
-                        s.score != null ? `релевантность: ${s.score}` : "",
+                        s.kind ? t("results.sources.kind", { value: s.kind }) : "",
+                        s.status ? t("results.sources.status", { value: s.status }) : "",
+                        s.source ? t("results.sources.source", { value: s.source }) : "",
+                        s.score != null ? t("results.sources.relevance", { value: s.score }) : "",
                       ].filter(Boolean).join("\n")}
                     >
                       <span className="tc-source-n">[{s.n ?? i + 1}]</span>
@@ -134,20 +113,20 @@ export function resultView(name, p) {
       const results = Array.isArray(payload.results) ? payload.results : [];
       const delivered = Number(payload.already_delivered || 0);
       const foundLabel = results.length
-        ? `найдено: ${results.length}`
+        ? t("results.found", { count: results.length })
         : delivered > 0
-          ? "нового нет"
-          : "ничего не найдено";
+          ? t("results.noNew")
+          : t("results.nothingFound");
       return {
         icon: <Icon name="search" size={14} />,
         accent: "var(--md-link)",
-        title: "Память мира — найдено",
+        title: t("results.worldQuery.title"),
         body: (
           <>
             <div className="tc-chips">
               <Badge tone={results.length ? "ok" : "muted"}>{foundLabel}</Badge>
-              {delivered > 0 && <Badge tone="muted">{`уже было: ${delivered}`}</Badge>}
-              {nonEmpty(payload.scope) && <Badge tone="muted">{WS_SCOPE[payload.scope] || payload.scope}</Badge>}
+              {delivered > 0 && <Badge tone="muted">{t("results.alreadyDelivered", { count: delivered })}</Badge>}
+              {nonEmpty(payload.scope) && <Badge tone="muted">{t(`worldState.scopes.${payload.scope}`, { defaultValue: payload.scope })}</Badge>}
             </div>
             {nonEmpty(payload.text) && <TextBlock>{payload.text}</TextBlock>}
             {results.length > 0 && (
@@ -157,8 +136,8 @@ export function resultView(name, p) {
                   return (
                     <div className="tc-ws-item" key={r.id || i}>
                       <div className="tc-chips">
-                        <Badge tone={typ.tone}>{typ.label}</Badge>
-                        {nonEmpty(r.scope) && <Badge tone="muted">{WS_SCOPE[r.scope] || r.scope}</Badge>}
+                        <Badge tone={typ.tone}>{t(`queryKinds.${typ.kind}`, { defaultValue: t(`worldState.types.${typ.kind}`, { defaultValue: typ.kind }) })}</Badge>
+                        {nonEmpty(r.scope) && <Badge tone="muted">{t(`worldState.scopes.${r.scope}`, { defaultValue: r.scope })}</Badge>}
                         {nonEmpty(r.npc_id) && <NpcRef id={r.npc_id} />}
                         {nonEmpty(r.target) && <Target id={r.target} />}
                         <ParticipantChips ids={r.participants} />
@@ -181,23 +160,24 @@ export function resultView(name, p) {
       return {
         icon: <Icon name="sparkles" size={14} />,
         accent: "var(--entity-note)",
-        title: "Память мира — записано",
+        title: t("results.worldUpdate.title"),
         body: (
           <>
             <div className="tc-chips">
-              <Badge tone={applied.length ? "ok" : "muted"}>{`сохранено: ${applied.length}`}</Badge>
-              {errors.length > 0 && <Badge tone="redo">{`отклонено: ${errors.length}`}</Badge>}
+              <Badge tone={applied.length ? "ok" : "muted"}>{t("results.saved", { count: applied.length })}</Badge>
+              {errors.length > 0 && <Badge tone="redo">{t("results.rejected", { count: errors.length })}</Badge>}
             </div>
             {applied.length > 0 && (
               <div className="tc-ws-list">
                 {applied.map((row, i) => {
-                  const op = WS_OP[row.op || "add"] || WS_OP.add;
-                  const typ = WS_TYPE[row.type] || { label: row.type || "", tone: "" };
+                  const opName = row.op || "add";
+                  const opTone = WS_OP[opName] || WS_OP.add;
+                  const typeTone = WS_TYPE[row.type] || "";
                   return (
                     <div className="tc-result-row" key={row.id || i}>
-                      <Badge tone={op.tone}>{op.label}</Badge>
-                      {nonEmpty(row.type) && <Badge tone={typ.tone}>{typ.label}</Badge>}
-                      {nonEmpty(row.scope) && <Badge tone="muted">{WS_SCOPE[row.scope] || row.scope}</Badge>}
+                      <Badge tone={opTone}>{t(`worldState.operationResults.${opName}`, { defaultValue: opName })}</Badge>
+                      {nonEmpty(row.type) && <Badge tone={typeTone}>{t(`worldState.types.${row.type}`, { defaultValue: row.type })}</Badge>}
+                      {nonEmpty(row.scope) && <Badge tone="muted">{t(`worldState.scopes.${row.scope}`, { defaultValue: row.scope })}</Badge>}
                       {nonEmpty(row.npc_id) && <NpcRef id={row.npc_id} />}
                       {nonEmpty(row.target) && <Target id={row.target} />}
                       <ParticipantChips ids={row.participants} />
@@ -208,11 +188,11 @@ export function resultView(name, p) {
               </div>
             )}
             {errors.length > 0 && (
-              <Field label="Не сохранено">
+              <Field label={t("results.notSaved")}>
                 <div className="tc-list">
                   {errors.map((e, i) => (
                     <div className="tc-text redo" key={i}>
-                      <MarkdownInline>{e.error || "ошибка записи"}</MarkdownInline>
+                      <MarkdownInline>{e.error || t("results.writeError")}</MarkdownInline>
                     </div>
                   ))}
                 </div>
@@ -231,14 +211,14 @@ export function resultView(name, p) {
         accent: "var(--brand-text)",
         title: (
           <>
-            Карточка — <NpcRef id={payload.npc_id} />
+            {t("results.npcProfile.title")}<NpcRef id={payload.npc_id} />
           </>
         ),
         body: (
           <>
             <div className="tc-chips">
-              {nonEmpty(payload.preset) && <Badge tone="muted">{PROFILE_PRESET[payload.preset] || payload.preset}</Badge>}
-              {payload.card_revision != null && <Badge tone="muted">{`ревизия ${payload.card_revision}`}</Badge>}
+              {nonEmpty(payload.preset) && <Badge tone="muted">{t(`profilePresets.${payload.preset}`, { defaultValue: payload.preset })}</Badge>}
+              {payload.card_revision != null && <Badge tone="muted">{t("results.revision", { value: payload.card_revision })}</Badge>}
             </div>
             {nonEmpty(payload.error) ? (
               <div className="tc-text redo"><MarkdownInline>{payload.error}</MarkdownInline></div>
@@ -251,7 +231,7 @@ export function resultView(name, p) {
                 </Field>
               ))
             ) : (
-              <div className="tc-text">нет полей</div>
+              <div className="tc-text">{t("results.noFields")}</div>
             )}
           </>
         ),
@@ -264,11 +244,11 @@ export function resultView(name, p) {
       return {
         icon: <Icon name="clock" size={14} />,
         accent: "var(--md-em)",
-        title: "Время мира",
+        title: t("results.worldTime.title"),
         body: (
           <>
             <div className="tc-chips">
-              {payload.elapsed_minutes != null && <Badge tone="warn">{`+${payload.elapsed_minutes} мин`}</Badge>}
+              {payload.elapsed_minutes != null && <Badge tone="warn">{t("time.plusMinutes", { count: payload.elapsed_minutes })}</Badge>}
               {nonEmpty(now) && <Badge tone="ok">{now}</Badge>}
             </div>
             {nonEmpty(payload.summary) && <TextBlock>{payload.summary}</TextBlock>}
@@ -283,14 +263,14 @@ export function resultView(name, p) {
       return {
         icon: <Icon name="shield" size={14} />,
         accent: "var(--player)",
-        title: "Лист персонажа — обновлён",
+        title: t("results.playerSheet.title"),
         body: (
           <>
             <div className="tc-chips">
               {updated.length
                 ? updated.map((f) => <Badge key={f} tone="ok">{f}</Badge>)
-                : <Badge tone="muted">без изменений</Badge>}
-              {payload.card_revision != null && <Badge tone="muted">{`ревизия ${payload.card_revision}`}</Badge>}
+                : <Badge tone="muted">{t("common.noChanges")}</Badge>}
+              {payload.card_revision != null && <Badge tone="muted">{t("results.revision", { value: payload.card_revision })}</Badge>}
             </div>
             {nonEmpty(payload.reason) && <TextBlock>{payload.reason}</TextBlock>}
             {nonEmpty(payload.error) && <div className="tc-text redo"><MarkdownInline>{payload.error}</MarkdownInline></div>}
@@ -303,7 +283,7 @@ export function resultView(name, p) {
       return {
         icon: <Icon name="sliders" size={14} />,
         accent: "var(--text-3)",
-        title: "Инструменты ГМ",
+        title: t("results.toolSearch.title"),
         body: nonEmpty(payload.text) ? (
           <TextBlock>{payload.text}</TextBlock>
         ) : (
@@ -316,7 +296,7 @@ export function resultView(name, p) {
       return {
         icon: <Icon name="check" size={14} />,
         accent: "var(--entity-unknown)",
-        title: <>Результат <code>{name}</code></>,
+        title: <>{t("results.fallbackTitle")} <code>{name}</code></>,
         body: (
           <div className="tc-text">
             <MarkdownText>{"```json\n" + JSON.stringify(payload, null, 2) + "\n```"}</MarkdownText>
@@ -329,23 +309,25 @@ export function resultView(name, p) {
 // Just the result body (no card chrome) — for embedding under a tool call's request
 // inside one merged ToolCard.
 export function ToolResultBody({ name, payload = {} }) {
-  return resultView(name, payload).body;
+  const { t } = useTranslation("developer");
+  return resultView(name, payload, t).body;
 }
 
 export default function ToolResultCard({ name, payload = {}, showRaw = true }) {
-  const { icon, accent, title, body } = resultView(name, payload);
+  const { t } = useTranslation("developer");
+  const { icon, accent, title, body } = resultView(name, payload, t);
   return (
     <div className="tool-card result" style={{ "--tc": accent }}>
       <div className="tc-hd">
-        <Tooltip className="tc-ico" tipClassName="tool-tip" content={RESULT_HELP[name] || "Результат инструмента ГМ."}>
+        <Tooltip className="tc-ico" tipClassName="tool-tip" content={t(`results.help.${name}`, { defaultValue: t("results.help.default") })}>
           {icon}
         </Tooltip>
         <span className="tc-title">{title}</span>
-        <span className="tc-result-tag">результат</span>
+        <span className="tc-result-tag">{t("common.result")}</span>
       </div>
       <div className="tc-body">{body}</div>
       {showRaw && (
-        <Spoiler label="сырой результат (JSON)">
+        <Spoiler label={t("raw.resultJson")}>
           <MarkdownText>{"```json\n" + JSON.stringify(payload, null, 2) + "\n```"}</MarkdownText>
         </Spoiler>
       )}

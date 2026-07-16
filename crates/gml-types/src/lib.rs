@@ -8,12 +8,14 @@
 
 pub mod error;
 pub mod event;
+pub mod language;
 pub mod npc;
 pub mod role;
 pub mod tool;
 
 pub use error::{ParseRoleError, TypesError};
 pub use event::{event_kind, Event};
+pub use language::{normalize_language_tag, DEFAULT_RESPONSE_LANGUAGE};
 pub use npc::{NpcBeat, NpcResponse};
 pub use role::{Role, REASONING_ROLES};
 pub use tool::{ParsedCall, ToolExecutionResult};

@@ -8,6 +8,7 @@ import { ChatScrollContext } from "../chatScrollContext.js";
 import { EntityRegistryContext } from "../entityContext.js";
 import { NpcRosterContext } from "../npcContext.js";
 import { StatusLabelsContext } from "../statusContext.js";
+import { useTranslation } from "react-i18next";
 
 const List = forwardRef(function List({ className, ...props }, ref) {
   return <div ref={ref} {...props} className={"chat-inner " + (className || "")} />;
@@ -37,6 +38,7 @@ export default function Chat({
   onBranchFrom,
   historyBusy = false,
 }) {
+  const { t } = useTranslation("game");
   const virtuoso = useRef(null);
   const scrollerRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -161,15 +163,17 @@ export default function Chat({
           focusable={false}
           content={
             <TipContent
-              title="К последним сообщениям"
-              note={newCount > 0 ? `Новых сообщений: ${newCount}` : "Прокрутить диалог вниз."}
+              title={t("chat.scrollToLatest")}
+              note={newCount > 0
+                ? t("chat.newMessages", { count: newCount })
+                : t("chat.scrollDownNote")}
             />
           }
         >
           <button
             className={"scrolldown" + (showDown ? " show" : "")}
             onClick={() => { pausedRef.current = false; scrollToBottom("smooth"); }}
-            aria-label="Вниз"
+            aria-label={t("chat.scrollDownAria")}
           >
             <Icon name="arrow-down" size={16} />
             {newCount > 0 && <span className="badge">{newCount > 99 ? "99+" : newCount}</span>}

@@ -6,6 +6,7 @@ license = "MIT"
 
 [dependencies]
 gml-config = { workspace = true }
+gml-types = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

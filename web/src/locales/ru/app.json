@@ -1,0 +1,98 @@
+{
+  "nav": {
+    "backToLibrary": "← Библиотека"
+  },
+  "defaults": {
+    "nextQuestion": "Что ты делаешь дальше?",
+    "startingScene": "стартовая сцена",
+    "newWorld": "Новый мир",
+    "character": "Персонаж"
+  },
+  "status": {
+    "gmThinking": "ГМ думает…",
+    "gmTool": "ГМ: {{tool}}…",
+    "npcTyping": "{{name}} печатает…",
+    "stopping": "Останавливаю…",
+    "launchingGame": "Запускаю игру…",
+    "savingWorld": "Сохраняю мир…",
+    "openingGame": "Открываю игру…"
+  },
+  "commands": {
+    "newGame": "Новая партия",
+    "newStory": "Новая история: {{scene}}",
+    "constraintAdded": "Ограничение сцены добавлено",
+    "worldEventAdded": "Событие добавлено в мир"
+  },
+  "prompts": {
+    "characterName": "Новое имя персонажа"
+  },
+  "api": {
+    "importFailed": "Импорт не выполнен ({{status}})",
+    "exportFailed": "Экспорт не выполнен ({{status}})",
+    "transcriptionFailed": "Ошибка распознавания ({{status}})",
+    "architectUnavailable": "Архитектор недоступен (HTTP {{status}})",
+    "invalidTurnEvent": "Сервер прислал повреждённое событие хода",
+    "requestIdFailed": "Не удалось создать идентификатор хода",
+    "invalidTurnRequest": "Некорректный запрос хода",
+    "turnFailed": "Ход не выполнен",
+    "turnStreamMissing": "Сервер не открыл поток хода",
+    "eventAfterTurn": "Сервер прислал событие после завершения хода",
+    "turnResultUnconfirmed": "Сервер не подтвердил результат хода",
+    "wrongTurnConfirmed": "Сервер подтвердил другой ход",
+    "connectionClosedBeforeTurn": "Соединение закрылось до подтверждения хода"
+  },
+  "notices": {
+    "turnAlreadyCommitted": "Ход уже успел сохраниться — показан его итог.",
+    "sheetSaved": "Лист «{{title}}» сохранён (v{{version}})",
+    "characterSaved": "Персонаж «{{title}}» сохранён (v{{version}})",
+    "protagonistSaved": "Протагонист «{{title}}» сохранён в библиотеку"
+  },
+  "errors": {
+    "incompleteChatPayload": "Сервер вернул неполные данные чата. Нет полей: {{fields}}",
+    "chatsLoad": "Не удалось загрузить список игр",
+    "worldsLoad": "Не удалось загрузить список миров",
+    "sidecarUnavailable": "Статус инференса недоступен",
+    "storiesLoad": "Не удалось загрузить истории",
+    "charactersLoad": "Не удалось загрузить персонажей",
+    "connectorModelsLoad": "Не удалось загрузить модели коннектора",
+    "connectorModelsMismatch": "Сервер вернул модели другого коннектора",
+    "connectorsLoad": "Не удалось загрузить коннекторы",
+    "stateLoad": "Не удалось загрузить состояние",
+    "transcriptLoad": "Не удалось загрузить историю",
+    "turnFailed": "Ход не выполнен",
+    "turnCommittedTranscriptRefresh": "Ход завершён, но история не обновилась",
+    "turnTranscriptRefresh": "Ход выполнен, но история не обновилась",
+    "turnChatsRefresh": "Ход выполнен, но список игр не обновился",
+    "stopNotConfirmed": "Сервер не подтвердил остановку",
+    "stopFailed": "Не удалось остановить генерацию",
+    "commandFailed": "Команда не выполнена",
+    "invalidRewindMessage": "Некорректное сообщение для отката",
+    "openGameFirst": "Сначала откройте игру",
+    "waitForCurrentAction": "Дождитесь завершения текущего действия",
+    "turnNoLongerEditable": "Этот ход уже нельзя изменить",
+    "historyMutationFailed": "Изменение истории не применено",
+    "gameCreate": "Не удалось создать игру",
+    "worldCreate": "Не удалось сохранить мир",
+    "gameOpen": "Не удалось открыть игру",
+    "gameDelete": "Не удалось удалить игру",
+    "worldDelete": "Не удалось удалить мир",
+    "storyDelete": "Не удалось удалить историю",
+    "exportFailed": "Экспорт не выполнен",
+    "characterRename": "Не удалось переименовать персонажа",
+    "characterDelete": "Не удалось удалить персонажа",
+    "noActiveGame": "Нет активной игры",
+    "characterSave": "Не удалось сохранить персонажа",
+    "protagonistSave": "Не удалось сохранить протагониста",
+    "libraryReveal": "Не удалось открыть папку библиотеки",
+    "modelSwitch": "Не удалось переключить модель",
+    "settingsSave": "Не удалось сохранить настройки",
+    "authExpired": "Срок авторизации истёк",
+    "authStatusUnavailable": "Статус авторизации недоступен",
+    "connectorConnect": "Не удалось подключить {{name}}",
+    "connectorCancel": "Не удалось отменить подключение {{name}}",
+    "connectorCancelNotConfirmed": "Отмена подключения {{name}} не подтверждена",
+    "connectorDisconnect": "Не удалось отключить {{name}}",
+    "connectorDisconnectNotConfirmed": "Отключение {{name}} не подтверждено",
+    "gameReset": "Не удалось сбросить партию"
+  }
+}

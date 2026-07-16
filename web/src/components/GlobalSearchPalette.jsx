@@ -3,21 +3,19 @@ import Icon from "./Icon.jsx";
 import SearchField from "./SearchField.jsx";
 import SearchSkeleton from "./SearchSkeleton.jsx";
 import useAsyncSearch from "../useAsyncSearch.js";
+import { useTranslation } from "react-i18next";
 
-const SCOPES = [
-  ["all", "Везде"],
-  ["library", "Библиотека"],
-  ["chats", "Игры"],
-];
+const SCOPES = ["all", "library", "chats"];
 
 const TYPE_META = {
-  world: { label: "Мир", icon: "globe" },
-  story: { label: "История", icon: "scroll" },
-  character: { label: "Персонаж", icon: "user" },
-  chat: { label: "Игра", icon: "message" },
+  world: { icon: "globe" },
+  story: { icon: "scroll" },
+  character: { icon: "user" },
+  chat: { icon: "message" },
 };
 
 export default function GlobalSearchPalette({ open, onOpen, onClose, onSelect }) {
+  const { t } = useTranslation("game");
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("all");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -123,10 +121,10 @@ export default function GlobalSearchPalette({ open, onOpen, onClose, onSelect })
       >
         <div className="global-search-head">
           <div>
-            <h2 id="global-search-title">Общий поиск</h2>
-            <span>Миры, истории, персонажи, игры и сообщения</span>
+            <h2 id="global-search-title">{t("globalSearch.title")}</h2>
+            <span>{t("globalSearch.subtitle")}</span>
           </div>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть поиск">
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t("globalSearch.closeAria")}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -135,12 +133,12 @@ export default function GlobalSearchPalette({ open, onOpen, onClose, onSelect })
           value={query}
           onChange={setQuery}
           onKeyDown={onInputKeyDown}
-          placeholder="Введите название, имя или фразу из сообщения"
-          ariaLabel="Общий поиск"
+          placeholder={t("globalSearch.placeholder")}
+          ariaLabel={t("globalSearch.aria")}
           loading={search.revalidating}
         />
-        <div className="global-search-scopes" role="tablist" aria-label="Область поиска">
-          {SCOPES.map(([value, label]) => (
+        <div className="global-search-scopes" role="tablist" aria-label={t("globalSearch.scopeAria")}>
+          {SCOPES.map((value) => (
             <button
               key={value}
               type="button"
@@ -149,7 +147,7 @@ export default function GlobalSearchPalette({ open, onOpen, onClose, onSelect })
               className={scope === value ? "active" : ""}
               onClick={() => setScope(value)}
             >
-              {label}
+              {t(`globalSearch.scopes.${value}`)}
             </button>
           ))}
         </div>
@@ -161,12 +159,13 @@ export default function GlobalSearchPalette({ open, onOpen, onClose, onSelect })
           {!search.initialLoading && !search.error && search.items.length === 0 ? (
             <div className="global-search-state">
               <Icon name="search" size={22} />
-              <strong>{query.trim() ? "Ничего не найдено" : "Пока нечего показать"}</strong>
-              <span>{query.trim() ? "Попробуйте более короткий запрос." : "Созданные материалы и игры появятся здесь."}</span>
+              <strong>{query.trim() ? t("globalSearch.notFound") : t("globalSearch.empty")}</strong>
+              <span>{query.trim() ? t("globalSearch.notFoundHint") : t("globalSearch.emptyHint")}</span>
             </div>
           ) : null}
           {!search.initialLoading && search.items.map((item, index) => {
-            const meta = TYPE_META[item.type] || TYPE_META.chat;
+            const type = Object.hasOwn(TYPE_META, item.type) ? item.type : "chat";
+            const meta = TYPE_META[type];
             return (
               <button
                 key={`${item.type}:${item.id}`}
@@ -178,8 +177,8 @@ export default function GlobalSearchPalette({ open, onOpen, onClose, onSelect })
                 <span className="global-search-result-icon"><Icon name={meta.icon} size={16} /></span>
                 <span className="global-search-result-copy">
                   <span className="global-search-result-title">
-                    <strong>{item.title || "Без названия"}</strong>
-                    <em>{meta.label}</em>
+                    <strong>{item.title || t("globalSearch.untitled")}</strong>
+                    <em>{t(`globalSearch.types.${type}`)}</em>
                   </span>
                   {item.subtitle && <span className="global-search-result-subtitle">{item.subtitle}</span>}
                   {item.snippet && item.snippet !== item.subtitle && (
@@ -192,10 +191,14 @@ export default function GlobalSearchPalette({ open, onOpen, onClose, onSelect })
           })}
         </div>
         <div className="global-search-foot">
-          <span><kbd>↑</kbd><kbd>↓</kbd> выбрать</span>
-          <span><kbd>Enter</kbd> открыть</span>
-          <span><kbd>Esc</kbd> закрыть</span>
-          {search.total > search.items.length && <span className="global-search-total">Показано {search.items.length} из {search.total}</span>}
+          <span><kbd>↑</kbd><kbd>↓</kbd> {t("globalSearch.shortcuts.select")}</span>
+          <span><kbd>Enter</kbd> {t("globalSearch.shortcuts.open")}</span>
+          <span><kbd>Esc</kbd> {t("globalSearch.shortcuts.close")}</span>
+          {search.total > search.items.length && (
+            <span className="global-search-total">
+              {t("globalSearch.shown", { shown: search.items.length, total: search.total })}
+            </span>
+          )}
         </div>
       </section>
     </div>

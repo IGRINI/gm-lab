@@ -2,6 +2,7 @@ import Icon from "./Icon.jsx";
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
 import WorldDetailModal from "./WorldDetailModal.jsx";
+import { useTranslation } from "react-i18next";
 
 // The game context bar (UI_REDESIGN_TZ §Игра). It sits at the top of the chat
 // pane and shows the launched game's FIXED, read-only context — История (or
@@ -26,6 +27,7 @@ function firstText(...values) {
 // reuses WorldDetailModal's full sheet instead). `rows` are label/value pairs;
 // `body` is a free paragraph.
 function InfoModal({ title, subtitle, rows = [], body = "", empty, onClose }) {
+  const { t } = useTranslation("game");
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === "Escape") onClose?.();
@@ -50,7 +52,7 @@ function InfoModal({ title, subtitle, rows = [], body = "", empty, onClose }) {
         )}
         {hasBody && <p className="wd-desc">{txt(body)}</p>}
         {visibleRows.length === 0 && !hasBody && (
-          <p className="wd-empty">{empty || "Подробностей пока нет."}</p>
+          <p className="wd-empty">{empty || t("context.noDetails")}</p>
         )}
       </div>
     </Modal>
@@ -78,6 +80,7 @@ function Badge({ kicker, value, onClick, clickable }) {
 
 // The «Сброс партии» confirm dialog (reuses the shared .confirm-* styling).
 function ResetConfirm({ busy, onConfirm, onCancel }) {
+  const { t } = useTranslation("game");
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === "Escape" && !busy) onCancel?.();
@@ -94,13 +97,11 @@ function ResetConfirm({ busy, onConfirm, onCancel }) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="confirm-icon" aria-hidden="true"><Icon name="refresh" size={20} /></div>
-        <h3>Сбросить партию?</h3>
-        <p className="confirm-note">
-          Текущий ход и состояние сцены будут сброшены к началу. Это действие нельзя отменить.
-        </p>
+        <h3>{t("context.reset.title")}</h3>
+        <p className="confirm-note">{t("context.reset.note")}</p>
         <div className="confirm-actions">
           <button type="button" className="btn" onClick={onCancel} disabled={busy}>
-            Отмена
+            {t("actions.cancel")}
           </button>
           <button
             type="button"
@@ -108,7 +109,7 @@ function ResetConfirm({ busy, onConfirm, onCancel }) {
             onClick={onConfirm}
             disabled={busy}
           >
-            {busy ? "Сбрасываю…" : "Сбросить"}
+            {busy ? t("context.reset.busy") : t("context.reset.action")}
           </button>
         </div>
       </div>
@@ -128,6 +129,7 @@ export default function GameContextBar({
   onReset,
   locked = false,
 }) {
+  const { t } = useTranslation("game");
   // `detail` = which read-only modal is open: "story" | "world" | "character".
   const [detail, setDetail] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -153,10 +155,10 @@ export default function GameContextBar({
   }, [menuOpen]);
 
   const storyTitle = procedural
-    ? "Процедурная кампания"
-    : firstText(story?.title, story?.name) || "История";
-  const worldName = firstText(world?.title, world?.name, world?.world_lore?.name) || "Мир";
-  const pcName = firstText(playerCharacter?.name) || "Персонаж";
+    ? t("context.proceduralCampaign")
+    : firstText(story?.title, story?.name) || t("context.story");
+  const worldName = firstText(world?.title, world?.name, world?.world_lore?.name) || t("context.world");
+  const pcName = firstText(playerCharacter?.name) || t("context.character");
 
   const storyBody = firstText(story?.story_brief, story?.description);
   const storyInfoAvailable = !procedural && !!storyBody;
@@ -167,8 +169,8 @@ export default function GameContextBar({
     world?.preview
   );
   const worldRows = [
-    ["Жанр", world?.genre],
-    ["Тон", world?.tone],
+    [t("context.genre"), world?.genre],
+    [t("context.tone"), world?.tone],
   ];
   const worldInfoAvailable = !!worldName && (!!worldBody || worldRows.some(([, v]) => txt(v)));
   const pcInfoAvailable = !!playerCharacter && !!firstText(playerCharacter?.name);
@@ -189,19 +191,19 @@ export default function GameContextBar({
     <div className="game-context-bar">
       <div className="game-badges">
         <Badge
-          kicker="История"
+          kicker={t("context.story")}
           value={storyTitle}
           clickable={storyInfoAvailable}
           onClick={() => setDetail("story")}
         />
         <Badge
-          kicker="Мир"
+          kicker={t("context.world")}
           value={worldName}
           clickable={worldInfoAvailable}
           onClick={() => setDetail("world")}
         />
         <Badge
-          kicker="Персонаж"
+          kicker={t("context.character")}
           value={pcName}
           clickable={pcInfoAvailable}
           onClick={() => setDetail("character")}
@@ -212,7 +214,7 @@ export default function GameContextBar({
         <button
           type="button"
           className="btn btn-icon game-context-more"
-          aria-label="Действия партии"
+          aria-label={t("context.actionsAria")}
           aria-haspopup="true"
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((open) => !open)}
@@ -230,7 +232,7 @@ export default function GameContextBar({
                 onExportJson?.();
               }}
             >
-              Скачать JSON
+              {t("context.downloadJson")}
             </button>
             <button
               type="button"
@@ -242,7 +244,7 @@ export default function GameContextBar({
                 setConfirmReset(true);
               }}
             >
-              Сброс партии
+              {t("context.reset.menu")}
             </button>
           </div>
         )}
@@ -251,19 +253,19 @@ export default function GameContextBar({
       {detail === "story" && (
         <InfoModal
           title={storyTitle}
-          subtitle="История"
+          subtitle={t("context.story")}
           body={storyBody}
-          empty="Описание истории недоступно."
+          empty={t("context.storyUnavailable")}
           onClose={() => setDetail(null)}
         />
       )}
       {detail === "world" && (
         <InfoModal
           title={worldName}
-          subtitle="Мир"
+          subtitle={t("context.world")}
           rows={worldRows}
           body={worldBody}
-          empty="Описание мира недоступно."
+          empty={t("context.worldUnavailable")}
           onClose={() => setDetail(null)}
         />
       )}

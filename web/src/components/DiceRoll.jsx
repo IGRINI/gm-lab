@@ -4,6 +4,7 @@ import Spoiler from "./Spoiler.jsx";
 import MarkdownText from "./MarkdownText.jsx";
 import Tooltip from "./Tooltip.jsx";
 import { buildSolid, POLY_SIDES } from "./polyhedra.js";
+import { useTranslation } from "react-i18next";
 
 // Standard d6 pip layout as a 3x3 grid in {-1,0,1} units, laid out on the face's
 // own edge axes so the pips sit square inside the (hull-derived) cube face.
@@ -34,17 +35,17 @@ function cubeFacePips(pts, value) {
 // Full grade ladder from world._grade_from_margin (+ attack crits, ungraded, invalid).
 // A clear best→worst spectrum, so the badge reads as a graded outcome, not a binary.
 const GRADE = {
-  overwhelming_success: { label: "сокрушительный успех", cls: "crit-ok" },
-  critical_success: { label: "критический успех", cls: "crit-ok" },
-  strong_success: { label: "уверенный успех", cls: "ok" },
-  success: { label: "успех", cls: "ok" },
-  near_miss: { label: "почти получилось", cls: "fail" },
-  weak_failure: { label: "лёгкая неудача", cls: "fail" },
-  failure: { label: "провал", cls: "fail" },
-  major_failure: { label: "тяжёлый провал", cls: "fail" },
-  critical_failure: { label: "критический провал", cls: "crit-fail" },
-  ungraded: { label: "", cls: "neutral" },
-  invalid: { label: "неверная формула", cls: "fail" },
+  overwhelming_success: { cls: "crit-ok" },
+  critical_success: { cls: "crit-ok" },
+  strong_success: { cls: "ok" },
+  success: { cls: "ok" },
+  near_miss: { cls: "fail" },
+  weak_failure: { cls: "fail" },
+  failure: { cls: "fail" },
+  major_failure: { cls: "fail" },
+  critical_failure: { cls: "crit-fail" },
+  ungraded: { cls: "neutral" },
+  invalid: { cls: "fail" },
 };
 
 const GRADE_ACCENT = {
@@ -168,6 +169,7 @@ function useTumble(ref, { snap, seenKey, landTransform, keyframes, index, deps }
 
 // Real polyhedra (d4/d6/d8/d10/d12/d20) + a flat token fallback for odd sizes (d7…).
 function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
+  const { t } = useTranslation("game");
   const spinRef = useRef(null);
   const solid = POLY_SIDES.has(sides) ? buildSolid(sides, polyR(sides)) : null;
   const seenKey = seenKeyOf(rollKey, index);
@@ -190,10 +192,11 @@ function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
     deps: [sides, value, dropped, index, seenKey, animate],
   });
   const spinStyle = snap ? { transform: landTransform } : undefined;
-  const tip =
-    `d${sides}: выпало ${value}` +
-    (dropped ? "\n(отброшено правилом keep)" : "") +
-    (crit === "nat20" ? "\nнатуральная 20" : crit === "nat1" ? "\nнатуральная 1" : "");
+  const tip = t("dice.dieResult", { sides, value })
+    + (dropped ? `\n${t("dice.dropped")}` : "")
+    + (crit === "nat20"
+      ? `\n${t("dice.natural", { value: 20 })}`
+      : crit === "nat1" ? `\n${t("dice.natural", { value: 1 })}` : "");
 
   return (
     <DieFrame index={index} dropped={dropped} crit={crit} landed={landed} tip={tip}>
@@ -246,6 +249,7 @@ function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
 const COIN_R = 24;
 const COIN_SEG = Array.from({ length: 18 }, (_, i) => (360 / 18) * i);
 function CoinDie({ value, index, rollKey, animate }) {
+  const { t } = useTranslation("game");
   const spinRef = useRef(null);
   const seenKey = seenKeyOf(rollKey, index);
   const snap = isSnap(rollKey, index, animate);
@@ -260,7 +264,7 @@ function CoinDie({ value, index, rollKey, animate }) {
     deps: [value, index, seenKey, animate],
   });
   return (
-    <DieFrame index={index} landed={landed} tip={`d2 (монета): выпало ${value}`}>
+    <DieFrame index={index} landed={landed} tip={t("dice.coinResult", { value })}>
       <span className="die-spin coin" ref={spinRef} style={snap ? { transform: land } : undefined}>
         <span className="coin-face coin-front" style={{ transform: "translateZ(4px)" }}>1</span>
         <span className="coin-face coin-back" style={{ transform: "rotateY(180deg) translateZ(4px)" }}>2</span>
@@ -278,6 +282,7 @@ function CoinDie({ value, index, rollKey, animate }) {
 // live on the ridges between flats. Spins about Y to land.
 const D3_R = 24, D3_FLAT_R = 16;
 function D3Die({ value, index, rollKey, animate }) {
+  const { t } = useTranslation("game");
   const spinRef = useRef(null);
   const seenKey = seenKeyOf(rollKey, index);
   const snap = isSnap(rollKey, index, animate);
@@ -292,7 +297,7 @@ function D3Die({ value, index, rollKey, animate }) {
     deps: [value, index, seenKey, animate],
   });
   return (
-    <DieFrame index={index} landed={landed} tip={`d3 (шар с 3 гранями): выпало ${value}`}>
+    <DieFrame index={index} landed={landed} tip={t("dice.d3Result", { value })}>
       <span className="d3-body" />
       <span className="die-spin d3" ref={spinRef} style={snap ? { transform: land } : undefined}>
         {[1, 2, 3].map((n) => (
@@ -311,6 +316,7 @@ function D3Die({ value, index, rollKey, animate }) {
 // d100 — a magic 8-ball: a glossy black sphere with a window where the number tumbles
 // through random values, then settles on the backend roll with a pop.
 function BallDie({ value, index, rollKey, animate }) {
+  const { t } = useTranslation("game");
   const snap = isSnap(rollKey, index, animate);
   const seenKey = seenKeyOf(rollKey, index);
   const [num, setNum] = useState(value);
@@ -354,7 +360,7 @@ function BallDie({ value, index, rollKey, animate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, index, seenKey, animate]);
   return (
-    <DieFrame index={index} landed={landed} tip={`d100 (шар-предсказание): выпало ${value}`}>
+    <DieFrame index={index} landed={landed} tip={t("dice.d100Result", { value })}>
       <span className={"ball" + (landed ? " landed" : " rolling")}>
         <span className="ball-body" />
         <span className="ball-eight">8</span>
@@ -400,9 +406,12 @@ function diceList(roll) {
 // `animate` gates the tumble (live roll) vs snap (restored history); `rollId` is the
 // stable timeline message id used to animate each roll exactly once.
 export function DiceBody({ roll, animate = true, rollId }) {
+  const { t } = useTranslation("game");
   const r = roll || {};
   const dice = diceList(r);
-  const grade = GRADE[r.grade] || GRADE.ungraded;
+  const gradeKey = GRADE[r.grade] ? r.grade : "ungraded";
+  const grade = GRADE[gradeKey];
+  const gradeLabel = gradeKey === "ungraded" ? "" : t(`dice.grades.${gradeKey}`);
   const mod = Number(r.modifier) || 0;
   const kept = Array.isArray(r.kept) ? r.kept : [];
   const hasTarget = r.target_number != null && r.roll_kind && r.roll_kind !== "roll";
@@ -418,9 +427,9 @@ export function DiceBody({ roll, animate = true, rollId }) {
   const modAmt = mod
     ? `${mod > 0 ? "+" : "−"}${Math.abs(mod)}`
     : keep.startsWith("kh")
-    ? "преимущество"
+    ? t("dice.advantage")
     : keep.startsWith("kl")
-    ? "помеха"
+    ? t("dice.disadvantage")
     : "";
   const negativeMod = mod < 0 || keep.startsWith("kl");
 
@@ -442,15 +451,15 @@ export function DiceBody({ roll, animate = true, rollId }) {
         {note && (
           <div className={"dice-modnote" + (negativeMod ? " neg" : "")}>
             {modAmt && <b className="dice-modnote-amt">{modAmt}</b>}
-            <span className="dice-modnote-reason">{modAmt ? " от: " : ""}{note}</span>
+            <span className="dice-modnote-reason">{modAmt ? t("dice.modifierFrom") : ""}{note}</span>
           </div>
         )}
       </div>
 
       <div className="dice-readout">
         {showFormula && <span className="dice-formula">{formula}</span>}
-        <span className="dice-total" aria-label={`итог ${r.total}`}>{r.total}</span>
-        {grade.label && <span className={"dice-grade " + grade.cls}>{grade.label}</span>}
+        <span className="dice-total" aria-label={t("dice.totalAria", { total: r.total })}>{r.total}</span>
+        {gradeLabel && <span className={"dice-grade " + grade.cls}>{gradeLabel}</span>}
         {hasTarget && (
           <span className="dice-target">
             {(r.target_kind || "DC")} {r.target_number}
@@ -460,7 +469,7 @@ export function DiceBody({ roll, animate = true, rollId }) {
       </div>
 
       {r.detail && (
-        <Spoiler label="детали броска">
+        <Spoiler label={t("dice.details")}>
           <MarkdownText>{"```\n" + r.detail + "\n```"}</MarkdownText>
         </Spoiler>
       )}
@@ -470,13 +479,14 @@ export function DiceBody({ roll, animate = true, rollId }) {
 
 // Standalone dice card — fallback for a `dice` result with no matching tool call.
 export default function DiceRoll({ roll, animate, rollId }) {
+  const { t } = useTranslation("game");
   const r = roll || {};
   const grade = GRADE[r.grade] || GRADE.ungraded;
   return (
     <div className={"tool-card dice-card " + grade.cls}>
       <div className="tc-hd">
         <span className="tc-ico dice-ico"><Icon name="d20" size={15} /></span>
-        <span className="tc-title">Бросок кубика</span>
+        <span className="tc-title">{t("dice.title")}</span>
         {r.notation && <span className="tc-name">{r.notation}</span>}
       </div>
       <DiceBody roll={r} animate={animate} rollId={rollId} />

@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
-use crate::Backend;
+use crate::{Backend, ResponseLanguageBackend, ResponseLanguageSource};
 
 const MAX_CONNECTOR_ID_CHARS: usize = 64;
 const MAX_MODEL_ID_CHARS: usize = 256;
@@ -483,6 +483,7 @@ struct RegisteredConnector {
 #[derive(Default)]
 pub struct ConnectorRegistry {
     connectors: RwLock<HashMap<ConnectorId, RegisteredConnector>>,
+    response_language_source: Option<Arc<dyn ResponseLanguageSource>>,
 }
 
 impl fmt::Debug for ConnectorRegistry {
@@ -497,6 +498,18 @@ impl fmt::Debug for ConnectorRegistry {
 impl ConnectorRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a registry that applies one application-owned response language
+    /// policy to every backend created by every connector.
+    pub fn with_response_language_source<S>(source: S) -> Self
+    where
+        S: ResponseLanguageSource + 'static,
+    {
+        Self {
+            connectors: RwLock::new(HashMap::new()),
+            response_language_source: Some(Arc::new(source)),
+        }
     }
 
     /// Register one application-lifetime connector. Replacing an existing id is
@@ -722,7 +735,14 @@ impl ConnectorRegistry {
         binding: &ModelBinding,
     ) -> Result<Arc<dyn Backend>, ConnectorError> {
         let connector = self.require_connector(binding.connector_id())?;
-        Ok(connector.create_backend(binding.model_id()))
+        let backend = connector.create_backend(binding.model_id());
+        match &self.response_language_source {
+            Some(source) => Ok(Arc::new(ResponseLanguageBackend::new(
+                backend,
+                source.clone(),
+            ))),
+            None => Ok(backend),
+        }
     }
 
     fn require_connector(

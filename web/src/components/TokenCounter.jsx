@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import Modal from "./Modal.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { api } from "../api.js";
+import { useTranslation } from "react-i18next";
 
 export default function TokenCounter({ models = [], currentModel = "", onClose }) {
+  const { t } = useTranslation("game");
   const modelOptions = useMemo(() => {
     const list = (models || []).map((m) => m.id || m.slug).filter(Boolean);
     if (currentModel && !list.includes(currentModel)) list.unshift(currentModel);
@@ -71,7 +73,7 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
     setError("");
     try {
       const d = await api.tokenize(text, model);
-      if (!d.ok) throw new Error(d.error || "не удалось посчитать");
+      if (!d.ok) throw new Error(d.error || t("tokenCounter.countFailed"));
       setResult(d);
     } catch (e) {
       setError(e.message || String(e));
@@ -82,43 +84,43 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
   };
 
   return (
-    <Modal title="Подсчёт токенов" subtitle="OpenAI · /v1/responses/input_tokens" wide depth={1} onClose={onClose}>
+    <Modal title={t("tokenCounter.title")} subtitle="OpenAI · /v1/responses/input_tokens" wide depth={1} onClose={onClose}>
       <div className="tok-tool">
         <div className="tok-keyrow">
           <div className="tok-keyhead">
-            <span>OpenAI API-ключ</span>
+            <span>{t("tokenCounter.apiKey")}</span>
             {keySaved ? (
-              <b className="tok-key-ok">сохранён · {keyHint}</b>
+              <b className="tok-key-ok">{t("tokenCounter.keySaved")} · {keyHint}</b>
             ) : (
-              <em className="tok-key-no">не сохранён</em>
+              <em className="tok-key-no">{t("tokenCounter.keyNotSaved")}</em>
             )}
           </div>
           <div className="tok-keyinputs">
             <input
               type="password"
-              placeholder={keySaved ? "заменить ключ…" : "sk-…"}
+              placeholder={keySaved ? t("tokenCounter.replaceKeyPlaceholder") : "sk-…"}
               value={keyInput}
               autoComplete="off"
               onChange={(e) => setKeyInput(e.target.value)}
             />
             <button type="button" className="btn" disabled={keyBusy || !keyInput.trim()} onClick={saveKey}>
-              Сохранить
+              {t("actions.save")}
             </button>
             {keySaved && (
               <button type="button" className="btn" disabled={keyBusy} onClick={deleteKey}>
-                Удалить
+                {t("actions.delete")}
               </button>
             )}
           </div>
           <small className="tok-hint">
-            Ключ нужен для запроса. Хранится на сервере; в открытом виде не показывается.
+            {t("tokenCounter.keyHint")}
           </small>
         </div>
 
         <textarea
           className="tok-text"
           rows={6}
-          placeholder="Вставь текст для подсчёта токенов…"
+          placeholder={t("tokenCounter.textPlaceholder")}
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
@@ -130,12 +132,12 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
             focusable={false}
             content={
               <TipContent
-                title="Модель для подсчёта"
-                note="Токены считаются по токенизатору выбранной модели."
+                title={t("tokenCounter.modelTitle")}
+                note={t("tokenCounter.modelNote")}
               />
             }
           >
-            <select value={model} onChange={(e) => setModel(e.target.value)} aria-label="Модель">
+            <select value={model} onChange={(e) => setModel(e.target.value)} aria-label={t("tokenCounter.modelAria")}>
               {modelOptions.length ? (
                 modelOptions.map((m) => (
                   <option key={m} value={m}>
@@ -143,7 +145,7 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
                   </option>
                 ))
               ) : (
-                <option value="">модели не загружены</option>
+                <option value="">{t("tokenCounter.modelsNotLoaded")}</option>
               )}
             </select>
           </Tooltip>
@@ -153,7 +155,7 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
             disabled={busy || !text.trim() || !keySaved}
             onClick={count}
           >
-            {busy ? "Считаю…" : "Посчитать"}
+            {busy ? t("tokenCounter.counting") : t("tokenCounter.count")}
           </button>
         </div>
 
@@ -163,13 +165,13 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
           <div className="tok-result">
             <div className="tok-stats">
               <span className="tok-count">
-                <b>{result.count ?? "—"}</b> токенов ввода
+                <b>{result.count ?? "—"}</b> {t("tokenCounter.inputTokens", { count: result.count ?? 0 })}
               </span>
-              <span>{result.chars} символов</span>
+              <span>{t("tokenCounter.characters", { count: result.chars })}</span>
               {result.model ? <span className="tok-enc">{result.model}</span> : null}
             </div>
             <small className="tok-hint">
-              Бесплатная ручка OpenAI <code>/v1/responses/input_tokens</code> — модель не запускается. Отдаёт только число, без разбивки.
+              {t("tokenCounter.endpointPrefix")} <code>/v1/responses/input_tokens</code>{t("tokenCounter.endpointSuffix")}
             </small>
           </div>
         )}

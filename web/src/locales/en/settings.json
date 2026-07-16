@@ -1,0 +1,131 @@
+{
+  "title": "Settings",
+  "sectionsAria": "Settings sections",
+  "tabs": {
+    "model": "Model",
+    "interface": "Interface",
+    "debug": "Debug view"
+  },
+  "closeAria": "Close",
+  "tooltip": {
+    "title": "Settings",
+    "note": "Model, languages, interface, speech, and connections."
+  },
+  "language": {
+    "section": "Language",
+    "interface": "Interface language",
+    "interfaceHint": "Applied immediately and saved only for this browser.",
+    "response": "Response language",
+    "responseHint": "The model will answer in this language. This setting is independent from the interface language."
+  },
+  "developer": {
+    "section": "Developer mode",
+    "description": "When disabled, players get a clean view without token counters, tool calls, GM and character thoughts, world-memory operations, or the story debug panel. Enable it to see the internal workflow.",
+    "label": "Developer mode",
+    "hint": "Disabled by default.",
+    "debugNote": "Choose exactly what to show on the Debug view tab. The switches apply immediately."
+  },
+  "debug": {
+    "visibilitySection": "Visible details",
+    "visibilityDescription": "Fine-grained interface visibility. Changes apply in real time.",
+    "toolsSection": "Tools",
+    "toolsDescription": "Count text tokens through the OpenAI API (requires a saved API key).",
+    "tokenCounter": "🔢 Token counter",
+    "flags": {
+      "tokenCards": {
+        "label": "Token counters beside the composer",
+        "hint": "The GM context and Run total cards beside the input field."
+      },
+      "messageTokens": {
+        "label": "Tokens below messages",
+        "hint": "Per-turn totals and model-call metrics in the transcript."
+      },
+      "toolCalls": {
+        "label": "GM tool calls",
+        "hint": "Tool-call cards and raw JSON. When disabled, players see only safe results."
+      },
+      "gmThoughts": {
+        "label": "GM thoughts and retries",
+        "hint": "The GM reasoning stream and notes when a character reply is sent back for revision."
+      },
+      "npcInternals": {
+        "label": "Character internals",
+        "hint": "Hidden character thoughts and response grounding. Speech and actions always remain visible."
+      },
+      "memoryOps": {
+        "label": "World memory (search and write)",
+        "hint": "World-memory reads and writes, NPC card requests, and tool loading."
+      },
+      "historyDebug": {
+        "label": "Story debug tab",
+        "hint": "The story debug panel for editing scenes, NPCs, facts, and other state."
+      }
+    }
+  },
+  "roles": {
+    "gm": {
+      "title": "Game master",
+      "note": "Decides what happens in the scene, which tools to call, and what to tell the player."
+    },
+    "npc": {
+      "title": "Characters",
+      "note": "Plays an individual character: speech, actions, memory, and hidden motives."
+    },
+    "compact": {
+      "title": "Compaction",
+      "note": "Compresses old history. High reasoning is usually unnecessary here."
+    }
+  },
+  "reasoning": {
+    "effort": "Reasoning effort",
+    "summary": "Reasoning summary"
+  },
+  "general": {
+    "section": "General",
+    "description": "These parameters apply to every model request.",
+    "verbosity": "Text verbosity",
+    "tools": "Tools",
+    "streamGm": "Stream GM text",
+    "parallelTools": "Parallel tools",
+    "suggestOptions": "GM suggests actions",
+    "tts": "Read dialogue aloud (TTS)",
+    "ttsAutoplay": "Autoplay speech in sequence",
+    "images": "Image generation",
+    "toolHopLimit": "Tool-hop limit",
+    "toolHopSubtitle": "How many internal tools the GM can call during one turn.",
+    "unlimited": "unlimited",
+    "toolHopNote": "Set a number to stop an excessively long chain of actions.",
+    "outputLimit": "Response limit"
+  },
+  "values": {
+    "none": "off",
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "very high",
+    "auto": "auto",
+    "concise": "concise",
+    "detailed": "detailed",
+    "default": "default",
+    "required": "required"
+  },
+  "sidecar": {
+    "off": "off",
+    "ready": "ready",
+    "loading": "loading",
+    "warming": "warming up",
+    "inference": "Inference",
+    "readyTitle": "Inference is ready",
+    "failedTitle": "Inference failed to load",
+    "unavailableTitle": "Inference status unavailable",
+    "loadingTitle": "Inference is loading",
+    "url": "URL",
+    "pid": "PID",
+    "elapsed": "Elapsed",
+    "elapsedOf": "{{elapsed}} of {{timeout}}",
+    "state": "State",
+    "embedder": "Embedder",
+    "reranker": "Reranker"
+  }
+}

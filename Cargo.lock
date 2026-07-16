@@ -1786,6 +1786,7 @@ name = "gml-prompts"
 version = "0.1.0"
 dependencies = [
  "gml-config",
+ "gml-types",
  "serde_json",
  "sha2",
 ]

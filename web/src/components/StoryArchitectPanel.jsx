@@ -1,5 +1,6 @@
 import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api.js";
 import Spoiler from "./Spoiler.jsx";
 import useConnectorModelBinding from "../useConnectorModelBinding.js";
@@ -11,6 +12,7 @@ import {
   normalizeVisibleMessage,
   AutoTextarea,
   useLiveSegments,
+  useLocalizedFallbackMessage,
   ArchitectChatPane,
   ArchitectDebugModal,
   accumulateUsage,
@@ -40,21 +42,17 @@ const DEFAULT_STORY_DRAFT = {
   time: null,
 };
 
-const DEFAULT_ARCHITECT_MESSAGES = [
-  {
-    role: "assistant",
-    content:
-      "Опиши, какую историю ты хочешь на этом мире — или дай направление, а завязку я соберу сам.\n\nЧто особенно полезно:\n\n1. О чём история и что движет игроком (story brief).\n2. Публичное вступление — что игрок видит и знает в начале.\n3. Скрытая правда истории (секрет только для GM).\n4. Стартовая сцена: место, кто рядом, что создаёт напряжение.\n5. Кого встретит игрок (NPC) и какие факты уже известны миру.\n6. Каким может быть предлагаемый протагонист (игрок сможет заменить его при запуске).\n\nЯ пишу только завязку одной истории поверх канона мира — без глав, целей и концовок.",
-  },
-];
+function defaultArchitectMessages(t) {
+  return [{ role: "assistant", content: t("story.architect.intro"), uiFallback: true }];
+}
 
 // The list sections rendered as read-only JSON summaries in v1 (complex nested
 // object cards the architect authors; the panel shows a compact preview and the
 // full JSON in a spoiler — editing them is a future track, per §С1.3).
 const OBJECT_LIST_SECTIONS = [
-  ["npcs", "NPC (стартовый состав)", (e) => textValue(e?.name) || textValue(e?.id)],
-  ["public_facts", "Публичные факты", (e) => textValue(e?.text) || textValue(e?.id)],
-  ["state_records", "Начальные состояния", (e) => textValue(e?.text) || textValue(e?.id)],
+  ["npcs", "npcs", (e) => textValue(e?.name) || textValue(e?.id)],
+  ["public_facts", "publicFacts", (e) => textValue(e?.text) || textValue(e?.id)],
+  ["state_records", "stateRecords", (e) => textValue(e?.text) || textValue(e?.id)],
 ];
 
 // Scene sub-lists rendered as newline-editable text. `items` and `exits` are
@@ -63,10 +61,10 @@ const OBJECT_LIST_SECTIONS = [
 // fields (portable, visible, owner, id...) are preserved by name on parse; a
 // NEW line defaults to a takeable visible item / visible exit.
 const SCENE_LIST_FIELDS = [
-  ["present_npcs", "NPC в сцене (id, по строке)"],
-  ["exits", "Выходы (имя -> куда, по строке)"],
-  ["items", "Предметы (имя — детали, по строке)"],
-  ["constraints", "Ограничения (по строке)"],
+  ["present_npcs", "presentNpcs"],
+  ["exits", "exits"],
+  ["items", "items"],
+  ["constraints", "constraints"],
 ];
 
 function asObject(value) {
@@ -101,9 +99,9 @@ function storyDraftFromSaved(story) {
 // Restore the visible conversation from the server's architect block
 // (`GET /stories/{id}/draft` → `{architect: {messages}}`). The chat lives in the
 // package's architect.json now — never inside the story row.
-function architectMessagesFromChat(architect) {
+function architectMessagesFromChat(architect, t) {
   const messages = asArray(architect?.messages).map(normalizeVisibleMessage).filter(Boolean);
-  return messages.length > 0 ? messages : DEFAULT_ARCHITECT_MESSAGES;
+  return messages.length > 0 ? messages : defaultArchitectMessages(t);
 }
 
 // The plot object POSTed as `draft` to the story architect (snake_case, matching
@@ -265,13 +263,15 @@ export default function StoryArchitectPanel({
   onSaveProtagonist,
   className = "",
 }) {
+  const { t } = useTranslation("studio");
   // Seed the form from the catalog row's scalars only (title/description); the
   // GM-only seed comes from the draft fetch below (the `story` prop is the
   // minimal catalog row, §С1.3). The model history and prompt-cache ids are
   // SERVER-side now (the package's architect.json) — the panel holds only the
   // visible conversation.
   const [storyDraft, setStoryDraft] = useState(() => storyDraftFromSaved(story));
-  const [messages, setMessages] = useState(() => architectMessagesFromChat(null));
+  const [messages, setMessages] = useState(() => architectMessagesFromChat(null, t));
+  useLocalizedFallbackMessage(setMessages, t("story.architect.intro"));
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
@@ -325,7 +325,7 @@ export default function StoryArchitectPanel({
     // Reset synchronously to the catalog row's scalars (title/description) so the
     // form never flashes a stale story while the draft fetch is in flight.
     setStoryDraft(storyDraftFromSaved(story));
-    setMessages(architectMessagesFromChat(null));
+    setMessages(architectMessagesFromChat(null, t));
     setCurrentStoryId(id || "");
     clearLive();
     setInput("");
@@ -345,17 +345,17 @@ export default function StoryArchitectPanel({
       .then((data) => {
         if (cancelled || loadedStoryIdRef.current !== id) return;
         if (!data?.ok || !data.story) {
-          throw new Error(data?.error || "не удалось загрузить черновик истории");
+          throw new Error(data?.error || t("story.errors.loadDraft"));
         }
         setStoryDraft(storyDraftFromSaved(data.story));
-        setMessages(architectMessagesFromChat(data.architect));
+        setMessages(architectMessagesFromChat(data.architect, t));
         resetModelBinding(data.architect?.model_binding);
       })
       .catch((error) => {
         if (cancelled || loadedStoryIdRef.current !== id) return;
         setBindingLoading(false);
         setBindingLoadFailed(true);
-        setArchitectError(error?.message || "не удалось загрузить черновик истории");
+        setArchitectError(error?.message || t("story.errors.loadDraft"));
       });
     return () => {
       cancelled = true;
@@ -469,7 +469,7 @@ export default function StoryArchitectPanel({
               setStoryDraft((current) => mergeStoryDraft(current, args));
             }
           } else if (ev.kind === "architect_error") {
-            failure = textValue(ev.data) || "Архитектор не ответил";
+            failure = textValue(ev.data) || t("architect.errors.noResponse");
             if (ev.model_binding) resetModelBinding(ev.model_binding);
             // The story is created BEFORE the model call; error events carry
             // the persisted story_id as a sibling of `data`. Pin it so a retry
@@ -513,14 +513,14 @@ export default function StoryArchitectPanel({
       if (failure) throw new Error(failure);
       setRetryText("");
     } catch (error) {
-      const message = error?.message || "Не удалось вызвать архитектора";
+      const message = error?.message || t("architect.errors.callFailed");
       setArchitectError(message);
       setRetryText(text);
       if (!adopted) {
         setMessages((current) => [
           ...current,
           ...liveSegmentsRef.current,
-          { role: "assistant", content: `Не получилось обновить историю: ${message}` },
+          { role: "assistant", content: t("story.errors.updateFailed", { message }) },
         ]);
         clearLive();
       }
@@ -550,29 +550,30 @@ export default function StoryArchitectPanel({
         <div className="world-studio-id">
           <span className="world-studio-emblem" aria-hidden="true"><Icon name="book" size={18} /></span>
           <div className="world-studio-title">
-            <span className="world-studio-kicker">создание истории</span>
-            <b>Студия историй</b>
+            <span className="world-studio-kicker">{t("story.kicker")}</span>
+            <b>{t("story.title")}</b>
             <p className="world-studio-sub">
-              Соберите завязку истории поверх мира{worldTitle ? ` «${worldTitle}»` : ""} с
-              архитектором. Черновик сохраняется автоматически на каждом шаге.
+              {worldTitle
+                ? t("story.subtitleWithWorld", { world: worldTitle })
+                : t("story.subtitle")}
             </p>
           </div>
         </div>
         <span className={`world-studio-chip${ready ? " ready" : ""}`}>
-          {ready ? "готова к запуску" : "черновик не готов"}
+          {ready ? t("story.readiness.ready") : t("story.readiness.notReady")}
         </span>
       </header>
 
       <div className="world-studio-body">
         <ArchitectChatPane
-          headKicker="архитектор"
-          headTitle="Собрать сюжет"
-          usageTitle="Токены архитектора истории"
-          helpTitle="Архитектор истории"
-          helpSubtitle="Отдельный AI-контур до старта игры."
-          helpNote="Он собирает завязку одной истории поверх готового мира: story brief, публичное вступление, скрытую правду GM, стартовую сцену, NPC, факты и предлагаемого протагониста. Без глав, целей и концовок — их движок пока не отслеживает."
-          thinkLabel="🧠 Архитектор рассуждает"
-          placeholder="Например: интрига в портовом городе, где пропадают досмотрщики, а игрок — новый инспектор… (Enter — отправить)"
+          headKicker={t("architect.kicker")}
+          headTitle={t("story.architect.title")}
+          usageTitle={t("story.architect.usageTitle")}
+          helpTitle={t("story.architect.helpTitle")}
+          helpSubtitle={t("architect.helpSubtitle")}
+          helpNote={t("story.architect.helpNote")}
+          thinkLabel={t("architect.thinking")}
+          placeholder={t("story.architect.placeholder")}
           messages={messages}
           liveSegments={liveSegments}
           busy={architectBusy}
@@ -605,66 +606,66 @@ export default function StoryArchitectPanel({
 
         <section
           className={`world-studio-pane world-inspector${ready ? " is-live" : ""}`}
-          aria-label="Параметры истории"
+          aria-label={t("story.inspector.ariaLabel")}
         >
           <div className="world-inspector-head">
-            <span className="world-inspector-kicker">сюжет</span>
-            <b>{textValue(storyDraft.title) || "Без названия"}</b>
+            <span className="world-inspector-kicker">{t("story.inspector.kicker")}</span>
+            <b>{textValue(storyDraft.title) || t("common.untitled")}</b>
           </div>
 
           <div className="world-inspector-body">
             <label className="world-field">
-              <span>Название истории</span>
+              <span>{t("story.fields.title.label")}</span>
               <input
                 value={storyDraft.title}
                 onChange={(event) => updateDraft("title", event.target.value)}
-                placeholder="Например: Досмотр в Соляном порту"
+                placeholder={t("story.fields.title.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Короткое описание (для списка историй)</span>
+              <span>{t("story.fields.description.label")}</span>
               <input
                 value={storyDraft.description}
                 onChange={(event) => updateDraft("description", event.target.value)}
-                placeholder="Одна строка для списка историй."
+                placeholder={t("story.fields.description.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Завязка для игрока (story brief)</span>
+              <span>{t("story.fields.storyBrief.label")}</span>
               <AutoTextarea
                 value={storyDraft.story_brief}
                 onChange={(event) => updateDraft("story_brief", event.target.value)}
-                placeholder="Кто игрок и что втягивает его в историю (несколько предложений)."
+                placeholder={t("story.fields.storyBrief.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Публичное вступление</span>
+              <span>{t("story.fields.publicIntro.label")}</span>
               <AutoTextarea
                 value={storyDraft.public_intro}
                 onChange={(event) => updateDraft("public_intro", event.target.value)}
-                placeholder="Что игрок видит и знает в начале — без секретов GM."
+                placeholder={t("story.fields.publicIntro.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Скрытая правда (секрет GM)</span>
+              <span>{t("story.fields.hiddenTruth.label")}</span>
               <AutoTextarea
                 value={storyDraft.hidden_truth}
                 onChange={(event) => updateDraft("hidden_truth", event.target.value)}
-                placeholder="То, что стоит за историей и чего игрок не должен узнать напрямую."
+                placeholder={t("story.fields.hiddenTruth.placeholder")}
                 disabled={locked}
               />
             </label>
 
             <label className="world-field">
-              <span>Стартовое время (минуты с полуночи, напр. 480 = 08:00)</span>
+              <span>{t("story.fields.time.label")}</span>
               <input
                 type="number"
                 value={storyDraft.time == null ? "" : storyDraft.time}
@@ -676,43 +677,43 @@ export default function StoryArchitectPanel({
 
             <div className="world-bible">
               <div className="world-bible-fields">
-                <p className="world-bible-hint">Предлагаемый протагонист (игрок сможет заменить его при запуске).</p>
+                <p className="world-bible-hint">{t("story.protagonist.hint")}</p>
                 <div className="world-field-grid">
                   <label className="world-field">
-                    <span>Имя</span>
+                    <span>{t("story.protagonist.name.label")}</span>
                     <input
                       value={rawText(pc.name)}
                       onChange={(event) => updatePc("name", event.target.value)}
-                      placeholder="Например: Мира"
+                      placeholder={t("story.protagonist.name.placeholder")}
                       disabled={locked}
                     />
                   </label>
                   <label className="world-field">
-                    <span>Роль/архетип</span>
+                    <span>{t("story.protagonist.classRole.label")}</span>
                     <input
                       value={rawText(pc.class_role)}
                       onChange={(event) => updatePc("class_role", event.target.value)}
-                      placeholder="Например: морской досмотрщик"
+                      placeholder={t("story.protagonist.classRole.placeholder")}
                       disabled={locked}
                     />
                   </label>
                 </div>
                 <div className="world-field-grid">
                   <label className="world-field">
-                    <span>Местоимения</span>
+                    <span>{t("story.protagonist.pronouns.label")}</span>
                     <input
                       value={rawText(pc.pronouns)}
                       onChange={(event) => updatePc("pronouns", event.target.value)}
-                      placeholder="она/её"
+                      placeholder={t("story.protagonist.pronouns.placeholder")}
                       disabled={locked}
                     />
                   </label>
                   <label className="world-field">
-                    <span>Предыстория (одна строка)</span>
+                    <span>{t("story.protagonist.background.label")}</span>
                     <input
                       value={rawText(pc.background)}
                       onChange={(event) => updatePc("background", event.target.value)}
-                      placeholder="Что связывает героя с этой историей."
+                      placeholder={t("story.protagonist.background.placeholder")}
                       disabled={locked}
                     />
                   </label>
@@ -722,28 +723,28 @@ export default function StoryArchitectPanel({
 
             <div className="world-bible">
               <div className="world-bible-fields">
-                <p className="world-bible-hint">Стартовая сцена — где игрок открывает историю.</p>
+                <p className="world-bible-hint">{t("story.scene.hint")}</p>
                 <label className="world-field">
-                  <span>Название сцены</span>
+                  <span>{t("story.scene.title.label")}</span>
                   <input
                     value={rawText(scene.title)}
                     onChange={(event) => updateScene("title", event.target.value)}
-                    placeholder="Например: Ворота Соляного порта"
+                    placeholder={t("story.scene.title.placeholder")}
                     disabled={locked}
                   />
                 </label>
                 <label className="world-field">
-                  <span>Описание сцены</span>
+                  <span>{t("story.scene.description.label")}</span>
                   <AutoTextarea
                     value={rawText(scene.description)}
                     onChange={(event) => updateScene("description", event.target.value)}
-                    placeholder="Что игрок видит на старте — конкретно, сенсорно."
+                    placeholder={t("story.scene.description.placeholder")}
                     disabled={locked}
                   />
                 </label>
                 <div className="world-field-grid">
                   <label className="world-field">
-                    <span>location_id</span>
+                    <span>{t("story.scene.locationId")}</span>
                     <input
                       value={rawText(scene.location_id)}
                       onChange={(event) => updateScene("location_id", event.target.value)}
@@ -752,22 +753,22 @@ export default function StoryArchitectPanel({
                     />
                   </label>
                   <label className="world-field">
-                    <span>Напряжение сцены</span>
+                    <span>{t("story.scene.tension.label")}</span>
                     <input
                       value={rawText(scene.tension)}
                       onChange={(event) => updateScene("tension", event.target.value)}
-                      placeholder="Что делает это сценой, а не холлом."
+                      placeholder={t("story.scene.tension.placeholder")}
                       disabled={locked}
                     />
                   </label>
                 </div>
-                {SCENE_LIST_FIELDS.map(([field, label]) => (
+                {SCENE_LIST_FIELDS.map(([field, labelKey]) => (
                   <label key={field} className="world-field">
-                    <span>{label}</span>
+                    <span>{t(`story.scene.lists.${labelKey}`)}</span>
                     <AutoTextarea
                       value={sceneListText(field, scene[field])}
                       onChange={(event) => updateSceneList(field, event.target.value)}
-                      placeholder="по пункту на строку"
+                      placeholder={t("story.scene.listPlaceholder")}
                       disabled={locked}
                     />
                   </label>
@@ -776,22 +777,22 @@ export default function StoryArchitectPanel({
             </div>
 
             <label className="world-field">
-              <span>Собственные имена (по строке)</span>
+              <span>{t("story.properNouns.label")}</span>
               <AutoTextarea
                 value={listText(storyDraft.proper_nouns)}
                 onChange={(event) => updateProperNouns(event.target.value)}
-                placeholder="Имена, которые нужно писать единообразно — по одному на строку."
+                placeholder={t("story.properNouns.placeholder")}
                 disabled={locked}
               />
             </label>
 
-            {OBJECT_LIST_SECTIONS.map(([field, label, summarize]) => {
+            {OBJECT_LIST_SECTIONS.map(([field, labelKey, summarize]) => {
               const entries = asArray(storyDraft[field]);
               if (entries.length === 0) return null;
               return (
                 <div key={field} className="world-bible">
                   <div className="world-bible-fields">
-                    <Spoiler label={`${label} · ${entries.length}`}>
+                    <Spoiler label={`${t(`story.objectSections.${labelKey}`)} · ${entries.length}`}>
                       <ul className="story-plot-list">
                         {entries.map((entry, index) => (
                           <li key={index}>{summarize(entry) || `#${index + 1}`}</li>
@@ -814,9 +815,9 @@ export default function StoryArchitectPanel({
                     className="btn"
                     onClick={() => onSaveProtagonist(currentStoryId)}
                     disabled={locked || !ready}
-                    title="Сохранить протагониста истории как переносимый пакет .gmchar"
+                    title={t("story.actions.saveProtagonistTitle")}
                   >
-                    Сохранить протагониста как пакет
+                    {t("story.actions.saveProtagonist")}
                   </button>
                 )}
                 <button
@@ -825,13 +826,12 @@ export default function StoryArchitectPanel({
                   onClick={() => onPlayStory?.(currentStoryId)}
                   disabled={locked || !ready}
                 >
-                  ▶ Запустить историю
+                  {t("story.actions.play")}
                 </button>
               </div>
             )}
             <p className="world-manager-note">
-              Черновик сохраняется автоматически на каждом ответе архитектора. Для запуска нужны
-              story brief и публичное вступление. Запуск открывает игровой чат по этой истории.
+              {t("story.saveNote")}
             </p>
           </div>
         </section>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import WorldDetailModal from "./WorldDetailModal.jsx";
 import Icon from "./Icon.jsx";
+import { useTranslation } from "react-i18next";
 
 // The right-side scene panel (UI_REDESIGN_TZ §Игра). It replaces the old inline
 // WorldHud and regroups the live game state into three sections — СЦЕНА (title +
@@ -17,8 +18,8 @@ function arr(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function npcName(n) {
-  return txt(n?.label) || txt(n?.name) || txt(n?.public_label) || txt(n?.id) || "персонаж";
+function npcName(n, fallback) {
+  return txt(n?.label) || txt(n?.name) || txt(n?.public_label) || txt(n?.id) || fallback;
 }
 
 function npcColor(n) {
@@ -36,6 +37,7 @@ export default function ScenePanel({
   canSaveCharacter = false,
   onSaveCharacter,
 }) {
+  const { t } = useTranslation("game");
   // `detail` = which read-only modal is open: "scene" | "character".
   const [detail, setDetail] = useState(null);
   // Save-hero control state: null (idle), true (choice row open), "busy" (in flight).
@@ -45,7 +47,8 @@ export default function ScenePanel({
   const [expanded, setExpanded] = useState(false);
 
   const dateLabel =
-    txt(time?.current_date_label) || (time?.day_number ? `День ${time.day_number}` : "");
+    txt(time?.current_date_label)
+    || (time?.day_number ? t("scenePanel.day", { count: time.day_number }) : "");
   const timeOfDay = txt(time?.time_of_day);
   const calendar = txt(time?.calendar_name);
   const sceneTitle = txt(scene?.title);
@@ -70,7 +73,8 @@ export default function ScenePanel({
     sourceId && Array.isArray(characters)
       ? characters.find((c) => c != null && String(c.id) === sourceId) || null
       : null;
-  const sourceTitle = txt(source?.title) || txt(source?.preview) || pcName || "исходный";
+  const sourceTitle = txt(source?.title) || txt(source?.preview) || pcName
+    || t("scenePanel.sourceFallback");
   const saveBusy = saveState === "busy";
 
   const runSave = async (characterId) => {
@@ -89,16 +93,16 @@ export default function ScenePanel({
 
   return (
     <>
-      <aside className={"scene-panel" + (expanded ? " is-open" : "")} aria-label="Текущее состояние">
+      <aside className={"scene-panel" + (expanded ? " is-open" : "")} aria-label={t("scenePanel.stateAria")}>
         <button
           type="button"
           className="scene-panel-summary"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          aria-label={expanded ? "Свернуть состояние сцены" : "Развернуть состояние сцены"}
+          aria-label={expanded ? t("scenePanel.collapseAria") : t("scenePanel.expandAria")}
         >
           <Icon name="pin" size={13} />
-          <span className="scene-summary-main">{sceneTitle || "Сцена"}</span>
+          <span className="scene-summary-main">{sceneTitle || t("scene.title")}</span>
           {timeOfDay && <span className="scene-summary-meta">{timeOfDay}</span>}
           {pcName && (
             <span className="scene-summary-meta">
@@ -109,9 +113,9 @@ export default function ScenePanel({
           <Icon name={expanded ? "chevron-up" : "chevron-down"} size={14} className="scene-summary-caret" />
         </button>
         <section className="scene-group">
-          <div className="scene-group-kicker">сцена</div>
+          <div className="scene-group-kicker">{t("scenePanel.scene")}</div>
           <div className="scene-row">
-            <span>локация</span>
+            <span>{t("scenePanel.location")}</span>
             {sceneClickable ? (
               <Tooltip
                 className="tooltip-block"
@@ -119,9 +123,9 @@ export default function ScenePanel({
                 focusable={false}
                 content={
                   <TipContent
-                    title="Локация"
-                    subtitle={sceneTitle || "Текущая сцена"}
-                    note="Открыть подробности: описание, персонажи, выходы и предметы."
+                    title={t("scenePanel.locationTitle")}
+                    subtitle={sceneTitle || t("scenePanel.currentScene")}
+                    note={t("scenePanel.locationNote")}
                   />
                 }
               >
@@ -134,37 +138,37 @@ export default function ScenePanel({
             )}
           </div>
           <div className="scene-row">
-            <span>дата</span>
+            <span>{t("scenePanel.date")}</span>
             <b>{calendar ? `${calendar}, ${dateLabel || "—"}` : dateLabel || "—"}</b>
           </div>
           <div className="scene-row">
-            <span>время</span>
+            <span>{t("scenePanel.time")}</span>
             <b>{timeOfDay || "—"}</b>
           </div>
         </section>
 
         <section className="scene-group">
-          <div className="scene-group-kicker">рядом</div>
+          <div className="scene-group-kicker">{t("scenePanel.nearby")}</div>
           {present.length > 0 ? (
             <div className="scene-npcs">
               {present.map((n) => (
-                <div className="scene-npc" key={n.id || npcName(n)}>
+                <div className="scene-npc" key={n.id || npcName(n, t("scene.characterFallback"))}>
                   <span className="dot" style={{ "--c": npcColor(n) }} />
-                  <b style={{ color: npcColor(n) }}>{npcName(n)}</b>
+                  <b style={{ color: npcColor(n) }}>{npcName(n, t("scene.characterFallback"))}</b>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="scene-empty">Рядом никого нет.</p>
+            <p className="scene-empty">{t("scenePanel.nobodyNearby")}</p>
           )}
         </section>
 
         {(pcName || canSaveCharacter) && (
           <section className="scene-group">
-            <div className="scene-group-kicker">герой</div>
+            <div className="scene-group-kicker">{t("scenePanel.hero")}</div>
             {pcName && (
               <div className="scene-row">
-                <span>имя</span>
+                <span>{t("scenePanel.name")}</span>
                 {pcClickable ? (
                   <button type="button" className="scene-link" onClick={() => setDetail("character")}>
                     {pcName}
@@ -176,7 +180,7 @@ export default function ScenePanel({
             )}
             {hpText && (
               <div className="scene-row">
-                <span>ХП</span>
+                <span>{t("scenePanel.hp")}</span>
                 <b>{hpText}</b>
               </div>
             )}
@@ -187,7 +191,7 @@ export default function ScenePanel({
                   className="btn small scene-hero-btn"
                   onClick={() => setDetail("character")}
                 >
-                  <Icon name="user" size={13} /> Лист персонажа
+                  <Icon name="user" size={13} /> {t("scenePanel.characterSheet")}
                 </button>
               )}
               {canSaveCharacter &&
@@ -198,9 +202,9 @@ export default function ScenePanel({
                       className="btn small scene-hero-btn"
                       onClick={() => runSave(sourceId)}
                       disabled={saveBusy}
-                      title={`Перезаписать пакет «${sourceTitle}» текущим состоянием`}
+                      title={t("scenePanel.overwriteTitle", { title: sourceTitle })}
                     >
-                      Обновить «{sourceTitle}»
+                      {t("scenePanel.updateSource", { title: sourceTitle })}
                     </button>
                     <button
                       type="button"
@@ -208,7 +212,7 @@ export default function ScenePanel({
                       onClick={() => runSave("")}
                       disabled={saveBusy}
                     >
-                      Сохранить как нового
+                      {t("scenePanel.saveAsNew")}
                     </button>
                     <button
                       type="button"
@@ -216,7 +220,7 @@ export default function ScenePanel({
                       onClick={() => setSaveState(null)}
                       disabled={saveBusy}
                     >
-                      Отмена
+                      {t("actions.cancel")}
                     </button>
                   </div>
                 ) : source ? (
@@ -226,7 +230,7 @@ export default function ScenePanel({
                     onClick={() => setSaveState(true)}
                     disabled={saveBusy}
                   >
-                    <Icon name="download" size={13} /> {saveBusy ? "Сохраняю…" : "Сохранить в библиотеку"}
+                    <Icon name="download" size={13} /> {saveBusy ? t("scenePanel.saving") : t("scenePanel.saveToLibrary")}
                   </button>
                 ) : (
                   <button
@@ -235,7 +239,7 @@ export default function ScenePanel({
                     onClick={() => runSave("")}
                     disabled={saveBusy}
                   >
-                    <Icon name="download" size={13} /> {saveBusy ? "Сохраняю…" : "Сохранить в библиотеку"}
+                    <Icon name="download" size={13} /> {saveBusy ? t("scenePanel.saving") : t("scenePanel.saveToLibrary")}
                   </button>
                 ))}
             </div>

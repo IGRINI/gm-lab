@@ -14,41 +14,13 @@ const STORAGE_KEY = "gmlab.devSettings";
 // One entry per individually-togglable visibility aspect (shown in Settings →
 // «Дебаг-вид» when developer mode is on). Each is "show this dev-only UI".
 export const FLAG_META = [
-  {
-    key: "tokenCards",
-    label: "Счётчики токенов у поля ввода",
-    hint: "Таблички «ГМ контекст» и «За ран» рядом с полем ввода.",
-  },
-  {
-    key: "messageTokens",
-    label: "Токены под сообщениями",
-    hint: "Строка «Σ за ход» и метрики вызовов модели в ленте.",
-  },
-  {
-    key: "toolCalls",
-    label: "Вызовы инструментов ГМ",
-    hint: "Карточки вызова тулов и сырой JSON. Выкл — игроку видны только безопасные результаты (бросок, время, лист персонажа).",
-  },
-  {
-    key: "gmThoughts",
-    label: "Мысли ГМ и возвраты",
-    hint: "Поток размышлений ГМ и пометки о возврате реплики персонажа на переделку.",
-  },
-  {
-    key: "npcInternals",
-    label: "Скрытое у персонажей",
-    hint: "Скрытые мысли персонажа и «опора ответа». Речь и действие игроку видны всегда.",
-  },
-  {
-    key: "memoryOps",
-    label: "Память мира (поиск и запись)",
-    hint: "Чтение/запись памяти мира, запросы карточек NPC, загрузка инструментов.",
-  },
-  {
-    key: "historyDebug",
-    label: "Вкладка «Дебаг истории»",
-    hint: "Боковая панель отладки истории (правка сцены, NPC, фактов и т.п.).",
-  },
+  { key: "tokenCards" },
+  { key: "messageTokens" },
+  { key: "toolCalls" },
+  { key: "gmThoughts" },
+  { key: "npcInternals" },
+  { key: "memoryOps" },
+  { key: "historyDebug" },
 ];
 
 const FLAG_KEYS = FLAG_META.map((f) => f.key);

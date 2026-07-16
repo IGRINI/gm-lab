@@ -1,9 +1,11 @@
 import Icon from "./Icon.jsx";
+import { useTranslation } from "react-i18next";
 // Lightweight stacked-modal. A modal manager (DebugPanel) owns the stack and
 // closes only the TOP layer on ESC / backdrop-click, so layering stays sane.
 // Each deeper layer sits at a higher z-index and dims the one below it.
 
 export default function Modal({ title, subtitle, onClose, depth = 0, wide = false, className = "", children, footer }) {
+  const { t } = useTranslation("game");
   return (
     <div
       className="dbg-backdrop"
@@ -22,7 +24,7 @@ export default function Modal({ title, subtitle, onClose, depth = 0, wide = fals
             <h3>{title}</h3>
             {subtitle && <span>{subtitle}</span>}
           </div>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть">
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t("common.closeAria")}>
             <Icon name="x" size={15} />
           </button>
         </div>

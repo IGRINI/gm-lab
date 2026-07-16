@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import "./i18n/index.js";
 import App from "./App.jsx";
 // Порядок каскада: шрифты → токены/примитивы → экраны.
 import "./fonts.css";

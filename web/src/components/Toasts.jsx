@@ -1,5 +1,6 @@
 import Icon from "./Icon.jsx";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 // Bottom-right toast stack for the redesigned shell (§Игра/Ошибки in the TZ).
 // Replaces the old `store.dispatch({kind:"error"})`-into-the-transcript channel.
@@ -21,21 +22,21 @@ const DEFAULT_TTL = 6000;
 
 // Machine error-code -> human, player-facing headline. Anything not listed falls
 // back to the human `message`, then a generic line (see `toastHeadline`).
-const ERROR_MESSAGES = {
-  protagonist_required: "Выберите персонажа — без него игра не начнётся",
-  world_lore_required: "Миру нужно описание — заполните world_lore в студии мира",
-  world_required: "Сначала выберите мир",
-  story_required: "Сначала выберите историю",
-  world_not_found: "Мир не найден — возможно, он был удалён",
-  story_not_found: "История не найдена — возможно, она была удалена",
-  character_not_found: "Персонаж не найден — возможно, он был удалён",
-  import_collision: "Пакет с таким id уже существует",
-};
+const ERROR_CODES = new Set([
+  "protagonist_required",
+  "world_lore_required",
+  "world_required",
+  "story_required",
+  "world_not_found",
+  "story_not_found",
+  "character_not_found",
+  "import_collision",
+]);
 
 // Resolve an error `code` to its human headline, or "" when unmapped.
-export function mapErrorCode(code) {
-  if (!code || typeof code !== "string") return "";
-  return ERROR_MESSAGES[code] || "";
+export function mapErrorCode(code, t) {
+  if (!ERROR_CODES.has(code) || typeof t !== "function") return "";
+  return t(`toasts.codes.${code}`);
 }
 
 const KIND_ICON = {
@@ -49,21 +50,21 @@ const KIND_ICON = {
 
 // The one-line headline shown in the toast body. Prefers an explicit title, then
 // the mapped error code, then the raw human message, then a kind-generic line.
-export function toastHeadline(toast) {
+export function toastHeadline(toast, t) {
   if (!toast) return "";
   if (toast.title && toast.title.trim()) return toast.title.trim();
-  const mapped = mapErrorCode(toast.code);
+  const mapped = mapErrorCode(toast.code, t);
   if (mapped) return mapped;
   const message = typeof toast.message === "string" ? toast.message.trim() : "";
   if (message) return message;
-  return toast.kind === "error" ? "Не удалось выполнить действие" : "Готово";
+  return toast.kind === "error" ? t("toasts.genericError") : t("toasts.done");
 }
 
 // The collapsible detail text (raw server output). Only surfaced when it differs
 // from the headline — a mapped code pushes its raw `message` down here.
-export function toastDetail(toast) {
+export function toastDetail(toast, t) {
   if (!toast) return "";
-  const headline = toastHeadline(toast);
+  const headline = toastHeadline(toast, t);
   const parts = [];
   const message = typeof toast.message === "string" ? toast.message.trim() : "";
   const detail = typeof toast.detail === "string" ? toast.detail.trim() : "";
@@ -73,6 +74,7 @@ export function toastDetail(toast) {
 }
 
 function ToastItem({ toast, onDismiss }) {
+  const { t } = useTranslation("game");
   const [expanded, setExpanded] = useState(false);
   const kind = toast.kind || "info";
   const sticky = toast.sticky ?? kind === "error";
@@ -85,8 +87,8 @@ function ToastItem({ toast, onDismiss }) {
     return () => clearTimeout(timer);
   }, [toast.id, sticky, ttl, onDismiss]);
 
-  const headline = toastHeadline(toast);
-  const detail = toastDetail(toast);
+  const headline = toastHeadline(toast, t);
+  const detail = toastDetail(toast, t);
 
   return (
     <div className={"toast toast--" + kind} role={kind === "error" ? "alert" : "status"}>
@@ -97,7 +99,7 @@ function ToastItem({ toast, onDismiss }) {
           type="button"
           className="toast-close"
           onClick={() => onDismiss?.(toast.id)}
-          aria-label="Закрыть уведомление"
+          aria-label={t("toasts.closeAria")}
         >
           <Icon name="x" size={13} />
         </button>
@@ -110,7 +112,7 @@ function ToastItem({ toast, onDismiss }) {
             aria-expanded={expanded}
             onClick={() => setExpanded((value) => !value)}
           >
-            {expanded ? "Скрыть детали" : "Показать детали"}
+            {expanded ? t("toasts.hideDetails") : t("toasts.showDetails")}
           </button>
           {expanded && <pre className="toast-detail-text">{detail}</pre>}
         </div>
@@ -120,10 +122,11 @@ function ToastItem({ toast, onDismiss }) {
 }
 
 export default function Toasts({ toasts, onDismiss }) {
+  const { t } = useTranslation("game");
   const list = Array.isArray(toasts) ? toasts : [];
   if (list.length === 0) return null;
   return (
-    <div className="toast-stack" role="region" aria-label="Уведомления" aria-live="polite">
+    <div className="toast-stack" role="region" aria-label={t("toasts.regionAria")} aria-live="polite">
       {list.map((toast) => (
         <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}

@@ -1,0 +1,324 @@
+{
+  "common": {
+    "result": "result",
+    "noChanges": "no changes"
+  },
+  "references": {
+    "character": "character",
+    "player": "player",
+    "role": "role: {{value}}",
+    "pronouns": "pronouns: {{value}}"
+  },
+  "raw": {
+    "toolName": "Raw model tool name: {{name}}",
+    "callJson": "raw call (JSON)",
+    "resultJson": "raw result (JSON)"
+  },
+  "time": {
+    "lessThanMinute": "less than a minute",
+    "daysShort": "{{count}} d",
+    "hoursShort": "{{count}} h",
+    "minutesShort": "{{count}} min",
+    "plusMinutes": "+{{count}} min"
+  },
+  "status": {
+    "unknown": "unknown",
+    "help": {
+      "default": "Confidence status for the character's whereabouts.",
+      "known": "The location is established as a working fact of the current story.",
+      "likely": "This is a likely location, but it is not firmly confirmed.",
+      "rumored": "This is a rumor or an unverified lead.",
+      "unknown": "The exact location is unknown.",
+      "present": "The character is in the current scene."
+    }
+  },
+  "fields": {
+    "situation": { "label": "Situation", "help": "A brief, neutral description of what the character sees or hears and should react to." },
+    "gmCorrection": { "label": "GM correction", "help": "Why the previous character response was sent back for revision." },
+    "location": { "label": "Where", "help": "The character's position or location relative to the current scene." },
+    "activity": { "label": "Activity", "help": "What the character is visibly doing right now." },
+    "attitude": { "label": "Attitude", "help": "The character's visible attitude in this scene." },
+    "reason": { "label": "Why", "help": "Why the GM is changing world state or calling the tool." },
+    "source": { "label": "Source", "help": "Where the location information came from." },
+    "details": { "label": "Details", "help": "Additional visible or known information." },
+    "inScene": { "label": "In scene", "help": "Named characters present in the new scene." },
+    "exits": { "label": "Exits", "help": "Visible paths the player can take from the current scene." },
+    "items": { "label": "Items", "help": "Visible scene objects that can potentially be interacted with." },
+    "constraints": { "label": "Constraints", "help": "Physical or situational constraints of the scene." },
+    "tension": { "label": "Tension", "help": "The current pressure level of the scene." },
+    "purpose": { "label": "Purpose", "help": "Which uncertain outcome the roll checks." },
+    "check": { "label": "Check" },
+    "knownName": { "label": "Known name" }
+  },
+  "worldState": {
+    "types": {
+      "record": "record",
+      "fact": "fact",
+      "rumor": "rumor",
+      "npc_memory": "NPC memory",
+      "relationship": "relationship",
+      "goal": "goal",
+      "public_lookup": "public fact"
+    },
+    "operations": { "add": "add", "update": "update", "delete": "delete" },
+    "operationResults": { "add": "added", "update": "updated", "delete": "deleted" },
+    "scopes": {
+      "public": "public",
+      "gm": "GM",
+      "npc": "NPC only",
+      "shared": "shared",
+      "player": "player",
+      "owner": "owner",
+      "subject": "subject",
+      "participants": "participants"
+    }
+  },
+  "profilePresets": {
+    "visible": "visible",
+    "social": "social",
+    "mechanics": "mechanics",
+    "status": "status",
+    "identity": "identity"
+  },
+  "bible": {
+    "sectionsLabel": "Lore sections",
+    "operations": { "add": "Added", "remove": "Removed", "replace": "Replaced" },
+    "set": {
+      "title": "Title",
+      "genre": "Genre",
+      "tone": "Tone",
+      "world_size": "World size",
+      "population": "Population",
+      "public_premise": "Public premise",
+      "hidden_premise": "Hidden premise (GM)",
+      "world_image_prompt_en": "World image prompt (EN)",
+      "world_map_prompt_en": "World map prompt (EN)"
+    },
+    "sections": {
+      "dogmas": "dogmas",
+      "world_laws": "world laws",
+      "inhabitants": "peoples",
+      "creatures": "creatures",
+      "regions": "regions",
+      "power_centers": "power centers",
+      "religions": "religions",
+      "gods": "gods",
+      "cultures": "cultures",
+      "history": "history",
+      "economy": "economy",
+      "daily_life": "daily life",
+      "story_hooks": "story hooks",
+      "hidden_secrets": "secrets",
+      "location_rules": "location rules",
+      "prohibited_elements": "prohibited elements"
+    }
+  },
+  "tools": {
+    "help": {
+      "default": "Internal GM tool. Details are available in the raw JSON below.",
+      "ask_npc": "Asks a specific character what they say or do.",
+      "move_npc": "Updates a character's presence in the current scene.",
+      "set_npc_presence": "Updates a character's presence in the current scene.",
+      "set_npc_whereabouts": "Stores where an absent character can be found.",
+      "set_scene": "Replaces the current scene when the player reaches a new place.",
+      "roll_dice": "Makes a D&D 5e roll for an action with an uncertain outcome.",
+      "get_world_fact": "Checks established facts and information in world memory.",
+      "ask_player": "Offers the player quick action options.",
+      "query_world_state": "Searches world memory within the requested visibility scope.",
+      "update_world_state": "Stores facts, rumors, NPC memories, relationships, and goals.",
+      "update_player_character": "Updates the player character sheet.",
+      "advance_time": "Advances the hidden world clock.",
+      "get_npc_profile": "Requests selected fields from an NPC profile.",
+      "tool_search": "Loads a hidden tool by keyword.",
+      "draft_world_bible": "Creates or updates a structured world draft.",
+      "edit_world_bible": "Edits selected world fields and sections."
+    },
+    "askNpc": { "title": "Character request — ", "redoTitle": "Response returned — " },
+    "npcPresence": {
+      "title": "Scene presence — ",
+      "present": "enters the scene", "presentHelp": "The character was added to the current scene.",
+      "absent": "leaves the scene", "absentHelp": "The character was removed from the current scene.",
+      "visible": "visible", "visibleHelp": "The player and scene can see the character.",
+      "hidden": "hidden", "hiddenHelp": "The character is present implicitly or outside the player's view.",
+      "hears": "can hear", "hearsHelp": "The character can hear the current scene.",
+      "deaf": "cannot hear", "deafHelp": "The character cannot hear the scene and should not react to its conversation."
+    },
+    "whereabouts": { "title": "Whereabouts — ", "placeHelp": "Where the character can be sought based on current information." },
+    "setScene": {
+      "title": "Scene change", "titleHelp": "Title of the new current scene.",
+      "exitDestination": "leads to: {{value}}", "exitHidden": "currently hidden", "exitVisible": "visible exit",
+      "exitBlocked": "blocked by: {{value}}", "exit": "exit", "blockedHelp": "Why this exit cannot currently be used freely.",
+      "itemLocation": "location: {{value}}", "itemOwner": "owner: {{value}}", "itemPortable": "can be taken",
+      "itemFixed": "not portable as an ordinary item", "item": "item",
+      "constraintHelp": "A physical, social, or situational rule the GM must account for."
+    },
+    "rollDice": {
+      "title": "Dice roll", "notationHelp": "Roll notation, such as 1d20 or 2d20kh1.",
+      "kindHelp": "The roll type selected before the result.", "targetHelp": "The target number was fixed before the roll."
+    },
+    "getWorldFact": { "title": "World memory request", "queryHelp": "A world-memory query: the GM should verify facts rather than invent them." },
+    "askPlayer": { "title": "Player options", "questionHelp": "The prompt shown above quick-response buttons.", "option": "option {{number}}" },
+    "updateWorldState": { "title": "Write to world memory", "empty": "no records" },
+    "queryWorldState": { "title": "Search world memory", "scopeHelp": "The visibility scope searched by the GM.", "queryHelp": "The GM's world-memory search query." },
+    "updatePlayer": { "title": "Player character sheet" },
+    "advanceTime": { "title": "Advance time", "minutesHelp": "How many in-world minutes passed this turn." },
+    "getNpcProfile": { "title": "Character profile — ", "presetHelp": "The profile field group requested by the GM." },
+    "toolSearch": { "title": "GM tool search", "queryHelp": "The GM's request to load a hidden tool." },
+    "draftBible": { "title": "World draft", "titleHelp": "The world's title in this draft." },
+    "editBible": { "title": "Edit world" },
+    "fallback": { "title": "The GM called tool", "noArguments": "no arguments" }
+  },
+  "playerCards": {
+    "timeElapsed": "{{value}} passed",
+    "sheetUpdated": "Character sheet updated"
+  },
+  "factStatus": {
+    "known": "known", "likely": "likely", "rumored": "rumor", "confirmed": "confirmed", "unknown": "unknown"
+  },
+  "queryKinds": {
+    "public_lookup": "public fact", "public_intro": "public fact", "gm_canon": "GM canon", "hidden_event": "hidden event"
+  },
+  "results": {
+    "recordId": "record id: {{id}}",
+    "noNew": "nothing new", "nothingFound": "nothing found", "found": "found: {{count}}",
+    "alreadyDelivered": "already delivered: {{count}}", "saved": "saved: {{count}}", "rejected": "rejected: {{count}}",
+    "notSaved": "Not saved", "writeError": "write error", "revision": "revision {{value}}", "noFields": "no fields",
+    "fallbackTitle": "Result",
+    "worldFact": { "title": "World memory — response" },
+    "worldQuery": { "title": "World memory — results" },
+    "worldUpdate": { "title": "World memory — saved" },
+    "npcProfile": { "title": "Profile — " },
+    "worldTime": { "title": "World time" },
+    "playerSheet": { "title": "Character sheet — updated" },
+    "toolSearch": { "title": "GM tools" },
+    "sources": {
+      "label": "Sources", "kind": "type: {{value}}", "status": "status: {{value}}",
+      "source": "source: {{value}}", "relevance": "relevance: {{value}}"
+    },
+    "help": {
+      "default": "GM tool result.",
+      "get_world_fact": "What world memory returned for the GM's query.",
+      "query_world_state": "What the GM's world-memory search found.",
+      "update_world_state": "The result of writing to world memory.",
+      "get_npc_profile": "NPC profile fields returned by the request.",
+      "advance_time": "The new world-clock state after advancing time.",
+      "update_player_character": "Which character-sheet fields changed.",
+      "tool_search": "Which hidden tools the GM loaded."
+    }
+  },
+  "debug": {
+    "common": {
+      "add": "Add", "apply": "Apply", "cancel": "Cancel", "close": "Close", "disable": "Disable",
+      "edit": "edit", "empty": "empty for now", "enable": "Enable", "none": "none", "off": "off", "save": "Save"
+    },
+    "badges": { "gm": "GM", "gmOnly": "GM only", "sheet": "sheet" },
+    "errors": {
+      "load": "debug data could not be loaded", "apply": "could not apply the change",
+      "jsonArray": "{{label}}: expected a JSON array", "integer": "{{label}}: expected an integer"
+    },
+    "factKinds": { "public": "Public", "truth": "Hidden truth", "rumor": "Rumor", "fact": "fact" },
+    "rolls": {
+      "next": "Next roll", "all": "All rolls", "dieValue": "die = {{value}}",
+      "nextHint": "The next roll will use this die value, then the override will reset.",
+      "allHint": "Every roll will use this die value until the override is disabled.",
+      "example20": "e.g. 20", "example18": "e.g. 18", "nextShort": "next:{{value}}", "allShort": "all:{{value}}"
+    },
+    "facts": {
+      "newPlaceholder": "New fact text…", "add": "Add fact", "deleteTitle": "Delete fact",
+      "deleteNote": "The fact will be removed from world memory.", "empty": "no facts yet"
+    },
+    "stateRecords": {
+      "new": "New record", "hint": "Durable world memory. It reaches the model through query_world_state within the selected scope and does not change the cached prefix.",
+      "placeholder": "State record text…", "kindTitle": "Record type", "kindNote": "What is stored: a fact, rumor, NPC memory, relationship, or goal.",
+      "scopeTitle": "Record visibility", "scopeNote": "Who can access this record during memory search.",
+      "deleteTitle": "Delete record", "deleteNote": "The record will no longer be included in model memory.", "empty": "no records"
+    },
+    "rumors": {
+      "new": "New rumor", "hint": "Reaches the GM through query_world_state as unconfirmed information and does not change the cached prefix.",
+      "placeholder": "Rumor text…", "speakerPlaceholder": "speaker", "confirmedShort": "confirmed", "rumor": "rumor",
+      "unconfirm": "unconfirm", "deleteTitle": "Delete rumor", "deleteNote": "The rumor will disappear from available world information.", "empty": "no rumors"
+    },
+    "storyEditor": {
+      "title": "Story title", "brief": "Player brief", "publicIntro": "Public intro", "cachePrefix": "cached prefix",
+      "cacheWarning": "The intro is part of the cached prefix. Saving rebuilds it once; the other fields do not affect the cache.",
+      "hiddenTruth": "Hidden truth (secret; not part of the prefix)", "hiddenEvents": "Hidden GM events (one per line)"
+    },
+    "sceneEditor": {
+      "title": "Scene title", "description": "Description", "tension": "Tension",
+      "constraints": "Constraints (one per line)", "constraintsShort": "Constraints", "present": "Who is in the scene",
+      "items": "Items", "exits": "Exits", "itemsJson": "Items (JSON)", "exitsJson": "Exits (JSON)",
+      "itemsHelp": "Array of objects: id, name, location, visible, portable, owner, details.",
+      "exitsHelp": "Array of objects: id, name, destination, visible, blocked_by."
+    },
+    "fields": {
+      "name": "Name", "playerSees": "Player sees", "color": "Color", "role": "Role", "pronouns": "Pronouns",
+      "publicLabel": "Public label", "publicLabelPlaceholder": "innkeeper", "knownName": "Known name", "age": "Age",
+      "physicalTypeNpc": "Type/size/species", "physicalType": "Type/species", "features": "Distinctive features", "lifeStatus": "Life status",
+      "statusNote": "Status note", "currentCondition": "Current condition", "description": "Description", "personality": "Personality",
+      "values": "Values", "habits": "Habits", "pressureResponse": "Response under pressure", "underPressure": "Under pressure",
+      "boundaries": "Boundaries", "voice": "Voice", "goals": "Motives", "knowledge": "Knowledge",
+      "secretNoContext": "Secret (not included in GM context)", "mechanics": "Mechanics", "ac": "AC",
+      "passivePerception": "Passive Perception", "hpCurrent": "Current HP", "hpMax": "Maximum HP", "speed": "Speed",
+      "senses": "Senses", "languages": "Languages", "skills": "Skills", "skill": "Skill", "savingThrows": "Saving throws",
+      "savingThrow": "Saving throw", "status": "Status", "details": "Details", "classRole": "Class/role", "level": "Level",
+      "background": "Background", "life": "Life", "condition": "Condition", "gmNotes": "GM notes",
+      "inventory": "Inventory", "equipment": "Equipment", "specialFeatures": "Features",
+      "featureDescription": "What it does (optional)", "concentration": "Concentration", "turns": "turns", "model": "model",
+      "backend": "backend", "where": "where"
+    },
+    "npcEditor": {
+      "secretWarning": "Changing the secret is risky: old NPC memory may conflict with the new profile. Reset NPC memory manually if needed.",
+      "inCurrentScene": "In the current scene", "where": "Where (location)", "resetMemory": "Reset NPC memory (history, compact, thread) — irreversible",
+      "resetWarning": "This NPC's personal history will be deleted and a new thread created. This character's cache and memory will be reset.",
+      "saveAndReset": "Save and reset memory"
+    },
+    "playerEditor": { "mechanics": "Player mechanics" },
+    "spells": {
+      "levelShort": "lvl. {{value}}", "cantrip": "cantrip", "concentrationShort": "conc.", "ritual": "ritual",
+      "slotLevel": "level {{level}}: {{current}}/{{max}}"
+    },
+    "sceneSummary": { "scene": "scene", "location": "location", "present": "in scene", "tension": "tension" },
+    "factsView": { "hiddenTruth": "Hidden truth", "publicFacts": "Public facts", "rumors": "Rumors and unconfirmed information" },
+    "npcs": {
+      "empty": "no characters", "inSceneSuffix": " · in scene", "playerSeesSuffix": " · player sees: {{value}}", "messages": "{{count}} msg."
+    },
+    "npcCard": {
+      "personality": "Personality", "trait": "{{label}}: {{value}}", "secret": "Secret", "memory": "NPC memory", "commitments": "Response commitments"
+    },
+    "playerCard": {
+      "notLoaded": "player profile is not loaded", "defaultName": "Player character", "sheet": "character sheet",
+      "equipmentFeatures": "Equipment and features", "spells": "Spells", "slots": "slots"
+    },
+    "events": { "turn": "turn {{value}}", "witnesses": "witnesses: {{value}}" },
+    "runtime": {
+      "cacheTitle": "Token cache", "cacheHelp": "The cached prefix consists of system rules and the public intro. Other edits are appended to the tail and do not invalidate the prefix.",
+      "lastRunTokens": "Last run tokens", "cachedTokensHelp": "cached_tokens greater than zero means the prefix was reused.",
+      "context": "Context", "modelSettings": "Model settings", "modelSettingsHelp": "Read only. Settings are changed in the header and apply from the next turn.",
+      "gmReasoning": "GM reasoning", "npcReasoning": "NPC reasoning", "compactReasoning": "Compact reasoning",
+      "verbosity": "verbosity", "toolChoice": "tool choice", "gmStream": "GM stream", "parallelTools": "parallel tools",
+      "suggestOptions": "suggest options", "toolHopLimit": "tool-hop limit", "unlimited": "unlimited", "tokenLimit": "token limit"
+    },
+    "tabs": {
+      "overview": "Overview", "story": "Story", "scene": "Scene", "player": "Player", "npcs": "Characters",
+      "facts": "Facts", "memory": "Memory", "runtime": "Runtime", "rolls": "Rolls", "rumors": "Rumors"
+    },
+    "panel": {
+      "hide": "Hide debug", "open": "Open debug", "tip": "View and edit the story's internal state.",
+      "button": "Debug", "heading": "story debug", "refreshing": "Refreshing…", "refresh": "Refresh", "turns": "turns: {{count}}",
+      "sections": "Debug sections", "loading": "loading…", "notOpened": "the panel has not been opened yet", "storyFallback": "Story",
+      "backendModel": "backend · model", "characters": "characters", "time": "time", "startBrief": "Initial player brief",
+      "editStory": "Edit story and canon", "objective": "GM objective", "objectiveHelp": "A developer note that is not sent directly to the model.",
+      "briefHelp": "This text appears in the chat's top card and does not affect the GM cached prefix.",
+      "publicIntroHelp": "Part of the cached prefix. Editing it rebuilds the prefix once.",
+      "hiddenTruthHelp": "Not part of the prefix. Reaches the GM through query_world_state with scope=gm.", "hiddenEvents": "Hidden GM events",
+      "editScene": "Edit scene", "worldFacts": "World facts", "stateRecords": "State records",
+      "stateRecordsLong": "State records", "gmSummary": "GM summary", "loadedTools": "Loaded GM tools", "recentEvents": "Recent events"
+    },
+    "modals": {
+      "rollsTitle": "Roll controls", "rollsSubtitle": "dice debugging", "addDelete": "add / delete",
+      "rumorsSubtitle": "add / confirm / delete", "storyTitle": "Edit story and canon",
+      "storySubtitle": "intro · hidden truth · hidden events", "playerTitle": "Edit player character",
+      "chooseToEdit": "choose one to edit", "editPrefix": "Edit:", "stateRecordsSubtitle": "durable state records"
+    }
+  }
+}

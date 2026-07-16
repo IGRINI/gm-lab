@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useTranslation } from "react-i18next";
 
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 8;
@@ -8,13 +9,14 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function fileNameFromUrl(src) {
+function fileNameFromUrl(src, fallback = "image") {
   const clean = String(src || "").split(/[?#]/, 1)[0].replace(/\\/g, "/");
   const name = clean.split("/").filter(Boolean).pop();
-  return name || "image";
+  return name || fallback;
 }
 
 export function ImageViewer({ src, title, alt, onClose }) {
+  const { t } = useTranslation("game");
   const overlayRef = useRef(null);
   const stageRef = useRef(null);
   const downOnBackdropRef = useRef(false);
@@ -131,7 +133,7 @@ export function ImageViewer({ src, title, alt, onClose }) {
     <div ref={overlayRef} className="image-viewer-overlay" role="dialog" aria-modal="true">
       <div className="image-viewer-toolbar">
         <div className="image-viewer-title">
-          <strong title={src}>{title || alt || fileNameFromUrl(src)}</strong>
+          <strong title={src}>{title || alt || fileNameFromUrl(src, t("image.defaultAlt"))}</strong>
           <span>{zoomLabel}</span>
         </div>
       </div>
@@ -151,31 +153,31 @@ export function ImageViewer({ src, title, alt, onClose }) {
           style={{ "--preview-scale": String(scale), "--preview-x": `${offset.x}px`, "--preview-y": `${offset.y}px` }}
         >
           {loadError ? (
-            <div className="image-viewer-empty">Не удалось загрузить изображение</div>
+            <div className="image-viewer-empty">{t("image.loadFailed")}</div>
           ) : (
-            <img src={src} alt={alt || title || "image"} draggable={false} onError={() => setLoadError(true)} />
+            <img src={src} alt={alt || title || t("image.defaultAlt")} draggable={false} onError={() => setLoadError(true)} />
           )}
         </div>
         <div className="image-viewer-dock" onPointerDown={(event) => event.stopPropagation()}>
-          <button type="button" title="Уменьшить" aria-label="Уменьшить" onClick={() => zoomBy(1 / 1.2)}>
+          <button type="button" title={t("image.zoomOut")} aria-label={t("image.zoomOut")} onClick={() => zoomBy(1 / 1.2)}>
             -
           </button>
           <span className="image-viewer-zoom">{zoomLabel}</span>
-          <button type="button" title="Увеличить" aria-label="Увеличить" onClick={() => zoomBy(1.2)}>
+          <button type="button" title={t("image.zoomIn")} aria-label={t("image.zoomIn")} onClick={() => zoomBy(1.2)}>
             +
           </button>
-          <button type="button" title="Сбросить" aria-label="Сбросить" onClick={resetView}>
+          <button type="button" title={t("image.reset")} aria-label={t("image.reset")} onClick={resetView}>
             100%
           </button>
           <button
             type="button"
-            title={fullscreen ? "Выйти из полного экрана" : "На весь экран"}
-            aria-label={fullscreen ? "Выйти из полного экрана" : "На весь экран"}
+            title={fullscreen ? t("image.exitFullscreen") : t("image.fullscreen")}
+            aria-label={fullscreen ? t("image.exitFullscreen") : t("image.fullscreen")}
             onClick={() => void toggleFullscreen()}
           >
-            {fullscreen ? "fit" : "full"}
+            {fullscreen ? t("image.fitShort") : t("image.fullShort")}
           </button>
-          <button type="button" className="image-viewer-close" title="Закрыть" aria-label="Закрыть" onClick={onClose}>
+          <button type="button" className="image-viewer-close" title={t("common.closeAria")} aria-label={t("common.closeAria")} onClick={onClose}>
             x
           </button>
         </div>
@@ -185,10 +187,11 @@ export function ImageViewer({ src, title, alt, onClose }) {
 }
 
 export default function ImageThumbnail({ src, alt = "", caption = "", className = "" }) {
+  const { t } = useTranslation("game");
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
-  const title = caption || alt || fileNameFromUrl(src);
+  const title = caption || alt || fileNameFromUrl(src, t("image.defaultAlt"));
   const viewer =
     open && typeof document !== "undefined"
       ? createPortal(<ImageViewer src={src} title={title} alt={alt} onClose={() => setOpen(false)} />, document.body)
@@ -215,7 +218,7 @@ export default function ImageThumbnail({ src, alt = "", caption = "", className 
       >
         {!loaded && (
           <span className={`image-thumb-placeholder${error ? " error" : ""}`}>
-            {error ? "Изображение недоступно" : "Загрузка изображения..."}
+            {error ? t("image.unavailable") : t("image.loading")}
           </span>
         )}
         <img

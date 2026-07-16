@@ -1,4 +1,6 @@
 import { Fragment, useContext } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "../i18n/index.js";
 import Tooltip from "./Tooltip.jsx";
 import ImageThumbnail from "./ImagePreview.jsx";
 import { EntityRegistryContext, canonicalKind, resolveEntity } from "../entityContext.js";
@@ -6,11 +8,11 @@ import { EntityRegistryContext, canonicalKind, resolveEntity } from "../entityCo
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 const SAFE_ABSOLUTE_RE = /^(https?:|mailto:)/i;
 const SAFE_IMAGE_ABSOLUTE_RE = /^https?:/i;
-const ENTITY_KIND_LABELS = {
-  npc: "персонаж",
-  loc: "локация",
-  item: "предмет",
-  note: "заметка",
+const ENTITY_KIND_LABEL_KEYS = {
+  npc: "markdown.entityKinds.npc",
+  loc: "markdown.entityKinds.loc",
+  item: "markdown.entityKinds.item",
+  note: "markdown.entityKinds.note",
 };
 
 function parseEntityRef(part) {
@@ -34,7 +36,9 @@ function entityColor(kind, entity) {
 }
 
 function EntityTooltip({ entity, kind, id, label }) {
-  const typeLabel = ENTITY_KIND_LABELS[kind] || kind || "сущность";
+  const { t } = useTranslation("game");
+  const typeLabelKey = ENTITY_KIND_LABEL_KEYS[kind];
+  const typeLabel = typeLabelKey ? t(typeLabelKey) : kind || t("markdown.entityFallback");
   const title = entity?.title || entity?.name || label || id;
   const subtitle = entity?.subtitle || typeLabel;
   const description = entity?.description || entity?.text || "";
@@ -57,7 +61,7 @@ function EntityTooltip({ entity, kind, id, label }) {
           ))}
         </div>
       )}
-      {!entity && <div className="entity-tip-desc muted">Нет данных в текущем реестре.</div>}
+      {!entity && <div className="entity-tip-desc muted">{t("markdown.noEntityData")}</div>}
     </div>
   );
 }
@@ -81,6 +85,10 @@ function EntityRef({ token, registry, keyPrefix }) {
 }
 
 const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
+
+function interfaceLocale() {
+  return i18n.resolvedLanguage || i18n.language || "ru";
+}
 
 function isWordChar(ch) {
   return Boolean(ch && WORD_CHAR_RE.test(ch));
@@ -162,17 +170,17 @@ function autoEntityCandidates(registry) {
     if (kind !== "npc") continue;
     for (const label of entityAliases(entity)) {
       if (label.length < 3) continue;
-      const dedupeKey = `${kind}:${label.toLocaleLowerCase("ru-RU")}`;
+      const dedupeKey = `${kind}:${label.toLocaleLowerCase(interfaceLocale())}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
-      rows.push({ entity, kind, label, needle: label.toLocaleLowerCase("ru-RU") });
+      rows.push({ entity, kind, label, needle: label.toLocaleLowerCase(interfaceLocale()) });
     }
   }
   return rows.sort((a, b) => b.label.length - a.label.length);
 }
 
 function findNextEntityMatch(line, start, candidates) {
-  const haystack = line.toLocaleLowerCase("ru-RU");
+  const haystack = line.toLocaleLowerCase(interfaceLocale());
   let best = null;
   for (const candidate of candidates) {
     let from = start;
@@ -342,7 +350,7 @@ function takeList(lines, start, ordered) {
   return [items, i];
 }
 
-function renderBlocks(text, registry = null) {
+function renderBlocks(text, registry = null, emptyText = "—") {
   const lines = String(text ?? "").replace(/\r\n/g, "\n").split("\n");
   const out = [];
   let i = 0;
@@ -386,7 +394,7 @@ function renderBlocks(text, registry = null) {
         quote.push(lines[i].replace(/^\s*>\s?/, ""));
         i += 1;
       }
-      out.push(<blockquote key={`b-${out.length}`}>{renderBlocks(quote.join("\n"), registry)}</blockquote>);
+      out.push(<blockquote key={`b-${out.length}`}>{renderBlocks(quote.join("\n"), registry, emptyText)}</blockquote>);
       continue;
     }
 
@@ -421,15 +429,18 @@ function renderBlocks(text, registry = null) {
     out.push(<p key={`b-${out.length}`}>{inlineNodes(paragraph.join("\n"), `p-${out.length}`, registry)}</p>);
   }
 
-  return out.length ? out : "—";
+  return out.length ? out : emptyText;
 }
 
 export function MarkdownInline({ children }) {
+  const { t } = useTranslation("game");
   const registry = useContext(EntityRegistryContext);
-  return <>{inlineNodes(children || "—", "i", registry)}</>;
+  return <>{inlineNodes(children || t("markdown.empty"), "i", registry)}</>;
 }
 
 export default function MarkdownText({ children, className = "" }) {
+  const { t } = useTranslation("game");
   const registry = useContext(EntityRegistryContext);
-  return <div className={["md", className].filter(Boolean).join(" ")}>{renderBlocks(children || "—", registry)}</div>;
+  const emptyText = t("markdown.empty");
+  return <div className={["md", className].filter(Boolean).join(" ")}>{renderBlocks(children || emptyText, registry, emptyText)}</div>;
 }

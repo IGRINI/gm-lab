@@ -1,16 +1,20 @@
 import Icon from "./Icon.jsx";
+import { useTranslation } from "react-i18next";
 
 export default function SearchField({
   value = "",
   onChange,
-  placeholder = "Поиск",
-  ariaLabel = "Поиск",
+  placeholder,
+  ariaLabel,
   compact = false,
   loading = false,
   inputRef,
   autoFocus = false,
   onKeyDown,
 }) {
+  const { t } = useTranslation("game");
+  const resolvedPlaceholder = placeholder ?? t("search.placeholder");
+  const resolvedAriaLabel = ariaLabel ?? t("search.aria");
   const clear = () => {
     onChange?.("");
     inputRef?.current?.focus({ preventScroll: true });
@@ -28,15 +32,15 @@ export default function SearchField({
         autoCorrect="off"
         spellCheck={false}
         autoFocus={autoFocus}
-        placeholder={placeholder}
-        aria-label={ariaLabel}
+        placeholder={resolvedPlaceholder}
+        aria-label={resolvedAriaLabel}
         aria-busy={loading || undefined}
         onChange={(event) => onChange?.(event.target.value)}
         onKeyDown={onKeyDown}
       />
       {loading && <span className="search-field-progress" aria-hidden="true" />}
       {value && (
-        <button type="button" className="search-field-clear" onClick={clear} aria-label="Очистить поиск">
+        <button type="button" className="search-field-clear" onClick={clear} aria-label={t("search.clearAria")}>
           <Icon name="x" size={compact ? 13 : 14} />
         </button>
       )}

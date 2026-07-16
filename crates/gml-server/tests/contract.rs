@@ -3345,17 +3345,22 @@ async fn settings_update_persists_and_reflects() {
     let (status, body) = post(
         &state,
         "/settings",
-        serde_json::json!({"settings": {"gm_suggest_options": true}}),
+        serde_json::json!({"settings": {
+            "gm_suggest_options": true,
+            "response_language": "en-US"
+        }}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     let got: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(got["ok"], true);
     assert_eq!(got["settings"]["gm_suggest_options"], true);
+    assert_eq!(got["settings"]["response_language"], "en-us");
     // /state reflects the new setting.
     let (_s, sbody) = get(&state, "/state").await;
     let st: Value = serde_json::from_slice(&sbody).unwrap();
     assert_eq!(st["settings"]["gm_suggest_options"], true);
+    assert_eq!(st["settings"]["response_language"], "en-us");
 }
 
 // =========================================================================

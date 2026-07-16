@@ -1,4 +1,6 @@
 import { useMemo, useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "./i18n/index.js";
 import {
   api,
   createTurnRequestId,
@@ -51,6 +53,10 @@ import {
 
 const CONNECTOR_AUTH_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const CONNECTOR_AUTH_CANCEL_TIMEOUT_MS = 15 * 1000;
+
+function appText(key, options = {}) {
+  return i18n.t(key, { ns: "app", ...options });
+}
 
 function connectorAuthPollInterval(start) {
   const seconds = Number(start?.interval_seconds);
@@ -201,7 +207,7 @@ function normalizePlayerOptions(payload) {
     : [];
   if (!options.length) return null;
   return {
-    question: textValue(payload.question) || "Что ты делаешь дальше?",
+    question: textValue(payload.question) || appText("defaults.nextQuestion"),
     options,
   };
 }
@@ -239,12 +245,13 @@ function requireChatSessionPayload(payload) {
   if (payload?.state == null) missing.push("state");
   if (payload?.transcript == null) missing.push("transcript");
   if (missing.length > 0) {
-    throw new Error(`Сервер вернул неполный payload чата: нет ${missing.join(" и ")}`);
+    throw new Error(appText("errors.incompleteChatPayload", { fields: missing.join(", ") }));
   }
   return { chatId: payload.chat.id, state: payload.state, transcript: payload.transcript };
 }
 
 export default function App() {
+  const { t } = useTranslation("app");
   const store = useMemo(createTimeline, []);
   const messages = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const dev = useDevSettings();
@@ -432,11 +439,11 @@ export default function App() {
     setChatsError("");
     try {
       const data = await api.chats();
-      if (!data.ok) throw new Error(data.error || "список игр не загружен");
+      if (!data.ok) throw new Error(data.error || appText("errors.chatsLoad"));
       setChatsFromServer(data);
       return data;
     } catch (e) {
-      setChatsError(e.message || "список игр не загружен");
+      setChatsError(e.message || appText("errors.chatsLoad"));
       return null;
     } finally {
       setChatsLoading(false);
@@ -448,11 +455,11 @@ export default function App() {
     setWorldsError("");
     try {
       const data = await api.worlds();
-      if (!data.ok) throw new Error(data.error || "список миров не загружен");
+      if (!data.ok) throw new Error(data.error || appText("errors.worldsLoad"));
       setWorlds(Array.isArray(data.worlds) ? data.worlds : []);
       return data;
     } catch (e) {
-      setWorldsError(e.message || "список миров не загружен");
+      setWorldsError(e.message || appText("errors.worldsLoad"));
       return null;
     } finally {
       setWorldsLoading(false);
@@ -484,7 +491,7 @@ export default function App() {
           ...EMPTY_SIDECAR_STATUS,
           enabled: true,
           state: "unavailable",
-          error: e.message || "статус sidecar недоступен",
+          error: e.message || appText("errors.sidecarUnavailable"),
         });
       }
       timer = window.setTimeout(poll, delay);
@@ -502,13 +509,13 @@ export default function App() {
     setStoriesError("");
     try {
       const data = await api.stories();
-      if (!data.ok) throw new Error(data.error || "истории не загружены");
+      if (!data.ok) throw new Error(data.error || appText("errors.storiesLoad"));
       const nextStories = normalizeStories(data);
       setStories(nextStories);
       return nextStories;
     } catch (e) {
       setStories([]);
-      setStoriesError(e.message || "истории не загружены");
+      setStoriesError(e.message || appText("errors.storiesLoad"));
       return [];
     } finally {
       setStoriesLoading(false);
@@ -520,13 +527,13 @@ export default function App() {
     setCharactersError("");
     try {
       const data = await api.characters();
-      if (!data.ok) throw new Error(data.error || "персонажи не загружены");
+      if (!data.ok) throw new Error(data.error || appText("errors.charactersLoad"));
       const next = Array.isArray(data.characters) ? data.characters : [];
       setCharacters(next);
       return next;
     } catch (e) {
       setCharacters([]);
-      setCharactersError(e.message || "персонажи не загружены");
+      setCharactersError(e.message || appText("errors.charactersLoad"));
       return [];
     } finally {
       setCharactersLoading(false);
@@ -576,9 +583,9 @@ export default function App() {
     const request = (async () => {
       try {
         const data = await api.connectorModels(connectorId);
-        if (!data.ok) throw new Error(data.error || "модели коннектора не загружены");
+        if (!data.ok) throw new Error(data.error || appText("errors.connectorModelsLoad"));
         if (data.connector_id && data.connector_id !== connectorId) {
-          throw new Error("сервер вернул модели другого коннектора");
+          throw new Error(appText("errors.connectorModelsMismatch"));
         }
         const nextModels = normalizeModels([], data.models, connectorId);
         setModels((current) => [
@@ -588,7 +595,7 @@ export default function App() {
         connectorModelsLoadedRef.current.add(connectorId);
         return nextModels;
       } catch (error) {
-        notify(error.message || "модели коннектора не загружены");
+        notify(error.message || appText("errors.connectorModelsLoad"));
         return [];
       } finally {
         connectorModelsRequestsRef.current.delete(connectorId);
@@ -603,7 +610,7 @@ export default function App() {
   const loadConnectors = useCallback(async () => {
     try {
       const data = await api.connectors();
-      if (!data.ok) throw new Error(data.error || "коннекторы не загружены");
+      if (!data.ok) throw new Error(data.error || appText("errors.connectorsLoad"));
       const nextConnectors = Array.isArray(data.connectors) ? data.connectors : [];
       const binding = normalizeModelBinding(data.model_binding);
       const catalogModels = normalizeModels(nextConnectors, data.models, binding.connector_id);
@@ -648,7 +655,7 @@ export default function App() {
         const s = await api.state();
         setStateFromServer(s);
       } catch (e) {
-        notify(e.message || "состояние не загружено");
+        notify(e.message || appText("errors.stateLoad"));
       }
       await loadConnectors();
       try {
@@ -659,7 +666,7 @@ export default function App() {
         store.dispatchMany(events);
         setPlayerOptions(playerOptionsFromEvents(events));
       } catch (e) {
-        notify(e.message || "история не загружена");
+        notify(e.message || appText("errors.transcriptLoad"));
       }
       setStatus("");
     })();
@@ -682,7 +689,7 @@ export default function App() {
       try {
         if (!requestId) requestId = createTurnRequestId();
       } catch (error) {
-        notify(error?.message || "ход не выполнен");
+        notify(error?.message || appText("errors.turnFailed"));
         return;
       }
 
@@ -727,7 +734,7 @@ export default function App() {
       setPlayerOptions(null);
       setBusy(true);
       setTurnGenerating(true);
-      setStatus("ГМ думает…");
+      setStatus(appText("status.gmThinking"));
       let streamError = null;
       let playerEventSeen = false;
       let terminal = null;
@@ -738,7 +745,7 @@ export default function App() {
             if (ev.kind === "error") {
               streamError = {
                 agent: textValue(ev.agent) || "ГМ",
-                text: textValue(ev.data) || "Ход не выполнен",
+                text: textValue(ev.data) || appText("errors.turnFailed"),
               };
             }
             const auto = ttsAutoplayRef.current;
@@ -772,8 +779,11 @@ export default function App() {
               if (ev.data?.run) setRunUsage(ev.data.run);
               if (ev.data?.context) setContextUsage(ev.data.context);
             }
-            if (ev.kind === "gm_tool_call") setStatus("ГМ: " + ev.data.name + "…");
-            else if (ev.kind === "npc_start") setStatus(ev.agent + " печатает…");
+            if (ev.kind === "gm_tool_call") {
+              setStatus(appText("status.gmTool", { tool: ev.data.name }));
+            } else if (ev.kind === "npc_start") {
+              setStatus(appText("status.npcTyping", { name: ev.agent }));
+            }
             else if (ev.kind === "npc_speech") setStatus("");
           }, {
             signal: controller.signal,
@@ -800,7 +810,7 @@ export default function App() {
           restoreAttemptUi();
           const errorRow = streamError || {
             agent: "ГМ",
-            text: e?.message || "Ход не выполнен",
+            text: e?.message || appText("errors.turnFailed"),
           };
           if (e?.retryable === false) {
             store.rollbackTurn();
@@ -840,7 +850,7 @@ export default function App() {
           restoreAttemptUi();
           const errorRow = streamError || {
             agent: "ГМ",
-            text: textValue(terminal.error) || "Ход не выполнен",
+            text: textValue(terminal.error) || appText("errors.turnFailed"),
           };
           if (!legacyResume && !playerEventSeen) store.pushLocal({ type: "player", text });
           if (!legacyResume && !streamError) {
@@ -881,13 +891,13 @@ export default function App() {
             restoreAttemptUi();
             if (legacyResume) {
               store.rollbackTurn();
-              notify(error?.message || "Ход завершён, но история не обновилась");
+              notify(error?.message || appText("errors.turnCommittedTranscriptRefresh"));
             } else {
               if (!playerEventSeen) store.pushLocal({ type: "player", text });
               store.pushLocal({
                 type: "error",
                 agent: "ГМ",
-                text: error?.message || "Ход завершён, но история не обновилась",
+                text: error?.message || appText("errors.turnCommittedTranscriptRefresh"),
               });
             }
             // Retain the current checkpoint. Repeating the same id is safe and
@@ -912,7 +922,7 @@ export default function App() {
             setPlayerOptions(playerOptionsFromEvents(events));
             setStateFromServer(nextState);
           } catch (error) {
-            notify(error?.message || "Ход выполнен, но история не обновилась");
+            notify(error?.message || appText("errors.turnTranscriptRefresh"));
           }
         }
 
@@ -920,7 +930,7 @@ export default function App() {
         try {
           await refreshChats();
         } catch (error) {
-          notify(error?.message || "Ход выполнен, но список игр не обновился");
+          notify(error?.message || appText("errors.turnChatsRefresh"));
         }
         return terminal;
       } finally {
@@ -958,7 +968,7 @@ export default function App() {
     ) return;
     activeTurn.cancelling = true;
     ttsAutoReset();
-    setStatus("Останавливаю…");
+    setStatus(appText("status.stopping"));
     const cancelPromise = (async () => {
       try {
         const data = await api.cancelTurn(activeTurn.chatId, activeTurn.requestId);
@@ -966,7 +976,7 @@ export default function App() {
           !data?.ok ||
           (data.status !== "cancelled" && data.status !== "committed")
         ) {
-          throw new Error(data?.error || "Сервер не подтвердил остановку");
+          throw new Error(data?.error || appText("errors.stopNotConfirmed"));
         }
 
         // The cancel endpoint crosses the same commit fence as SQLite and returns
@@ -976,12 +986,12 @@ export default function App() {
         activeTurn.canonicalRestored = true;
         activeTurn.controller.abort();
         if (data.status === "committed") {
-          notify("Ход уже успел сохраниться — показан его итог");
+          notify(appText("notices.turnAlreadyCommitted"), { kind: "info" });
         }
       } catch (error) {
         activeTurn.cancelling = false;
-        setStatus("ГМ думает…");
-        notify(error?.message || "Не удалось остановить генерацию");
+        setStatus(appText("status.gmThinking"));
+        notify(error?.message || appText("errors.stopFailed"));
       }
     })();
     activeTurn.cancelPromise = cancelPromise;
@@ -1001,30 +1011,32 @@ export default function App() {
       try {
         const data = await api.command(cmd, arg);
         if (!data.ok) {
-          notifyApiError(data, "команда не выполнена");
+          notifyApiError(data, appText("errors.commandFailed"));
           return;
         }
         if (cmd === "reset") {
           store.clear();
           setPlayerOptions(null);
           setStateFromServer(data.state);
-          store.pushLocal({ type: "command", text: "Новая партия" });
+          store.pushLocal({ type: "command", text: appText("commands.newGame") });
         } else if (cmd === "new") {
           store.clear();
           setPlayerOptions(null);
           setStateFromServer(data.state);
           store.pushLocal({
             type: "command",
-            text: "Новая история: " + (data.state.scene?.title || "стартовая сцена"),
+            text: appText("commands.newStory", {
+              scene: data.state.scene?.title || appText("defaults.startingScene"),
+            }),
           });
         } else if (cmd === "constraint") {
-          store.pushLocal({ type: "command", text: "Ограничение сцены добавлено" });
+          store.pushLocal({ type: "command", text: appText("commands.constraintAdded") });
         } else if (cmd === "event") {
-          store.pushLocal({ type: "command", text: "Событие добавлено в мир" });
+          store.pushLocal({ type: "command", text: appText("commands.worldEventAdded") });
         }
         await refreshChats();
       } catch (e) {
-        notify(e.message || "команда не выполнена");
+        notify(e.message || appText("errors.commandFailed"));
       } finally {
         setBusy(false);
       }
@@ -1046,11 +1058,11 @@ export default function App() {
     async (mode, turn, rawText, previousRequestId = "") => {
       const text = textValue(rawText);
       if (!text || !Number.isInteger(turn) || turn < 1) {
-        throw new Error("Некорректное сообщение для отката");
+        throw new Error(appText("errors.invalidRewindMessage"));
       }
-      if (!activeChatId) throw new Error("Сначала откройте игру");
+      if (!activeChatId) throw new Error(appText("errors.openGameFirst"));
       if (turnInFlightRef.current || busy || chatActionBusy) {
-        throw new Error("Дождитесь завершения текущего действия");
+        throw new Error(appText("errors.waitForCurrentAction"));
       }
 
       // Only the view is rewound here. The server loads the same checkpoint
@@ -1058,7 +1070,7 @@ export default function App() {
       // until the replacement turn completes successfully.
       store.rollbackTurn();
       if (!store.truncateFromPlayerTurn(turn)) {
-        throw new Error("Этот ход уже нельзя изменить");
+        throw new Error(appText("errors.turnNoLongerEditable"));
       }
 
       setChatActionBusy(true);
@@ -1105,7 +1117,7 @@ export default function App() {
             textValue(event?.request_id) === textValue(result?.request_id)
         );
         if (!committed) {
-          const errorText = textValue(result?.error) || "Изменение истории не применено";
+          const errorText = textValue(result?.error) || appText("errors.historyMutationFailed");
           store.beginTurn();
           store.pushLocal({ type: "error", agent: "ГМ", text: errorText });
           if (result?.retryable !== false && result?.request_id) {
@@ -1289,7 +1301,7 @@ export default function App() {
     async ({ connectorId, modelId, storyId, worldId, characterId, title }) => {
       if (chatActionBusy) return;
       setChatActionBusy(true);
-      setStatus("Запускаю игру...");
+      setStatus(appText("status.launchingGame"));
       try {
         const body = {
           activate: true,
@@ -1302,7 +1314,7 @@ export default function App() {
         if (title) body.title = title;
         const data = await api.createChat(body);
         if (!data.ok) {
-          notifyApiError(data, "игра не создана");
+          notifyApiError(data, appText("errors.gameCreate"));
           return;
         }
         restoreChatSession(data);
@@ -1317,7 +1329,7 @@ export default function App() {
         await refreshChats();
         closeChatsOnMobile();
       } catch (e) {
-        notify(e.message || "игра не создана");
+        notify(e.message || appText("errors.gameCreate"));
       } finally {
         setChatActionBusy(false);
         setStatus("");
@@ -1344,7 +1356,7 @@ export default function App() {
     async (draft) => {
       if (busy || chatActionBusy) return;
       const payload = {
-        title: textValue(draft?.title) || "Новый мир",
+        title: textValue(draft?.title) || appText("defaults.newWorld"),
         genre: textValue(draft?.genre) || "fantasy",
         tone: textValue(draft?.tone) || "tense",
         world_size: textValue(draft?.worldSize),
@@ -1354,13 +1366,13 @@ export default function App() {
         status: "ready",
       };
       setChatActionBusy(true);
-      setStatus("Сохраняю мир...");
+      setStatus(appText("status.savingWorld"));
       try {
         const data = selectedWorldId
           ? await api.updateWorld(selectedWorldId, payload)
           : await api.createWorld(payload);
         if (!data.ok) {
-          notifyApiError(data, "мир не создан");
+          notifyApiError(data, appText("errors.worldCreate"));
           return null;
         }
         if (Array.isArray(data.worlds)) setWorlds(data.worlds);
@@ -1371,7 +1383,7 @@ export default function App() {
         // image URLs (/world-assets/...) instead of keeping volatile sidecar URLs.
         return data.world || null;
       } catch (e) {
-        notify(e.message || "мир не создан");
+        notify(e.message || appText("errors.worldCreate"));
         return null;
       } finally {
         setChatActionBusy(false);
@@ -1445,9 +1457,12 @@ export default function App() {
       const id = c.id == null ? "" : String(c.id).trim();
       if (id) setSelectedCharacterArchitectId(id);
       loadCharacters();
-      const title = (typeof c.title === "string" && c.title.trim()) || "Персонаж";
+      const title = (typeof c.title === "string" && c.title.trim()) || appText("defaults.character");
       const version = c.version == null ? "?" : c.version;
-      pushToast({ kind: "success", message: `Лист «${title}» сохранён (v${version})` });
+      pushToast({
+        kind: "success",
+        message: appText("notices.sheetSaved", { title, version }),
+      });
     },
     [loadCharacters, pushToast]
   );
@@ -1463,11 +1478,11 @@ export default function App() {
         return;
       }
       setChatActionBusy(true);
-      setStatus("Открываю игру...");
+      setStatus(appText("status.openingGame"));
       try {
         const data = await api.activateChat(chatId);
         if (!data.ok) {
-          notifyApiError(data, "игра не открыта");
+          notifyApiError(data, appText("errors.gameOpen"));
           return;
         }
         restoreChatSession(data);
@@ -1475,7 +1490,7 @@ export default function App() {
         await refreshChats();
         closeChatsOnMobile();
       } catch (e) {
-        notify(e.message || "игра не открыта");
+        notify(e.message || appText("errors.gameOpen"));
       } finally {
         setChatActionBusy(false);
         setStatus("");
@@ -1509,7 +1524,7 @@ export default function App() {
       try {
         const data = await api.deleteChat(chatId);
         if (!data.ok) {
-          notifyApiError(data, "игра не удалена");
+          notifyApiError(data, appText("errors.gameDelete"));
           return;
         }
         // If the open game was deleted, switch to the session the server returned
@@ -1519,7 +1534,7 @@ export default function App() {
         }
         await refreshChats();
       } catch (e) {
-        notify(e.message || "игра не удалена");
+        notify(e.message || appText("errors.gameDelete"));
       }
     },
     [activeChatId, restoreChatSession, refreshChats, notify, notifyApiError]
@@ -1531,14 +1546,14 @@ export default function App() {
       try {
         const data = await api.deleteWorld(worldId);
         if (!data.ok) {
-          notifyApiError(data, "мир не удалён");
+          notifyApiError(data, appText("errors.worldDelete"));
           return;
         }
         if (sameChatId(worldId, selectedWorldId)) setSelectedWorldId("");
         if (Array.isArray(data.worlds)) setWorlds(data.worlds);
         else await refreshWorlds();
       } catch (e) {
-        notify(e.message || "мир не удалён");
+        notify(e.message || appText("errors.worldDelete"));
       }
     },
     [refreshWorlds, selectedWorldId, notify, notifyApiError]
@@ -1550,12 +1565,12 @@ export default function App() {
       try {
         const data = await api.deleteStory(storyId);
         if (!data.ok) {
-          notifyApiError(data, "история не удалена");
+          notifyApiError(data, appText("errors.storyDelete"));
           return;
         }
         await loadStories();
       } catch (e) {
-        notify(e.message || "история не удалена");
+        notify(e.message || appText("errors.storyDelete"));
       }
     },
     [loadStories, notify, notifyApiError]
@@ -1568,7 +1583,7 @@ export default function App() {
       try {
         await api.downloadExport(api.exportWorldUrl(worldId), `${worldId}.gmworld.zip`);
       } catch (e) {
-        notify(e.message || "экспорт не выполнен");
+        notify(e.message || appText("errors.exportFailed"));
       }
     },
     [notify]
@@ -1580,7 +1595,7 @@ export default function App() {
       try {
         await api.downloadExport(api.exportStoryUrl(storyId, !!bake), `${storyId}.gmstory.zip`);
       } catch (e) {
-        notify(e.message || "экспорт не выполнен");
+        notify(e.message || appText("errors.exportFailed"));
       }
     },
     [notify]
@@ -1592,7 +1607,7 @@ export default function App() {
       try {
         await api.downloadExport(api.exportCharacterUrl(characterId), `${characterId}.gmchar.zip`);
       } catch (e) {
-        notify(e.message || "экспорт не выполнен");
+        notify(e.message || appText("errors.exportFailed"));
       }
     },
     [notify]
@@ -1602,19 +1617,19 @@ export default function App() {
   const onRenameCharacter = useCallback(
     async (characterId, currentTitle) => {
       if (!characterId || typeof window === "undefined") return;
-      const next = window.prompt("Новое имя персонажа", currentTitle || "");
+      const next = window.prompt(appText("prompts.characterName"), currentTitle || "");
       if (next == null) return; // cancelled
       const title = next.trim();
       if (!title || title === (currentTitle || "").trim()) return;
       try {
         const data = await api.updateCharacter(characterId, { title });
         if (!data.ok) {
-          notifyApiError(data, "не удалось переименовать персонажа");
+          notifyApiError(data, appText("errors.characterRename"));
           return;
         }
         await loadCharacters();
       } catch (e) {
-        notify(e.message || "не удалось переименовать персонажа");
+        notify(e.message || appText("errors.characterRename"));
       }
     },
     [loadCharacters, notify, notifyApiError]
@@ -1626,12 +1641,12 @@ export default function App() {
       try {
         const data = await api.deleteCharacter(characterId);
         if (!data.ok) {
-          notifyApiError(data, "не удалось удалить персонажа");
+          notifyApiError(data, appText("errors.characterDelete"));
           return;
         }
         await loadCharacters();
       } catch (e) {
-        notify(e.message || "не удалось удалить персонажа");
+        notify(e.message || appText("errors.characterDelete"));
       }
     },
     [loadCharacters, notify, notifyApiError]
@@ -1642,23 +1657,26 @@ export default function App() {
   const onSaveCharacter = useCallback(
     async (characterId) => {
       if (!activeChatId) {
-        notify("Нет активной игры");
+        notify(appText("errors.noActiveGame"));
         return;
       }
       try {
         const body = characterId ? { character_id: characterId } : {};
         const data = await api.saveCharacterFromChat(activeChatId, body);
         if (!data.ok) {
-          notifyApiError(data, "не удалось сохранить персонажа");
+          notifyApiError(data, appText("errors.characterSave"));
           return;
         }
         await loadCharacters();
         const c = data.character || {};
-        const title = (typeof c.title === "string" && c.title.trim()) || "Персонаж";
+        const title = (typeof c.title === "string" && c.title.trim()) || appText("defaults.character");
         const version = c.version == null ? "?" : c.version;
-        pushToast({ kind: "success", message: `Персонаж «${title}» сохранён (v${version})` });
+        pushToast({
+          kind: "success",
+          message: appText("notices.characterSaved", { title, version }),
+        });
       } catch (e) {
-        notify(e.message || "не удалось сохранить персонажа");
+        notify(e.message || appText("errors.characterSave"));
       }
     },
     [activeChatId, loadCharacters, pushToast, notify, notifyApiError]
@@ -1670,13 +1688,16 @@ export default function App() {
       if (!storyId) return;
       try {
         const data = await api.saveProtagonist(storyId);
-        if (!data.ok) throw new Error(data.error || "не удалось сохранить протагониста");
+        if (!data.ok) throw new Error(data.error || appText("errors.protagonistSave"));
         await loadCharacters();
         const c = data.character || {};
-        const title = (typeof c.title === "string" && c.title.trim()) || "Персонаж";
-        pushToast({ kind: "success", message: `Протагонист «${title}» сохранён в библиотеку` });
+        const title = (typeof c.title === "string" && c.title.trim()) || appText("defaults.character");
+        pushToast({
+          kind: "success",
+          message: appText("notices.protagonistSaved", { title }),
+        });
       } catch (e) {
-        notify(e.message || "не удалось сохранить протагониста");
+        notify(e.message || appText("errors.protagonistSave"));
       }
     },
     [loadCharacters, pushToast, notify]
@@ -1685,9 +1706,9 @@ export default function App() {
   const onRevealLibrary = useCallback(async () => {
     try {
       const data = await api.revealLibrary();
-      if (!data.ok) throw new Error(data.error || "не удалось открыть папку библиотеки");
+      if (!data.ok) throw new Error(data.error || appText("errors.libraryReveal"));
     } catch (e) {
-      notify(e.message || "не удалось открыть папку библиотеки");
+      notify(e.message || appText("errors.libraryReveal"));
     }
   }, [notify]);
 
@@ -1840,10 +1861,10 @@ export default function App() {
       if (!model) return;
       try {
         const data = await api.setModel(model);
-        if (!data.ok) throw new Error(data.error || "модель не переключена");
+        if (!data.ok) throw new Error(data.error || appText("errors.modelSwitch"));
         setStateFromServer(data.state);
       } catch (e) {
-        notify(e.message || "модель не переключена");
+        notify(e.message || appText("errors.modelSwitch"));
       }
     },
     [setStateFromServer, notify]
@@ -1855,14 +1876,14 @@ export default function App() {
       setSettings(next);
       try {
         const data = await api.updateSettings(next);
-        if (!data.ok) throw new Error(data.error || "настройки не сохранены");
+        if (!data.ok) throw new Error(data.error || appText("errors.settingsSave"));
         if (data.settings) setSettings((prev) => ({ ...prev, ...data.settings }));
         if (data.settings_options) {
           setSettingsOptions((prev) => ({ ...prev, ...data.settings_options }));
         }
         if (data.state) setStateFromServer(data.state);
       } catch (e) {
-        notify(e.message || "настройки не сохранены");
+        notify(e.message || appText("errors.settingsSave"));
       }
     },
     [settings, setStateFromServer, notify]
@@ -1921,10 +1942,10 @@ export default function App() {
       const authState = connectorAuthState(auth);
       if (authState === "signed_in" || authState === "not_required") return auth;
       if (authState === "expired") {
-        throw new Error(auth.message || "Срок авторизации истёк");
+        throw new Error(auth.message || appText("errors.authExpired"));
       }
       if (Date.now() >= deadline) {
-        throw lastStatusError || new Error("Срок авторизации истёк");
+        throw lastStatusError || new Error(appText("errors.authExpired"));
       }
 
       await waitForAbortable(
@@ -1938,7 +1959,7 @@ export default function App() {
         const data = await api.connectorAuthStatus(connectorId, {
           signal: operation.controller.signal,
         });
-        if (!data.ok) throw new Error(data.error || "Статус авторизации недоступен");
+        if (!data.ok) throw new Error(data.error || appText("errors.authStatusUnavailable"));
         auth = data.auth || {};
         lastStatusError = null;
         consecutiveStatusFailures = 0;
@@ -1974,7 +1995,7 @@ export default function App() {
       const data = await api.connectorAuthStart(connectorId, methodId, {
         signal: operation.controller.signal,
       });
-      if (!data.ok) throw new Error(data.error || `${name} не подключён`);
+      if (!data.ok) throw new Error(data.error || appText("errors.connectorConnect", { name }));
       updateConnectorAuth(connectorId, data.auth);
 
       const start = data.start || { kind: "complete" };
@@ -1993,8 +2014,10 @@ export default function App() {
       void loadConnectorModels(connectorId, { force: true });
     } catch (e) {
       if (operation.cancelRequested || operation.disposed) return;
-      if (operation.timedOut) notify("Срок авторизации истёк");
-      else if (!isAbortError(e)) notify(e.message || `${name} не подключён`);
+      if (operation.timedOut) notify(appText("errors.authExpired"));
+      else if (!isAbortError(e)) {
+        notify(e.message || appText("errors.connectorConnect", { name }));
+      }
     } finally {
       if (!operation.cancelRequested && finishConnectorAuthOperation(connectorId, operation)) {
         await loadConnectors();
@@ -2023,14 +2046,16 @@ export default function App() {
       const data = await api.connectorAuthLogout(connectorId, {
         signal: cancelController.signal,
       });
-      if (!data.ok) throw new Error(data.error || `не вышло отменить подключение ${name}`);
+      if (!data.ok) {
+        throw new Error(data.error || appText("errors.connectorCancel", { name }));
+      }
       updateConnectorAuth(connectorId, { state: "signed_out" });
       void loadConnectorModels(connectorId, { force: true });
     } catch (error) {
       if (operation.disposed) return;
       const message = isAbortError(error)
-        ? `отмена подключения ${name} не подтверждена`
-        : error.message || `не вышло отменить подключение ${name}`;
+        ? appText("errors.connectorCancelNotConfirmed", { name })
+        : error.message || appText("errors.connectorCancel", { name });
       notify(message);
     } finally {
       if (finishConnectorAuthOperation(connectorId, operation)) await loadConnectors();
@@ -2058,14 +2083,16 @@ export default function App() {
       const data = await api.connectorAuthLogout(connectorId, {
         signal: operation.controller.signal,
       });
-      if (!data.ok) throw new Error(data.error || `не вышло отключить ${name}`);
+      if (!data.ok) {
+        throw new Error(data.error || appText("errors.connectorDisconnect", { name }));
+      }
       updateConnectorAuth(connectorId, { state: "signed_out" });
       void loadConnectorModels(connectorId, { force: true });
     } catch (e) {
       if (operation.disposed) return;
       const message = isAbortError(e)
-        ? `отключение ${name} не подтверждено`
-        : e.message || `не вышло отключить ${name}`;
+        ? appText("errors.connectorDisconnectNotConfirmed", { name })
+        : e.message || appText("errors.connectorDisconnect", { name });
       notify(message);
     } finally {
       if (finishConnectorAuthOperation(connectorId, operation)) await loadConnectors();
@@ -2077,7 +2104,7 @@ export default function App() {
     try {
       const data = await api.command("reset");
       if (!data.ok) {
-        notifyApiError(data, "не удалось сбросить партию");
+        notifyApiError(data, appText("errors.gameReset"));
         return;
       }
       store.clear();
@@ -2086,7 +2113,7 @@ export default function App() {
       setStateFromServer(data.state);
       await refreshChats();
     } catch (e) {
-      notify(e.message || "не удалось сбросить партию");
+      notify(e.message || appText("errors.gameReset"));
     }
   }, [store, setStateFromServer, refreshChats, notify, notifyApiError]);
 
@@ -2188,7 +2215,7 @@ export default function App() {
           <main className="world-creation-pane">
             <div className="studio-frame">
               <button type="button" className="studio-back" onClick={showLibrary}>
-                ← Библиотека
+                {t("nav.backToLibrary")}
               </button>
               <WorldArchitectPanel
                 world={selectedWorld}
@@ -2215,7 +2242,7 @@ export default function App() {
           <main className="world-creation-pane">
             <div className="studio-frame">
               <button type="button" className="studio-back" onClick={showLibrary}>
-                ← Библиотека
+                {t("nav.backToLibrary")}
               </button>
               <StoryArchitectPanel
                 key={storyArchitectWorldId || "new-story"}
@@ -2246,7 +2273,7 @@ export default function App() {
           <main className="world-creation-pane">
             <div className="studio-frame">
               <button type="button" className="studio-back" onClick={showLibrary}>
-                ← Библиотека
+                {t("nav.backToLibrary")}
               </button>
               <CharacterArchitectPanel
                 key={`char-studio-${characterStudioEpoch}`}

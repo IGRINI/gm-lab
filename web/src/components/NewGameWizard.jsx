@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import Modal from "./Modal.jsx";
 import ConnectorModelPicker from "./ConnectorModelPicker.jsx";
 import WizCard, {
@@ -143,6 +144,7 @@ export default function NewGameWizard({
   onClose,
   busy = false,
 }) {
+  const { t } = useTranslation("library");
   // Seed the selection once, from the preselect hint. The integrator mounts a
   // fresh wizard per open, so a one-shot initializer is enough (no re-sync).
   const [init] = useState(() => deriveInitial(preselect, worlds, stories, characters));
@@ -242,7 +244,11 @@ export default function NewGameWizard({
   }, [characters, worldChoice, storyId, isProcedural]);
   const characterBaseBadge = (c) => {
     const rank = characterMatchRank(c);
-    return rank === 2 ? "под эту историю" : rank === 1 ? "из этого мира" : undefined;
+    return rank === 2
+      ? t("badges.forThisStory")
+      : rank === 1
+        ? t("badges.fromThisWorld")
+        : undefined;
   };
 
   // On entering Персонаж with nothing picked yet, default to the story's own
@@ -254,18 +260,18 @@ export default function NewGameWizard({
   }, [step, characterChoice, hasProtagonist]);
 
   const storyNameForTitle = isSyntheticProcedural
-    ? "Процедурная кампания"
-    : storyTitle(selectedStoryRow);
+    ? t("wizard.proceduralCampaign")
+    : storyTitle(selectedStoryRow, t);
   const characterNameForTitle =
     characterChoice === "protagonist"
       ? protagonistName
       : selectedCharacter
-        ? characterTitle(selectedCharacter)
+        ? characterTitle(selectedCharacter, t)
         : "";
   const defaultTitle = useMemo(() => {
-    const base = storyNameForTitle || "Новая игра";
+    const base = storyNameForTitle || t("wizard.newGame");
     return characterNameForTitle ? `${base} — ${characterNameForTitle}` : base;
-  }, [storyNameForTitle, characterNameForTitle]);
+  }, [storyNameForTitle, characterNameForTitle, t]);
 
   // Название auto-fills «{история} — {персонаж}» until the player edits it.
   useEffect(() => {
@@ -355,25 +361,25 @@ export default function NewGameWizard({
 
   const worldLabel = worldChoice
     ? worldChoice.type === "builtin"
-      ? storyTitle((stories || []).find((s) => sameId(s.id, worldChoice.storyId)))
-      : worldTitle(selectedWorld)
+      ? storyTitle((stories || []).find((s) => sameId(s.id, worldChoice.storyId)), t)
+      : worldTitle(selectedWorld, t)
     : "";
   const storyLabel = storyId
     ? isSyntheticProcedural
-      ? "Процедурная кампания"
-      : storyTitle(selectedStoryRow)
+      ? t("wizard.proceduralCampaign")
+      : storyTitle(selectedStoryRow, t)
     : "";
   const characterLabel =
     characterChoice === "protagonist"
-      ? protagonistName || "Протагонист истории"
+      ? protagonistName || t("wizard.storyProtagonist")
       : selectedCharacter
-        ? characterTitle(selectedCharacter)
+        ? characterTitle(selectedCharacter, t)
         : "";
 
   const steps = [
-    { n: 1, name: "Мир", value: worldLabel, reachable: true },
-    { n: 2, name: "История", value: storyLabel, reachable: !!worldChoice },
-    { n: 3, name: "Персонаж", value: characterLabel, reachable: !!storyId },
+    { n: 1, name: t("entities.world"), value: worldLabel, reachable: true },
+    { n: 2, name: t("entities.story"), value: storyLabel, reachable: !!worldChoice },
+    { n: 3, name: t("entities.character"), value: characterLabel, reachable: !!storyId },
   ];
 
   const bundleStory =
@@ -389,12 +395,12 @@ export default function NewGameWizard({
         onClick={step === 1 ? onClose : goBack}
         disabled={locked}
       >
-        {step === 1 ? "Отмена" : "← Назад"}
+        {step === 1 ? t("actions.cancel") : t("actions.back")}
       </button>
       <div className="wiz-foot-right">
         {step === 3 && (
           <label className="wiz-name">
-            <span>Название</span>
+            <span>{t("wizard.titleLabel")}</span>
             <input
               value={title}
               placeholder={defaultTitle}
@@ -413,11 +419,11 @@ export default function NewGameWizard({
             onClick={goNext}
             disabled={locked || !canAdvance}
           >
-            Далее →
+            {t("actions.next")}
           </button>
         ) : (
           <button type="button" className="btn primary" onClick={launch} disabled={!canLaunch}>
-            {locked ? "Запуск…" : "Начать"}
+            {locked ? t("wizard.launching") : t("wizard.start")}
           </button>
         )}
       </div>
@@ -426,8 +432,8 @@ export default function NewGameWizard({
 
   return (
     <Modal
-      title="Новая игра"
-      subtitle={`Шаг ${step} из 3`}
+      title={t("wizard.newGame")}
+      subtitle={t("wizard.step", { step, total: 3 })}
       onClose={onClose}
       className="wiz-modal"
       footer={footer}
@@ -447,7 +453,7 @@ export default function NewGameWizard({
           authPrompts={connectorAuthPrompts}
           onAuthStart={onConnectorAuthStart}
           onAuthCancel={onConnectorAuthCancel}
-          ariaLabel="Коннектор и модель новой игры"
+          ariaLabel={t("wizard.connectorModelAria")}
         />
         <ol className="wiz-steps">
           {steps.map((s) => (
@@ -477,7 +483,7 @@ export default function NewGameWizard({
 
         {step === 1 && (
           <div className="wiz-panel">
-            <p className="wiz-lead">Выберите мир из библиотеки или встроенную классику.</p>
+            <p className="wiz-lead">{t("wizard.chooseWorldLead")}</p>
             <div className="wiz-grid">
               {libraryWorlds.map((w) => (
                 <WizCard
@@ -485,11 +491,11 @@ export default function NewGameWizard({
                   selected={worldChoice?.type === "world" && sameId(worldChoice.id, w.id)}
                   disabled={locked}
                   onClick={() => chooseWorld({ type: "world", id: idOf(w.id) })}
-                  kicker="мир"
-                  title={worldTitle(w)}
+                  kicker={t("entities.worldLower")}
+                  title={worldTitle(w, t)}
                   meta={worldMeta(w)}
                   desc={worldPreview(w)}
-                  tip={worldTip(w)}
+                  tip={worldTip(w, t)}
                 />
               ))}
               {builtinBundles.map((s) => (
@@ -500,22 +506,22 @@ export default function NewGameWizard({
                   onClick={() =>
                     chooseWorld({ type: "builtin", id: idOf(s.id), storyId: idOf(s.id) })
                   }
-                  kicker="мир"
-                  badge="встроенная классика"
-                  title={storyTitle(s)}
+                  kicker={t("entities.worldLower")}
+                  badge={t("badges.builtinClassic")}
+                  title={storyTitle(s, t)}
                   desc={storyDescription(s)}
-                  tip={storyTip(s, { kicker: "встроенная классика" })}
+                  tip={storyTip(s, t, { kicker: t("badges.builtinClassic") })}
                 />
               ))}
               <WizCard
                 add
-                title="Создать мир"
+                title={t("actions.createWorldBare")}
                 disabled={locked}
                 onClick={() => openStudio("world", null)}
               />
             </div>
             {libraryWorlds.length === 0 && builtinBundles.length === 0 && (
-              <p className="wiz-empty">Миров пока нет — создайте новый в студии.</p>
+              <p className="wiz-empty">{t("wizard.noWorlds")}</p>
             )}
           </div>
         )}
@@ -523,22 +529,24 @@ export default function NewGameWizard({
         {step === 2 &&
           (worldChoice?.type === "builtin" ? (
             <div className="wiz-panel">
-              <p className="wiz-lead">Встроенная классика — история идёт в комплекте.</p>
+              <p className="wiz-lead">{t("wizard.builtinStoryLead")}</p>
               <div className="wiz-grid">
                 <WizCard
                   selected
                   disabled={locked}
                   onClick={() => chooseStory(worldChoice.storyId)}
-                  kicker="история"
-                  title={storyTitle(bundleStory)}
+                  kicker={t("entities.storyLower")}
+                  title={storyTitle(bundleStory, t)}
                   desc={storyDescription(bundleStory)}
-                  tip={storyTip(bundleStory)}
+                  tip={storyTip(bundleStory, t)}
                 />
               </div>
             </div>
           ) : (
             <div className="wiz-panel">
-              <p className="wiz-lead">Истории мира «{worldTitle(selectedWorld)}».</p>
+              <p className="wiz-lead">
+                {t("wizard.worldStoriesLead", { world: worldTitle(selectedWorld, t) })}
+              </p>
               <div className="wiz-grid">
                 {worldBoundStories.map((s) => (
                   <WizCard
@@ -546,26 +554,26 @@ export default function NewGameWizard({
                     selected={sameId(storyId, s.id)}
                     disabled={locked}
                     onClick={() => chooseStory(s.id)}
-                    kicker="история"
-                    meta={s.kind === "procedural" ? "процедурная" : undefined}
-                    title={storyTitle(s)}
+                    kicker={t("entities.storyLower")}
+                    meta={s.kind === "procedural" ? t("badges.procedural") : undefined}
+                    title={storyTitle(s, t)}
                     desc={storyDescription(s)}
-                    tip={storyTip(s)}
+                    tip={storyTip(s, t)}
                   />
                 ))}
                 <WizCard
                   selected={isSyntheticProcedural}
                   disabled={locked}
                   onClick={() => chooseStory("procedural")}
-                  kicker="история"
-                  badge="процедурная"
-                  title="Процедурная кампания"
-                  desc="Живой мир генерируется из библии мира при запуске."
-                  tip={storyTip(proceduralRow)}
+                  kicker={t("entities.storyLower")}
+                  badge={t("badges.procedural")}
+                  title={t("wizard.proceduralCampaign")}
+                  desc={t("wizard.proceduralDescription")}
+                  tip={storyTip(proceduralRow, t)}
                 />
                 <WizCard
                   add
-                  title="Создать историю"
+                  title={t("actions.createStoryBare")}
                   disabled={locked}
                   onClick={() => openStudio("story", { worldId: idOf(worldChoice?.id) })}
                 />
@@ -577,10 +585,10 @@ export default function NewGameWizard({
           <div className="wiz-panel">
             <p className="wiz-lead">
               {isProcedural
-                ? "Процедурной кампании нужен персонаж из библиотеки."
+                ? t("wizard.characterLeadProcedural")
                 : hasProtagonist
-                  ? "Выберите персонажа. По умолчанию — протагонист истории."
-                  : "У этой истории нет готового протагониста — выберите персонажа из библиотеки."}
+                  ? t("wizard.characterLeadWithProtagonist")
+                  : t("wizard.characterLeadWithoutProtagonist")}
             </p>
             <div className="wiz-grid">
               {hasProtagonist && (
@@ -588,16 +596,16 @@ export default function NewGameWizard({
                   selected={characterChoice === "protagonist"}
                   disabled={locked}
                   onClick={() => chooseCharacter("protagonist")}
-                  kicker="персонаж"
-                  badge="из истории"
-                  title={protagonistName || "Протагонист истории"}
-                  meta={pcMeta(protagonistPc)}
+                  kicker={t("entities.characterLower")}
+                  badge={t("badges.fromStory")}
+                  title={protagonistName || t("wizard.storyProtagonist")}
+                  meta={pcMeta(protagonistPc, t)}
                   desc={
                     textValue(protagonistPc?.background) ||
                     textValue(protagonistPc?.physical_type) ||
-                    "Готовый герой, заданный автором истории."
+                    t("wizard.protagonistDescription")
                   }
-                  tip={protagonistTip(selectedStoryRow)}
+                  tip={protagonistTip(selectedStoryRow, t)}
                 />
               )}
               {sortedCharacters.map((c) => {
@@ -608,18 +616,18 @@ export default function NewGameWizard({
                     selected={sameId(characterChoice, c.id)}
                     disabled={locked}
                     onClick={() => chooseCharacter(idOf(c.id))}
-                    kicker="персонаж"
+                    kicker={t("entities.characterLower")}
                     badge={characterBaseBadge(c)}
-                    title={characterTitle(c)}
-                    meta={characterMeta(c)}
-                    desc={preview && preview !== characterTitle(c) ? preview : ""}
-                    tip={characterTip(c)}
+                    title={characterTitle(c, t)}
+                    meta={characterMeta(c, t)}
+                    desc={preview && preview !== characterTitle(c, t) ? preview : ""}
+                    tip={characterTip(c, t)}
                   />
                 );
               })}
               <WizCard
                 add
-                title="Создать персонажа"
+                title={t("actions.createCharacterBare")}
                 disabled={locked}
                 onClick={() =>
                   openStudio("character", {
@@ -634,12 +642,11 @@ export default function NewGameWizard({
             </div>
             {!hasProtagonist && (characters || []).length === 0 && (
               <p className="wiz-hint">
-                Персонажей пока нет — создайте в студии или импортируйте .gmchar, без него эта
-                игра не запустится.
+                {t("wizard.noCharacters")}
               </p>
             )}
             {!characterOk && (characters || []).length > 0 && (
-              <p className="wiz-hint">Выберите персонажа, чтобы начать.</p>
+              <p className="wiz-hint">{t("wizard.chooseCharacter")}</p>
             )}
           </div>
         )}

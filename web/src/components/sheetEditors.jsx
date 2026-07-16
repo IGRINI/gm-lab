@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import Icon from "./Icon.jsx";
 import { AutoTextarea, textValue } from "./architectShared.jsx";
 
@@ -284,17 +285,18 @@ function EditorBlock({ hint, children }) {
 
 // Характеристики — the six core abilities as number inputs (extra keys of the
 // abilities object survive untouched — only the core six are editable).
-export function AbilitiesEditor({ label = "Характеристики", abilities, onChange, disabled = false }) {
+export function AbilitiesEditor({ label, abilities, onChange, disabled = false }) {
+  const { t } = useTranslation("studio");
   const obj = asObject(abilities) || {};
   return (
-    <EditorBlock hint={label}>
+    <EditorBlock hint={label || t("sheet.abilities.title")}>
       <div className="character-abilities">
         {ABILITY_ORDER.map((key) => {
           const raw = obj[key];
           const mod = abilityMod(raw);
           return (
             <label className="character-ability character-ability-edit" key={key}>
-              <span className="character-ability-k">{ABILITY_SHORT[key]}</span>
+              <span className="character-ability-k">{t(`sheet.abilities.short.${key}`)}</span>
               <input
                 type="number"
                 className="character-ability-input"
@@ -314,6 +316,7 @@ export function AbilitiesEditor({ label = "Характеристики", abilit
 
 // Навыки / спасброски: строка = имя + числовой модификатор.
 export function MapRowsEditor({ label, rows, onEdit, onAdd, onRemove, keyPlaceholder, disabled = false }) {
+  const { t } = useTranslation("studio");
   return (
     <EditorBlock hint={label}>
       <div className="sheet-rows">
@@ -343,14 +346,14 @@ export function MapRowsEditor({ label, rows, onEdit, onAdd, onRemove, keyPlaceho
               className="sheet-row-del"
               onClick={() => onRemove(i)}
               disabled={disabled}
-              aria-label="Удалить строку"
+              aria-label={t("sheet.rows.remove")}
             >
               <Icon name="x" size={12} />
             </button>
           </div>
         ))}
         <button type="button" className="sheet-add-btn" onClick={onAdd} disabled={disabled}>
-          + добавить
+          {t("sheet.rows.add")}
         </button>
       </div>
     </EditorBlock>
@@ -380,10 +383,11 @@ export function NamedListEditor({
   onEdit,
   onAdd,
   onRemove,
-  namePlaceholder = "Название",
-  descPlaceholder = "Описание (необязательно)",
+  namePlaceholder,
+  descPlaceholder,
   disabled = false,
 }) {
+  const { t } = useTranslation("studio");
   return (
     <EditorBlock hint={label}>
       <div className="sheet-rows">
@@ -393,14 +397,14 @@ export function NamedListEditor({
               className="sheet-list-input sheet-named-name"
               value={entryName(r.text)}
               onChange={(e) => onEdit(i, entryJoin(e.target.value, entryDesc(r.text)))}
-              placeholder={namePlaceholder}
+              placeholder={namePlaceholder || t("sheet.namedList.namePlaceholder")}
               disabled={disabled}
             />
             <textarea
               className="sheet-list-input sheet-named-desc"
               value={entryDesc(r.text)}
               onChange={(e) => onEdit(i, entryJoin(entryName(r.text), e.target.value))}
-              placeholder={descPlaceholder}
+              placeholder={descPlaceholder || t("sheet.namedList.descriptionPlaceholder")}
               disabled={disabled}
               rows={1}
             />
@@ -409,14 +413,14 @@ export function NamedListEditor({
               className="sheet-row-del"
               onClick={() => onRemove(i)}
               disabled={disabled}
-              aria-label="Удалить строку"
+              aria-label={t("sheet.rows.remove")}
             >
               <Icon name="x" size={12} />
             </button>
           </div>
         ))}
         <button type="button" className="sheet-add-btn" onClick={onAdd} disabled={disabled}>
-          + добавить
+          {t("sheet.rows.add")}
         </button>
       </div>
     </EditorBlock>
@@ -425,7 +429,7 @@ export function NamedListEditor({
 
 // Заклинания — 5-field cards, collapsed to «{name} · {level} круг».
 export function SpellsEditor({
-  label = "Заклинания",
+  label,
   rows,
   openSet,
   onToggle,
@@ -434,8 +438,9 @@ export function SpellsEditor({
   onRemove,
   disabled = false,
 }) {
+  const { t } = useTranslation("studio");
   return (
-    <EditorBlock hint={label}>
+    <EditorBlock hint={label || t("sheet.spells.title")}>
       <div className="sheet-rows">
         {rows.map((r, i) => {
           const open = openSet.has(i);
@@ -449,7 +454,10 @@ export function SpellsEditor({
                     <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
                   </span>
                   <span className="spell-edit-label">
-                    {(r.name || "").trim() || "Без названия"} · {lvl} круг
+                    {t("sheet.spells.summary", {
+                      name: (r.name || "").trim() || t("sheet.untitled"),
+                      level: lvl,
+                    })}
                   </span>
                 </button>
                 <button
@@ -457,7 +465,7 @@ export function SpellsEditor({
                   className="sheet-row-del"
                   onClick={() => onRemove(i)}
                   disabled={disabled}
-                  aria-label="Удалить заклинание"
+                  aria-label={t("sheet.spells.remove")}
                 >
                   <Icon name="x" size={12} />
                 </button>
@@ -466,16 +474,16 @@ export function SpellsEditor({
                 <div className="spell-edit-body">
                   <div className="world-field-grid spell-name-grid">
                     <label className="world-field">
-                      <span>Название</span>
+                      <span>{t("sheet.spells.name")}</span>
                       <input
                         value={r.name}
                         onChange={(e) => onEdit(i, { name: e.target.value })}
-                        placeholder="Огненный снаряд"
+                        placeholder={t("sheet.spells.namePlaceholder")}
                         disabled={disabled}
                       />
                     </label>
                     <label className="world-field">
-                      <span>Круг (0–9)</span>
+                      <span>{t("sheet.spells.level")}</span>
                       <input
                         type="number"
                         min="0"
@@ -488,11 +496,11 @@ export function SpellsEditor({
                     </label>
                   </div>
                   <label className="world-field">
-                    <span>Эффект</span>
+                    <span>{t("sheet.spells.effect")}</span>
                     <AutoTextarea
                       value={r.effect}
                       onChange={(e) => onEdit(i, { effect: e.target.value })}
-                      placeholder="Что делает заклинание — коротко."
+                      placeholder={t("sheet.spells.effectPlaceholder")}
                       disabled={disabled}
                     />
                   </label>
@@ -504,7 +512,7 @@ export function SpellsEditor({
                         onChange={(e) => onEdit(i, { concentration: e.target.checked })}
                         disabled={disabled}
                       />
-                      <span>Концентрация</span>
+                      <span>{t("sheet.spells.concentration")}</span>
                     </label>
                     <label className="sheet-check">
                       <input
@@ -513,7 +521,7 @@ export function SpellsEditor({
                         onChange={(e) => onEdit(i, { ritual: e.target.checked })}
                         disabled={disabled}
                       />
-                      <span>Ритуал</span>
+                      <span>{t("sheet.spells.ritual")}</span>
                     </label>
                   </div>
                 </div>
@@ -522,7 +530,7 @@ export function SpellsEditor({
           );
         })}
         <button type="button" className="sheet-add-btn" onClick={onAdd} disabled={disabled}>
-          + добавить заклинание
+          {t("sheet.spells.add")}
         </button>
       </div>
     </EditorBlock>
@@ -531,7 +539,7 @@ export function SpellsEditor({
 
 // Слоты заклинаний — flat level→текущие/макс maps.
 export function SlotsEditor({
-  label = "Слоты заклинаний",
+  label,
   rows,
   missing,
   onEdit,
@@ -539,18 +547,19 @@ export function SlotsEditor({
   onRemove,
   disabled = false,
 }) {
+  const { t } = useTranslation("studio");
   return (
-    <EditorBlock hint={label}>
+    <EditorBlock hint={label || t("sheet.slots.title")}>
       <div className="sheet-rows">
         {rows.map((r, i) => (
           <div className="slot-row" key={r.level}>
-            <span className="slot-level">{r.level} круг</span>
+            <span className="slot-level">{t("sheet.slots.level", { level: r.level })}</span>
             <input
               type="number"
               className="slot-num"
               value={r.cur}
               onChange={(e) => onEdit(i, { cur: e.target.value })}
-              placeholder="тек."
+              placeholder={t("sheet.slots.currentPlaceholder")}
               disabled={disabled}
             />
             <span className="slot-sep">/</span>
@@ -559,7 +568,7 @@ export function SlotsEditor({
               className="slot-num"
               value={r.max}
               onChange={(e) => onEdit(i, { max: e.target.value })}
-              placeholder="макс"
+              placeholder={t("sheet.slots.maxPlaceholder")}
               disabled={disabled}
             />
             <button
@@ -567,7 +576,7 @@ export function SlotsEditor({
               className="sheet-row-del"
               onClick={() => onRemove(i)}
               disabled={disabled}
-              aria-label="Удалить круг"
+              aria-label={t("sheet.slots.remove")}
             >
               <Icon name="x" size={12} />
             </button>
@@ -583,7 +592,7 @@ export function SlotsEditor({
                 onClick={() => onAddLevel(lvl)}
                 disabled={disabled}
               >
-                + круг {lvl}
+                {t("sheet.slots.addLevel", { level: lvl })}
               </button>
             ))}
           </div>

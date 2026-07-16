@@ -1,0 +1,437 @@
+{
+  "actions": {
+    "cancel": "Отмена",
+    "delete": "Удалить",
+    "retry": "Повторить",
+    "save": "Сохранить"
+  },
+  "common": {
+    "closeAria": "Закрыть"
+  },
+  "markdown": {
+    "empty": "—",
+    "entityFallback": "сущность",
+    "noEntityData": "Нет данных в текущем реестре.",
+    "entityKinds": {
+      "npc": "персонаж",
+      "loc": "локация",
+      "item": "предмет",
+      "note": "заметка"
+    }
+  },
+  "chat": {
+    "scrollToLatest": "К последним сообщениям",
+    "newMessages_one": "Новое сообщение: {{count}}",
+    "newMessages_few": "Новых сообщений: {{count}}",
+    "newMessages_many": "Новых сообщений: {{count}}",
+    "newMessages_other": "Новых сообщений: {{count}}",
+    "scrollDownNote": "Прокрутить диалог вниз.",
+    "scrollDownAria": "Вниз"
+  },
+  "search": {
+    "placeholder": "Поиск",
+    "aria": "Поиск",
+    "clearAria": "Очистить поиск",
+    "inProgress": "Идёт поиск",
+    "inProgressEllipsis": "Идёт поиск…",
+    "unavailable": "Поиск временно недоступен"
+  },
+  "history": {
+    "untitled": "Новая игра",
+    "emptyPreview": "Пустая игра",
+    "closeSidebar": "Закрыть боковую панель",
+    "gamesAria": "Игры",
+    "sectionsAria": "Разделы",
+    "nav": {
+      "game": "Игра",
+      "library": "Библиотека"
+    },
+    "title": "Игры",
+    "refreshing": "Обновляю…",
+    "newGameAria": "Новая игра",
+    "newGameShort": "Новая",
+    "searchPlaceholder": "Найти игру или сообщение",
+    "searchAria": "Поиск по сохранённым играм",
+    "filtersAria": "Фильтры поиска",
+    "found_one": "Найдено: {{count}}",
+    "found_few": "Найдено: {{count}}",
+    "found_many": "Найдено: {{count}}",
+    "found_other": "Найдено: {{count}}",
+    "savedGamesAria": "Сохранённые игры",
+    "noSearchResults": "По этому запросу ничего не найдено. Попробуйте убрать часть фильтров.",
+    "noGames": "Сохранённых игр пока нет. Нажмите «Новая», чтобы начать.",
+    "delete": {
+      "title": "Удалить игру",
+      "tooltip": "Перед удалением появится подтверждение.",
+      "aria": "Удалить игру: {{title}}",
+      "confirmTitle": "Удалить игру?",
+      "quotedName": "«{{title}}»",
+      "confirmNote": "Игра и все её данные удалятся из базы безвозвратно — история, персонажи, мир и связанные эмбеддинги. Это действие нельзя отменить.",
+      "deleting": "Удаляю…",
+      "action": "Удалить"
+    }
+  },
+  "filters": {
+    "any": "Любой",
+    "dialogAria": "Фильтры поиска игр",
+    "title": "Фильтры",
+    "closeAria": "Закрыть фильтры",
+    "field": "Где искать",
+    "fields": {
+      "all": "Везде",
+      "title": "В названиях",
+      "world": "В мирах",
+      "story": "В историях",
+      "character": "В персонажах",
+      "messages": "В сообщениях"
+    },
+    "world": "Мир",
+    "story": "История",
+    "character": "Персонаж",
+    "period": "Период",
+    "periods": {
+      "all": "За всё время",
+      "days7": "7 дней",
+      "days30": "30 дней",
+      "days90": "90 дней"
+    },
+    "sort": "Сортировка",
+    "sorts": {
+      "relevance": "По релевантности",
+      "updated": "Сначала новые"
+    },
+    "hasMessages": "Только игры с сообщениями",
+    "reset": "Сбросить",
+    "done": "Готово"
+  },
+  "globalSearch": {
+    "title": "Общий поиск",
+    "subtitle": "Миры, истории, персонажи, игры и сообщения",
+    "closeAria": "Закрыть поиск",
+    "placeholder": "Введите название, имя или фразу из сообщения",
+    "aria": "Общий поиск",
+    "scopeAria": "Область поиска",
+    "scopes": {
+      "all": "Везде",
+      "library": "Библиотека",
+      "chats": "Игры"
+    },
+    "notFound": "Ничего не найдено",
+    "empty": "Пока нечего показать",
+    "notFoundHint": "Попробуйте более короткий запрос.",
+    "emptyHint": "Созданные материалы и игры появятся здесь.",
+    "untitled": "Без названия",
+    "types": {
+      "world": "Мир",
+      "story": "История",
+      "character": "Персонаж",
+      "chat": "Игра"
+    },
+    "shortcuts": {
+      "select": "выбрать",
+      "open": "открыть",
+      "close": "закрыть"
+    },
+    "shown": "Показано {{shown}} из {{total}}"
+  },
+  "context": {
+    "noDetails": "Подробностей пока нет.",
+    "proceduralCampaign": "Процедурная кампания",
+    "story": "История",
+    "world": "Мир",
+    "character": "Персонаж",
+    "genre": "Жанр",
+    "tone": "Тон",
+    "actionsAria": "Действия партии",
+    "downloadJson": "Скачать JSON",
+    "storyUnavailable": "Описание истории недоступно.",
+    "worldUnavailable": "Описание мира недоступно.",
+    "reset": {
+      "menu": "Сброс партии",
+      "title": "Сбросить партию?",
+      "note": "Текущий ход и состояние сцены будут сброшены к началу. Это действие нельзя отменить.",
+      "busy": "Сбрасываю…",
+      "action": "Сбросить"
+    }
+  },
+  "scene": {
+    "story": "История",
+    "introduction": "Вступление",
+    "title": "Сцена",
+    "inScene": "в сцене",
+    "whereToFind": "где искать",
+    "fields": {
+      "role": "роль",
+      "type": "тип",
+      "features": "приметы",
+      "condition": "состояние",
+      "status": "статус",
+      "landmark": "ориентир"
+    },
+    "unknown": "неизвестно",
+    "statuses": {
+      "present": "в текущей сцене",
+      "known": "известно",
+      "likely": "вероятно",
+      "rumored": "по слухам",
+      "unknown": "неизвестно",
+      "left_scene": "ушёл"
+    },
+    "characterFallback": "персонаж",
+    "presentLabel": "В сцене:",
+    "noNamedCharacters": "нет именованных персонажей",
+    "whereToFindLabel": "Где искать:",
+    "placeUnknown": "место не установлено"
+  },
+  "scenePanel": {
+    "day": "День {{count}}",
+    "sourceFallback": "исходный",
+    "stateAria": "Текущее состояние",
+    "collapseAria": "Свернуть состояние сцены",
+    "expandAria": "Развернуть состояние сцены",
+    "scene": "сцена",
+    "location": "локация",
+    "locationTitle": "Локация",
+    "currentScene": "Текущая сцена",
+    "locationNote": "Открыть подробности: описание, персонажи, выходы и предметы.",
+    "date": "дата",
+    "time": "время",
+    "nearby": "рядом",
+    "nobodyNearby": "Рядом никого нет.",
+    "hero": "герой",
+    "name": "имя",
+    "hp": "ХП",
+    "characterSheet": "Лист персонажа",
+    "overwriteTitle": "Перезаписать пакет «{{title}}» текущим состоянием",
+    "updateSource": "Обновить «{{title}}»",
+    "saveAsNew": "Сохранить как нового",
+    "saving": "Сохраняю…",
+    "saveToLibrary": "Сохранить в библиотеку"
+  },
+  "composer": {
+    "placeholder": "Действие игрока…",
+    "stop": "Остановить",
+    "send": "Отправить",
+    "stopSubtitle": "Прервать текущую генерацию.",
+    "sendSubtitle": "Передать действие игрока ГМ.",
+    "stopNote": "Незавершённый ход и его изменения будут отменены.",
+    "mobileSendNote": "На телефоне отправка только этой кнопкой.",
+    "keyboardSendNote": "На клавиатуре также работает Enter; Shift+Enter добавляет новую строку.",
+    "stopAria": "Остановить генерацию"
+  },
+  "voice": {
+    "emptyResult": "Пустой ответ распознавания",
+    "recognitionError": "Ошибка распознавания",
+    "httpsRequired": "Голосовой ввод работает только по HTTPS. Открой приложение по https://<IP> (запусти сервер с GM_HTTPS=1).",
+    "unsupported": "Этот браузер не поддерживает запись с микрофона.",
+    "noAccess": "Нет доступа к микрофону",
+    "recording": "Идёт запись… нажми ■, чтобы остановить",
+    "transcribing": "Распознаю…",
+    "cancelRecording": "Отменить запись",
+    "cancelVoice": "Отменить голосовое",
+    "cancelRecordingNote": "Остановит запись и не отправит аудио на распознавание.",
+    "cancelVoiceNote": "Уберёт текущую голосовую операцию.",
+    "stopRecording": "Остановить запись",
+    "input": "Голосовой ввод",
+    "stopRecordingNote": "Закончит запись и отправит аудио на распознавание.",
+    "inputNote": "Запишет речь с микрофона и вставит распознанный текст в поле ввода."
+  },
+  "quickReplies": {
+    "defaultQuestion": "Что ты делаешь дальше?",
+    "aria": "Варианты действий",
+    "show": "Показать варианты",
+    "hide": "Скрыть варианты",
+    "showNote": "Вернёт быстрые действия под поле ввода.",
+    "hideNote": "Спрячет подсказки, поле ввода останется доступным.",
+    "expandAria": "Развернуть варианты",
+    "collapseAria": "Свернуть варианты",
+    "subtitle": "Быстрый ответ игрока",
+    "sends": "отправит"
+  },
+  "usage": {
+    "tokens": "токенов",
+    "cache": "Кэш",
+    "characters": "Персонажи",
+    "gm": "ГМ",
+    "active": "активно",
+    "history": "история",
+    "historyTitle": "История",
+    "untilCompact": "до компакта",
+    "untilCompactTitle": "До компакта",
+    "summary": "сводка",
+    "tokenCountShort": "{{count}} ток",
+    "characterSessions": "Сессии персонажей",
+    "hasHistory": "есть история",
+    "notCalled": "ещё не вызывался",
+    "noCharacterSessions": "Сессий персонажей пока нет.",
+    "worldScene": "мир/сцена: {{count}} ток",
+    "run": {
+      "title": "Весь ран",
+      "shortTitle": "За ран",
+      "turns": "ходов: {{count}}",
+      "calls": "вызовов модели: {{count}}",
+      "input": "ввод: {{count}} ток",
+      "output": "вывод: {{count}} ток",
+      "cached": "кэш: {{count}} ток",
+      "gm": "ГМ: {{tokens}} ток / {{calls}} выз.",
+      "characters": "персонажи: {{tokens}} ток / {{calls}} выз.",
+      "peak": "пик контекста: {{count}} ток",
+      "time": "время: {{seconds}}s"
+    },
+    "context": {
+      "modelContext": "Контекст модели",
+      "compact": "компакт {{value}}",
+      "window": "окно {{value}}",
+      "gmContext": "ГМ контекст"
+    }
+  },
+  "tts": {
+    "pause": "Пауза",
+    "pauseNote": "Приостановить текущую озвучку.",
+    "resume": "Продолжить",
+    "resumeNote": "Возобновить озвучку с места паузы.",
+    "stop": "Стоп",
+    "stopNote": "Остановить озвучку этого сообщения.",
+    "errorRetry": "Ошибка озвучки — повторить",
+    "play": "Озвучить",
+    "playNote": "Сгенерировать и воспроизвести аудио для видимого текста."
+  },
+  "message": {
+    "gameMaster": "Гейм-мастер",
+    "gmThinking": "🧠 ГМ думает",
+    "typing": "печатает…",
+    "hiddenThoughts": "🧠 Скрытые мысли (игрок не видит)",
+    "visibleSteps": "Видимые шаги",
+    "responseBasis": "📌 Опора ответа",
+    "worldFact": "📖 факт мира (ГМ запросил)",
+    "retrying": "Повторяю…",
+    "history": {
+      "changeFailed": "Не удалось изменить историю",
+      "actionsAria": "Действия с сообщением",
+      "editTitle": "Изменить отсюда",
+      "editAria": "Изменить сообщение и пересчитать хвост",
+      "edit": "Изменить",
+      "branchTitle": "Ответвить в новый чат",
+      "branchAria": "Создать новую ветвь с этого сообщения",
+      "branch": "Ответвить",
+      "editInputAria": "Новый текст сообщения",
+      "branchInputAria": "Первое сообщение ветви",
+      "editNote": "Текущий хвост будет удалён и построен заново.",
+      "branchNote": "Оригинальный чат сохранится, продолжение откроется в новой ветви.",
+      "preparing": "Подготавливаю…",
+      "editContinue": "Изменить и продолжить",
+      "createBranch": "Создать ветвь"
+    },
+    "sceneUpdate": {
+      "title": "Сцена: {{title}}",
+      "present": "Сейчас в сцене: {{names}}",
+      "prefix": "Сцена:",
+      "inScene": "теперь в сцене",
+      "outsideScene": "теперь вне сцены"
+    },
+    "whereabouts": {
+      "title": "Местонахождение:",
+      "whereToFind": "Где искать"
+    },
+    "reject": {
+      "prefix": "✗ ГМ вернул действие",
+      "suffix": "на переделку",
+      "note": "Замечание ГМ:"
+    },
+    "meta": {
+      "cached": "{{count}}↻ кэш",
+      "line": "⏱ {{seconds}}s · {{tps}} tok/s · {{input}}↑ {{output}}↓ ток{{cached}}",
+      "input": "ввод: {{count}} ток / {{seconds}}s",
+      "fromCache": "из кэша: {{count}} ток",
+      "output": "вывод: {{count}} ток / {{seconds}}s",
+      "modelLoad": "загрузка модели: {{seconds}}s",
+      "systemPrompt": "≈ системный промпт ГМ: ~{{count}} ток (оценка, входит в «ввод»)",
+      "turnTotal": "Σ за ход:",
+      "tokenCount": "{{count}} токенов",
+      "totalDetails": " ({{input}}↑ ввод / {{output}}↓ вывод){{cached}} · {{calls}} вызовов"
+    }
+  },
+  "dice": {
+    "dieResult": "d{{sides}}: выпало {{value}}",
+    "dropped": "(отброшено правилом keep)",
+    "natural": "натуральная {{value}}",
+    "coinResult": "d2 (монета): выпало {{value}}",
+    "d3Result": "d3 (шар с 3 гранями): выпало {{value}}",
+    "d100Result": "d100 (шар-предсказание): выпало {{value}}",
+    "advantage": "преимущество",
+    "disadvantage": "помеха",
+    "modifierFrom": " от: ",
+    "totalAria": "итог {{total}}",
+    "details": "детали броска",
+    "title": "Бросок кубика",
+    "grades": {
+      "overwhelming_success": "сокрушительный успех",
+      "critical_success": "критический успех",
+      "strong_success": "уверенный успех",
+      "success": "успех",
+      "near_miss": "почти получилось",
+      "weak_failure": "лёгкая неудача",
+      "failure": "провал",
+      "major_failure": "тяжёлый провал",
+      "critical_failure": "критический провал",
+      "invalid": "неверная формула"
+    }
+  },
+  "image": {
+    "loadFailed": "Не удалось загрузить изображение",
+    "defaultAlt": "изображение",
+    "zoomOut": "Уменьшить",
+    "zoomIn": "Увеличить",
+    "reset": "Сбросить",
+    "exitFullscreen": "Выйти из полного экрана",
+    "fullscreen": "На весь экран",
+    "fitShort": "вписать",
+    "fullShort": "экран",
+    "unavailable": "Изображение недоступно",
+    "loading": "Загрузка изображения..."
+  },
+  "toasts": {
+    "genericError": "Не удалось выполнить действие",
+    "done": "Готово",
+    "closeAria": "Закрыть уведомление",
+    "hideDetails": "Скрыть детали",
+    "showDetails": "Показать детали",
+    "regionAria": "Уведомления",
+    "codes": {
+      "protagonist_required": "Выберите персонажа — без него игра не начнётся",
+      "world_lore_required": "Миру нужно описание — заполните world_lore в студии мира",
+      "world_required": "Сначала выберите мир",
+      "story_required": "Сначала выберите историю",
+      "world_not_found": "Мир не найден — возможно, он был удалён",
+      "story_not_found": "История не найдена — возможно, она была удалена",
+      "character_not_found": "Персонаж не найден — возможно, он был удалён",
+      "import_collision": "Пакет с таким id уже существует"
+    }
+  },
+  "tokenCounter": {
+    "title": "Подсчёт токенов",
+    "apiKey": "OpenAI API-ключ",
+    "keySaved": "сохранён",
+    "keyNotSaved": "не сохранён",
+    "replaceKeyPlaceholder": "заменить ключ…",
+    "keyHint": "Ключ нужен для запроса. Хранится на сервере; в открытом виде не показывается.",
+    "textPlaceholder": "Вставь текст для подсчёта токенов…",
+    "modelTitle": "Модель для подсчёта",
+    "modelNote": "Токены считаются по токенизатору выбранной модели.",
+    "modelAria": "Модель",
+    "modelsNotLoaded": "модели не загружены",
+    "counting": "Считаю…",
+    "count": "Посчитать",
+    "countFailed": "не удалось посчитать",
+    "inputTokens_one": "токен ввода",
+    "inputTokens_few": "токена ввода",
+    "inputTokens_many": "токенов ввода",
+    "inputTokens_other": "токенов ввода",
+    "characters_one": "{{count}} символ",
+    "characters_few": "{{count}} символа",
+    "characters_many": "{{count}} символов",
+    "characters_other": "{{count}} символов",
+    "endpointPrefix": "Бесплатная ручка OpenAI",
+    "endpointSuffix": " — модель не запускается. Отдаёт только число, без разбивки."
+  }
+}

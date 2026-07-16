@@ -1,3 +1,5 @@
+import { runtimeText } from "./i18n/runtime.js";
+
 function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -9,7 +11,7 @@ export function connectorIdOf(connector) {
 export function connectorName(connector) {
   return textValue(connector?.display_name || connector?.name || connector?.label)
     || connectorIdOf(connector)
-    || "Коннектор";
+    || runtimeText("connectors:catalog.fallbackName", { defaultValue: "Коннектор" });
 }
 
 export function modelIdOf(model) {
@@ -24,7 +26,11 @@ export function modelLabel(model) {
   const id = modelIdOf(model);
   const name = textValue(model?.display_name || model?.name || model?.label);
   const base = name && name !== id ? `${name} · ${id}` : id;
-  return model?.supported === false ? `${base} · экспериментальная` : base;
+  return model?.supported === false
+    ? `${base} · ${runtimeText("connectors:catalog.experimental", {
+        defaultValue: "экспериментальная",
+      })}`
+    : base;
 }
 
 export function normalizeModelBinding(binding) {

@@ -5,6 +5,7 @@ import { fmtK } from "../util.js";
 import { transcribeAudio } from "../api.js";
 import { VisibilityContext } from "../devSettings.js";
 import { setAudioSessionType } from "../ttsStore.js";
+import { useTranslation } from "react-i18next";
 
 // Pick a MediaRecorder MIME the browser actually supports, preferring Opus.
 function pickRecorderMime() {
@@ -19,23 +20,6 @@ function pickRecorderMime() {
     if (MediaRecorder.isTypeSupported?.(mime)) return mime;
   }
   return "";
-}
-
-const PLACEHOLDER = "Действие игрока…";
-const PLACEHOLDER_COMPACT = "Действие игрока…";
-
-function useCompact() {
-  const [compact, setCompact] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width:700px)").matches
-  );
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(max-width:700px)");
-    const on = (e) => setCompact(e.matches);
-    mq.addEventListener?.("change", on);
-    return () => mq.removeEventListener?.("change", on);
-  }, []);
-  return compact;
 }
 
 // True on touch devices (phones/tablets) whose primary pointer is coarse and
@@ -56,34 +40,35 @@ function useSoftKeyboard() {
   return soft;
 }
 
-function usageTitle(run) {
+function usageTitle(run, t) {
   return [
-    "Весь ран",
-    `ходов: ${run.turns || 0}`,
-    `вызовов модели: ${run.calls || 0}`,
-    `ввод: ${run.in || 0} ток`,
-    `вывод: ${run.out || 0} ток`,
-    `кэш: ${run.cached || 0} ток`,
-    `ГМ: ${run.gm_tokens || 0} ток / ${run.gm_calls || 0} выз.`,
-    `персонажи: ${run.npc_tokens || 0} ток / ${run.npc_calls || 0} выз.`,
-    `пик контекста: ${run.peak_context || 0} ток`,
-    `время: ${run.secs || 0}s`,
+    t("usage.run.title"),
+    t("usage.run.turns", { count: run.turns || 0 }),
+    t("usage.run.calls", { count: run.calls || 0 }),
+    t("usage.run.input", { count: run.in || 0 }),
+    t("usage.run.output", { count: run.out || 0 }),
+    t("usage.run.cached", { count: run.cached || 0 }),
+    t("usage.run.gm", { tokens: run.gm_tokens || 0, calls: run.gm_calls || 0 }),
+    t("usage.run.characters", { tokens: run.npc_tokens || 0, calls: run.npc_calls || 0 }),
+    t("usage.run.peak", { count: run.peak_context || 0 }),
+    t("usage.run.time", { seconds: run.secs || 0 }),
   ].join("\n");
 }
 
 function RunUsage({ run }) {
+  const { t } = useTranslation("game");
   const data = run || {};
   return (
-    <Tooltip as="aside" className="run-usage" content={usageTitle(data)}>
-      <div className="run-usage-label">За ран</div>
+    <Tooltip as="aside" className="run-usage" content={usageTitle(data, t)}>
+      <div className="run-usage-label">{t("usage.run.shortTitle")}</div>
       <div className="run-usage-main">
         <b>{fmtK(data.tokens || 0)}</b>
-        <span>токенов</span>
+        <span>{t("usage.tokens")}</span>
       </div>
       <div className="run-usage-grid">
-        <span>Кэш</span>
+        <span>{t("usage.cache")}</span>
         <b>{fmtK(data.cached || 0)}</b>
-        <span>Персонажи</span>
+        <span>{t("usage.characters")}</span>
         <b>{fmtK(data.npc_tokens || 0)}</b>
       </div>
     </Tooltip>
@@ -116,6 +101,7 @@ function DetailRow({ label, value, pct }) {
 }
 
 function ContextDetails({ context, modelWindow }) {
+  const { t } = useTranslation("game");
   const data = context || {};
   const gm = data.gm || {};
   const npcs = (data.npcs && data.npcs.length ? data.npcs : data.npc?.name ? [data.npc] : []);
@@ -126,27 +112,27 @@ function ContextDetails({ context, modelWindow }) {
   return (
     <div className="context-tip-panel">
       <div className="context-tip-head">
-        <b>Контекст модели</b>
+        <b>{t("usage.context.modelContext")}</b>
         <span>
-          компакт {gmLimit ? fmtK(gmLimit) : "?"}
-          {modelWindow ? ` · окно ${fmtK(modelWindow)}` : ""}
+          {t("usage.context.compact", { value: gmLimit ? fmtK(gmLimit) : "?" })}
+          {modelWindow ? ` · ${t("usage.context.window", { value: fmtK(modelWindow) })}` : ""}
         </span>
       </div>
 
       <div className="context-detail-card">
         <div className="context-detail-title">
-          <b style={{ color: "var(--gm)" }}>ГМ</b>
+          <b style={{ color: "var(--gm)" }}>{t("usage.gm")}</b>
           <span>{fmtK(gm.active || 0)} / {gmLimit ? fmtK(gmLimit) : "?"}</span>
         </div>
         <Meter value={gmContextPct} />
-        <DetailRow label="активно" value={`${fmtK(gm.active || 0)} / ${gmLimit ? fmtK(gmLimit) : "?"}`} pct={gmContextPct} />
-        <DetailRow label="история" value={`${fmtK(gm.history || 0)} / ${fmtK(gm.limit || 0)}`} pct={gmCompactPct} />
-        <DetailRow label="до компакта" value={`${fmtK(gm.remaining || 0)} ток`} />
-        <DetailRow label="сводка" value={`${fmtK(gm.summary || 0)} ток`} />
+        <DetailRow label={t("usage.active")} value={`${fmtK(gm.active || 0)} / ${gmLimit ? fmtK(gmLimit) : "?"}`} pct={gmContextPct} />
+        <DetailRow label={t("usage.history")} value={`${fmtK(gm.history || 0)} / ${fmtK(gm.limit || 0)}`} pct={gmCompactPct} />
+        <DetailRow label={t("usage.untilCompact")} value={t("usage.tokenCountShort", { count: fmtK(gm.remaining || 0) })} />
+        <DetailRow label={t("usage.summary")} value={t("usage.tokenCountShort", { count: fmtK(gm.summary || 0) })} />
       </div>
 
       <div className="context-detail-section">
-        <span>Сессии персонажей</span>
+        <span>{t("usage.characterSessions")}</span>
         <b>{npcs.filter((npc) => npc.has_session).length}/{npcs.length}</b>
       </div>
 
@@ -158,28 +144,29 @@ function ContextDetails({ context, modelWindow }) {
           return (
             <div className={"context-detail-card npc" + (npc.has_session ? "" : " inactive")} key={npc.id || npc.name}>
               <div className="context-detail-title">
-                <b style={{ color: npc.color || "var(--entity-unknown)" }}>{npc.name || npc.id || "персонаж"}</b>
-                <span>{npc.has_session ? "есть история" : "ещё не вызывался"}</span>
+                <b style={{ color: npc.color || "var(--entity-unknown)" }}>{npc.name || npc.id || t("scene.characterFallback")}</b>
+                <span>{npc.has_session ? t("usage.hasHistory") : t("usage.notCalled")}</span>
               </div>
               <Meter value={contextPct} />
-              <DetailRow label="активно" value={`${fmtK(npc.active || 0)} / ${npcLimit ? fmtK(npcLimit) : "?"}`} pct={contextPct} />
+              <DetailRow label={t("usage.active")} value={`${fmtK(npc.active || 0)} / ${npcLimit ? fmtK(npcLimit) : "?"}`} pct={contextPct} />
               <Meter value={compactPct} />
-              <DetailRow label="история" value={`${fmtK(npc.history || 0)} / ${fmtK(npc.limit || 0)}`} pct={compactPct} />
-              <DetailRow label="до компакта" value={`${fmtK(npc.remaining || 0)} ток`} />
-              {npc.summary ? <DetailRow label="сводка" value={`${fmtK(npc.summary)} ток`} /> : null}
+              <DetailRow label={t("usage.history")} value={`${fmtK(npc.history || 0)} / ${fmtK(npc.limit || 0)}`} pct={compactPct} />
+              <DetailRow label={t("usage.untilCompact")} value={t("usage.tokenCountShort", { count: fmtK(npc.remaining || 0) })} />
+              {npc.summary ? <DetailRow label={t("usage.summary")} value={t("usage.tokenCountShort", { count: fmtK(npc.summary) })} /> : null}
             </div>
           );
         })
       ) : (
-        <div className="context-detail-empty">Сессий персонажей пока нет.</div>
+        <div className="context-detail-empty">{t("usage.noCharacterSessions")}</div>
       )}
 
-      <div className="context-detail-foot">мир/сцена: {fmtK(data.world || 0)} ток</div>
+      <div className="context-detail-foot">{t("usage.worldScene", { count: fmtK(data.world || 0) })}</div>
     </div>
   );
 }
 
 function ContextUsage({ context, modelWindow }) {
+  const { t } = useTranslation("game");
   const data = context || {};
   const gm = data.gm || {};
   const gmActive = gm.active || data.current || 0;
@@ -192,19 +179,19 @@ function ContextUsage({ context, modelWindow }) {
       tipClassName="context-tip"
       content={<ContextDetails context={data} modelWindow={modelWindow} />}
     >
-      <div className="context-usage-label">ГМ контекст</div>
+      <div className="context-usage-label">{t("usage.context.gmContext")}</div>
       <div className="context-usage-main">
         <b>{fmtK(gmActive)}</b>
-        <span>токенов</span>
+        <span>{t("usage.tokens")}</span>
         {gm.limit ? <em>{contextPct}%</em> : null}
       </div>
       <div className="context-meter" aria-hidden="true">
         <span style={{ width: `${contextPct}%` }} />
       </div>
       <div className="context-usage-grid">
-        <span>История</span>
+        <span>{t("usage.historyTitle")}</span>
         <b>{fmtK(gm.history || 0)} / {fmtK(gm.limit || 0)} · {compactPct}%</b>
-        <span>До компакта</span>
+        <span>{t("usage.untilCompactTitle")}</span>
         <b>{fmtK(gm.remaining || 0)}</b>
       </div>
     </Tooltip>
@@ -212,8 +199,9 @@ function ContextUsage({ context, modelWindow }) {
 }
 
 function QuickReplies({ playerOptions, busy, onPick }) {
+  const { t } = useTranslation("game");
   const options = Array.isArray(playerOptions?.options) ? playerOptions.options : [];
-  const question = playerOptions?.question || "Что ты делаешь дальше?";
+  const question = playerOptions?.question || t("quickReplies.defaultQuestion");
   const [collapsed, setCollapsed] = useState(false);
   // Re-expand automatically whenever a fresh batch of suggestions arrives.
   const sig = options.map((o) => o.label).join("|") + "::" + question;
@@ -224,7 +212,7 @@ function QuickReplies({ playerOptions, busy, onPick }) {
   return (
     <section
       className={"quick-replies" + (collapsed ? " collapsed" : "")}
-      aria-label="Варианты действий"
+      aria-label={t("quickReplies.aria")}
     >
       <div className="quick-replies-head">
         <span className="quick-replies-q">{question}</span>
@@ -234,8 +222,8 @@ function QuickReplies({ playerOptions, busy, onPick }) {
           focusable={false}
           content={
             <TipContent
-              title={collapsed ? "Показать варианты" : "Скрыть варианты"}
-              note={collapsed ? "Вернёт быстрые действия под поле ввода." : "Спрячет подсказки, поле ввода останется доступным."}
+              title={collapsed ? t("quickReplies.show") : t("quickReplies.hide")}
+              note={collapsed ? t("quickReplies.showNote") : t("quickReplies.hideNote")}
             />
           }
         >
@@ -244,7 +232,7 @@ function QuickReplies({ playerOptions, busy, onPick }) {
             className="quick-replies-toggle"
             onClick={() => setCollapsed((c) => !c)}
             aria-expanded={!collapsed}
-            aria-label={collapsed ? "Развернуть варианты" : "Свернуть варианты"}
+            aria-label={collapsed ? t("quickReplies.expandAria") : t("quickReplies.collapseAria")}
           >
             <Icon name={collapsed ? "chevron-up" : "chevron-down"} size={14} />
           </button>
@@ -261,8 +249,8 @@ function QuickReplies({ playerOptions, busy, onPick }) {
               content={
                 <TipContent
                   title={option.label}
-                  subtitle="Быстрый ответ игрока"
-                  rows={[["отправит", option.message]]}
+                  subtitle={t("quickReplies.subtitle")}
+                  rows={[[t("quickReplies.sends"), option.message]]}
                 />
               }
             >
@@ -295,9 +283,9 @@ export default function Composer({
   modelWindow,
   speechToTextEnabled = false,
 }) {
+  const { t } = useTranslation("game");
   const [value, setValue] = useState("");
   const ref = useRef(null);
-  const compact = useCompact();
   const softKeyboard = useSoftKeyboard();
   const vis = useContext(VisibilityContext);
 
@@ -382,15 +370,15 @@ export default function Composer({
           blobRef.current = null;
           insertTranscript(text);
         } else {
-          setVoiceError("Пустой ответ распознавания");
+          setVoiceError(t("voice.emptyResult"));
         }
       } catch (err) {
         if (token !== attemptRef.current) return;
         setTranscribing(false);
-        setVoiceError(err?.message || "Ошибка распознавания");
+        setVoiceError(err?.message || t("voice.recognitionError"));
       }
     },
-    [insertTranscript]
+    [insertTranscript, t]
   );
 
   const startRecording = useCallback(async () => {
@@ -399,8 +387,8 @@ export default function Composer({
     if (!micApi) {
       setVoiceError(
         insecureContext
-          ? "Голосовой ввод работает только по HTTPS. Открой приложение по https://<IP> (запусти сервер с GM_HTTPS=1)."
-          : "Этот браузер не поддерживает запись с микрофона."
+          ? t("voice.httpsRequired")
+          : t("voice.unsupported")
       );
       return;
     }
@@ -429,9 +417,9 @@ export default function Composer({
     } catch {
       stopStream();
       setRecording(false);
-      setVoiceError("Нет доступа к микрофону");
+      setVoiceError(t("voice.noAccess"));
     }
-  }, [recording, transcribing, sendVoice, stopStream, micApi, insecureContext]);
+  }, [recording, transcribing, sendVoice, stopStream, micApi, insecureContext, t]);
 
   const stopRecording = useCallback(() => {
     const rec = recRef.current;
@@ -514,9 +502,9 @@ export default function Composer({
     : "idle";
   const showVoice = voiceState !== "idle";
   const voiceLabel = recording
-    ? "Идёт запись… нажми ■, чтобы остановить"
+    ? t("voice.recording")
     : transcribing
-    ? "Распознаю…"
+    ? t("voice.transcribing")
     : voiceError;
 
   return (
@@ -533,7 +521,7 @@ export default function Composer({
               <span className="voice-text">{voiceLabel}</span>
               {voiceState === "error" && blobRef.current ? (
                 <button type="button" className="voice-retry" onClick={retryVoice}>
-                  Повторить
+                  {t("actions.retry")}
                 </button>
               ) : null}
               <Tooltip
@@ -542,8 +530,8 @@ export default function Composer({
                 focusable={false}
                 content={
                   <TipContent
-                    title={recording ? "Отменить запись" : "Отменить голосовое"}
-                    note={recording ? "Остановит запись и не отправит аудио на распознавание." : "Уберёт текущую голосовую операцию."}
+                    title={recording ? t("voice.cancelRecording") : t("voice.cancelVoice")}
+                    note={recording ? t("voice.cancelRecordingNote") : t("voice.cancelVoiceNote")}
                   />
                 }
               >
@@ -551,7 +539,7 @@ export default function Composer({
                   type="button"
                   className="voice-cancel"
                   onClick={cancelVoice}
-                  aria-label={recording ? "Отменить запись" : "Отменить голосовое"}
+                  aria-label={recording ? t("voice.cancelRecording") : t("voice.cancelVoice")}
                 >
                   <Icon name="x" size={13} />
                 </button>
@@ -565,7 +553,7 @@ export default function Composer({
                 ref={ref}
                 rows={1}
                 value={value}
-                placeholder={compact || softKeyboard ? PLACEHOLDER_COMPACT : PLACEHOLDER}
+                placeholder={t("composer.placeholder")}
                 autoComplete="off"
                 onChange={(e) => setValue(e.target.value)}
                 onKeyDown={onKeyDown}
@@ -578,8 +566,8 @@ export default function Composer({
                     focusable={false}
                     content={
                       <TipContent
-                        title={recording ? "Остановить запись" : "Голосовой ввод"}
-                        note={recording ? "Закончит запись и отправит аудио на распознавание." : "Запишет речь с микрофона и вставит распознанный текст в поле ввода."}
+                        title={recording ? t("voice.stopRecording") : t("voice.input")}
+                        note={recording ? t("voice.stopRecordingNote") : t("voice.inputNote")}
                       />
                     }
                   >
@@ -589,7 +577,7 @@ export default function Composer({
                       data-recording={recording ? "true" : "false"}
                       onClick={toggleRecord}
                       disabled={transcribing}
-                      aria-label={recording ? "Остановить запись" : "Голосовой ввод"}
+                      aria-label={recording ? t("voice.stopRecording") : t("voice.input")}
                     >
                       {recording ? <Icon name="square" size={14} /> : <Icon name="mic" size={16} />}
                     </button>
@@ -601,14 +589,14 @@ export default function Composer({
                   focusable={false}
                     content={
                       <TipContent
-                        title={generating ? "Остановить" : "Отправить"}
-                        subtitle={generating ? "Прервать текущую генерацию." : "Передать действие игрока ГМ."}
+                        title={generating ? t("composer.stop") : t("composer.send")}
+                        subtitle={generating ? t("composer.stopSubtitle") : t("composer.sendSubtitle")}
                         note={
                           generating
-                            ? "Незавершённый ход и его изменения будут отменены."
+                            ? t("composer.stopNote")
                             : softKeyboard
-                            ? "На телефоне отправка только этой кнопкой."
-                            : "На клавиатуре также работает Enter; Shift+Enter добавляет новую строку."
+                            ? t("composer.mobileSendNote")
+                            : t("composer.keyboardSendNote")
                         }
                       />
                     }
@@ -620,7 +608,7 @@ export default function Composer({
                       data-mode={generating ? "stop" : "send"}
                       onClick={generating ? onStop : submit}
                       disabled={generating ? typeof onStop !== "function" : busy || !value.trim()}
-                      aria-label={generating ? "Остановить генерацию" : "Отправить"}
+                      aria-label={generating ? t("composer.stopAria") : t("composer.send")}
                     >
                       <span className="send-ico" aria-hidden="true">
                         <Icon name={generating ? "square" : "arrow-up"} size={generating ? 13 : 17} strokeWidth={2} />

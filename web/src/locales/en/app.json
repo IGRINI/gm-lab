@@ -1,0 +1,98 @@
+{
+  "nav": {
+    "backToLibrary": "← Library"
+  },
+  "defaults": {
+    "nextQuestion": "What do you do next?",
+    "startingScene": "starting scene",
+    "newWorld": "New world",
+    "character": "Character"
+  },
+  "status": {
+    "gmThinking": "GM is thinking…",
+    "gmTool": "GM: {{tool}}…",
+    "npcTyping": "{{name}} is typing…",
+    "stopping": "Stopping…",
+    "launchingGame": "Starting game…",
+    "savingWorld": "Saving world…",
+    "openingGame": "Opening game…"
+  },
+  "commands": {
+    "newGame": "New game",
+    "newStory": "New story: {{scene}}",
+    "constraintAdded": "Scene constraint added",
+    "worldEventAdded": "Event added to the world"
+  },
+  "prompts": {
+    "characterName": "New character name"
+  },
+  "api": {
+    "importFailed": "Import failed ({{status}})",
+    "exportFailed": "Export failed ({{status}})",
+    "transcriptionFailed": "Transcription failed ({{status}})",
+    "architectUnavailable": "The architect is unavailable (HTTP {{status}})",
+    "invalidTurnEvent": "The server sent a damaged turn event",
+    "requestIdFailed": "Could not create a turn identifier",
+    "invalidTurnRequest": "Invalid turn request",
+    "turnFailed": "The turn failed",
+    "turnStreamMissing": "The server did not open the turn stream",
+    "eventAfterTurn": "The server sent an event after the turn had finished",
+    "turnResultUnconfirmed": "The server did not confirm the turn result",
+    "wrongTurnConfirmed": "The server confirmed another turn",
+    "connectionClosedBeforeTurn": "The connection closed before the turn was confirmed"
+  },
+  "notices": {
+    "turnAlreadyCommitted": "The turn had already been saved; its result is now shown.",
+    "sheetSaved": "Sheet “{{title}}” saved (v{{version}})",
+    "characterSaved": "Character “{{title}}” saved (v{{version}})",
+    "protagonistSaved": "Protagonist “{{title}}” saved to the library"
+  },
+  "errors": {
+    "incompleteChatPayload": "The server returned incomplete chat data. Missing: {{fields}}",
+    "chatsLoad": "Could not load games",
+    "worldsLoad": "Could not load worlds",
+    "sidecarUnavailable": "Inference status is unavailable",
+    "storiesLoad": "Could not load stories",
+    "charactersLoad": "Could not load characters",
+    "connectorModelsLoad": "Could not load connector models",
+    "connectorModelsMismatch": "The server returned models for another connector",
+    "connectorsLoad": "Could not load connectors",
+    "stateLoad": "Could not load state",
+    "transcriptLoad": "Could not load history",
+    "turnFailed": "The turn failed",
+    "turnCommittedTranscriptRefresh": "The turn finished, but its history could not be refreshed",
+    "turnTranscriptRefresh": "The turn completed, but its history could not be refreshed",
+    "turnChatsRefresh": "The turn completed, but the game list could not be refreshed",
+    "stopNotConfirmed": "The server did not confirm that generation stopped",
+    "stopFailed": "Could not stop generation",
+    "commandFailed": "The command failed",
+    "invalidRewindMessage": "This message cannot be used as a rewind point",
+    "openGameFirst": "Open a game first",
+    "waitForCurrentAction": "Wait for the current action to finish",
+    "turnNoLongerEditable": "This turn can no longer be changed",
+    "historyMutationFailed": "The history change was not applied",
+    "gameCreate": "Could not create the game",
+    "worldCreate": "Could not save the world",
+    "gameOpen": "Could not open the game",
+    "gameDelete": "Could not delete the game",
+    "worldDelete": "Could not delete the world",
+    "storyDelete": "Could not delete the story",
+    "exportFailed": "Export failed",
+    "characterRename": "Could not rename the character",
+    "characterDelete": "Could not delete the character",
+    "noActiveGame": "There is no active game",
+    "characterSave": "Could not save the character",
+    "protagonistSave": "Could not save the protagonist",
+    "libraryReveal": "Could not open the library folder",
+    "modelSwitch": "Could not switch models",
+    "settingsSave": "Could not save settings",
+    "authExpired": "Authorization has expired",
+    "authStatusUnavailable": "Authorization status is unavailable",
+    "connectorConnect": "Could not connect {{name}}",
+    "connectorCancel": "Could not cancel the {{name}} connection",
+    "connectorCancelNotConfirmed": "Cancellation of the {{name}} connection was not confirmed",
+    "connectorDisconnect": "Could not disconnect {{name}}",
+    "connectorDisconnectNotConfirmed": "Disconnection of {{name}} was not confirmed",
+    "gameReset": "Could not reset the game"
+  }
+}

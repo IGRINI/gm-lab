@@ -438,7 +438,10 @@ async fn build_connectors(
     settings: Arc<RuntimeSettings>,
     dirs: &AppDirs,
 ) -> Result<(Arc<ConnectorRegistry>, ModelBinding), String> {
-    let registry = Arc::new(ConnectorRegistry::new());
+    let response_language_settings = settings.clone();
+    let registry = Arc::new(ConnectorRegistry::with_response_language_source(
+        move || response_language_settings.response_language(None),
+    ));
     registry
         .register(Arc::new(MockConnector))
         .map_err(|error| error.to_string())?;

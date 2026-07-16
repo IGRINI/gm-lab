@@ -1,0 +1,61 @@
+{
+  "actions": {
+    "cancel": "Cancel",
+    "cancelAction": "Cancel",
+    "close": "Close",
+    "connect": "Connect",
+    "logout": "Sign out",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "save": "Save"
+  },
+  "nav": {
+    "sections": "Sections",
+    "game": "Game",
+    "library": "Library",
+    "imageLab": "Image Lab"
+  },
+  "search": {
+    "open": "Open global search",
+    "label": "Search"
+  },
+  "model": {
+    "label": "Model",
+    "tooltip": "The model that will handle the next turn.",
+    "changeNote": "The change applies to new requests and does not switch a response already in progress.",
+    "refresh": "Refresh models",
+    "refreshNote": "Request the model list from the current connector again."
+  },
+  "sidebar": {
+    "hide": "Hide chats and worlds",
+    "show": "Show chats and worlds",
+    "hideNote": "Free up space for the current scene and conversation.",
+    "showNote": "Open the sidebar with chats and worlds.",
+    "collapse": "Collapse chats and worlds",
+    "expand": "Expand chats and worlds"
+  },
+  "usage": {
+    "input": "input",
+    "output": "output",
+    "cache": "cache",
+    "total": "total"
+  },
+  "duration": {
+    "seconds_one": "{{count}} sec",
+    "seconds_few": "{{count}} sec",
+    "seconds_many": "{{count}} sec",
+    "seconds_other": "{{count}} sec",
+    "minutes_one": "{{count}} min",
+    "minutes_few": "{{count}} min",
+    "minutes_many": "{{count}} min",
+    "minutes_other": "{{count}} min",
+    "hours_one": "{{count}} hr",
+    "hours_few": "{{count}} hr",
+    "hours_many": "{{count}} hr",
+    "hours_other": "{{count}} hr",
+    "days_one": "{{count}} day",
+    "days_few": "{{count}} days",
+    "days_many": "{{count}} days",
+    "days_other": "{{count}} days"
+  }
+}

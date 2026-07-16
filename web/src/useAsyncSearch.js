@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.js";
+import { useTranslation } from "react-i18next";
 
 const EMPTY_RESULT = { items: [], total: 0, hasMore: false };
 
@@ -8,6 +9,7 @@ const EMPTY_RESULT = { items: [], total: 0, hasMore: false };
 // request on every change and also keeps a sequence guard for environments
 // where an already-resolved fetch cannot be cancelled in time.
 export default function useAsyncSearch(params, { enabled = true, delay = 220 } = {}) {
+  const { i18n, t } = useTranslation("game");
   const requestKey = JSON.stringify(params || {});
   const request = useMemo(() => JSON.parse(requestKey), [requestKey]);
   const sequenceRef = useRef(0);
@@ -39,7 +41,7 @@ export default function useAsyncSearch(params, { enabled = true, delay = 220 } =
       abortRef.current = controller;
       try {
         const data = await api.search(request, { signal: controller.signal });
-        if (!data?.ok) throw new Error("Поиск временно недоступен");
+        if (!data?.ok) throw new Error(t("search.unavailable"));
         if (controller.signal.aborted || sequence !== sequenceRef.current) return;
         setResult({
           items: Array.isArray(data.items) ? data.items : [],
@@ -49,7 +51,7 @@ export default function useAsyncSearch(params, { enabled = true, delay = 220 } =
         setError("");
       } catch {
         if (controller.signal.aborted || sequence !== sequenceRef.current) return;
-        setError("Поиск временно недоступен");
+        setError(t("search.unavailable"));
       } finally {
         if (!controller.signal.aborted && sequence === sequenceRef.current) {
           setInitialLoading(false);
@@ -65,7 +67,7 @@ export default function useAsyncSearch(params, { enabled = true, delay = 220 } =
     // `result.items.length` intentionally stays out: retaining prior results is
     // presentation state and must not restart the network request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestKey, enabled, delay]);
+  }, [requestKey, enabled, delay, i18n.language, t]);
 
   return {
     ...result,

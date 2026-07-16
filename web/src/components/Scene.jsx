@@ -1,6 +1,7 @@
 import { useContext } from "react";
 import { StatusLabelsContext } from "../statusContext.js";
 import Tooltip from "./Tooltip.jsx";
+import { useTranslation } from "react-i18next";
 
 function SceneTipRow({ label, value }) {
   if (!value) return null;
@@ -13,6 +14,7 @@ function SceneTipRow({ label, value }) {
 }
 
 function SceneNpcTip({ npc, label, status, place }) {
+  const { t } = useTranslation("game");
   const role = npc?.role || "";
   const type = npc?.physical_type || "";
   const features = npc?.distinctive_features || "";
@@ -20,16 +22,16 @@ function SceneNpcTip({ npc, label, status, place }) {
   return (
     <div className="scene-tip">
       <div className="scene-tip-head">
-        <span>{place ? "где искать" : "в сцене"}</span>
+        <span>{place ? t("scene.whereToFind") : t("scene.inScene")}</span>
         <b>{label}</b>
       </div>
       <div className="scene-tip-rows">
-        <SceneTipRow label="роль" value={role} />
-        <SceneTipRow label="тип" value={type} />
-        <SceneTipRow label="приметы" value={features} />
-        <SceneTipRow label="состояние" value={condition} />
-        <SceneTipRow label="статус" value={status} />
-        <SceneTipRow label="ориентир" value={place} />
+        <SceneTipRow label={t("scene.fields.role")} value={role} />
+        <SceneTipRow label={t("scene.fields.type")} value={type} />
+        <SceneTipRow label={t("scene.fields.features")} value={features} />
+        <SceneTipRow label={t("scene.fields.condition")} value={condition} />
+        <SceneTipRow label={t("scene.fields.status")} value={status} />
+        <SceneTipRow label={t("scene.fields.landmark")} value={place} />
       </div>
     </div>
   );
@@ -55,13 +57,14 @@ function normalizeStoryBrief(storyBrief) {
 }
 
 export default function Scene({ storyBrief, scene, npcs }) {
+  const { t } = useTranslation("game");
   const statusLabels = useContext(StatusLabelsContext);
   const brief = normalizeStoryBrief(storyBrief);
   if (brief) {
     return (
       <div className="scene story-brief-card">
-        <div className="lead">История</div>
-        <div className="scene-title">{brief.title || "Вступление"}</div>
+        <div className="lead">{t("scene.story")}</div>
+        <div className="scene-title">{brief.title || t("scene.introduction")}</div>
         <div className="scene-desc">{brief.text}</div>
       </div>
     );
@@ -81,16 +84,19 @@ export default function Scene({ storyBrief, scene, npcs }) {
         return (w.status && w.status !== "unknown") || w.location_name || w.details;
       })
     : [];
-  const statusText = (status) => statusLabels[status] || status || "неизвестно";
-  const npcLabel = (npc) => npc?.label || npc?.name || npc?.public_label || npc?.id || "персонаж";
+  const statusText = (status) => ["present", "known", "likely", "rumored", "unknown", "left_scene"].includes(status)
+    ? t(`scene.statuses.${status}`)
+    : statusLabels[status] || status || t("scene.unknown");
+  const npcLabel = (npc) => npc?.label || npc?.name || npc?.public_label || npc?.id
+    || t("scene.characterFallback");
 
   return (
     <div className="scene">
-      <div className="lead">Сцена</div>
+      <div className="lead">{t("scene.title")}</div>
       <div className="scene-title">{title}</div>
       {description && <div className="scene-desc">{description}</div>}
       <div className="legend">
-        <span className="legend-label">В сцене:</span>
+        <span className="legend-label">{t("scene.presentLabel")}</span>
         {present.length ? present.map((n) => (
           <Tooltip
             key={n.id || npcLabel(n)}
@@ -101,14 +107,14 @@ export default function Scene({ storyBrief, scene, npcs }) {
             <span className="dot" style={{ "--c": n.color || "var(--entity-unknown)" }} />
             <span style={{ color: n.color || "var(--entity-unknown)" }}>{npcLabel(n)}</span>
           </Tooltip>
-        )) : <span>нет именованных персонажей</span>}
+        )) : <span>{t("scene.noNamedCharacters")}</span>}
       </div>
       {offscreen.length > 0 && (
         <div className="whereabouts-list">
-          <div className="legend-label">Где искать:</div>
+          <div className="legend-label">{t("scene.whereToFindLabel")}</div>
           {offscreen.map((n) => {
             const w = whereabouts[n.id] || {};
-            const place = w.location_name || w.location_id || "место не установлено";
+            const place = w.location_name || w.location_id || t("scene.placeUnknown");
             return (
               <Tooltip
                 as="div"

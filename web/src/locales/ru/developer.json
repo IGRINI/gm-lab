@@ -1,0 +1,324 @@
+{
+  "common": {
+    "result": "результат",
+    "noChanges": "без изменений"
+  },
+  "references": {
+    "character": "персонаж",
+    "player": "игрок",
+    "role": "роль: {{value}}",
+    "pronouns": "род: {{value}}"
+  },
+  "raw": {
+    "toolName": "Сырое имя инструмента модели: {{name}}",
+    "callJson": "сырой вызов (JSON)",
+    "resultJson": "сырой результат (JSON)"
+  },
+  "time": {
+    "lessThanMinute": "меньше минуты",
+    "daysShort": "{{count}} дн",
+    "hoursShort": "{{count}} ч",
+    "minutesShort": "{{count}} мин",
+    "plusMinutes": "+{{count}} мин"
+  },
+  "status": {
+    "unknown": "неизвестно",
+    "help": {
+      "default": "Статус уверенности по местонахождению персонажа.",
+      "known": "Местонахождение установлено как рабочий факт текущей истории.",
+      "likely": "Это вероятное местонахождение, но не железное подтверждение.",
+      "rumored": "Это слух или непроверенная зацепка.",
+      "unknown": "Точное местонахождение не установлено.",
+      "present": "Персонаж находится в текущей сцене."
+    }
+  },
+  "fields": {
+    "situation": { "label": "Ситуация", "help": "Коротко и нейтрально описывает, что персонаж видит или слышит и на что должен отреагировать." },
+    "gmCorrection": { "label": "Правка ГМ", "help": "Почему предыдущий ответ персонажа был отправлен на переделку." },
+    "location": { "label": "Где", "help": "Позиция или место персонажа относительно текущей сцены." },
+    "activity": { "label": "Занятие", "help": "Что персонаж сейчас делает видимо для игрока." },
+    "attitude": { "label": "Настрой", "help": "Видимый настрой или отношение персонажа в этой сцене." },
+    "reason": { "label": "Почему", "help": "Причина, по которой ГМ меняет состояние мира или вызывает инструмент." },
+    "source": { "label": "Источник", "help": "Откуда взялась информация о местонахождении." },
+    "details": { "label": "Детали", "help": "Дополнительная видимая или известная информация." },
+    "inScene": { "label": "В сцене", "help": "Именованные персонажи, которые присутствуют в новой сцене." },
+    "exits": { "label": "Выходы", "help": "Видимые пути, куда игрок может пойти из текущей сцены." },
+    "items": { "label": "Предметы", "help": "Видимые объекты сцены, с которыми потенциально можно взаимодействовать." },
+    "constraints": { "label": "Ограничения", "help": "Физические или ситуационные рамки сцены." },
+    "tension": { "label": "Напряжение", "help": "Текущий тон давления в сцене." },
+    "purpose": { "label": "Зачем", "help": "Какой неопределённый исход проверяет бросок." },
+    "check": { "label": "Проверка" },
+    "knownName": { "label": "Известное имя" }
+  },
+  "worldState": {
+    "types": {
+      "record": "запись",
+      "fact": "факт",
+      "rumor": "слух",
+      "npc_memory": "память NPC",
+      "relationship": "отношение",
+      "goal": "цель",
+      "public_lookup": "публичный факт"
+    },
+    "operations": { "add": "добавить", "update": "изменить", "delete": "удалить" },
+    "operationResults": { "add": "добавлено", "update": "изменено", "delete": "удалено" },
+    "scopes": {
+      "public": "публично",
+      "gm": "ГМ",
+      "npc": "только NPC",
+      "shared": "общее",
+      "player": "игрок",
+      "owner": "владелец",
+      "subject": "субъект",
+      "participants": "участники"
+    }
+  },
+  "profilePresets": {
+    "visible": "видимое",
+    "social": "социальное",
+    "mechanics": "механика",
+    "status": "состояние",
+    "identity": "личность"
+  },
+  "bible": {
+    "sectionsLabel": "Разделы лора",
+    "operations": { "add": "Добавлено", "remove": "Убрано", "replace": "Заменено" },
+    "set": {
+      "title": "Название",
+      "genre": "Жанр",
+      "tone": "Тон",
+      "world_size": "Размер мира",
+      "population": "Население",
+      "public_premise": "Публичная предпосылка",
+      "hidden_premise": "Скрытая предпосылка (GM)",
+      "world_image_prompt_en": "Промпт изображения мира (EN)",
+      "world_map_prompt_en": "Промпт карты мира (EN)"
+    },
+    "sections": {
+      "dogmas": "догматы",
+      "world_laws": "законы мира",
+      "inhabitants": "народы",
+      "creatures": "существа",
+      "regions": "регионы",
+      "power_centers": "власть",
+      "religions": "вера",
+      "gods": "боги",
+      "cultures": "культуры",
+      "history": "история",
+      "economy": "экономика",
+      "daily_life": "быт",
+      "story_hooks": "зацепки",
+      "hidden_secrets": "секреты",
+      "location_rules": "правила локаций",
+      "prohibited_elements": "запреты"
+    }
+  },
+  "tools": {
+    "help": {
+      "default": "Служебный инструмент ГМ. Подробности видны в сыром JSON ниже.",
+      "ask_npc": "ГМ спрашивает отдельного персонажа, что тот говорит или делает.",
+      "move_npc": "Обновляет присутствие персонажа в текущей сцене.",
+      "set_npc_presence": "Обновляет присутствие персонажа в текущей сцене.",
+      "set_npc_whereabouts": "Запоминает, где искать отсутствующего персонажа.",
+      "set_scene": "Заменяет текущую сцену, когда игрок пришёл в новое место.",
+      "roll_dice": "Бросок по D&D 5e для действия с неопределённым исходом.",
+      "get_world_fact": "Проверяет факты и сведения в памяти мира.",
+      "ask_player": "Предлагает игроку быстрые варианты действий.",
+      "query_world_state": "Ищет записи в памяти мира в нужной области видимости.",
+      "update_world_state": "Записывает факты, слухи, память NPC, отношения и цели.",
+      "update_player_character": "Обновляет лист персонажа игрока.",
+      "advance_time": "Сдвигает скрытые часы мира.",
+      "get_npc_profile": "Запрашивает отдельные поля карточки NPC.",
+      "tool_search": "Догружает скрытый инструмент по ключевым словам.",
+      "draft_world_bible": "Создаёт или обновляет структурированный черновик мира.",
+      "edit_world_bible": "Точечно правит отдельные поля и разделы мира."
+    },
+    "askNpc": { "title": "Запрос к персонажу — ", "redoTitle": "Возврат ответа — " },
+    "npcPresence": {
+      "title": "Присутствие в сцене — ",
+      "present": "входит в сцену", "presentHelp": "Персонаж добавлен в текущую сцену.",
+      "absent": "покидает сцену", "absentHelp": "Персонаж убран из текущей сцены.",
+      "visible": "виден", "visibleHelp": "Игрок и сцена могут видеть персонажа.",
+      "hidden": "скрыт", "hiddenHelp": "Персонаж присутствует неявно или вне видимости игрока.",
+      "hears": "слышит", "hearsHelp": "Персонаж находится в зоне слышимости текущей сцены.",
+      "deaf": "не слышит", "deafHelp": "Персонаж не слышит текущую сцену и не должен реагировать на разговор."
+    },
+    "whereabouts": { "title": "Местонахождение — ", "placeHelp": "Место, где персонажа можно искать по текущим сведениям." },
+    "setScene": {
+      "title": "Смена сцены", "titleHelp": "Название новой текущей сцены.",
+      "exitDestination": "куда ведёт: {{value}}", "exitHidden": "сейчас не виден", "exitVisible": "видимый выход",
+      "exitBlocked": "заблокирован: {{value}}", "exit": "выход", "blockedHelp": "Почему этот выход сейчас нельзя использовать свободно.",
+      "itemLocation": "где: {{value}}", "itemOwner": "владелец: {{value}}", "itemPortable": "можно взять",
+      "itemFixed": "не переносится как обычный предмет", "item": "предмет",
+      "constraintHelp": "Физическое, социальное или ситуационное правило сцены, которое ГМ должен учитывать."
+    },
+    "rollDice": {
+      "title": "Бросок кубика", "notationHelp": "Формула броска, например 1d20 или 2d20kh1.",
+      "kindHelp": "Тип броска, выбранный до результата.", "targetHelp": "Целевое число зафиксировано до броска."
+    },
+    "getWorldFact": { "title": "Запрос к памяти мира", "queryHelp": "Запрос к памяти мира: ГМ должен проверять факты, а не придумывать их." },
+    "askPlayer": { "title": "Варианты для игрока", "questionHelp": "Вопрос-подсказка над кнопками быстрых ответов.", "option": "вариант {{number}}" },
+    "updateWorldState": { "title": "Запись в память мира", "empty": "нет записей" },
+    "queryWorldState": { "title": "Поиск в памяти мира", "scopeHelp": "Область видимости, в которой ищет ГМ.", "queryHelp": "Поисковый запрос ГМ к памяти мира." },
+    "updatePlayer": { "title": "Лист персонажа игрока" },
+    "advanceTime": { "title": "Сдвиг времени", "minutesHelp": "Сколько внутриигровых минут прошло за этот ход." },
+    "getNpcProfile": { "title": "Карточка персонажа — ", "presetHelp": "Группа полей карточки, которую запросил ГМ." },
+    "toolSearch": { "title": "Поиск инструмента ГМ", "queryHelp": "Запрос ГМ на загрузку скрытого инструмента." },
+    "draftBible": { "title": "Черновик мира", "titleHelp": "Название мира в черновике." },
+    "editBible": { "title": "Правка мира" },
+    "fallback": { "title": "ГМ вызвал инструмент", "noArguments": "нет аргументов" }
+  },
+  "playerCards": {
+    "timeElapsed": "Прошло {{value}}",
+    "sheetUpdated": "Лист персонажа обновлён"
+  },
+  "factStatus": {
+    "known": "известно", "likely": "вероятно", "rumored": "слух", "confirmed": "подтверждено", "unknown": "неизвестно"
+  },
+  "queryKinds": {
+    "public_lookup": "публичный факт", "public_intro": "публичный факт", "gm_canon": "канон ГМ", "hidden_event": "скрытое событие"
+  },
+  "results": {
+    "recordId": "id записи: {{id}}",
+    "noNew": "нового нет", "nothingFound": "ничего не найдено", "found": "найдено: {{count}}",
+    "alreadyDelivered": "уже было: {{count}}", "saved": "сохранено: {{count}}", "rejected": "отклонено: {{count}}",
+    "notSaved": "Не сохранено", "writeError": "ошибка записи", "revision": "ревизия {{value}}", "noFields": "нет полей",
+    "fallbackTitle": "Результат",
+    "worldFact": { "title": "Память мира — ответ" },
+    "worldQuery": { "title": "Память мира — найдено" },
+    "worldUpdate": { "title": "Память мира — записано" },
+    "npcProfile": { "title": "Карточка — " },
+    "worldTime": { "title": "Время мира" },
+    "playerSheet": { "title": "Лист персонажа — обновлён" },
+    "toolSearch": { "title": "Инструменты ГМ" },
+    "sources": {
+      "label": "Источники", "kind": "тип: {{value}}", "status": "статус: {{value}}",
+      "source": "источник: {{value}}", "relevance": "релевантность: {{value}}"
+    },
+    "help": {
+      "default": "Результат инструмента ГМ.",
+      "get_world_fact": "Что память мира вернула на запрос ГМ.",
+      "query_world_state": "Что нашёл поиск ГМ по памяти мира.",
+      "update_world_state": "Итог записи в память мира.",
+      "get_npc_profile": "Поля карточки NPC, которые вернул запрос.",
+      "advance_time": "Новое состояние часов мира после сдвига.",
+      "update_player_character": "Какие поля листа персонажа изменились.",
+      "tool_search": "Какие скрытые инструменты загрузил ГМ."
+    }
+  },
+  "debug": {
+    "common": {
+      "add": "Добавить", "apply": "Применить", "cancel": "Отменить", "close": "Закрыть", "disable": "Выключить",
+      "edit": "править", "empty": "пока пусто", "enable": "Включить", "none": "нет", "off": "выкл", "save": "Сохранить"
+    },
+    "badges": { "gm": "ГМ", "gmOnly": "только ГМ", "sheet": "лист" },
+    "errors": {
+      "load": "debug не загружен", "apply": "не удалось применить",
+      "jsonArray": "{{label}}: нужен JSON-массив", "integer": "{{label}}: нужно целое число"
+    },
+    "factKinds": { "public": "Публичный", "truth": "Скрытая правда", "rumor": "Слух", "fact": "факт" },
+    "rolls": {
+      "next": "Следующий бросок", "all": "Все броски", "dieValue": "кубик = {{value}}",
+      "nextHint": "Ближайший бросок выпадет этим значением кубика, затем настройка сбросится.",
+      "allHint": "Каждый бросок выпадает этим значением кубика, пока настройка не выключена.",
+      "example20": "напр. 20", "example18": "напр. 18", "nextShort": "след:{{value}}", "allShort": "все:{{value}}"
+    },
+    "facts": {
+      "newPlaceholder": "Текст нового факта…", "add": "Добавить факт", "deleteTitle": "Удалить факт",
+      "deleteNote": "Факт будет убран из памяти мира.", "empty": "фактов пока нет"
+    },
+    "stateRecords": {
+      "new": "Новая запись", "hint": "Долговременная память мира. Доходит до модели через query_world_state по выбранной видимости и не меняет кеш-префикс.",
+      "placeholder": "Текст записи состояния…", "kindTitle": "Тип записи", "kindNote": "Что сохраняется: факт, слух, память NPC, отношение или цель.",
+      "scopeTitle": "Видимость записи", "scopeNote": "Кому запись должна быть доступна при поиске памяти.",
+      "deleteTitle": "Удалить запись", "deleteNote": "Запись больше не будет попадать в память модели.", "empty": "записей нет"
+    },
+    "rumors": {
+      "new": "Новый слух", "hint": "Доходит до ГМ через query_world_state как неподтверждённое сведение и не меняет кеш-префикс.",
+      "placeholder": "Текст слуха…", "speakerPlaceholder": "кто говорит (speaker)", "confirmedShort": "подтв.", "rumor": "слух",
+      "unconfirm": "снять", "deleteTitle": "Удалить слух", "deleteNote": "Слух исчезнет из доступных мировых сведений.", "empty": "слухов нет"
+    },
+    "storyEditor": {
+      "title": "Название истории", "brief": "Бриф для игрока", "publicIntro": "Публичное интро", "cachePrefix": "кеш-префикс",
+      "cacheWarning": "Интро лежит в кешируемом префиксе. Сохранение пересоберёт его один раз; остальные поля кеш не трогают.",
+      "hiddenTruth": "Скрытая правда (секрет; в префикс не входит)", "hiddenEvents": "Скрытые события ГМ (по одному на строку)"
+    },
+    "sceneEditor": {
+      "title": "Название сцены", "description": "Описание", "tension": "Напряжение",
+      "constraints": "Ограничения (по одному на строку)", "constraintsShort": "Ограничения", "present": "Кто в сцене",
+      "items": "Предметы", "exits": "Выходы", "itemsJson": "Предметы (JSON)", "exitsJson": "Выходы (JSON)",
+      "itemsHelp": "Массив объектов: id, name, location, visible, portable, owner, details.",
+      "exitsHelp": "Массив объектов: id, name, destination, visible, blocked_by."
+    },
+    "fields": {
+      "name": "Имя", "playerSees": "Игрок видит", "color": "Цвет", "role": "Роль", "pronouns": "Род",
+      "publicLabel": "Публичный ярлык", "publicLabelPlaceholder": "трактирщик", "knownName": "Известное имя", "age": "Возраст",
+      "physicalTypeNpc": "Тип/размер/вид", "physicalType": "Тип/вид", "features": "Приметы", "lifeStatus": "Статус жизни",
+      "statusNote": "Заметка статуса", "currentCondition": "Текущее состояние", "description": "Описание", "personality": "Характер",
+      "values": "Ценности", "habits": "Привычки", "pressureResponse": "Реакция на давление", "underPressure": "Под давлением",
+      "boundaries": "Границы", "voice": "Голос", "goals": "Мотивы", "knowledge": "Что знает",
+      "secretNoContext": "Секрет (в контекст ГМ не попадает)", "mechanics": "Механика", "ac": "КД",
+      "passivePerception": "Пасс. восприятие", "hpCurrent": "ХП сейчас", "hpMax": "ХП максимум", "speed": "Скорость",
+      "senses": "Чувства", "languages": "Языки", "skills": "Навыки", "skill": "Навык", "savingThrows": "Спасброски",
+      "savingThrow": "Спасбросок", "status": "Статус", "details": "Детали", "classRole": "Класс/роль", "level": "Уровень",
+      "background": "Предыстория", "life": "Жизнь", "condition": "Состояние", "gmNotes": "Заметки ГМ",
+      "inventory": "Инвентарь", "equipment": "Снаряжение", "specialFeatures": "Особенности",
+      "featureDescription": "Что даёт (необязательно)", "concentration": "Концентрация", "turns": "ходов", "model": "модель",
+      "backend": "бэкенд", "where": "где"
+    },
+    "npcEditor": {
+      "secretWarning": "Смена секрета — опасная правка. Старая память NPC может конфликтовать с новой картой. При необходимости сбросьте память NPC вручную.",
+      "inCurrentScene": "В текущей сцене", "where": "Где (место)", "resetMemory": "Сбросить память NPC (история, компакт, тред) — необратимо",
+      "resetWarning": "Будет удалена личная история этого NPC и создан новый тред. Кеш и память этого персонажа будут сброшены.",
+      "saveAndReset": "Сохранить и сбросить память"
+    },
+    "playerEditor": { "mechanics": "Механика игрока" },
+    "spells": {
+      "levelShort": "ур. {{value}}", "cantrip": "заговор", "concentrationShort": "конц.", "ritual": "ритуал",
+      "slotLevel": "{{level}}-й: {{current}}/{{max}}"
+    },
+    "sceneSummary": { "scene": "сцена", "location": "локация", "present": "в сцене", "tension": "напряжение" },
+    "factsView": { "hiddenTruth": "Скрытая правда", "publicFacts": "Публичные факты", "rumors": "Слухи и неподтверждённое" },
+    "npcs": {
+      "empty": "персонажей нет", "inSceneSuffix": " · в сцене", "playerSeesSuffix": " · игрок видит: {{value}}", "messages": "{{count}} сообщ."
+    },
+    "npcCard": {
+      "personality": "Личность", "trait": "{{label}}: {{value}}", "secret": "Секрет", "memory": "Память NPC", "commitments": "Коммиты ответа"
+    },
+    "playerCard": {
+      "notLoaded": "карточка игрока не загружена", "defaultName": "Персонаж игрока", "sheet": "лист персонажа",
+      "equipmentFeatures": "Снаряжение и особенности", "spells": "Заклинания", "slots": "слоты"
+    },
+    "events": { "turn": "ход {{value}}", "witnesses": "видели: {{value}}" },
+    "runtime": {
+      "cacheTitle": "Кеш токенов", "cacheHelp": "Кешируемый префикс состоит из системных правил и публичного интро. Остальные правки идут в хвост и не ломают префикс.",
+      "lastRunTokens": "Токены последнего прогона", "cachedTokensHelp": "cached_tokens больше нуля означает, что префикс переиспользован.",
+      "context": "Контекст", "modelSettings": "Настройки модели", "modelSettingsHelp": "Только просмотр. Настройки меняются в шапке и применяются со следующего хода.",
+      "gmReasoning": "Рассуждение ГМ", "npcReasoning": "Рассуждение NPC", "compactReasoning": "Рассуждение сжатия",
+      "verbosity": "подробность", "toolChoice": "выбор инструментов", "gmStream": "поток ответа ГМ", "parallelTools": "параллельные инструменты",
+      "suggestOptions": "предлагать варианты", "toolHopLimit": "tool-hop лимит", "unlimited": "без ограничения", "tokenLimit": "лимит токенов"
+    },
+    "tabs": {
+      "overview": "Обзор", "story": "Сюжет", "scene": "Сцена", "player": "Игрок", "npcs": "Персонажи",
+      "facts": "Факты", "memory": "Память", "runtime": "Рантайм", "rolls": "Броски", "rumors": "Слухи"
+    },
+    "panel": {
+      "hide": "Скрыть дебаг", "open": "Открыть дебаг", "tip": "Панель для просмотра и правки служебного состояния истории.",
+      "button": "Дебаг", "heading": "дебаг истории", "refreshing": "Обновляю…", "refresh": "Обновить", "turns": "ходов: {{count}}",
+      "sections": "Разделы дебага", "loading": "загружаю…", "notOpened": "панель ещё не открывалась", "storyFallback": "История",
+      "backendModel": "бэкенд · модель", "characters": "персонажей", "time": "время", "startBrief": "Бриф игрока на старте",
+      "editStory": "Править сюжет и канон", "objective": "Цель ведения", "objectiveHelp": "Пояснение для разработчика; модели оно напрямую не передаётся.",
+      "briefHelp": "Этот текст показывается в верхней карточке чата и не меняет кеш-префикс ГМ.",
+      "publicIntroHelp": "Лежит в кешируемом префиксе. Правка пересоберёт префикс один раз.",
+      "hiddenTruthHelp": "В префикс не входит. Доходит до ГМ через query_world_state со scope=gm.", "hiddenEvents": "Скрытые события ГМ",
+      "editScene": "Править сцену", "worldFacts": "Факты мира", "stateRecords": "Записи состояния",
+      "stateRecordsLong": "Записи состояния (state records)", "gmSummary": "Сводка ГМ", "loadedTools": "Загруженные тулы ГМ", "recentEvents": "Последние события"
+    },
+    "modals": {
+      "rollsTitle": "Управление бросками", "rollsSubtitle": "отладка кубов", "addDelete": "добавить / удалить",
+      "rumorsSubtitle": "добавить / подтвердить / удалить", "storyTitle": "Правка сюжета и канона",
+      "storySubtitle": "интро · скрытая правда · скрытые события", "playerTitle": "Правка персонажа игрока",
+      "chooseToEdit": "выбери для правки", "editPrefix": "Правка:", "stateRecordsSubtitle": "долговременные записи состояния"
+    }
+  }
+}

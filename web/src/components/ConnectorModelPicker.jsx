@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import {
   authMethods,
   bindingReady,
@@ -15,16 +16,17 @@ import {
 } from "../connectorCatalog.js";
 
 export function ConnectorAuthPrompt({ prompt, connectorId }) {
+  const { t } = useTranslation("connectors");
   if (!prompt || prompt.connector_id !== connectorId) return null;
   const isDeviceCode = prompt.kind === "device_code";
   const url = connectorAuthUrl(prompt);
   return (
     <div className="connector-auth-prompt" role="status">
-      <span>{isDeviceCode ? "Откройте страницу и подтвердите код:" : "Завершите вход в браузере."}</span>
+      <span>{isDeviceCode ? t("auth.devicePrompt") : t("auth.browserPrompt")}</span>
       {isDeviceCode && prompt.user_code && <code>{prompt.user_code}</code>}
       {url && (
         <a href={url} target="_blank" rel="noreferrer">
-          Открыть страницу входа
+          {t("auth.openLogin")}
         </a>
       )}
     </div>
@@ -46,8 +48,9 @@ export default function ConnectorModelPicker({
   authPrompts = {},
   onAuthStart,
   onAuthCancel,
-  ariaLabel = "Коннектор и модель",
+  ariaLabel,
 }) {
+  const { t } = useTranslation(["connectors", "common"]);
   const resolved = useMemo(
     () => resolveModelBinding(value, connectors, models),
     [value, connectors, models]
@@ -94,10 +97,10 @@ export default function ConnectorModelPicker({
   return (
     <div
       className={`connector-model-picker${compact ? " connector-model-picker--compact" : ""}`}
-      aria-label={ariaLabel}
+      aria-label={ariaLabel || t("picker.ariaLabel")}
     >
       <label className="connector-model-field">
-        <span>Коннектор</span>
+        <span>{t("picker.connector")}</span>
         <select
           value={resolved.connector_id}
           onChange={(event) => changeConnector(event.target.value)}
@@ -111,14 +114,16 @@ export default function ConnectorModelPicker({
       </label>
 
       <label className="connector-model-field connector-model-field--model">
-        <span>Модель</span>
+        <span>{t("picker.model")}</span>
         <select
           value={resolved.model_id}
           onChange={(event) => onChange?.({ ...resolved, model_id: event.target.value })}
           disabled={disabled || modelsLoading || availableModels.length === 0}
         >
           {!modelAvailable && resolved.model_id && (
-            <option value={resolved.model_id}>{resolved.model_id} · недоступна</option>
+            <option value={resolved.model_id}>
+              {resolved.model_id} · {t("picker.unavailable")}
+            </option>
           )}
           {availableModels.map((model) => {
             const id = modelIdOf(model);
@@ -128,14 +133,14 @@ export default function ConnectorModelPicker({
       </label>
 
       {connectorLocked && (
-        <span className="connector-model-lock" title="Коннектор закреплён за этой историей">
-          Коннектор закреплён
+        <span className="connector-model-lock" title={t("picker.lockedTitle")}>
+          {t("picker.locked")}
         </span>
       )}
 
       {!authenticated && methods.length > 0 && (
         <div className="connector-model-auth">
-          <span>{connectorName(connector)} не подключён</span>
+          <span>{t("picker.notConnected", { name: connectorName(connector) })}</span>
           {authBusy ? (
             <button
               type="button"
@@ -143,7 +148,7 @@ export default function ConnectorModelPicker({
               disabled={authCancelling || typeof onAuthCancel !== "function"}
               onClick={() => onAuthCancel?.(resolved.connector_id)}
             >
-              {authCancelling ? "Отменяю…" : "Отменить"}
+              {authCancelling ? t("auth.cancelling") : t("common:actions.cancelAction")}
             </button>
           ) : methods.map((method) => (
             <button
@@ -153,7 +158,7 @@ export default function ConnectorModelPicker({
               disabled={disabled || typeof onAuthStart !== "function"}
               onClick={() => onAuthStart?.(resolved.connector_id, method.id)}
             >
-              {methods.length === 1 ? "Подключить" : method.name}
+              {methods.length === 1 ? t("common:actions.connect") : method.name}
             </button>
           ))}
         </div>
@@ -162,23 +167,23 @@ export default function ConnectorModelPicker({
       <ConnectorAuthPrompt prompt={authPrompt} connectorId={resolved.connector_id} />
 
       {!connector && resolved.connector_id && (
-        <span className="connector-model-error">Коннектор недоступен</span>
+        <span className="connector-model-error">{t("picker.connectorUnavailable")}</span>
       )}
 
       {modelsLoading && (
-        <span className="connector-model-lock">Загружаю модели…</span>
+        <span className="connector-model-lock">{t("picker.loadingModels")}</span>
       )}
 
       {connector && !ready && authenticated && !modelsLoading && (
         <div className="connector-model-retry">
-          <span className="connector-model-error">У коннектора нет доступной модели</span>
+          <span className="connector-model-error">{t("picker.noModel")}</span>
           <button
             type="button"
             className="btn small"
             disabled={disabled || typeof onEnsureConnectorModels !== "function"}
             onClick={() => onEnsureConnectorModels?.(resolved.connector_id, { force: true })}
           >
-            Повторить
+            {t("common:actions.retry")}
           </button>
         </div>
       )}

@@ -20,8 +20,8 @@ function textValue(value) {
 
 // ---- card text helpers (shared by NewGameWizard / BasePickerModal) ----
 
-export function worldTitle(world) {
-  return textValue(world?.title) || textValue(world?.world_lore?.name) || "Без названия";
+export function worldTitle(world, t) {
+  return textValue(world?.title) || textValue(world?.world_lore?.name) || t("defaults.untitled");
 }
 
 export function worldMeta(world) {
@@ -32,21 +32,21 @@ export function worldPreview(world) {
   return textValue(world?.preview) || textValue(world?.public_premise) || "";
 }
 
-export function storyTitle(story) {
-  return textValue(story?.title) || "Без названия";
+export function storyTitle(story, t) {
+  return textValue(story?.title) || t("defaults.untitled");
 }
 
 export function storyDescription(story) {
   return textValue(story?.story_brief) || textValue(story?.description) || "";
 }
 
-export function characterTitle(character) {
-  return textValue(character?.title) || "Персонаж";
+export function characterTitle(character, t) {
+  return textValue(character?.title) || t("entities.character");
 }
 
-export function characterMeta(character) {
+export function characterMeta(character, t) {
   const pc = character?.payload?.player_character || {};
-  return pcMeta(pc) || textValue(character?.preview) || "персонаж";
+  return pcMeta(pc, t) || textValue(character?.preview) || t("entities.characterLower");
 }
 
 // The catalog row's public protagonist summary (whitelisted server-side; see
@@ -59,7 +59,7 @@ export function storyPc(story) {
 // «класс/роль · ур. N» from any player_character-shaped sheet. Library .gmchar
 // sheets are NOT server-whitelisted (LLM-authored/imported), so only scalar
 // levels render — an object would stringify to «ур. [object Object]».
-export function pcMeta(pc) {
+export function pcMeta(pc, t) {
   const parts = [];
   const role = textValue(pc?.class_role);
   if (role) parts.push(role);
@@ -68,7 +68,7 @@ export function pcMeta(pc) {
     (typeof level === "number" && Number.isFinite(level)) ||
     (typeof level === "string" && level.trim() !== "")
   ) {
-    parts.push(`ур. ${level}`);
+    parts.push(t("meta.levelShort", { level }));
   }
   return parts.join(" · ");
 }
@@ -101,23 +101,30 @@ function CardTip({ kicker, title, meta, desc, rows = [] }) {
 
 // The world's PUBLIC face: premise in full + flavor meta. `world_lore` rides in
 // the /worlds row, but only these player-safe fields ever render.
-export function worldTip(world) {
+export function worldTip(world, t) {
   if (!world) return null;
   const lore = world.world_lore && typeof world.world_lore === "object" ? world.world_lore : {};
   const premise =
     textValue(world.public_premise) || textValue(lore.public_premise) || textValue(world.preview);
   const rows = [
-    ["Жанр", textValue(world.genre) || textValue(lore.genre)],
-    ["Тон", textValue(world.tone) || textValue(lore.tone)],
-    ["Масштаб", textValue(world.scale) || textValue(lore.scale)],
+    [t("tips.genre"), textValue(world.genre) || textValue(lore.genre)],
+    [t("tips.tone"), textValue(world.tone) || textValue(lore.tone)],
+    [t("tips.scale"), textValue(world.scale) || textValue(lore.scale)],
   ];
   if (!premise && !rows.some((r) => r[1])) return null;
-  return <CardTip kicker="мир" title={worldTitle(world)} desc={premise} rows={rows} />;
+  return (
+    <CardTip
+      kicker={t("entities.worldLower")}
+      title={worldTitle(world, t)}
+      desc={premise}
+      rows={rows}
+    />
+  );
 }
 
 // The story's public premise in full; an authored protagonist gets a one-line
 // mention (his own card/tip carries the details).
-export function storyTip(story, { kicker = "история" } = {}) {
+export function storyTip(story, t, { kicker = t("entities.storyLower") } = {}) {
   if (!story) return null;
   const brief = textValue(story.story_brief);
   // No separate description row: App's normalizeStory folds story_brief into
@@ -128,44 +135,53 @@ export function storyTip(story, { kicker = "история" } = {}) {
   if (pc) {
     const name = textValue(pc.name);
     const role = textValue(pc.class_role);
-    rows.push(["Протагонист", name ? (role ? `${name} — ${role}` : name) : role]);
+    rows.push([t("tips.protagonist"), name ? (role ? `${name} — ${role}` : name) : role]);
   }
   const desc = brief || description;
   if (!desc && rows.length === 0) return null;
-  return <CardTip kicker={kicker} title={storyTitle(story)} desc={desc} rows={rows} />;
+  return <CardTip kicker={kicker} title={storyTitle(story, t)} desc={desc} rows={rows} />;
 }
 
 // Sheet fields a hero tip presents, in order — presentation only, no mechanics.
-const PC_TIP_ROWS = [
-  ["age", "Возраст"],
-  ["physical_type", "Внешность"],
-  ["distinctive_features", "Приметы"],
-  ["personality", "Характер"],
-  ["values", "Ценности"],
-  ["condition", "Состояние"],
+const PC_TIP_FIELDS = [
+  "age",
+  "physical_type",
+  "distinctive_features",
+  "personality",
+  "values",
+  "condition",
 ];
 
-function pcTip({ title, sheet, fallbackDesc = "" }) {
-  const rows = PC_TIP_ROWS.map(([key, label]) => [label, textValue(sheet?.[key])]);
+function pcTip({ title, sheet, t, fallbackDesc = "" }) {
+  const rows = PC_TIP_FIELDS.map((key) => [t(`tips.characterFields.${key}`), textValue(sheet?.[key])]);
   const desc = textValue(sheet?.background) || fallbackDesc;
   if (!desc && !rows.some((r) => r[1])) return null;
-  return <CardTip kicker="персонаж" title={title} meta={pcMeta(sheet)} desc={desc} rows={rows} />;
+  return (
+    <CardTip
+      kicker={t("entities.characterLower")}
+      title={title}
+      meta={pcMeta(sheet, t)}
+      desc={desc}
+      rows={rows}
+    />
+  );
 }
 
 // The story's own authored protagonist, from the catalog row's public summary.
-export function protagonistTip(story) {
+export function protagonistTip(story, t) {
   const pc = storyPc(story);
   if (!pc) return null;
-  return pcTip({ title: textValue(pc.name) || "Протагонист истории", sheet: pc });
+  return pcTip({ title: textValue(pc.name) || t("wizard.storyProtagonist"), sheet: pc, t });
 }
 
 // A library .gmchar hero, from the full sheet the /characters row carries.
-export function characterTip(character) {
+export function characterTip(character, t) {
   if (!character) return null;
   const sheet = character.payload?.player_character || {};
   return pcTip({
-    title: characterTitle(character),
+    title: characterTitle(character, t),
     sheet,
+    t,
     fallbackDesc: textValue(character.preview),
   });
 }

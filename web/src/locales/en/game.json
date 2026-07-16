@@ -1,0 +1,437 @@
+{
+  "actions": {
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "retry": "Retry",
+    "save": "Save"
+  },
+  "common": {
+    "closeAria": "Close"
+  },
+  "markdown": {
+    "empty": "—",
+    "entityFallback": "entity",
+    "noEntityData": "No data in the current registry.",
+    "entityKinds": {
+      "npc": "character",
+      "loc": "location",
+      "item": "item",
+      "note": "note"
+    }
+  },
+  "chat": {
+    "scrollToLatest": "Jump to latest messages",
+    "newMessages_one": "{{count}} new message",
+    "newMessages_few": "{{count}} new messages",
+    "newMessages_many": "{{count}} new messages",
+    "newMessages_other": "{{count}} new messages",
+    "scrollDownNote": "Scroll to the bottom of the conversation.",
+    "scrollDownAria": "Scroll down"
+  },
+  "search": {
+    "placeholder": "Search",
+    "aria": "Search",
+    "clearAria": "Clear search",
+    "inProgress": "Searching",
+    "inProgressEllipsis": "Searching…",
+    "unavailable": "Search is temporarily unavailable"
+  },
+  "history": {
+    "untitled": "New game",
+    "emptyPreview": "Empty game",
+    "closeSidebar": "Close sidebar",
+    "gamesAria": "Games",
+    "sectionsAria": "Sections",
+    "nav": {
+      "game": "Game",
+      "library": "Library"
+    },
+    "title": "Games",
+    "refreshing": "Refreshing…",
+    "newGameAria": "New game",
+    "newGameShort": "New",
+    "searchPlaceholder": "Find a game or message",
+    "searchAria": "Search saved games",
+    "filtersAria": "Search filters",
+    "found_one": "Found: {{count}}",
+    "found_few": "Found: {{count}}",
+    "found_many": "Found: {{count}}",
+    "found_other": "Found: {{count}}",
+    "savedGamesAria": "Saved games",
+    "noSearchResults": "Nothing matched this search. Try removing some filters.",
+    "noGames": "No saved games yet. Select “New” to begin.",
+    "delete": {
+      "title": "Delete game",
+      "tooltip": "You will be asked to confirm before deletion.",
+      "aria": "Delete game: {{title}}",
+      "confirmTitle": "Delete game?",
+      "quotedName": "“{{title}}”",
+      "confirmNote": "The game and all of its data will be permanently deleted, including its history, characters, world, and related embeddings. This action cannot be undone.",
+      "deleting": "Deleting…",
+      "action": "Delete"
+    }
+  },
+  "filters": {
+    "any": "Any",
+    "dialogAria": "Game search filters",
+    "title": "Filters",
+    "closeAria": "Close filters",
+    "field": "Search in",
+    "fields": {
+      "all": "Everywhere",
+      "title": "Titles",
+      "world": "Worlds",
+      "story": "Stories",
+      "character": "Characters",
+      "messages": "Messages"
+    },
+    "world": "World",
+    "story": "Story",
+    "character": "Character",
+    "period": "Period",
+    "periods": {
+      "all": "All time",
+      "days7": "7 days",
+      "days30": "30 days",
+      "days90": "90 days"
+    },
+    "sort": "Sort",
+    "sorts": {
+      "relevance": "Most relevant",
+      "updated": "Newest first"
+    },
+    "hasMessages": "Only games with messages",
+    "reset": "Reset",
+    "done": "Done"
+  },
+  "globalSearch": {
+    "title": "Global search",
+    "subtitle": "Worlds, stories, characters, games, and messages",
+    "closeAria": "Close search",
+    "placeholder": "Enter a title, name, or phrase from a message",
+    "aria": "Global search",
+    "scopeAria": "Search scope",
+    "scopes": {
+      "all": "Everywhere",
+      "library": "Library",
+      "chats": "Games"
+    },
+    "notFound": "Nothing found",
+    "empty": "Nothing to show yet",
+    "notFoundHint": "Try a shorter search.",
+    "emptyHint": "Created content and games will appear here.",
+    "untitled": "Untitled",
+    "types": {
+      "world": "World",
+      "story": "Story",
+      "character": "Character",
+      "chat": "Game"
+    },
+    "shortcuts": {
+      "select": "select",
+      "open": "open",
+      "close": "close"
+    },
+    "shown": "Showing {{shown}} of {{total}}"
+  },
+  "context": {
+    "noDetails": "No details yet.",
+    "proceduralCampaign": "Procedural campaign",
+    "story": "Story",
+    "world": "World",
+    "character": "Character",
+    "genre": "Genre",
+    "tone": "Tone",
+    "actionsAria": "Game actions",
+    "downloadJson": "Download JSON",
+    "storyUnavailable": "Story description is unavailable.",
+    "worldUnavailable": "World description is unavailable.",
+    "reset": {
+      "menu": "Reset game",
+      "title": "Reset game?",
+      "note": "The current turn and scene state will be reset to the beginning. This action cannot be undone.",
+      "busy": "Resetting…",
+      "action": "Reset"
+    }
+  },
+  "scene": {
+    "story": "Story",
+    "introduction": "Introduction",
+    "title": "Scene",
+    "inScene": "in scene",
+    "whereToFind": "where to find",
+    "fields": {
+      "role": "role",
+      "type": "type",
+      "features": "features",
+      "condition": "condition",
+      "status": "status",
+      "landmark": "landmark"
+    },
+    "unknown": "unknown",
+    "statuses": {
+      "present": "in the current scene",
+      "known": "known",
+      "likely": "likely",
+      "rumored": "rumored",
+      "unknown": "unknown",
+      "left_scene": "left"
+    },
+    "characterFallback": "character",
+    "presentLabel": "In scene:",
+    "noNamedCharacters": "no named characters",
+    "whereToFindLabel": "Where to find:",
+    "placeUnknown": "location unknown"
+  },
+  "scenePanel": {
+    "day": "Day {{count}}",
+    "sourceFallback": "source",
+    "stateAria": "Current state",
+    "collapseAria": "Collapse scene state",
+    "expandAria": "Expand scene state",
+    "scene": "scene",
+    "location": "location",
+    "locationTitle": "Location",
+    "currentScene": "Current scene",
+    "locationNote": "Open details about the description, characters, exits, and items.",
+    "date": "date",
+    "time": "time",
+    "nearby": "nearby",
+    "nobodyNearby": "Nobody is nearby.",
+    "hero": "hero",
+    "name": "name",
+    "hp": "HP",
+    "characterSheet": "Character sheet",
+    "overwriteTitle": "Overwrite package “{{title}}” with the current state",
+    "updateSource": "Update “{{title}}”",
+    "saveAsNew": "Save as new",
+    "saving": "Saving…",
+    "saveToLibrary": "Save to library"
+  },
+  "composer": {
+    "placeholder": "Player action…",
+    "stop": "Stop",
+    "send": "Send",
+    "stopSubtitle": "Stop the current generation.",
+    "sendSubtitle": "Send the player action to the GM.",
+    "stopNote": "The unfinished turn and its changes will be discarded.",
+    "mobileSendNote": "On a phone, use this button to send.",
+    "keyboardSendNote": "You can also press Enter to send; Shift+Enter adds a new line.",
+    "stopAria": "Stop generation"
+  },
+  "voice": {
+    "emptyResult": "Speech recognition returned an empty result",
+    "recognitionError": "Speech recognition failed",
+    "httpsRequired": "Voice input only works over HTTPS. Open the app at https://<IP> after starting the server with GM_HTTPS=1.",
+    "unsupported": "This browser does not support microphone recording.",
+    "noAccess": "Microphone access was denied",
+    "recording": "Recording… select ■ to stop",
+    "transcribing": "Transcribing…",
+    "cancelRecording": "Cancel recording",
+    "cancelVoice": "Cancel voice input",
+    "cancelRecordingNote": "Stop recording without sending the audio for transcription.",
+    "cancelVoiceNote": "Clear the current voice operation.",
+    "stopRecording": "Stop recording",
+    "input": "Voice input",
+    "stopRecordingNote": "Finish recording and send the audio for transcription.",
+    "inputNote": "Record speech from the microphone and insert the transcription into the input field."
+  },
+  "quickReplies": {
+    "defaultQuestion": "What do you do next?",
+    "aria": "Suggested actions",
+    "show": "Show suggestions",
+    "hide": "Hide suggestions",
+    "showNote": "Restore quick actions below the input field.",
+    "hideNote": "Hide suggestions while keeping the input field available.",
+    "expandAria": "Expand suggestions",
+    "collapseAria": "Collapse suggestions",
+    "subtitle": "Quick player reply",
+    "sends": "sends"
+  },
+  "usage": {
+    "tokens": "tokens",
+    "cache": "Cache",
+    "characters": "Characters",
+    "gm": "GM",
+    "active": "active",
+    "history": "history",
+    "historyTitle": "History",
+    "untilCompact": "until compact",
+    "untilCompactTitle": "Until compact",
+    "summary": "summary",
+    "tokenCountShort": "{{count}} tok",
+    "characterSessions": "Character sessions",
+    "hasHistory": "has history",
+    "notCalled": "not called yet",
+    "noCharacterSessions": "No character sessions yet.",
+    "worldScene": "world/scene: {{count}} tok",
+    "run": {
+      "title": "Entire run",
+      "shortTitle": "Run",
+      "turns": "turns: {{count}}",
+      "calls": "model calls: {{count}}",
+      "input": "input: {{count}} tok",
+      "output": "output: {{count}} tok",
+      "cached": "cache: {{count}} tok",
+      "gm": "GM: {{tokens}} tok / {{calls}} calls",
+      "characters": "characters: {{tokens}} tok / {{calls}} calls",
+      "peak": "peak context: {{count}} tok",
+      "time": "time: {{seconds}}s"
+    },
+    "context": {
+      "modelContext": "Model context",
+      "compact": "compact {{value}}",
+      "window": "window {{value}}",
+      "gmContext": "GM context"
+    }
+  },
+  "tts": {
+    "pause": "Pause",
+    "pauseNote": "Pause the current narration.",
+    "resume": "Resume",
+    "resumeNote": "Resume narration from where it was paused.",
+    "stop": "Stop",
+    "stopNote": "Stop narrating this message.",
+    "errorRetry": "Narration failed — retry",
+    "play": "Narrate",
+    "playNote": "Generate and play audio for the visible text."
+  },
+  "message": {
+    "gameMaster": "Game Master",
+    "gmThinking": "🧠 GM is thinking",
+    "typing": "typing…",
+    "hiddenThoughts": "🧠 Hidden thoughts (not visible to the player)",
+    "visibleSteps": "Visible steps",
+    "responseBasis": "📌 Response basis",
+    "worldFact": "📖 world fact requested by the GM",
+    "retrying": "Retrying…",
+    "history": {
+      "changeFailed": "Could not change the history",
+      "actionsAria": "Message actions",
+      "editTitle": "Edit from here",
+      "editAria": "Edit this message and regenerate the tail",
+      "edit": "Edit",
+      "branchTitle": "Branch into a new chat",
+      "branchAria": "Create a new branch from this message",
+      "branch": "Branch",
+      "editInputAria": "New message text",
+      "branchInputAria": "First message in the branch",
+      "editNote": "The current tail will be removed and rebuilt.",
+      "branchNote": "The original chat will be preserved and the continuation will open in a new branch.",
+      "preparing": "Preparing…",
+      "editContinue": "Edit and continue",
+      "createBranch": "Create branch"
+    },
+    "sceneUpdate": {
+      "title": "Scene: {{title}}",
+      "present": "Currently in scene: {{names}}",
+      "prefix": "Scene:",
+      "inScene": "is now in the scene",
+      "outsideScene": "is now outside the scene"
+    },
+    "whereabouts": {
+      "title": "Whereabouts:",
+      "whereToFind": "Where to find"
+    },
+    "reject": {
+      "prefix": "✗ The GM sent",
+      "suffix": "back for revision",
+      "note": "GM note:"
+    },
+    "meta": {
+      "cached": "{{count}}↻ cache",
+      "line": "⏱ {{seconds}}s · {{tps}} tok/s · {{input}}↑ {{output}}↓ tok{{cached}}",
+      "input": "input: {{count}} tok / {{seconds}}s",
+      "fromCache": "from cache: {{count}} tok",
+      "output": "output: {{count}} tok / {{seconds}}s",
+      "modelLoad": "model load: {{seconds}}s",
+      "systemPrompt": "≈ GM system prompt: ~{{count}} tok (estimate, included in input)",
+      "turnTotal": "Σ this turn:",
+      "tokenCount": "{{count}} tokens",
+      "totalDetails": " ({{input}}↑ input / {{output}}↓ output){{cached}} · {{calls}} calls"
+    }
+  },
+  "dice": {
+    "dieResult": "d{{sides}}: rolled {{value}}",
+    "dropped": "(dropped by the keep rule)",
+    "natural": "natural {{value}}",
+    "coinResult": "d2 (coin): rolled {{value}}",
+    "d3Result": "d3 (three-sided ball): rolled {{value}}",
+    "d100Result": "d100 (fortune ball): rolled {{value}}",
+    "advantage": "advantage",
+    "disadvantage": "disadvantage",
+    "modifierFrom": " from: ",
+    "totalAria": "total {{total}}",
+    "details": "roll details",
+    "title": "Dice roll",
+    "grades": {
+      "overwhelming_success": "overwhelming success",
+      "critical_success": "critical success",
+      "strong_success": "strong success",
+      "success": "success",
+      "near_miss": "near miss",
+      "weak_failure": "minor failure",
+      "failure": "failure",
+      "major_failure": "major failure",
+      "critical_failure": "critical failure",
+      "invalid": "invalid formula"
+    }
+  },
+  "image": {
+    "loadFailed": "Could not load image",
+    "defaultAlt": "image",
+    "zoomOut": "Zoom out",
+    "zoomIn": "Zoom in",
+    "reset": "Reset",
+    "exitFullscreen": "Exit fullscreen",
+    "fullscreen": "Fullscreen",
+    "fitShort": "fit",
+    "fullShort": "full",
+    "unavailable": "Image unavailable",
+    "loading": "Loading image..."
+  },
+  "toasts": {
+    "genericError": "Could not complete the action",
+    "done": "Done",
+    "closeAria": "Close notification",
+    "hideDetails": "Hide details",
+    "showDetails": "Show details",
+    "regionAria": "Notifications",
+    "codes": {
+      "protagonist_required": "Select a character before starting the game",
+      "world_lore_required": "The world needs a description; complete world_lore in the world studio",
+      "world_required": "Select a world first",
+      "story_required": "Select a story first",
+      "world_not_found": "World not found; it may have been deleted",
+      "story_not_found": "Story not found; it may have been deleted",
+      "character_not_found": "Character not found; it may have been deleted",
+      "import_collision": "A package with this id already exists"
+    }
+  },
+  "tokenCounter": {
+    "title": "Token count",
+    "apiKey": "OpenAI API key",
+    "keySaved": "saved",
+    "keyNotSaved": "not saved",
+    "replaceKeyPlaceholder": "replace key…",
+    "keyHint": "The key is required for this request. It is stored on the server and is never shown in plain text.",
+    "textPlaceholder": "Paste text to count its tokens…",
+    "modelTitle": "Counting model",
+    "modelNote": "Tokens are counted with the tokenizer for the selected model.",
+    "modelAria": "Model",
+    "modelsNotLoaded": "models not loaded",
+    "counting": "Counting…",
+    "count": "Count",
+    "countFailed": "could not count tokens",
+    "inputTokens_one": "input token",
+    "inputTokens_few": "input tokens",
+    "inputTokens_many": "input tokens",
+    "inputTokens_other": "input tokens",
+    "characters_one": "{{count}} character",
+    "characters_few": "{{count}} characters",
+    "characters_many": "{{count}} characters",
+    "characters_other": "{{count}} characters",
+    "endpointPrefix": "The free OpenAI endpoint",
+    "endpointSuffix": " does not run the model. It returns only the total count, without a breakdown."
+  }
+}

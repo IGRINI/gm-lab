@@ -272,16 +272,13 @@ impl DialogStore {
         let default_client = connector_registry
             .create_backend(&default_binding)
             .map_err(|e| StoreError::Other(e.to_string()))?;
-        let connector = connector_registry
-            .connector(default_binding.connector_id())
-            .ok_or_else(|| {
-                StoreError::Other(format!(
-                    "connector is not registered: {}",
-                    default_binding.connector_id().as_str()
-                ))
-            })?;
-        let model = default_binding.model_id().to_string();
-        let client_factory: ClientFactory = Arc::new(move || connector.create_backend(&model));
+        let factory_registry = connector_registry.clone();
+        let factory_binding = default_binding.clone();
+        let client_factory: ClientFactory = Arc::new(move || {
+            factory_registry
+                .create_backend(&factory_binding)
+                .expect("validated connector binding remains registered")
+        });
         let store = DialogStore {
             db_path,
             client_factory,
@@ -319,15 +316,16 @@ impl DialogStore {
     ) -> Result<(Arc<dyn Backend>, ClientFactory, ModelBinding), StoreError> {
         let binding = self.normalize_binding(requested)?;
         if let Some(registry) = &self.connector_registry {
-            let connector = registry.connector(binding.connector_id()).ok_or_else(|| {
-                StoreError::Other(format!(
-                    "connector is not registered: {}",
-                    binding.connector_id().as_str()
-                ))
-            })?;
-            let model = binding.model_id().to_string();
-            let client = connector.create_backend(&model);
-            let factory: ClientFactory = Arc::new(move || connector.create_backend(&model));
+            let client = registry
+                .create_backend(&binding)
+                .map_err(|error| StoreError::Other(error.to_string()))?;
+            let factory_registry = registry.clone();
+            let factory_binding = binding.clone();
+            let factory: ClientFactory = Arc::new(move || {
+                factory_registry
+                    .create_backend(&factory_binding)
+                    .expect("validated connector binding remains registered")
+            });
             return Ok((client, factory, binding));
         }
 

@@ -1,0 +1,61 @@
+{
+  "actions": {
+    "cancel": "Отмена",
+    "cancelAction": "Отменить",
+    "close": "Закрыть",
+    "connect": "Подключить",
+    "logout": "Выйти",
+    "refresh": "Обновить",
+    "retry": "Повторить",
+    "save": "Сохранить"
+  },
+  "nav": {
+    "sections": "Разделы",
+    "game": "Игра",
+    "library": "Библиотека",
+    "imageLab": "Image Lab"
+  },
+  "search": {
+    "open": "Открыть общий поиск",
+    "label": "Поиск"
+  },
+  "model": {
+    "label": "Модель",
+    "tooltip": "Какая модель отвечает за следующий ход.",
+    "changeNote": "Смена применяется к новым запросам, уже идущий ответ не переключается.",
+    "refresh": "Обновить модели",
+    "refreshNote": "Повторно запросит список у текущего коннектора."
+  },
+  "sidebar": {
+    "hide": "Скрыть чаты и миры",
+    "show": "Показать чаты и миры",
+    "hideNote": "Освободит место для текущей сцены и диалога.",
+    "showNote": "Откроет боковую панель с чатами и мирами.",
+    "collapse": "Свернуть чаты и миры",
+    "expand": "Развернуть чаты и миры"
+  },
+  "usage": {
+    "input": "ввод",
+    "output": "вывод",
+    "cache": "кэш",
+    "total": "всего"
+  },
+  "duration": {
+    "seconds_one": "{{count}} с",
+    "seconds_few": "{{count}} с",
+    "seconds_many": "{{count}} с",
+    "seconds_other": "{{count}} с",
+    "minutes_one": "{{count}} мин",
+    "minutes_few": "{{count}} мин",
+    "minutes_many": "{{count}} мин",
+    "minutes_other": "{{count}} мин",
+    "hours_one": "{{count}} ч",
+    "hours_few": "{{count}} ч",
+    "hours_many": "{{count}} ч",
+    "hours_other": "{{count}} ч",
+    "days_one": "{{count}} дн",
+    "days_few": "{{count}} дн",
+    "days_many": "{{count}} дн",
+    "days_other": "{{count}} дн"
+  }
+}

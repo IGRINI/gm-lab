@@ -1,0 +1,158 @@
+{
+  "title": "Library",
+  "filters": {
+    "all": "All",
+    "worlds": "Worlds",
+    "stories": "Stories",
+    "characters": "Characters"
+  },
+  "entities": {
+    "world": "World",
+    "worldLower": "world",
+    "story": "Story",
+    "storyLower": "story",
+    "character": "Character",
+    "characterLower": "character",
+    "baseLower": "base"
+  },
+  "defaults": {
+    "untitled": "Untitled",
+    "newWorld": "New world",
+    "newStory": "New story"
+  },
+  "meta": {
+    "level": "level {{level}}",
+    "levelShort": "lvl. {{level}}"
+  },
+  "actions": {
+    "cancel": "Cancel",
+    "back": "← Back",
+    "next": "Next →",
+    "play": "Play",
+    "studio": "Studio",
+    "export": "Export",
+    "exportWithWorld": "Export with world",
+    "delete": "Delete",
+    "rename": "Rename",
+    "create": "Create",
+    "openFolder": "Open folder",
+    "createWorld": "+ Create world",
+    "createStory": "+ Create story",
+    "createCharacter": "+ Create character",
+    "createWorldBare": "Create world",
+    "createStoryBare": "Create story",
+    "createCharacterBare": "Create character"
+  },
+  "create": {
+    "world": "World",
+    "story": "Story",
+    "character": "Character",
+    "packageAria": "Create package"
+  },
+  "cards": {
+    "noDescription": "No description",
+    "more": "More · {{title}}",
+    "worldUnavailable": "world unavailable",
+    "storyUnavailable": "story unavailable"
+  },
+  "badges": {
+    "builtinClassic": "built-in classic",
+    "procedural": "procedural",
+    "forThisStory": "for this story",
+    "fromThisWorld": "from this world",
+    "fromStory": "from story"
+  },
+  "import": {
+    "action": "Import",
+    "inProgress": "Importing…",
+    "failed": "import failed",
+    "replaceConfirm": "A package with this id already exists. Replace it?",
+    "successWorld": "World imported",
+    "successStory": "Story imported",
+    "successCharacter": "Character imported"
+  },
+  "search": {
+    "ariaLabel": "Search library",
+    "placeholderAll": "Search the entire library",
+    "placeholderFilter": "Search: {{filter}}",
+    "nothingFound": "Nothing found",
+    "noMatchesLibrary": "No matches in the library. Try another word.",
+    "noMatchesTab": "No matches in this tab. Try another word.",
+    "found_one": "{{count}} found",
+    "found_few": "{{count}} found",
+    "found_many": "{{count}} found",
+    "found_other": "{{count}} found"
+  },
+  "empty": {
+    "libraryTitle": "The library is empty",
+    "libraryText": "Create your first world, then build stories and characters on top of it.",
+    "worldsTitle": "Create your first world",
+    "worldsText": "There are no worlds yet. Create one in the studio or import a package.",
+    "storiesTitle": "Create your first story",
+    "storiesText": "There are no stories yet. Create one in the story studio over a world.",
+    "charactersTitle": "Create your first character",
+    "charactersText": "There are no characters yet. Create one in the studio or import a .gmchar file."
+  },
+  "delete": {
+    "worldTitle": "Delete world?",
+    "storyTitle": "Delete story?",
+    "characterTitle": "Delete character?",
+    "worldNote": "The world will be removed from the library. Game chats and the current session will not change. Stories and characters based on this world will remain, but lose its source material. This cannot be undone.",
+    "storyNote": "The story will be removed from the library. Saved games will not change. Characters based on this story will remain, but lose its source material. This cannot be undone.",
+    "characterNote": "The character will be removed from the library. Saved games will not change because their snapshots are self-contained. This cannot be undone.",
+    "inProgress": "Deleting…"
+  },
+  "wizard": {
+    "newGame": "New game",
+    "step": "Step {{step}} of {{total}}",
+    "connectorModelAria": "Connector and model for the new game",
+    "titleLabel": "Title",
+    "start": "Start",
+    "launching": "Starting…",
+    "chooseWorldLead": "Choose a world from the library or a built-in classic.",
+    "noWorlds": "There are no worlds yet. Create one in the studio.",
+    "builtinStoryLead": "A built-in classic includes its story.",
+    "worldStoriesLead": "Stories in “{{world}}”.",
+    "proceduralCampaign": "Procedural campaign",
+    "proceduralDescription": "A living world is generated from the world bible at launch.",
+    "characterLeadProcedural": "A procedural campaign needs a character from the library.",
+    "characterLeadWithProtagonist": "Choose a character. The story protagonist is selected by default.",
+    "characterLeadWithoutProtagonist": "This story has no ready protagonist. Choose a character from the library.",
+    "storyProtagonist": "Story protagonist",
+    "protagonistDescription": "A ready hero defined by the story author.",
+    "noCharacters": "There are no characters yet. Create one in the studio or import a .gmchar file; this game cannot start without one.",
+    "chooseCharacter": "Choose a character to begin."
+  },
+  "basePicker": {
+    "newStory": "New story",
+    "newCharacter": "New character",
+    "chooseWorldBase": "choose a base world",
+    "chooseBase": "choose a base",
+    "toStudio": "Open studio →",
+    "storyLead": "A story is built over a world, whose canon becomes the story bible.",
+    "characterLead": "A character can be standalone, tied to a world, or based on a built-in classic whose public canon guides the architect.",
+    "noBase": "No base",
+    "noBaseDescription": "A portable hero not tied to a world, suitable for any story.",
+    "noWorldsForStory": "There are no worlds yet. Create one first, because a story requires a world.",
+    "noWorldsCharacter": "There are no worlds yet, but a character can be created without a base.",
+    "noWorldsCharacterWithBuiltin": "There are no worlds yet, but a character can be standalone or based on a built-in classic.",
+    "optionalStory": "Optional: a story from “{{world}}”. The hero will become its protagonist.",
+    "noStory": "No story",
+    "noStoryDescription": "Use only the world as a base, so the hero can fit any of its stories.",
+    "noAuthoredStories": "This world has no authored stories yet."
+  },
+  "tips": {
+    "genre": "Genre",
+    "tone": "Tone",
+    "scale": "Scale",
+    "protagonist": "Protagonist",
+    "characterFields": {
+      "age": "Age",
+      "physical_type": "Appearance",
+      "distinctive_features": "Distinctive features",
+      "personality": "Personality",
+      "values": "Values",
+      "condition": "Condition"
+    }
+  }
+}

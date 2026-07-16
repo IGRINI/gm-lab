@@ -5,6 +5,7 @@ import SearchField from "./SearchField.jsx";
 import SearchSkeleton from "./SearchSkeleton.jsx";
 import ChatSearchFilters from "./ChatSearchFilters.jsx";
 import useAsyncSearch from "../useAsyncSearch.js";
+import { useTranslation } from "react-i18next";
 
 // Games-only sidebar for the redesigned shell (§Игра in the TZ). The old omnibus
 // (Чаты/Миры/Персонажи tabs + story/character pickers + import/export) is gone:
@@ -12,27 +13,23 @@ import useAsyncSearch from "../useAsyncSearch.js";
 // created only through the New-Game wizard («+ Новая игра»). This panel just
 // lists the saved games and lets the player open or delete one.
 
-const DATE_FORMATTER = new Intl.DateTimeFormat("ru-RU", {
-  day: "numeric",
-  month: "short",
-});
-
-function chatTitle(chat) {
-  return chat?.title?.trim() || "Новая игра";
+function chatTitle(chat, t) {
+  return chat?.title?.trim() || t("history.untitled");
 }
 
-function chatPreview(chat) {
-  return chat?.snippet?.trim() || chat?.preview?.trim() || chat?.subtitle?.trim() || "Пустая игра";
+function chatPreview(chat, t) {
+  return chat?.snippet?.trim() || chat?.preview?.trim() || chat?.subtitle?.trim()
+    || t("history.emptyPreview");
 }
 
-function chatSecondary(chat, searchActive) {
+function chatSecondary(chat, searchActive, t) {
   if (searchActive) {
     const snippet = chat?.snippet?.trim();
     if (snippet) return snippet;
     const context = chatContext(chat);
     if (context) return context;
   }
-  return chat?.preview?.trim() || chat?.subtitle?.trim() || chatPreview(chat);
+  return chat?.preview?.trim() || chat?.subtitle?.trim() || chatPreview(chat, t);
 }
 
 function chatContext(chat) {
@@ -42,12 +39,12 @@ function chatContext(chat) {
   return [...new Set(values)].join(" · ");
 }
 
-function chatDate(chat) {
+function chatDate(chat, formatter) {
   const raw = chat?.updated_at || chat?.created_at;
   if (!raw) return "";
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return "";
-  return DATE_FORMATTER.format(date).replace(".", "");
+  return formatter.format(date);
 }
 
 function sameChatId(a, b) {
@@ -73,6 +70,14 @@ export default function ChatHistorySidebar({
   onNavImage,
   imageLabEnabled = false,
 }) {
+  const { i18n, t } = useTranslation("game");
+  const dateFormatter = useMemo(
+    () => new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, {
+      day: "numeric",
+      month: "short",
+    }),
+    [i18n.language, i18n.resolvedLanguage]
+  );
   const closeRef = useRef(null);
   const newGameRef = useRef(null);
   const filterButtonRef = useRef(null);
@@ -203,7 +208,7 @@ export default function ChatHistorySidebar({
         onMouseDown={onClose}
         onClick={onClose}
         tabIndex={open ? 0 : -1}
-        aria-label="Закрыть боковую панель"
+        aria-label={t("history.closeSidebar")}
         aria-hidden={!open}
       />
       <aside
@@ -213,22 +218,22 @@ export default function ChatHistorySidebar({
           (open ? " is-open" : "") +
           (isGameView ? "" : " sidebar-off-game")
         }
-        aria-label="Игры"
+        aria-label={t("history.gamesAria")}
       >
-        <nav className="sidebar-nav" aria-label="Разделы">
+        <nav className="sidebar-nav" aria-label={t("history.sectionsAria")}>
           <button
             type="button"
             className={"sidebar-nav-item" + (isGameView ? " is-current" : "")}
             onClick={pickNav(onNavGame)}
           >
-            <Icon name="d20" size={15} /> Игра
+            <Icon name="d20" size={15} /> {t("history.nav.game")}
           </button>
           <button
             type="button"
             className={"sidebar-nav-item" + (isLibraryView ? " is-current" : "")}
             onClick={pickNav(onNavLibrary)}
           >
-            <Icon name="book" size={15} /> Библиотека
+            <Icon name="book" size={15} /> {t("history.nav.library")}
           </button>
           {imageLabEnabled && (
             <button
@@ -241,10 +246,10 @@ export default function ChatHistorySidebar({
           )}
         </nav>
         <div className="chat-sidebar-head">
-          <h2>Игры</h2>
+          <h2>{t("history.title")}</h2>
           <div className="chat-sidebar-head-actions">
             {loading && (
-              <span className="chat-sidebar-status" aria-live="polite">Обновляю…</span>
+              <span className="chat-sidebar-status" aria-live="polite">{t("history.refreshing")}</span>
             )}
             <button
               ref={newGameRef}
@@ -252,17 +257,17 @@ export default function ChatHistorySidebar({
               className="chat-new"
               onClick={onNewGame}
               disabled={busy}
-              aria-label="Новая игра"
+              aria-label={t("history.newGameAria")}
             >
               <Icon name="plus" size={14} />
-              <span>Новая</span>
+              <span>{t("history.newGameShort")}</span>
             </button>
             <button
               ref={closeRef}
               type="button"
               className="icon-btn chat-sidebar-close"
               onClick={onClose}
-              aria-label="Закрыть боковую панель"
+              aria-label={t("history.closeSidebar")}
             >
               <Icon name="x" size={15} />
             </button>
@@ -274,8 +279,8 @@ export default function ChatHistorySidebar({
             <SearchField
               value={searchQuery}
               onChange={setSearchQuery}
-              placeholder="Найти игру или сообщение"
-              ariaLabel="Поиск по сохранённым играм"
+              placeholder={t("history.searchPlaceholder")}
+              ariaLabel={t("history.searchAria")}
               compact
               loading={chatSearch.revalidating}
             />
@@ -284,7 +289,7 @@ export default function ChatHistorySidebar({
               type="button"
               className={"chat-filter-trigger" + (filterCount > 0 ? " active" : "")}
               onClick={() => setFiltersOpen((value) => !value)}
-              aria-label="Фильтры поиска"
+              aria-label={t("history.filtersAria")}
               aria-expanded={filtersOpen}
             >
               <Icon name="sliders" size={15} />
@@ -309,7 +314,7 @@ export default function ChatHistorySidebar({
             })}
           />
           {searchActive && !chatSearch.initialLoading && !chatSearch.error && (
-            <span className="chat-search-summary">{chatSearch.total} найдено</span>
+            <span className="chat-search-summary">{t("history.found", { count: chatSearch.total })}</span>
           )}
         </div>
 
@@ -319,15 +324,15 @@ export default function ChatHistorySidebar({
           <div className="chat-sidebar-error">{chatSearch.error}</div>
         )}
 
-        <nav className="chat-list" aria-label="Сохранённые игры">
+        <nav className="chat-list" aria-label={t("history.savedGamesAria")}>
           {searchActive && chatSearch.initialLoading ? (
             <SearchSkeleton variant="rows" count={5} />
           ) : null}
           {!chatSearch.initialLoading && visibleChats.length === 0 && !loading ? (
             <div className="chat-sidebar-empty">
               {searchActive
-                ? "По этому запросу ничего не найдено. Попробуйте убрать часть фильтров."
-                : "Сохранённых игр пока нет. Нажмите «Новая», чтобы начать."}
+                ? t("history.noSearchResults")
+                : t("history.noGames")}
             </div>
           ) : null}
           {!chatSearch.initialLoading && visibleChats.map((chat) => {
@@ -344,11 +349,11 @@ export default function ChatHistorySidebar({
                   <span className="chat-row-head">
                     <span className="chat-row-title-wrap">
                       {active && <span className="chat-row-active-dot" aria-hidden="true" />}
-                      <span className="chat-row-title">{chatTitle(chat)}</span>
+                      <span className="chat-row-title">{chatTitle(chat, t)}</span>
                     </span>
-                    <span className="chat-row-date">{chatDate(chat)}</span>
+                    <span className="chat-row-date">{chatDate(chat, dateFormatter)}</span>
                   </span>
-                  <span className="chat-row-preview">{chatSecondary(chat, searchActive)}</span>
+                  <span className="chat-row-preview">{chatSecondary(chat, searchActive, t)}</span>
                 </button>
                 <Tooltip
                   className="tooltip-wrap"
@@ -356,16 +361,16 @@ export default function ChatHistorySidebar({
                   focusable={false}
                   content={
                     <TipContent
-                      title="Удалить игру"
-                      subtitle={chatTitle(chat)}
-                      note="Перед удалением появится подтверждение."
+                      title={t("history.delete.title")}
+                      subtitle={chatTitle(chat, t)}
+                      note={t("history.delete.tooltip")}
                     />
                   }
                 >
                   <button
                     type="button"
                     className="chat-row-delete"
-                    aria-label={`Удалить игру: ${chatTitle(chat)}`}
+                    aria-label={t("history.delete.aria", { title: chatTitle(chat, t) })}
                     onClick={() => setConfirmTarget({ kind: "chat", id: chat.id })}
                     disabled={locked}
                   >
@@ -389,15 +394,14 @@ export default function ChatHistorySidebar({
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="confirm-icon" aria-hidden="true"><Icon name="trash" size={19} /></div>
-            <h3 id="confirm-delete-title">Удалить игру?</h3>
-            <p className="confirm-name">«{chatTitle(confirmItem)}»</p>
+            <h3 id="confirm-delete-title">{t("history.delete.confirmTitle")}</h3>
+            <p className="confirm-name">{t("history.delete.quotedName", { title: chatTitle(confirmItem, t) })}</p>
             <p id="confirm-delete-note" className="confirm-note">
-              Игра и все её данные удалятся из базы безвозвратно — история, персонажи, мир и
-              связанные эмбеддинги. Это действие нельзя отменить.
+              {t("history.delete.confirmNote")}
             </p>
             <div className="confirm-actions">
               <button type="button" className="btn" onClick={cancelDelete} disabled={deleting} autoFocus>
-                Отмена
+                {t("actions.cancel")}
               </button>
               <button
                 type="button"
@@ -405,7 +409,7 @@ export default function ChatHistorySidebar({
                 onClick={confirmDelete}
                 disabled={deleting}
               >
-                {deleting ? "Удаляю…" : "Удалить"}
+                {deleting ? t("history.delete.deleting") : t("history.delete.action")}
               </button>
             </div>
           </div>

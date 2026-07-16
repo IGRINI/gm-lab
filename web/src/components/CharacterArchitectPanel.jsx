@@ -1,5 +1,6 @@
 import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { api } from "../api.js";
 import WorldDetailModal from "./WorldDetailModal.jsx";
 import useConnectorModelBinding from "../useConnectorModelBinding.js";
@@ -10,6 +11,7 @@ import {
   normalizeVisibleMessage,
   AutoTextarea,
   useLiveSegments,
+  useLocalizedFallbackMessage,
   ArchitectChatPane,
   ArchitectDebugModal,
   accumulateUsage,
@@ -65,7 +67,7 @@ import {
 // read as a lie right under an «Основа: …» header. Keyed on the base IDS (not
 // titles): a dangling base still IS a base — its material is just unavailable,
 // and the greeting says so instead of pretending the hero is standalone.
-function defaultArchitectMessages({
+function defaultArchitectMessages(t, {
   worldId = "",
   storyId = "",
   worldTitle = "",
@@ -75,18 +77,17 @@ function defaultArchitectMessages({
   // hide a live world); only when every recorded base is gone say so.
   const closing =
     storyId && storyTitle
-      ? `Я соберу героя под историю «${storyTitle}» с опорой на её публичную завязку — при этом лист останется переносимым.`
+      ? t("character.architect.closing.story", { story: storyTitle })
       : worldId && worldTitle
-        ? `Я соберу героя под мир «${worldTitle}» с опорой на его публичный канон — при этом лист останется переносимым.`
+        ? t("character.architect.closing.world", { world: worldTitle })
         : worldId || storyId
-          ? "Основа героя записана в пакете, но её материал сейчас недоступен — я сохраню существующие связи листа."
-          : "Я собираю один переносимый лист персонажа — его можно будет запустить в любой истории.";
+          ? t("character.architect.closing.missing")
+          : t("character.architect.closing.standalone");
   return [
     {
       role: "assistant",
-      content:
-        "Опиши персонажа, которого хочешь собрать, — или дай направление, а лист я соберу сам.\n\nЧто особенно полезно:\n\n1. Имя, роль или класс, уровень.\n2. Характер, ценности, происхождение и внешность.\n3. Характеристики (сила, ловкость и т.д.) и ключевые навыки.\n4. ХП, класс доспеха, снаряжение и инвентарь.\n5. Заклинания и слоты, если персонаж их использует.\n\n" +
-        closing,
+      content: t("character.architect.intro", { closing }),
+      uiFallback: true,
     },
   ];
 }
@@ -221,13 +222,15 @@ export default function CharacterArchitectPanel({
   notify,
   className = "",
 }) {
+  const { t } = useTranslation("studio");
   // The full sheet (the `.gmchar` payload's player_character). Seeded from the
   // catalog row's `payload` (the /characters list carries it); the conversation
   // comes from the architect fetch below. Model history + cache ids are SERVER-
   // side (the dialogs SQLite) — the panel holds only the visible chat.
-  const greeting = defaultArchitectMessages({ worldId, storyId, worldTitle, storyTitle });
+  const greeting = defaultArchitectMessages(t, { worldId, storyId, worldTitle, storyTitle });
   const [sheet, setSheet] = useState(() => characterSheetFromSaved(character));
   const [messages, setMessages] = useState(() => characterMessagesFromChat(null, greeting));
+  useLocalizedFallbackMessage(setMessages, greeting[0].content);
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
@@ -400,7 +403,7 @@ export default function CharacterArchitectPanel({
       .then((data) => {
         if (cancelled || loadedCharacterIdRef.current !== id) return;
         if (!data?.ok) {
-          throw new Error(data?.error || "не удалось загрузить переписку персонажа");
+          throw new Error(data?.error || t("character.errors.loadChat"));
         }
         setMessages(characterMessagesFromChat(data.architect, greeting));
         resetModelBinding(data.architect?.model_binding);
@@ -409,7 +412,7 @@ export default function CharacterArchitectPanel({
         if (cancelled || loadedCharacterIdRef.current !== id) return;
         setBindingLoading(false);
         setBindingLoadFailed(true);
-        setArchitectError(error?.message || "не удалось загрузить переписку персонажа");
+        setArchitectError(error?.message || t("character.errors.loadChat"));
       });
     return () => {
       cancelled = true;
@@ -525,7 +528,7 @@ export default function CharacterArchitectPanel({
               setSheet((current) => mergeCharacterSheet(current, args));
             }
           } else if (ev.kind === "architect_error") {
-            failure = textValue(ev.data) || "Архитектор не ответил";
+            failure = textValue(ev.data) || t("architect.errors.noResponse");
             if (ev.model_binding) resetModelBinding(ev.model_binding);
             // The server creates the package (and saves the user message into
             // its conversation) BEFORE the model call, and its error events
@@ -574,14 +577,14 @@ export default function CharacterArchitectPanel({
       if (failure) throw new Error(failure);
       setRetryText("");
     } catch (error) {
-      const message = error?.message || "Не удалось вызвать архитектора";
+      const message = error?.message || t("architect.errors.callFailed");
       setArchitectError(message);
       setRetryText(text);
       if (!adopted) {
         setMessages((current) => [
           ...current,
           ...liveSegmentsRef.current,
-          { role: "assistant", content: `Не получилось обновить персонажа: ${message}` },
+          { role: "assistant", content: t("character.errors.updateFailed", { message }) },
         ]);
         clearLive();
       }
@@ -615,10 +618,10 @@ export default function CharacterArchitectPanel({
       let character;
       if (currentCharacterId) {
         const data = await api.saveCharacterDraft(currentCharacterId, payload);
-        if (!data?.ok) throw new Error(data?.error || "не удалось сохранить лист");
+        if (!data?.ok) throw new Error(data?.error || t("character.errors.saveSheet"));
         character = data.character;
       } else {
-        const title = textValue(payload.name) || "Персонаж";
+        const title = textValue(payload.name) || t("character.defaultTitle");
         const data = await api.createCharacter({
           title,
           payload: { player_character: payload },
@@ -627,7 +630,7 @@ export default function CharacterArchitectPanel({
           ...(worldId ? { world_id: worldId } : {}),
           ...(storyId ? { story_id: storyId } : {}),
         });
-        if (!data?.ok) throw new Error(data?.error || "не удалось создать персонажа");
+        if (!data?.ok) throw new Error(data?.error || t("character.errors.createCharacter"));
         character = data.character;
         const newId = textValue(character?.id);
         if (newId) {
@@ -642,7 +645,7 @@ export default function CharacterArchitectPanel({
       adoptSheet(savedPc);
       onCharacterPersisted?.(character);
     } catch (error) {
-      const message = error?.message || "не удалось сохранить лист";
+      const message = error?.message || t("character.errors.saveSheet");
       setSaveError(message);
       notify?.(message);
     } finally {
@@ -652,6 +655,40 @@ export default function CharacterArchitectPanel({
 
   const heroName = textValue(sheet.name);
   const hpObj = asObject(sheet.hp) || {};
+  const baseLabels = [];
+  if (worldId) {
+    baseLabels.push(
+      worldMissing
+        ? t("character.base.worldMissing")
+        : t("character.base.world", { world: worldTitle })
+    );
+  }
+  if (storyId) {
+    baseLabels.push(
+      storyMissing
+        ? t("character.base.storyMissing")
+        : t("character.base.story", { story: storyTitle })
+    );
+  }
+  const hasWorldCanon = Boolean(worldId && !worldMissing);
+  const hasStoryCanon = Boolean(storyId && !storyMissing);
+  const canonScope =
+    hasWorldCanon && hasStoryCanon
+      ? t("character.base.scope.both")
+      : hasStoryCanon
+        ? t("character.base.scope.story")
+        : hasWorldCanon
+          ? t("character.base.scope.world")
+          : "";
+  const subtitle =
+    worldId || storyId
+      ? canonScope
+        ? t("character.base.summaryAvailable", {
+            bases: baseLabels.join(" · "),
+            scope: canonScope,
+          })
+        : t("character.base.summaryMissing", { bases: baseLabels.join(" · ") })
+      : t("character.subtitle");
 
   return (
     <div className={`world-studio character-studio${className ? ` ${className}` : ""}`}>
@@ -659,56 +696,26 @@ export default function CharacterArchitectPanel({
         <div className="world-studio-id">
           <span className="world-studio-emblem" aria-hidden="true"><Icon name="user" size={18} /></span>
           <div className="world-studio-title">
-            <span className="world-studio-kicker">создание персонажа</span>
-            <b>Студия персонажей</b>
-            <p className="world-studio-sub">
-              {worldId || storyId ? (
-                <>
-                  Основа:{" "}
-                  {worldId && (
-                    <>
-                      {worldMissing ? "мир (пакет недоступен)" : `мир «${worldTitle}»`}
-                      {storyId ? " · " : ""}
-                    </>
-                  )}
-                  {storyId &&
-                    (storyMissing ? "история (пакет недоступен)" : `история «${storyTitle}»`)}
-                  {(worldId && !worldMissing) || (storyId && !storyMissing)
-                    ? // Pronoun agrees with what is actually available: их (оба),
-                      // её (история), его (мир).
-                      ` — архитектор опирается на ${
-                        worldId && !worldMissing && storyId && !storyMissing
-                          ? "их"
-                          : storyId && !storyMissing
-                            ? "её"
-                            : "его"
-                      } публичный канон.`
-                    : " — материал основы недоступен: архитектор сохранит записанные связи листа."}
-                </>
-              ) : (
-                <>
-                  Соберите переносимый лист героя с архитектором или отредактируйте каждое поле
-                  вручную и сохраните лист напрямую.
-                </>
-              )}
-            </p>
+            <span className="world-studio-kicker">{t("character.kicker")}</span>
+            <b>{t("character.title")}</b>
+            <p className="world-studio-sub">{subtitle}</p>
           </div>
         </div>
         <span className={`world-studio-chip${ready ? " ready" : ""}`}>
-          {ready ? "готов к запуску" : "черновик не готов"}
+          {ready ? t("character.readiness.ready") : t("character.readiness.notReady")}
         </span>
       </header>
 
       <div className="world-studio-body">
         <ArchitectChatPane
-          headKicker="архитектор"
-          headTitle="Собрать персонажа"
-          usageTitle="Токены архитектора персонажа"
-          helpTitle="Архитектор персонажа"
-          helpSubtitle="Отдельный AI-контур до старта игры."
-          helpNote="Он собирает один переносимый лист персонажа: имя и роль, характеристики, навыки, ХП, инвентарь, снаряжение и заклинания. Без основы герой универсален; с основой архитектор опирается на её публичный канон. Лист в любом случае переносим — героя можно запустить и в другой истории (при несовпадении мира придёт предупреждение)."
-          thinkLabel="🧠 Архитектор рассуждает"
-          placeholder="Например: суровый следопыт-полуэльф, выросший на болотах, мастер лука и трав… (Enter — отправить)"
+          headKicker={t("architect.kicker")}
+          headTitle={t("character.architect.title")}
+          usageTitle={t("character.architect.usageTitle")}
+          helpTitle={t("character.architect.helpTitle")}
+          helpSubtitle={t("architect.helpSubtitle")}
+          helpNote={t("character.architect.helpNote")}
+          thinkLabel={t("architect.thinking")}
+          placeholder={t("character.architect.placeholder")}
           messages={messages}
           liveSegments={liveSegments}
           busy={architectBusy}
@@ -741,30 +748,30 @@ export default function CharacterArchitectPanel({
 
         <section
           className={`world-studio-pane world-inspector character-sheet${ready ? " is-live" : ""}`}
-          aria-label="Лист персонажа"
+          aria-label={t("character.inspector.ariaLabel")}
         >
           <div className="world-inspector-head">
-            <span className="world-inspector-kicker">персонаж</span>
-            <b>{heroName || "Без имени"}</b>
+            <span className="world-inspector-kicker">{t("character.inspector.kicker")}</span>
+            <b>{heroName || t("character.unnamed")}</b>
           </div>
 
           <div className="world-inspector-body">
             <div className="world-field-grid">
               <label className="world-field">
-                <span>Имя</span>
+                <span>{t("character.fields.name.label")}</span>
                 <input
                   value={scalarText(sheet.name)}
                   onChange={(event) => updateField("name", event.target.value)}
-                  placeholder="Например: Кара Вент"
+                  placeholder={t("character.fields.name.placeholder")}
                   disabled={editDisabled}
                 />
               </label>
               <label className="world-field">
-                <span>Роль / класс</span>
+                <span>{t("character.fields.classRole.label")}</span>
                 <input
                   value={scalarText(sheet.class_role)}
                   onChange={(event) => updateField("class_role", event.target.value)}
-                  placeholder="Например: следопыт"
+                  placeholder={t("character.fields.classRole.placeholder")}
                   disabled={editDisabled}
                 />
               </label>
@@ -772,16 +779,16 @@ export default function CharacterArchitectPanel({
 
             <div className="world-field-grid">
               <label className="world-field">
-                <span>Местоимения</span>
+                <span>{t("character.fields.pronouns.label")}</span>
                 <input
                   value={scalarText(sheet.pronouns)}
                   onChange={(event) => updateField("pronouns", event.target.value)}
-                  placeholder="она/её"
+                  placeholder={t("character.fields.pronouns.placeholder")}
                   disabled={editDisabled}
                 />
               </label>
               <label className="world-field">
-                <span>Уровень</span>
+                <span>{t("character.fields.level.label")}</span>
                 <input
                   type="number"
                   value={numText(sheet.level)}
@@ -793,61 +800,61 @@ export default function CharacterArchitectPanel({
             </div>
 
             <label className="world-field">
-              <span>Возраст</span>
+              <span>{t("character.fields.age.label")}</span>
               <input
                 value={scalarText(sheet.age)}
                 onChange={(event) => updateField("age", event.target.value)}
-                placeholder="Например: 27"
+                placeholder={t("character.fields.age.placeholder")}
                 disabled={editDisabled}
               />
             </label>
 
             <label className="world-field">
-              <span>Внешность</span>
+              <span>{t("character.fields.appearance.label")}</span>
               <AutoTextarea
                 value={scalarText(sheet.physical_type)}
                 onChange={(event) => updateField("physical_type", event.target.value)}
-                placeholder="Телосложение, черты, как выглядит."
+                placeholder={t("character.fields.appearance.placeholder")}
                 disabled={editDisabled}
               />
             </label>
 
             <label className="world-field">
-              <span>Особые приметы</span>
+              <span>{t("character.fields.features.label")}</span>
               <AutoTextarea
                 value={scalarText(sheet.distinctive_features)}
                 onChange={(event) => updateField("distinctive_features", event.target.value)}
-                placeholder="Шрамы, татуировки, что запоминается."
+                placeholder={t("character.fields.features.placeholder")}
                 disabled={editDisabled}
               />
             </label>
 
             <label className="world-field">
-              <span>Происхождение</span>
+              <span>{t("character.fields.background.label")}</span>
               <AutoTextarea
                 value={scalarText(sheet.background)}
                 onChange={(event) => updateField("background", event.target.value)}
-                placeholder="Откуда герой, что его сформировало."
+                placeholder={t("character.fields.background.placeholder")}
                 disabled={editDisabled}
               />
             </label>
 
             <label className="world-field">
-              <span>Характер</span>
+              <span>{t("character.fields.personality.label")}</span>
               <AutoTextarea
                 value={scalarText(sheet.personality)}
                 onChange={(event) => updateField("personality", event.target.value)}
-                placeholder="Как ведёт себя, что движет героем."
+                placeholder={t("character.fields.personality.placeholder")}
                 disabled={editDisabled}
               />
             </label>
 
             <label className="world-field">
-              <span>Ценности</span>
+              <span>{t("character.fields.values.label")}</span>
               <AutoTextarea
                 value={scalarText(sheet.values)}
                 onChange={(event) => updateField("values", event.target.value)}
-                placeholder="Во что верит, чем не поступится."
+                placeholder={t("character.fields.values.placeholder")}
                 disabled={editDisabled}
               />
             </label>
@@ -862,10 +869,10 @@ export default function CharacterArchitectPanel({
             {/* Боевые параметры — КД, ХП, пассивное восприятие, скорость, чувства, языки. */}
             <div className="world-bible">
               <div className="world-bible-fields">
-                <p className="world-bible-hint">Боевые параметры</p>
+                <p className="world-bible-hint">{t("character.combat.title")}</p>
                 <div className="world-field-grid">
                   <label className="world-field">
-                    <span>КД</span>
+                    <span>{t("character.combat.armorClass")}</span>
                     <input
                       type="number"
                       value={numText(sheet.ac)}
@@ -875,7 +882,7 @@ export default function CharacterArchitectPanel({
                     />
                   </label>
                   <label className="world-field">
-                    <span>Пасс. восприятие</span>
+                    <span>{t("character.combat.passivePerception")}</span>
                     <input
                       type="number"
                       value={numText(sheet.passive_perception)}
@@ -887,7 +894,7 @@ export default function CharacterArchitectPanel({
                 </div>
                 <div className="world-field-grid">
                   <label className="world-field">
-                    <span>ХП сейчас</span>
+                    <span>{t("character.combat.hpCurrent")}</span>
                     <input
                       type="number"
                       value={numText(hpObj.current)}
@@ -897,7 +904,7 @@ export default function CharacterArchitectPanel({
                     />
                   </label>
                   <label className="world-field">
-                    <span>ХП максимум</span>
+                    <span>{t("character.combat.hpMax")}</span>
                     <input
                       type="number"
                       value={numText(hpObj.max)}
@@ -909,30 +916,30 @@ export default function CharacterArchitectPanel({
                 </div>
                 <div className="world-field-grid">
                   <label className="world-field">
-                    <span>Скорость</span>
+                    <span>{t("character.combat.speed.label")}</span>
                     <input
                       value={scalarText(sheet.speed)}
                       onChange={(e) => updateField("speed", e.target.value)}
-                      placeholder="Например: 30 фт"
+                      placeholder={t("character.combat.speed.placeholder")}
                       disabled={editDisabled}
                     />
                   </label>
                   <label className="world-field">
-                    <span>Чувства</span>
+                    <span>{t("character.combat.senses.label")}</span>
                     <input
                       value={scalarText(sheet.senses)}
                       onChange={(e) => updateField("senses", e.target.value)}
-                      placeholder="Тёмное зрение 18 м"
+                      placeholder={t("character.combat.senses.placeholder")}
                       disabled={editDisabled}
                     />
                   </label>
                 </div>
                 <label className="world-field">
-                  <span>Языки</span>
+                  <span>{t("character.combat.languages.label")}</span>
                   <input
                     value={scalarText(sheet.languages)}
                     onChange={(e) => updateField("languages", e.target.value)}
-                    placeholder="Общий, эльфийский"
+                    placeholder={t("character.combat.languages.placeholder")}
                     disabled={editDisabled}
                   />
                 </label>
@@ -940,25 +947,25 @@ export default function CharacterArchitectPanel({
             </div>
 
             <MapRowsEditor
-              label="Навыки"
+              label={t("character.editors.skills.label")}
               rows={skillRows.rows}
               onEdit={skillRows.edit}
               onAdd={skillRows.add}
               onRemove={skillRows.remove}
-              keyPlaceholder="Навык"
+              keyPlaceholder={t("character.editors.skills.placeholder")}
               disabled={editDisabled}
             />
             <MapRowsEditor
-              label="Спасброски"
+              label={t("character.editors.savingThrows.label")}
               rows={saveRows.rows}
               onEdit={saveRows.edit}
               onAdd={saveRows.add}
               onRemove={saveRows.remove}
-              keyPlaceholder="Спасбросок"
+              keyPlaceholder={t("character.editors.savingThrows.placeholder")}
               disabled={editDisabled}
             />
             <NamedListEditor
-              label="Инвентарь"
+              label={t("character.editors.inventory")}
               rows={invRows.rows}
               onEdit={invRows.edit}
               onAdd={invRows.add}
@@ -966,7 +973,7 @@ export default function CharacterArchitectPanel({
               disabled={editDisabled}
             />
             <NamedListEditor
-              label="Снаряжение"
+              label={t("character.editors.equipment")}
               rows={equipRows.rows}
               onEdit={equipRows.edit}
               onAdd={equipRows.add}
@@ -974,12 +981,12 @@ export default function CharacterArchitectPanel({
               disabled={editDisabled}
             />
             <NamedListEditor
-              label="Особенности"
+              label={t("character.editors.features")}
               rows={featRows.rows}
               onEdit={featRows.edit}
               onAdd={featRows.add}
               onRemove={featRows.remove}
-              descPlaceholder="Что даёт (необязательно)"
+              descPlaceholder={t("character.editors.featureDescription")}
               disabled={editDisabled}
             />
 
@@ -1008,11 +1015,11 @@ export default function CharacterArchitectPanel({
             <div className="world-bible">
               <div className="world-bible-fields">
                 <label className="world-field">
-                  <span>Тайна героя (видит только ГМ — публичный образ остаётся легендой)</span>
+                  <span>{t("character.gmNotes.label")}</span>
                   <AutoTextarea
                     value={scalarText(sheet.gm_notes)}
                     onChange={(e) => updateField("gm_notes", e.target.value)}
-                    placeholder="Служебные заметки для ведущего."
+                    placeholder={t("character.gmNotes.placeholder")}
                     disabled={editDisabled}
                   />
                 </label>
@@ -1028,14 +1035,14 @@ export default function CharacterArchitectPanel({
                 onClick={saveSheet}
                 disabled={editDisabled || !dirty}
               >
-                {saveBusy ? "Сохранение…" : "Сохранить лист"}
+                {saveBusy ? t("character.save.saving") : t("character.save.action")}
               </button>
               {saveError ? (
                 <span className="sheet-save-status is-error">{saveError}</span>
               ) : dirty ? (
-                <span className="sheet-save-status">Есть несохранённые правки</span>
+                <span className="sheet-save-status">{t("character.save.dirty")}</span>
               ) : (
-                <span className="sheet-save-status is-ok">Всё сохранено</span>
+                <span className="sheet-save-status is-ok">{t("character.save.saved")}</span>
               )}
             </div>
             <div className="world-inspector-launch">
@@ -1045,7 +1052,7 @@ export default function CharacterArchitectPanel({
                 onClick={() => setSheetOpen(true)}
                 disabled={!ready}
               >
-                Лист персонажа
+                {t("character.actions.sheet")}
               </button>
               {currentCharacterId && (
                 <button
@@ -1054,13 +1061,12 @@ export default function CharacterArchitectPanel({
                   onClick={() => onPlayCharacter?.(currentCharacterId)}
                   disabled={locked || !ready}
                 >
-                  ▶ Играть им
+                  {t("character.actions.play")}
                 </button>
               )}
             </div>
             <p className="world-manager-note">
-              Правьте лист вручную и жмите «Сохранить лист» — либо продолжайте диалог с
-              архитектором: черновик уезжает с каждым сообщением. Для запуска нужно имя.
+              {t("character.saveNote")}
             </p>
           </div>
         </section>

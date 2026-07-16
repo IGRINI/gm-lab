@@ -1,21 +1,16 @@
 import { useEffect, useRef } from "react";
 import Icon from "./Icon.jsx";
+import { useTranslation } from "react-i18next";
 
-const FIELD_OPTIONS = [
-  ["all", "Везде"],
-  ["title", "В названиях"],
-  ["world", "В мирах"],
-  ["story", "В историях"],
-  ["character", "В персонажах"],
-  ["messages", "В сообщениях"],
-];
+const FIELD_OPTIONS = ["all", "title", "world", "story", "character", "messages"];
 
 function EntitySelect({ label, value, options, onChange }) {
+  const { t } = useTranslation("game");
   return (
     <label className="chat-filter-field">
       <span>{label}</span>
       <select value={value || ""} onChange={(event) => onChange(event.target.value)}>
-        <option value="">Любой</option>
+        <option value="">{t("filters.any")}</option>
         {(options || []).map((option) => (
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
@@ -33,6 +28,7 @@ export default function ChatSearchFilters({
   onClose,
   onReset,
 }) {
+  const { t } = useTranslation("game");
   const ref = useRef(null);
   const update = (key, value) => onChange?.({ ...filters, [key]: value });
 
@@ -55,37 +51,39 @@ export default function ChatSearchFilters({
 
   if (!open) return null;
   return (
-    <div ref={ref} className="chat-filter-popover" role="dialog" aria-label="Фильтры поиска игр">
+    <div ref={ref} className="chat-filter-popover" role="dialog" aria-label={t("filters.dialogAria")}>
       <div className="chat-filter-head">
-        <strong>Фильтры</strong>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label="Закрыть фильтры">
+        <strong>{t("filters.title")}</strong>
+        <button type="button" className="icon-btn" onClick={onClose} aria-label={t("filters.closeAria")}>
           <Icon name="x" size={14} />
         </button>
       </div>
       <div className="chat-filter-grid">
         <label className="chat-filter-field chat-filter-field--wide">
-          <span>Где искать</span>
+          <span>{t("filters.field")}</span>
           <select value={filters?.field || "all"} onChange={(event) => update("field", event.target.value)}>
-            {FIELD_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            {FIELD_OPTIONS.map((value) => (
+              <option key={value} value={value}>{t(`filters.fields.${value}`)}</option>
+            ))}
           </select>
         </label>
-        <EntitySelect label="Мир" value={filters?.world_id} options={options?.worlds} onChange={(value) => update("world_id", value)} />
-        <EntitySelect label="История" value={filters?.story_id} options={options?.stories} onChange={(value) => update("story_id", value)} />
-        <EntitySelect label="Персонаж" value={filters?.character_id} options={options?.characters} onChange={(value) => update("character_id", value)} />
+        <EntitySelect label={t("filters.world")} value={filters?.world_id} options={options?.worlds} onChange={(value) => update("world_id", value)} />
+        <EntitySelect label={t("filters.story")} value={filters?.story_id} options={options?.stories} onChange={(value) => update("story_id", value)} />
+        <EntitySelect label={t("filters.character")} value={filters?.character_id} options={options?.characters} onChange={(value) => update("character_id", value)} />
         <label className="chat-filter-field">
-          <span>Период</span>
+          <span>{t("filters.period")}</span>
           <select value={filters?.period || ""} onChange={(event) => update("period", event.target.value)}>
-            <option value="">За всё время</option>
-            <option value="7d">7 дней</option>
-            <option value="30d">30 дней</option>
-            <option value="90d">90 дней</option>
+            <option value="">{t("filters.periods.all")}</option>
+            <option value="7d">{t("filters.periods.days7")}</option>
+            <option value="30d">{t("filters.periods.days30")}</option>
+            <option value="90d">{t("filters.periods.days90")}</option>
           </select>
         </label>
         <label className="chat-filter-field">
-          <span>Сортировка</span>
+          <span>{t("filters.sort")}</span>
           <select value={filters?.sort || "relevance"} onChange={(event) => update("sort", event.target.value)}>
-            <option value="relevance">По релевантности</option>
-            <option value="updated">Сначала новые</option>
+            <option value="relevance">{t("filters.sorts.relevance")}</option>
+            <option value="updated">{t("filters.sorts.updated")}</option>
           </select>
         </label>
         <label className="chat-filter-check chat-filter-field--wide">
@@ -94,12 +92,12 @@ export default function ChatSearchFilters({
             checked={Boolean(filters?.has_messages)}
             onChange={(event) => update("has_messages", event.target.checked)}
           />
-          <span>Только игры с сообщениями</span>
+          <span>{t("filters.hasMessages")}</span>
         </label>
       </div>
       <div className="chat-filter-actions">
-        <button type="button" className="btn" onClick={onReset}>Сбросить</button>
-        <button type="button" className="btn primary" onClick={onClose}>Готово</button>
+        <button type="button" className="btn" onClick={onReset}>{t("filters.reset")}</button>
+        <button type="button" className="btn primary" onClick={onClose}>{t("filters.done")}</button>
       </div>
     </div>
   );
