@@ -1,6 +1,7 @@
 //! `RagEngine` — hybrid dense + BM25 + RRF retrieval. Port of `rag.py`.
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use gml_config::Config;
 
@@ -14,20 +15,28 @@ use crate::tokenize::tokens;
 pub const GOOD_STATUS: [&str; 3] = ["known", "current", "present"];
 
 /// The English task that steers query-side retrieval. Kept domain-specific and
-/// in English (per Qwen3's multilingual guidance). Sent to the sidecar as `task`
-/// for `input_type:"query"`, and used by the default [`crate::Embedder::embed_query`]
-/// template. Splitting it out lets the sidecar build the model-card template
-/// (`Instruct: {task}\nQuery:{q}`) instead of a frozen client-side string.
-pub const QUERY_TASK: &str = "Given a game master's query, retrieve relevant \
-public world facts, current scene facts, known NPC whereabouts, evidence, and \
-unconfirmed witness statements for a tabletop RPG. Do not retrieve hidden canon \
-or private secrets.";
+/// in English (per Qwen3's multilingual guidance), but sourced from the common
+/// prompt catalog so the sidecar and local embedder cannot drift apart.
+pub const QUERY_TASK: &str = gml_prompts::RAG_QUERY_TASK;
+
+/// Access the cache-stable query task.
+pub fn query_task() -> &'static str {
+    static RENDERED_QUERY_TASK: LazyLock<String> = LazyLock::new(|| {
+        gml_prompts::render_prompt(gml_prompts::PromptId::RagQueryTask, serde_json::Value::Null)
+            .unwrap_or_else(|error| panic!("failed to render RAG query task: {error:#}"))
+    });
+    RENDERED_QUERY_TASK.as_str()
+}
 
 /// Port of `_query_instruction(query)` — the full client-side template. Used by
 /// the default (dumb-embedder) `embed_query` path and the golden tests; the
-/// sidecar builds its own from [`QUERY_TASK`]. Byte-identical to the original.
+/// sidecar builds its own from [`query_task`]. Byte-identical to the original.
 pub fn query_instruction(query: &str) -> String {
-    format!("Instruct: {QUERY_TASK}\nQuery: {}", py_strip(query))
+    gml_prompts::render_prompt(
+        gml_prompts::PromptId::RagQuery,
+        serde_json::json!({"query": py_strip(query)}),
+    )
+    .unwrap_or_else(|error| panic!("failed to render RAG query prompt: {error:#}"))
 }
 
 /// Port of `_rank_map(scores)`.

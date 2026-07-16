@@ -91,6 +91,7 @@ pub struct AppState {
     /// separate from the per-chat serialization locks: cancellation must be
     /// able to reach a model call while that call owns the chat lock.
     pub turn_registry: Arc<TurnRegistry>,
+    pub architect_registry: Arc<ArchitectRegistry>,
     /// Resolved path to the built SPA `index.html` (`web/dist/index.html`).
     pub index_html: Arc<Option<std::path::PathBuf>>,
 }
@@ -102,6 +103,14 @@ pub struct AppState {
 #[derive(Default)]
 pub struct TurnRegistry {
     controls: std::sync::Mutex<HashMap<TurnRequestKey, Weak<TurnControl>>>,
+    /// Monotonic registration order, so "the" active turn of a chat is the
+    /// most recently started one when several are live.
+    next_seq: std::sync::atomic::AtomicU64,
+    /// Chats with a delete in progress. A new turn may not register for such
+    /// a chat: without this, a POST racing the delete could register after
+    /// the delete's cancel sweep and later re-insert the deleted row on
+    /// commit.
+    deleting: std::sync::Mutex<std::collections::HashSet<(String, String)>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -121,25 +130,115 @@ impl TurnRequestKey {
     }
 }
 
+/// The request parameters a turn was started with. A duplicate POST for a live
+/// request id may only attach to the running turn when it asks for the exact
+/// same work; anything else is a conflicting reuse of the id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TurnFingerprint {
+    text: String,
+    legacy_resume: bool,
+    history: Option<TurnHistoryMutation>,
+}
+
+/// Events and the terminal receipt of one turn, buffered for late subscribers.
+#[derive(Default)]
+struct TurnFeed {
+    events: Vec<gml_types::Event>,
+    terminal: Option<TurnDone>,
+}
+
 /// Coordinates model cancellation with the non-cancellable blocking SQLite
 /// commit. A cancel request sets the flag before waiting on `commit_fence`.
 /// Therefore a save that has not started observes cancellation and is skipped;
 /// a save already holding the fence finishes first and wins deterministically.
+///
+/// The control also carries the turn's event feed: the server owns the model
+/// stream, so events are buffered here and every SSE response (the original
+/// one or a later re-attach) is just a subscriber. Dropping all subscribers
+/// never cancels the turn — only an explicit `/turn/{id}/cancel` does.
 struct TurnControl {
     cancel_requested: AtomicBool,
     model_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
     commit_target: std::sync::Mutex<Option<String>>,
     commit_fence: std::sync::Mutex<()>,
+    fingerprint: TurnFingerprint,
+    /// Registration order within the process; see [`TurnRegistry::next_seq`].
+    seq: u64,
+    feed: std::sync::Mutex<TurnFeed>,
+    progress: tokio::sync::watch::Sender<u64>,
 }
 
 impl TurnControl {
-    fn new() -> Self {
+    fn new(fingerprint: TurnFingerprint, seq: u64) -> Self {
+        let (progress, _) = tokio::sync::watch::channel(0u64);
         Self {
             cancel_requested: AtomicBool::new(false),
             model_abort: std::sync::Mutex::new(None),
             commit_target: std::sync::Mutex::new(None),
             commit_fence: std::sync::Mutex::new(()),
+            fingerprint,
+            seq,
+            feed: std::sync::Mutex::new(TurnFeed::default()),
+            progress,
         }
+    }
+
+    fn fingerprint(&self) -> &TurnFingerprint {
+        &self.fingerprint
+    }
+
+    /// Append one event to the feed and wake subscribers. Events arriving
+    /// after the terminal receipt are dropped so the SSE contract ("nothing
+    /// after `done`") holds for every subscriber.
+    fn publish(&self, event: gml_types::Event) {
+        {
+            let mut feed = self
+                .feed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if feed.terminal.is_some() {
+                return;
+            }
+            feed.events.push(event);
+        }
+        self.progress.send_modify(|version| *version += 1);
+    }
+
+    /// Publish the terminal receipt exactly once.
+    fn finish(&self, done: TurnDone) {
+        {
+            let mut feed = self
+                .feed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if feed.terminal.is_some() {
+                return;
+            }
+            feed.terminal = Some(done);
+        }
+        self.progress.send_modify(|version| *version += 1);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .terminal
+            .is_some()
+    }
+
+    /// Copy events starting at `from` plus the terminal receipt if present.
+    fn feed_snapshot(&self, from: usize) -> (Vec<gml_types::Event>, Option<TurnDone>) {
+        let feed = self
+            .feed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let from = from.min(feed.events.len());
+        (feed.events[from..].to_vec(), feed.terminal.clone())
+    }
+
+    fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.progress.subscribe()
     }
 
     fn cancellation_requested(&self) -> bool {
@@ -222,16 +321,40 @@ impl TurnControl {
 #[derive(Debug)]
 struct TurnCommitCancelled;
 
+/// Outcome of registering a turn request: a fresh control (this call must
+/// execute the turn), the still-live control of the same request id (this
+/// call may only attach to it), or a refusal because the chat's delete is in
+/// progress.
+enum TurnRegistration {
+    New(Arc<TurnControl>),
+    InFlight(Arc<TurnControl>),
+    ChatDeleting,
+}
+
 impl TurnRegistry {
-    fn register(&self, key: TurnRequestKey) -> Result<Arc<TurnControl>, ()> {
+    fn register(&self, key: TurnRequestKey, fingerprint: TurnFingerprint) -> TurnRegistration {
         const STALE_CONTROL_CLEANUP_INTERVAL: usize = 64;
 
         let mut controls = self
             .controls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if controls.get(&key).and_then(Weak::upgrade).is_some() {
-            return Err(());
+        // Checked under the controls lock: the delete sweep sets the tombstone
+        // first and scans the controls map second (also under this lock), so a
+        // registration that does not see the tombstone is guaranteed to be
+        // seen by the sweep — no window for a turn to slip past the delete.
+        if self.chat_delete_pending(&key.scope, &key.chat_id) {
+            return TurnRegistration::ChatDeleting;
+        }
+        if let Some(existing) = controls.get(&key).and_then(Weak::upgrade) {
+            // A finished control may stay upgradeable while a slow subscriber
+            // holds its Arc. Attaching a retry to it would replay a stale
+            // failed/cancelled receipt forever instead of re-executing;
+            // durable idempotency for committed turns is provided by the
+            // transcript receipt, not by this registry.
+            if !existing.is_finished() {
+                return TurnRegistration::InFlight(existing);
+            }
         }
         if controls.len() >= STALE_CONTROL_CLEANUP_INTERVAL
             && controls
@@ -240,9 +363,12 @@ impl TurnRegistry {
         {
             controls.retain(|_, control| control.strong_count() > 0);
         }
-        let control = Arc::new(TurnControl::new());
+        let seq = self
+            .next_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let control = Arc::new(TurnControl::new(fingerprint, seq));
         controls.insert(key, Arc::downgrade(&control));
-        Ok(control)
+        TurnRegistration::New(control)
     }
 
     fn get(&self, key: &TurnRequestKey) -> Option<Arc<TurnControl>> {
@@ -255,6 +381,192 @@ impl TurnRegistry {
             controls.remove(key);
         }
         control
+    }
+
+    /// The request id (and fingerprint) of a still-running turn started from
+    /// this chat, if any. Finished controls (terminal receipt published) are
+    /// not "active" even while a subscriber keeps their `Arc` alive. With
+    /// several live turns the most recently registered one wins — HashMap
+    /// iteration order must not leak into the API.
+    fn active_for_chat(&self, scope: &str, chat_id: &str) -> Option<(String, TurnFingerprint)> {
+        let controls = self
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        controls
+            .iter()
+            .filter(|(key, _)| key.scope == scope && key.chat_id == chat_id)
+            .filter_map(|(key, weak)| weak.upgrade().map(|control| (key, control)))
+            .filter(|(_, control)| !control.is_finished())
+            .max_by_key(|(_, control)| control.seq)
+            .map(|(key, control)| (key.request_id.clone(), control.fingerprint().clone()))
+    }
+
+    /// Refuse new turn registrations for a chat while its delete runs; the
+    /// returned guard lifts the bar when dropped.
+    fn begin_chat_delete(self: &Arc<Self>, scope: &str, chat_id: &str) -> ChatDeleteGuard {
+        self.deleting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((scope.to_string(), chat_id.to_string()));
+        ChatDeleteGuard {
+            registry: self.clone(),
+            scope: scope.to_string(),
+            chat_id: chat_id.to_string(),
+        }
+    }
+
+    fn chat_delete_pending(&self, scope: &str, chat_id: &str) -> bool {
+        self.deleting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(scope.to_string(), chat_id.to_string()))
+    }
+
+    fn end_chat_delete(&self, scope: &str, chat_id: &str) {
+        self.deleting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(scope.to_string(), chat_id.to_string()));
+    }
+
+    /// Live controls whose source chat or commit destination matches
+    /// `chat_id`. Used to fence off in-flight turns before a chat delete.
+    fn live_for_chat(&self, scope: &str, chat_id: &str) -> Vec<Arc<TurnControl>> {
+        let controls = self
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        controls
+            .iter()
+            .filter(|(key, _)| key.scope == scope)
+            .filter_map(|(key, weak)| weak.upgrade().map(|control| (key, control)))
+            .filter(|(key, control)| {
+                !control.is_finished()
+                    && (key.chat_id == chat_id
+                        || control.commit_target().as_deref() == Some(chat_id))
+            })
+            .map(|(_, control)| control)
+            .collect()
+    }
+}
+
+/// Buffered frame feed of one architect turn. The architect task itself is
+/// already detached (it survives client disconnects); this feed adds replay,
+/// so a reopened panel can re-attach to the live stream instead of guessing
+/// whether the model is still thinking.
+struct ArchitectFeed {
+    frames: std::sync::Mutex<(Vec<Value>, bool)>,
+    progress: tokio::sync::watch::Sender<u64>,
+}
+
+impl ArchitectFeed {
+    fn new() -> Self {
+        let (progress, _) = tokio::sync::watch::channel(0u64);
+        Self {
+            frames: std::sync::Mutex::new((Vec::new(), false)),
+            progress,
+        }
+    }
+
+    fn publish(&self, frame: Value) {
+        {
+            let mut frames = self
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if frames.1 {
+                return;
+            }
+            frames.0.push(frame);
+        }
+        self.progress.send_modify(|version| *version += 1);
+    }
+
+    fn finish(&self) {
+        {
+            let mut frames = self
+                .frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            frames.1 = true;
+        }
+        self.progress.send_modify(|version| *version += 1);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+    }
+
+    fn snapshot(&self, from: usize) -> (Vec<Value>, bool) {
+        let frames = self
+            .frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let from = from.min(frames.0.len());
+        (frames.0[from..].to_vec(), frames.1)
+    }
+
+    fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.progress.subscribe()
+    }
+}
+
+/// Live architect turns keyed by (package kind, package id). Weak like the
+/// turn registry: entries die with their feed's last strong ref. Only turns
+/// on EXISTING packages register — a first turn creating a package has no id
+/// a reloaded panel could ask about anyway.
+#[derive(Default)]
+pub struct ArchitectRegistry {
+    feeds: std::sync::Mutex<HashMap<(String, String), Weak<ArchitectFeed>>>,
+}
+
+impl ArchitectRegistry {
+    fn register(&self, kind: &str, package_id: &str, feed: &Arc<ArchitectFeed>) {
+        const STALE_FEED_CLEANUP_INTERVAL: usize = 64;
+
+        let mut feeds = self
+            .feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if feeds.len() >= STALE_FEED_CLEANUP_INTERVAL
+            && feeds.len().is_multiple_of(STALE_FEED_CLEANUP_INTERVAL)
+        {
+            feeds.retain(|_, feed| feed.strong_count() > 0);
+        }
+        feeds.insert(
+            (kind.to_string(), package_id.to_string()),
+            Arc::downgrade(feed),
+        );
+    }
+
+    fn get(&self, kind: &str, package_id: &str) -> Option<Arc<ArchitectFeed>> {
+        let mut feeds = self
+            .feeds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (kind.to_string(), package_id.to_string());
+        let feed = feeds.get(&key).and_then(Weak::upgrade);
+        if feed.is_none() {
+            feeds.remove(&key);
+        }
+        feed
+    }
+}
+
+/// Lifts the delete bar for a chat when the delete handler exits (any path).
+struct ChatDeleteGuard {
+    registry: Arc<TurnRegistry>,
+    scope: String,
+    chat_id: String,
+}
+
+impl Drop for ChatDeleteGuard {
+    fn drop(&mut self) {
+        self.registry.end_chat_delete(&self.scope, &self.chat_id);
     }
 }
 
@@ -373,7 +685,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/worlds/{id}/delete", post(post_delete_world))
         .route("/model", post(post_model))
         .route("/cmd", post(post_cmd))
+        .route("/architect/active", get(get_architect_active))
+        .route("/architect/stream", get(get_architect_stream))
         .route("/turn", post(post_turn))
+        .route("/turn/active", get(get_active_turn))
+        .route("/turn/{request_id}/stream", get(get_turn_stream))
         .route("/turn/{request_id}/cancel", post(post_cancel_turn))
         .route(
             "/transcribe",
@@ -1714,6 +2030,152 @@ impl gml_agents::ArchitectStream for ArchitectStreamSink {
     }
 }
 
+/// Bridge one architect turn's channel into a replayable feed and answer with
+/// a subscriber stream. The forwarder task owns the feed's lifecycle: it
+/// drains the detached architect task's channel into the buffer and finishes
+/// the feed when that task drops its sender — so the feed reflects the turn,
+/// not any single HTTP connection. Turns on an existing package register for
+/// discovery; a create-first turn has no id a reloaded panel could ask about.
+fn architect_feed_response(
+    state: &AppState,
+    kind: &'static str,
+    package_id: Option<&str>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Value>,
+) -> Response {
+    let feed = Arc::new(ArchitectFeed::new());
+    if let Some(package_id) = package_id {
+        state.architect_registry.register(kind, package_id, &feed);
+    }
+    let writer = feed.clone();
+    tokio::spawn(async move {
+        let mut rx = rx;
+        while let Some(frame) = rx.recv().await {
+            writer.publish(frame);
+        }
+        writer.finish();
+    });
+    architect_feed_subscribe(feed)
+}
+
+/// SSE subscriber over an architect feed: replay the buffer, tail live frames,
+/// close with the synthetic `{"kind":"done"}` frame the panels already expect.
+fn architect_feed_subscribe(feed: Arc<ArchitectFeed>) -> Response {
+    const ARCHITECT_FEED_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+    let stream = async_stream::stream! {
+        let mut progress = feed.subscribe();
+        let mut cursor = 0usize;
+        loop {
+            let (frames, finished) = feed.snapshot(cursor);
+            cursor += frames.len();
+            for frame in frames {
+                let line = format!("data: {}\n\n", serde_json::to_string(&frame).unwrap_or_default());
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
+            }
+            if finished {
+                yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
+                break;
+            }
+            match tokio::time::timeout(ARCHITECT_FEED_PING_INTERVAL, progress.changed()).await {
+                Ok(Ok(())) => {}
+                // The sender lives inside `feed`, which this stream holds an
+                // Arc to; treat the impossible closure as a clean end.
+                Ok(Err(_)) => {
+                    yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
+                    break;
+                }
+                Err(_) => yield Ok(Bytes::from(": ping\n\n")),
+            }
+        }
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    (headers, Body::from_stream(stream)).into_response()
+}
+
+/// Validated (kind, id) pair for the architect discovery/attach endpoints.
+fn architect_query_target(
+    params: &HashMap<String, String>,
+) -> Result<(&'static str, String), Response> {
+    let kind = match params.get("kind").map(String::as_str) {
+        Some("world") => "world",
+        Some("story") => "story",
+        Some("character") => "character",
+        _ => {
+            return Err(json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": "kind must be world, story or character"}),
+            ));
+        }
+    };
+    let id = params
+        .get("id")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    if id.is_empty() {
+        return Err(json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "id is required"}),
+        ));
+    }
+    Ok((kind, id))
+}
+
+/// `GET /architect/active?kind=&id=` — is an architect turn still generating
+/// for this package? Lets a reopened panel distinguish "model is thinking"
+/// from "the last call failed".
+async fn get_architect_active(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let (kind, id) = match architect_query_target(&params) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let active = state
+        .architect_registry
+        .get(kind, &id)
+        .is_some_and(|feed| !feed.is_finished());
+    json_response(
+        StatusCode::OK,
+        &json!({"ok": true, "kind": kind, "id": id, "active": active}),
+    )
+}
+
+/// `GET /architect/stream?kind=&id=` — re-attach to a live (or just-finished,
+/// still-pinned) architect turn: full replay + live tail + `done`. 404
+/// `architect_not_running` when nothing is buffered — the stored architect
+/// state is then the whole truth.
+async fn get_architect_stream(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let (kind, id) = match architect_query_target(&params) {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    match state.architect_registry.get(kind, &id) {
+        Some(feed) => architect_feed_subscribe(feed),
+        None => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({
+                "ok": false,
+                "code": "architect_not_running",
+                "error": "no architect turn is running for this package",
+            }),
+        ),
+    }
+}
+
 /// `POST /world-architect/chat` — Server-Sent Events. Streams the architect's
 /// reply as it generates (`architect_delta`), surfaces each tool call
 /// (`architect_tool`), then sends the full result (`architect_done`) carrying the
@@ -1746,6 +2208,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
     };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let registry_package_id = world_id.clone();
     let app = state.clone();
     tokio::spawn(async move {
         // Existing packages are locked before any content/chat mutation. A new
@@ -1974,26 +2437,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
         }
     });
 
-    let stream = async_stream::stream! {
-        let mut rx = rx;
-        while let Some(ev) = rx.recv().await {
-            let line = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
-            yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
-        }
-        yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
-    };
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream; charset=utf-8"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    headers.insert(
-        HeaderName::from_static("x-accel-buffering"),
-        HeaderValue::from_static("no"),
-    );
-    let body = Body::from_stream(stream);
-    (headers, body).into_response()
+    architect_feed_response(&state, "world", registry_package_id.as_deref(), rx)
 }
 
 /// `GET /worlds/{id}/architect` — the world-architect panel's conversation
@@ -2140,6 +2584,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
         };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let registry_package_id = story_id.clone();
     let app = state.clone();
     tokio::spawn(async move {
         let mut _architect_guard = match story_id.as_deref() {
@@ -2354,26 +2799,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
         }
     });
 
-    let stream = async_stream::stream! {
-        let mut rx = rx;
-        while let Some(ev) = rx.recv().await {
-            let line = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
-            yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
-        }
-        yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
-    };
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream; charset=utf-8"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    headers.insert(
-        HeaderName::from_static("x-accel-buffering"),
-        HeaderValue::from_static("no"),
-    );
-    let body = Body::from_stream(stream);
-    (headers, body).into_response()
+    architect_feed_response(&state, "story", registry_package_id.as_deref(), rx)
 }
 
 /// The bound world resolved for a story-architect turn: the live version to pin
@@ -2980,6 +3406,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
     };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let registry_package_id = character_id.clone();
     let app = state.clone();
     tokio::spawn(async move {
         let mut _architect_guard = match character_id.as_deref() {
@@ -3196,26 +3623,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
         }
     });
 
-    let stream = async_stream::stream! {
-        let mut rx = rx;
-        while let Some(ev) = rx.recv().await {
-            let line = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
-            yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
-        }
-        yield Ok(Bytes::from("data: {\"kind\": \"done\"}\n\n"));
-    };
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/event-stream; charset=utf-8"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    headers.insert(
-        HeaderName::from_static("x-accel-buffering"),
-        HeaderValue::from_static("no"),
-    );
-    let body = Body::from_stream(stream);
-    (headers, body).into_response()
+    architect_feed_response(&state, "character", registry_package_id.as_deref(), rx)
 }
 
 /// `GET /characters/{id}/architect` — the character-architect panel's
@@ -5374,6 +5782,33 @@ async fn post_delete_chat(State(state): State<AppState>, AxPath(id): AxPath<Stri
         .map(|c| c.into_owned())
         .unwrap_or(id);
     let scope = chat_scope_id();
+
+    // Turns are detached from their HTTP responses, so an in-flight turn can
+    // outlive every client and would re-insert the chat row on commit. Bar
+    // new registrations for this chat (guard lifts on every exit path), then
+    // cancel the live turns and cross the same fence the cancel endpoint
+    // uses: after this, each turn either committed already (and gets deleted
+    // with the chat) or can no longer commit.
+    let _delete_guard = state.turn_registry.begin_chat_delete(&scope, &chat_id);
+    let live_turns = state.turn_registry.live_for_chat(&scope, &chat_id);
+    if !live_turns.is_empty() {
+        for control in &live_turns {
+            control.request_cancellation();
+        }
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            for control in live_turns {
+                control.wait_for_commit();
+            }
+        })
+        .await
+        {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("cancel fence task failed: {error}")}),
+            );
+        }
+    }
+
     let cfg = state.config.clone();
     let settings = state.settings.clone();
     let store = state.store.clone();
@@ -5747,7 +6182,7 @@ const LEGACY_MODEL_ERROR_PREFIX: &str = "Ошибка вызова модели:
 const LEGACY_RESUME_REJECTED: &str =
     "Сохранённый ход нельзя безопасно повторить. Отправьте новое действие.";
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct TurnDone {
     ok: bool,
     cancelled: bool,
@@ -5837,36 +6272,6 @@ impl AbortTaskOnDrop {
 impl Drop for AbortTaskOnDrop {
     fn drop(&mut self) {
         self.0.abort();
-    }
-}
-
-/// Cancels an in-flight turn when its SSE response is dropped before the
-/// terminal receipt is produced. Unlike a bare task abort, this also closes the
-/// blocking-save race through [`TurnControl::commit`].
-struct CancelTurnOnDrop {
-    task_abort: Option<tokio::task::AbortHandle>,
-    control: Arc<TurnControl>,
-}
-
-impl CancelTurnOnDrop {
-    fn new<T>(handle: &tokio::task::JoinHandle<T>, control: Arc<TurnControl>) -> Self {
-        Self {
-            task_abort: Some(handle.abort_handle()),
-            control,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.task_abort = None;
-    }
-}
-
-impl Drop for CancelTurnOnDrop {
-    fn drop(&mut self) {
-        if let Some(task_abort) = self.task_abort.take() {
-            self.control.request_cancellation();
-            task_abort.abort();
-        }
     }
 }
 
@@ -6073,8 +6478,8 @@ fn committed_turn_for_request(transcript: &[Value], request_id: &str) -> Option<
     })
 }
 
-fn send_turn_error(tx: &tokio::sync::mpsc::UnboundedSender<gml_types::Event>, message: String) {
-    let _ = tx.send(gml_types::Event::new(
+fn send_turn_error(control: &TurnControl, message: String) {
+    control.publish(gml_types::Event::new(
         "error",
         Some("ГМ".to_string()),
         Value::String(message),
@@ -6206,7 +6611,6 @@ async fn execute_turn(
     state: AppState,
     request: TurnExecutionRequest,
     control: Arc<TurnControl>,
-    tx: tokio::sync::mpsc::UnboundedSender<gml_types::Event>,
 ) -> TurnDone {
     let TurnExecutionRequest {
         scope,
@@ -6280,11 +6684,11 @@ async fn execute_turn(
     let (mut rt, prepared_history) = match loaded {
         Ok(Ok(runtime)) => runtime,
         Ok(Err(error)) => {
-            send_turn_error(&tx, error.to_string());
+            send_turn_error(&control, error.to_string());
             return TurnDone::failed(request_id, false);
         }
         Err(error) => {
-            send_turn_error(&tx, format!("turn load task failed: {error}"));
+            send_turn_error(&control, format!("turn load task failed: {error}"));
             return TurnDone::failed(request_id, true);
         }
     };
@@ -6298,7 +6702,7 @@ async fn execute_turn(
         }
         SavedTurnRequest::DifferentText => {
             send_turn_error(
-                &tx,
+                &control,
                 "request_id has already been used for another turn".to_string(),
             );
             return TurnDone::failed(request_id, false);
@@ -6316,7 +6720,7 @@ async fn execute_turn(
         match TurnCheckpoint::capture(&rt, next_turn, request_id.clone(), text.clone()) {
             Ok(checkpoint) => Some(checkpoint),
             Err(error) => {
-                send_turn_error(&tx, error.to_string());
+                send_turn_error(&control, error.to_string());
                 return TurnDone::failed(request_id, false);
             }
         }
@@ -6324,14 +6728,14 @@ async fn execute_turn(
 
     let resume_checkpoint = if legacy_resume {
         let Some(checkpoint) = legacy_resume_checkpoint(&rt, &text) else {
-            send_turn_error(&tx, LEGACY_RESUME_REJECTED.to_string());
+            send_turn_error(&control, LEGACY_RESUME_REJECTED.to_string());
             return TurnDone::failed(request_id, false);
         };
         if !rt
             .session
             .remove_empty_failed_turn_usage(&checkpoint.meta_total)
         {
-            send_turn_error(&tx, LEGACY_RESUME_REJECTED.to_string());
+            send_turn_error(&control, LEGACY_RESUME_REJECTED.to_string());
             return TurnDone::failed(request_id, false);
         }
 
@@ -6343,7 +6747,7 @@ async fn execute_turn(
             .get_mut(checkpoint.player_row_index)
             .and_then(Value::as_object_mut)
         else {
-            send_turn_error(&tx, LEGACY_RESUME_REJECTED.to_string());
+            send_turn_error(&control, LEGACY_RESUME_REJECTED.to_string());
             return TurnDone::failed(request_id, false);
         };
         player_row.insert("request_id".to_string(), json!(&request_id));
@@ -6408,7 +6812,7 @@ async fn execute_turn(
             json!({"turn": turn_no, "event": &event})
         };
         rt.transcript.push(transcript_row);
-        let _ = tx.send(event);
+        control.publish(event);
     }
 
     let (session, outcome) = match turn_handle.await {
@@ -6418,7 +6822,7 @@ async fn execute_turn(
             if control.cancellation_requested() {
                 return TurnDone::cancelled(request_id);
             }
-            send_turn_error(&tx, format!("turn task failed: {error}"));
+            send_turn_error(&control, format!("turn task failed: {error}"));
             return TurnDone::failed(request_id, true);
         }
     };
@@ -6431,7 +6835,7 @@ async fn execute_turn(
 
     if unexpected_player_event {
         send_turn_error(
-            &tx,
+            &control,
             "Внутренняя ошибка восстановления хода: повтор игрока".to_string(),
         );
         return TurnDone::failed(request_id, false);
@@ -6469,11 +6873,11 @@ async fn execute_turn(
             !legacy_resume,
         ),
         Ok(Ok(Err(error))) => {
-            send_turn_error(&tx, format!("Не удалось сохранить ход: {error}"));
+            send_turn_error(&control, format!("Не удалось сохранить ход: {error}"));
             TurnDone::failed(request_id, true)
         }
         Err(error) => {
-            send_turn_error(&tx, format!("turn save task failed: {error}"));
+            send_turn_error(&control, format!("turn save task failed: {error}"));
             TurnDone::failed(request_id, true)
         }
     }
@@ -6537,63 +6941,123 @@ async fn post_turn(State(state): State<AppState>, body: Bytes) -> Response {
         Err(resp) => return resp,
     };
     let control_key = TurnRequestKey::new(&scope, &chat_id, &request_id);
-    let control = match state.turn_registry.register(control_key) {
-        Ok(control) => control,
-        Err(()) => {
+    let fallback_chat_id = chat_id.clone();
+    let fingerprint = TurnFingerprint {
+        text: text.clone(),
+        legacy_resume,
+        history: history.clone(),
+    };
+    let control = match state.turn_registry.register(control_key, fingerprint.clone()) {
+        TurnRegistration::New(control) => {
+            // The server owns the turn: the model stream is consumed by a
+            // detached task and every result is committed through the usual
+            // fenced save, no matter what happens to this HTTP response.
+            // Subscribers (below) only read the buffered feed.
+            let driver_control = control.clone();
+            let driver_request_id = request_id.clone();
+            tokio::spawn(async move {
+                // The nested spawn turns an execute_turn panic into a
+                // JoinError instead of a feed that never terminates.
+                let turn_handle = tokio::spawn(execute_turn(
+                    state,
+                    TurnExecutionRequest {
+                        scope,
+                        chat_id,
+                        text,
+                        request_id: driver_request_id.clone(),
+                        legacy_resume,
+                        history,
+                    },
+                    driver_control.clone(),
+                ));
+                let done = match turn_handle.await {
+                    Ok(done) => done,
+                    Err(error) => {
+                        send_turn_error(&driver_control, format!("turn task failed: {error}"));
+                        TurnDone::failed(driver_request_id, true)
+                    }
+                };
+                driver_control.finish(done);
+            });
+            control
+        }
+        TurnRegistration::InFlight(control) => {
+            // Same request id may re-attach to the live feed, but only for the
+            // exact same work; a different payload is a conflicting id reuse.
+            if control.fingerprint() != &fingerprint {
+                return json_response(
+                    StatusCode::CONFLICT,
+                    &json!({
+                        "ok": false,
+                        "code": "turn_in_progress",
+                        "error": "this request id is already in progress with a different payload",
+                    }),
+                );
+            }
+            control
+        }
+        TurnRegistration::ChatDeleting => {
             return json_response(
                 StatusCode::CONFLICT,
                 &json!({
                     "ok": false,
-                    "code": "turn_in_progress",
-                    "error": "this turn request is already in progress",
+                    "code": "chat_deleting",
+                    "error": "this chat is being deleted",
                 }),
             );
         }
     };
 
-    // The turn runs incrementally while its join handle carries the durable
-    // completion status. This lets the final `done` distinguish a committed
-    // turn, a replay, and a safely retryable staged failure.
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<gml_types::Event>();
-    let fallback_request_id = request_id.clone();
-    let fallback_chat_id = chat_id.clone();
+    turn_feed_response(control, request_id, fallback_chat_id)
+}
 
-    let turn_handle = tokio::spawn(execute_turn(
-        state,
-        TurnExecutionRequest {
-            scope,
-            chat_id,
-            text,
-            request_id,
-            legacy_resume,
-            history,
-        },
-        control.clone(),
-        tx,
-    ));
-    // Moving this guard into the response body ties the server task lifetime to
-    // the HTTP stream lifetime. Client disconnect/AbortController => body drop
-    // => execute_turn abort => nested orchestrator abort.
-    let turn_cancel = CancelTurnOnDrop::new(&turn_handle, control);
+/// Stream a turn's buffered feed as SSE: replay everything published so far,
+/// tail live events, then send the single terminal `done` frame. Dropping the
+/// response body only ends this subscription — the turn keeps running.
+fn turn_feed_response(
+    control: Arc<TurnControl>,
+    request_id: String,
+    fallback_chat_id: String,
+) -> Response {
+    const TURN_FEED_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
-    // Build the streaming body: each event -> `data: {json}\n\n`, then one
-    // structured terminal `done` frame after the save result is known.
     let stream = async_stream::stream! {
-        let mut turn_cancel = turn_cancel;
-        let mut rx = rx;
-        while let Some(event) = rx.recv().await {
-            let line = format!("data: {}\n\n", serde_json::to_string(&event).unwrap_or_default());
-            yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
+        let mut progress = control.subscribe();
+        let mut cursor = 0usize;
+        loop {
+            let (events, terminal) = control.feed_snapshot(cursor);
+            cursor += events.len();
+            for event in events {
+                let line = format!("data: {}\n\n", serde_json::to_string(&event).unwrap_or_default());
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(line));
+            }
+            if let Some(done) = terminal {
+                let line = format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(&done.as_value(&fallback_chat_id)).unwrap_or_default()
+                );
+                yield Ok(Bytes::from(line));
+                break;
+            }
+            match tokio::time::timeout(TURN_FEED_PING_INTERVAL, progress.changed()).await {
+                Ok(Ok(())) => {}
+                // The progress sender lives inside `control`, which this
+                // stream holds an Arc to, so `changed` cannot fail; keep the
+                // subscriber alive regardless.
+                Ok(Err(_)) => {
+                    let done = TurnDone::failed(request_id.clone(), true);
+                    let line = format!(
+                        "data: {}\n\n",
+                        serde_json::to_string(&done.as_value(&fallback_chat_id)).unwrap_or_default()
+                    );
+                    yield Ok(Bytes::from(line));
+                    break;
+                }
+                // Comment frames keep idle proxies from dropping the stream
+                // during long silent model calls; clients skip them.
+                Err(_) => yield Ok(Bytes::from(": ping\n\n")),
+            }
         }
-        let done = turn_handle
-            .await
-            .unwrap_or_else(|_| TurnDone::failed(fallback_request_id, true));
-        turn_cancel.disarm();
-        let line = format!(
-            "data: {}\n\n",
-            serde_json::to_string(&done.as_value(&fallback_chat_id)).unwrap_or_default()
-        );
-        yield Ok(Bytes::from(line));
     };
 
     let mut headers = HeaderMap::new();
@@ -6608,6 +7072,177 @@ async fn post_turn(State(state): State<AppState>, body: Bytes) -> Response {
     );
     let body = Body::from_stream(stream);
     (headers, body).into_response()
+}
+
+/// Re-attach to one logical turn: a live turn streams its buffered feed plus
+/// the live tail; a committed turn answers with a single replayed `done`
+/// frame; anything else is 404 `turn_not_running` (a failed or cancelled turn
+/// left the pre-turn checkpoint as the only truth, so there is nothing to
+/// stream).
+async fn get_turn_stream(
+    State(state): State<AppState>,
+    AxPath(encoded_request_id): AxPath<String>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let decoded_request_id = urlencoding::decode(&encoded_request_id)
+        .map(|value| value.into_owned())
+        .unwrap_or(encoded_request_id);
+    let request_id = match validate_turn_request_id(&decoded_request_id) {
+        Ok(request_id) => request_id,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            );
+        }
+    };
+    let explicit_chat_id = params
+        .get("chat_id")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let scope = chat_scope_id();
+    let chat_id = match resolve_owned_turn_chat(&state, &scope, explicit_chat_id).await {
+        Ok(chat_id) => chat_id,
+        Err(response) => return response,
+    };
+    let key = TurnRequestKey::new(&scope, &chat_id, &request_id);
+    if let Some(control) = state.turn_registry.get(&key) {
+        return turn_feed_response(control, request_id, chat_id);
+    }
+
+    // No live control: the turn either committed (durable receipt in the
+    // transcript / history-receipt table) or vanished without persisting
+    // anything. The lookup runs after the registry miss, so a commit that
+    // raced the upgrade is already visible in SQLite.
+    let store = state.store.clone();
+    let lookup_scope = scope.clone();
+    let lookup_chat_id = chat_id.clone();
+    let lookup_request_id = request_id.clone();
+    let committed = tokio::task::spawn_blocking(move || {
+        let (destination_chat_id, runtime) = match store.history_turn_receipt(
+            &lookup_scope,
+            &lookup_chat_id,
+            &lookup_request_id,
+        )? {
+            Some(receipt) => {
+                let runtime = store.load_chat(&lookup_scope, &receipt.destination_chat_id)?;
+                (receipt.destination_chat_id, runtime)
+            }
+            None => (
+                lookup_chat_id.clone(),
+                store.load_chat(&lookup_scope, &lookup_chat_id)?,
+            ),
+        };
+        Ok::<_, gml_persistence::StoreError>(
+            committed_turn_for_request(&runtime.transcript, &lookup_request_id).map(|turn| {
+                (
+                    destination_chat_id,
+                    turn,
+                    runtime.rewindable_turns.contains(&turn),
+                )
+            }),
+        )
+    })
+    .await;
+
+    match committed {
+        Ok(Ok(Some((destination_chat_id, turn, rewindable)))) => {
+            let done = TurnDone::completed(
+                request_id,
+                destination_chat_id.clone(),
+                true,
+                turn,
+                rewindable,
+            );
+            single_done_frame_response(&done, &destination_chat_id)
+        }
+        Ok(Ok(None)) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({
+                "ok": false,
+                "code": "turn_not_running",
+                "error": "this turn request is not running and was not committed",
+            }),
+        ),
+        Ok(Err(error)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": error.to_string()}),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("turn lookup task failed: {error}")}),
+        ),
+    }
+}
+
+/// One-frame SSE response for turns that already resolved durably.
+fn single_done_frame_response(done: &TurnDone, fallback_chat_id: &str) -> Response {
+    let line = format!(
+        "data: {}\n\n",
+        serde_json::to_string(&done.as_value(fallback_chat_id)).unwrap_or_default()
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    (headers, Body::from(line)).into_response()
+}
+
+/// Report the still-running turn of a chat, if any, so a reloaded client can
+/// re-attach instead of double-sending.
+async fn get_active_turn(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let explicit_chat_id = params
+        .get("chat_id")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let scope = chat_scope_id();
+    let chat_id = match resolve_owned_turn_chat(&state, &scope, explicit_chat_id).await {
+        Ok(chat_id) => chat_id,
+        Err(response) => return response,
+    };
+    // The fingerprint travels with the discovery response so a reloaded
+    // client can re-attach AND, if the turn later fails, retry it faithfully
+    // (same text, same history mutation) instead of degrading an edit/branch
+    // into a plain turn.
+    match state.turn_registry.active_for_chat(&scope, &chat_id) {
+        Some((request_id, fingerprint)) => json_response(
+            StatusCode::OK,
+            &json!({
+                "ok": true,
+                "chat_id": chat_id,
+                "request_id": request_id,
+                "text": fingerprint.text,
+                "legacy_resume": fingerprint.legacy_resume,
+                "history": fingerprint.history.as_ref().map(turn_history_value),
+            }),
+        ),
+        None => json_response(
+            StatusCode::OK,
+            &json!({"ok": true, "chat_id": chat_id, "request_id": Value::Null}),
+        ),
+    }
+}
+
+/// Wire shape of a history mutation, mirroring the `history` field accepted
+/// by POST /turn so discovery responses round-trip into retries.
+fn turn_history_value(history: &TurnHistoryMutation) -> Value {
+    match history {
+        TurnHistoryMutation::Edit { turn } => json!({"kind": "edit", "turn": turn}),
+        TurnHistoryMutation::Branch { turn, title } => match title {
+            Some(title) => json!({"kind": "branch", "turn": turn, "title": title}),
+            None => json!({"kind": "branch", "turn": turn}),
+        },
+    }
 }
 
 /// Stop one logical turn and resolve the commit race before acknowledging it.
@@ -8585,6 +9220,89 @@ mod chat_concurrency_tests {
     use super::*;
     use gml_mock::MockClient;
 
+    fn test_fingerprint() -> TurnFingerprint {
+        TurnFingerprint {
+            text: "Проверка границы сохранения".to_string(),
+            legacy_resume: false,
+            history: None,
+        }
+    }
+
+    #[test]
+    fn registry_replaces_finished_control_pinned_by_slow_subscriber() {
+        let registry = TurnRegistry::default();
+        let key = TurnRequestKey::new("shared", "chat", "req");
+        let first = match registry.register(key.clone(), test_fingerprint()) {
+            TurnRegistration::New(control) => control,
+            _ => panic!("first registration must be fresh"),
+        };
+        // A live duplicate attaches.
+        assert!(matches!(
+            registry.register(key.clone(), test_fingerprint()),
+            TurnRegistration::InFlight(_)
+        ));
+        // The turn ends without a commit while a subscriber still pins the
+        // Arc: a retry must re-execute, not attach to the stale feed.
+        first.finish(TurnDone::failed("req".to_string(), true));
+        let second = match registry.register(key.clone(), test_fingerprint()) {
+            TurnRegistration::New(control) => control,
+            _ => panic!("retry after a finished turn must re-register"),
+        };
+        assert!(!second.is_finished());
+        drop(first);
+    }
+
+    #[test]
+    fn registry_active_for_chat_prefers_latest_live_turn() {
+        let registry = TurnRegistry::default();
+        let first = match registry.register(
+            TurnRequestKey::new("shared", "chat", "req-a"),
+            test_fingerprint(),
+        ) {
+            TurnRegistration::New(control) => control,
+            _ => panic!("fresh registration"),
+        };
+        let second = match registry.register(
+            TurnRequestKey::new("shared", "chat", "req-b"),
+            test_fingerprint(),
+        ) {
+            TurnRegistration::New(control) => control,
+            _ => panic!("fresh registration"),
+        };
+        let (active, _) = registry
+            .active_for_chat("shared", "chat")
+            .expect("two live turns");
+        assert_eq!(active, "req-b", "the newest live turn wins");
+        second.finish(TurnDone::failed("req-b".to_string(), true));
+        let (active, _) = registry
+            .active_for_chat("shared", "chat")
+            .expect("first turn still live");
+        assert_eq!(active, "req-a", "finished turns are not active");
+        first.finish(TurnDone::failed("req-a".to_string(), true));
+        assert!(registry.active_for_chat("shared", "chat").is_none());
+    }
+
+    #[test]
+    fn registry_blocks_registration_while_chat_delete_pending() {
+        let registry = Arc::new(TurnRegistry::default());
+        let guard = registry.begin_chat_delete("shared", "chat");
+        assert!(matches!(
+            registry.register(
+                TurnRequestKey::new("shared", "chat", "req"),
+                test_fingerprint()
+            ),
+            TurnRegistration::ChatDeleting
+        ));
+        drop(guard);
+        assert!(matches!(
+            registry.register(
+                TurnRequestKey::new("shared", "chat", "req"),
+                test_fingerprint()
+            ),
+            TurnRegistration::New(_)
+        ));
+    }
+
     fn state(tmp: &tempfile::TempDir) -> AppState {
         let mut config = Config::from_env();
         config.backend = "mock".to_string();
@@ -8618,6 +9336,7 @@ mod chat_concurrency_tests {
             sidecar: None,
             locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             turn_registry: Arc::new(TurnRegistry::default()),
+            architect_registry: Arc::new(ArchitectRegistry::default()),
             index_html: Arc::new(None),
         }
     }
@@ -8666,7 +9385,7 @@ mod chat_concurrency_tests {
             },
         }));
 
-        let control = Arc::new(TurnControl::new());
+        let control = Arc::new(TurnControl::new(test_fingerprint(), 0));
         let save_control = control.clone();
         let store = state.store.clone();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
@@ -8709,7 +9428,7 @@ mod chat_concurrency_tests {
             "a commit that entered first remains canonical"
         );
 
-        let cancel_winner = TurnControl::new();
+        let cancel_winner = TurnControl::new(test_fingerprint(), 0);
         cancel_winner.request_cancellation();
         let save_called = AtomicBool::new(false);
         assert!(cancel_winner

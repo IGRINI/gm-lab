@@ -13,9 +13,8 @@
 //! that ride as extra system messages, exactly like the story architect's bound
 //! world bible. The blocks are PUBLIC-ONLY: the character architect talks to the
 //! PLAYER, so GM secrets (`hidden_premise`/`hidden_secrets`/`hidden_truth`) are
-//! stripped — basing a hero on a story must not spoil it. The system prompt has
-//! two variants sharing one body ([`CHARACTER_ARCHITECT_SYSTEM`] /
-//! [`CHARACTER_ARCHITECT_SYSTEM_BASED`]), picked by whether blocks are present:
+//! stripped — basing a hero on a story must not spoil it. One system template
+//! renders two variants, picked by whether blocks are present:
 //! a standalone conversation spends no tokens on base-block instructions, and a
 //! based one doesn't carry the contradictory "standalone" rule. The binding is
 //! fixed at creation, so the pick is stable across a conversation's turns.
@@ -28,9 +27,12 @@
 //! deep merge for the nested stat objects (abilities, skills, saving_throws, hp,
 //! spell_slots, spell_slots_max) so a partial re-draft refines instead of nuking.
 
+use std::sync::LazyLock;
+
 use serde_json::{json, Map, Value};
 
 use gml_llm::{Backend, BackendError};
+use gml_prompts::{render_prompt, PromptId};
 
 use crate::architect_runner::{
     architect_messages_with_system_blocks, architect_turn, ArchitectConfig, ArchitectOutput,
@@ -41,90 +43,33 @@ use crate::architect_runner::{
 /// the domain name (mirrors `StoryArchitectOutput`).
 pub type CharacterArchitectOutput = ArchitectOutput;
 
-/// The character-architect system prompt in two variants sharing one body: the
-/// mode paragraph is the ONLY difference. STANDALONE (no base) never mentions
-/// base blocks — no tokens spent on a feature the conversation doesn't use;
-/// BASED replaces the "do NOT tie them" rule (which would contradict the base)
-/// with grounding guidance. The variant is picked per conversation from the
-/// resolved context blocks; a character's binding is fixed at creation, so the
-/// prompt — and with it the cache prefix — stays stable across its turns.
-macro_rules! character_architect_system {
-    ($mode_rules:expr) => {
-        concat!(
-            r#"You are the GM-Lab character architect. You help the user author a reusable
-PLAYER CHARACTER — a portable hero card that can be launched into any story or
-world. Write all character text in Russian; keep it concrete and playable.
+/// Standalone character-architect prompt retained as a public constant for
+/// compatibility. Runtime assembly uses [`character_architect_system`].
+pub const CHARACTER_ARCHITECT_SYSTEM: &str = gml_prompts::CHARACTER_ARCHITECT_SYSTEM;
 
-You author ONE protagonist: name, pronouns, class/role, level, background, look
-and personality, D&D 5e stats (ability scores, skills, saving throws, AC, HP),
-speed/senses/languages, starting inventory, equipment, features, and — if the
-concept is a caster — known spells and spell slots.
+/// Based character-architect prompt retained as a public constant for
+/// compatibility. Runtime assembly uses [`character_architect_system`].
+pub const CHARACTER_ARCHITECT_SYSTEM_BASED: &str = gml_prompts::CHARACTER_ARCHITECT_SYSTEM_BASED;
 
-"#,
-            $mode_rules,
-            r#"
+static CHARACTER_ARCHITECT_SYSTEM_STANDALONE_RENDERED: LazyLock<String> = LazyLock::new(|| {
+    render_prompt(PromptId::CharacterArchitectSystem, json!({"based": false}))
+        .expect("embedded standalone character architect system prompt must render")
+});
 
-Build the sheet with draft_player_character. Make the first draft a complete,
-launchable hero: a real name (not a placeholder), a class_role and background
-that fit, the six ability scores, a few trained skills, sensible HP/AC for the
-level, and a starting inventory. The tool's field descriptions define each
-field's shape — follow them. abilities/skills/saving_throws are objects
-(name → number); hp is {current, max}; inventory/equipment/features are string
-lists; spells are objects; spell_slots/spell_slots_max are FLAT maps of
-level → count (e.g. {"1": 3}).
+static CHARACTER_ARCHITECT_SYSTEM_BASED_RENDERED: LazyLock<String> = LazyLock::new(|| {
+    render_prompt(PromptId::CharacterArchitectSystem, json!({"based": true}))
+        .expect("embedded based character architect system prompt must render")
+});
 
-Once a sheet exists, make changes with edit_player_character — patch only what
-differs (set a scalar or a whole object like abilities/hp; add/remove/replace
-entries in the list sections inventory, equipment, features, spells). Do NOT
-resend the whole sheet with draft_player_character for a small change; reserve
-draft_player_character for the first build or a deliberate full rebuild.
-
-The character lives on the server; user messages carry ONLY the user's text. The
-single source of the current state is the read_player_character tool. When the
-conversation is empty and the user asks for a new hero, build it straight away
-with draft_player_character. In every other case, before editing existing fields,
-before removing/replacing specific entries, and before making claims about what
-the sheet already says — call read_player_character for the relevant sections (or
-the whole sheet) and act on what it returns. The state may have changed between
-turns (the user edits fields by hand in the form). Never invent or guess current
-content, and never ask the user to paste it.
-
-Ask the user a question only when something important is genuinely missing or
-unclear, and ask it in your chat reply, not in a tool field. Otherwise just note
-briefly what you built or changed; questions are not required every turn.
-
-How you work, like an agent: think about what the hero needs, then update the
-sheet with a tool (draft_player_character to build, edit_player_character to
-change), then finish the turn with a short chat reply about what you built or
-changed. You may call tools more than once per turn. Each tool result comes back
-to you, so you can keep going or wrap up — but always end the turn with a reply,
-never on a bare tool call."#
-        )
-    };
+/// Rendered character-architect system rules. The mode paragraph is the only
+/// difference; each variant is rendered once so its cache prefix stays stable.
+pub fn character_architect_system(based: bool) -> &'static str {
+    if based {
+        CHARACTER_ARCHITECT_SYSTEM_BASED_RENDERED.as_str()
+    } else {
+        CHARACTER_ARCHITECT_SYSTEM_STANDALONE_RENDERED.as_str()
+    }
 }
-
-/// Canon-authoring rules for a STANDALONE hero (no base world/story). Russian
-/// content like the other architects; questions go in the chat reply, not a
-/// tool field; same agent-loop discipline.
-pub const CHARACTER_ARCHITECT_SYSTEM: &str = character_architect_system!(
-    "The hero is standalone: do NOT tie them to a specific world's secret canon \
-or a single story's plot; write them so they read sensibly dropped into \
-different adventures."
-);
-
-/// The BASED variant: the conversation carries base reference system blocks
-/// (world and/or story — any combination), so the standalone rule is replaced
-/// by grounding guidance. Deliberately GENERIC and MINIMAL: everything world-
-/// or story-specific — including the grounding directive itself — lives in the
-/// block (see the builders below), so a world-only base never pays for story
-/// instructions and nothing is said twice. This paragraph keeps only the two
-/// rules no block carries for every shape: secrecy and no-invention. Same body
-/// otherwise.
-pub const CHARACTER_ARCHITECT_SYSTEM_BASED: &str = character_architect_system!(
-    "The hero is built on the base reference given in the system block(s) that \
-follow — public, read-only: never reveal or guess at anything it does not \
-show, and do not invent canon beyond it."
-);
 
 // The character sheet field families the tool schema targets (documented in each
 // tool description rather than looked up here — the ops route by key, not by a
@@ -160,11 +105,7 @@ const PC_OBJECT_FIELDS: [&str; 6] = [
 /// server keeps such a conversation BASED by substituting
 /// [`character_architect_base_unavailable_block`] for the missing material.
 fn character_architect_prompt(context_blocks: &[String]) -> &'static str {
-    if context_blocks.iter().any(|b| !b.trim().is_empty()) {
-        CHARACTER_ARCHITECT_SYSTEM_BASED
-    } else {
-        CHARACTER_ARCHITECT_SYSTEM
-    }
+    character_architect_system(context_blocks.iter().any(|b| !b.trim().is_empty()))
 }
 
 /// The fallback base block for a character whose `world_ref`/`story_ref` are
@@ -174,12 +115,8 @@ fn character_architect_prompt(context_blocks: &[String]) -> &'static str {
 /// tells the model to PRESERVE the sheet's existing ties instead of the
 /// standalone prompt's "do NOT tie" — which would contradict the sheet.
 pub fn character_architect_base_unavailable_block() -> String {
-    "## BASE (reference unavailable)\n\
-    This hero was authored FOR a base world/story recorded in the package, but \
-    its reference material is not available right now (deleted or empty). \
-    Preserve the hero's existing ties, names and background exactly as the \
-    sheet has them; do not invent new canon for that base."
-        .to_string()
+    render_prompt(PromptId::CharacterArchitectBaseUnavailable, json!({}))
+        .expect("embedded character architect unavailable-base prompt must render")
 }
 
 /// Assemble the character-architect request messages: system (variant picked by
@@ -281,14 +218,11 @@ pub fn character_architect_world_block(world_lore: &Value) -> String {
     }
     let json =
         serde_json::to_string_pretty(&Value::Object(lore)).unwrap_or_else(|_| "{}".to_string());
-    format!(
-        "## BASE WORLD (public bible, read-only reference)\n\
-        The user is building this hero FOR this world. Ground the character in it — match its \
-        genre, tone and naming, reuse its proper nouns where natural, and give the hero a \
-        background that plausibly belongs here — but do NOT edit the world and do NOT invent \
-        world-level canon.\n\n\
-        {json}"
+    render_prompt(
+        PromptId::CharacterArchitectWorldReference,
+        json!({"json": json}),
     )
+    .expect("embedded character architect world-reference prompt must render")
 }
 
 /// The PUBLIC story fields allowed into the BASE STORY block — a WHITELIST, so a
@@ -326,13 +260,11 @@ pub fn character_architect_story_block(story_public: &Value) -> String {
     }
     let json =
         serde_json::to_string_pretty(&Value::Object(public)).unwrap_or_else(|_| "{}".to_string());
-    format!(
-        "## BASE STORY (public premise, read-only reference)\n\
-        The user is building this hero as a protagonist FOR this story. Shape the character to fit \
-        its public premise. This is only the PLAYER-VISIBLE part of the story: its hidden answers \
-        are not shown to you — never guess at them or hint that you know more.\n\n\
-        {json}"
+    render_prompt(
+        PromptId::CharacterArchitectStoryReference,
+        json!({"json": json}),
     )
+    .expect("embedded character architect story-reference prompt must render")
 }
 
 /// The `read_player_character` tool: return the FULL current text of the named
@@ -722,7 +654,8 @@ impl ArchitectConfig for CharacterArchitectConfig {
                 ToolApplication {
                     args: Value::Object(args.clone()),
                     changed: true,
-                    result: "Черновик персонажа создан/обновлён и показан пользователю. Дальше правь точечно через edit_player_character (не пересылай весь лист), либо кратко ответь пользователю в чат.".to_string(),
+                    result: render_prompt(PromptId::CharacterArchitectDraftSuccess, json!({}))
+                        .expect("embedded character architect draft-success prompt must render"),
                 }
             }
             "edit_player_character" => {
@@ -874,7 +807,10 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
     if lines.is_empty() {
         return "Правка НИЧЕГО не изменила (пустые операции). Прочитай нужный раздел read_player_character и повтори с точными данными.".to_string();
     }
-    lines.push("Продолжай точечные правки или кратко ответь в чат.".to_string());
+    lines.push(
+        render_prompt(PromptId::ArchitectEditSuccess, json!({}))
+            .expect("embedded architect edit-success prompt must render"),
+    );
     lines.join("\n")
 }
 

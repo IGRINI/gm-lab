@@ -11,19 +11,40 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use gml_llm::{Backend, BackendError, NullSink};
+use gml_prompts::{render_prompt, PromptId};
 use gml_types::Role;
 use gml_world::World;
 
 use crate::coerce::{as_list, text};
 
-const WORLD_SEED_OUTPUT_EXAMPLE: &str = r#"{"story_brief":"Кто игрок, где он находится, что произошло и что от него ждут.","public_intro":"Короткое вступление для игрока.","hidden_truth":"Скрытая истина для ГМ.","proper_nouns":["Точное имя"],"public_facts":["Публичный факт"],"npcs":[{"id":"npc_id","name":"Имя","role":"Роль","gender":"M","persona":"Характер","voice":"Манера речи","goals":"Цели","knowledge":"Знания","secret":"Тайна"}],"scene":{"id":"scene_id","location_id":"location_id","title":"Название сцены","description":"Описание сцены","present_npcs":["npc_id"],"items":[{"id":"item_id","name":"Предмет","location":"Где находится","visible":true,"portable":true,"owner":"","details":"Детали"}],"exits":[{"id":"exit_id","name":"Выход","destination":"Куда ведёт","visible":true,"blocked_by":""}],"constraints":["Физическое ограничение"],"tension":"Текущее напряжение"}}"#;
+fn render_world_seed_system(repair: bool) -> String {
+    render_prompt(PromptId::WorldSeedSystem, json!({"repair": repair}))
+        .expect("embedded world seed system prompt must render")
+}
 
-const SCENE_DELTA_OUTPUT_EXAMPLE: &str = r#"{"moves":[{"npc_id":"npc_id","present":true,"reason":"явно вошёл в сцену","location":"текущее место","visible":true,"can_hear":true,"activity":"что делает","attitude":"текущее отношение"}]}"#;
-
-fn with_world_seed_output_example(instructions: &str) -> String {
-    format!(
-        "{instructions}\n\nReturn exactly one JSON object with this shape; repeat array entries as needed:\n{WORLD_SEED_OUTPUT_EXAMPLE}"
+fn render_world_seed_repair_user(brief: &str, broken_seed: &str) -> String {
+    render_prompt(
+        PromptId::WorldSeedRepairUser,
+        json!({"brief": brief, "broken_seed": broken_seed}),
     )
+    .expect("embedded world seed repair user prompt must render")
+}
+
+fn render_scene_delta_system() -> String {
+    render_prompt(PromptId::SceneDeltaSystem, json!({}))
+        .expect("embedded scene delta system prompt must render")
+}
+
+fn render_scene_delta_user(roster: &str, scene_context: &str, narration: &str) -> String {
+    render_prompt(
+        PromptId::SceneDeltaUser,
+        json!({
+            "roster": roster,
+            "scene_context": scene_context,
+            "narration": narration,
+        }),
+    )
+    .expect("embedded scene delta user prompt must render")
 }
 
 fn obj(v: &Value) -> Option<&Map<String, Value>> {
@@ -271,28 +292,7 @@ fn apply_brief_display_names(mut seed: Value, brief: &str) -> Value {
 /// `build_world_seed(client, brief)` — ask the model for a new playable world
 /// seed; World validates it afterwards. Repair logic preserved.
 pub async fn build_world_seed(client: &dyn Backend, brief: &str) -> Result<Value, BackendError> {
-    let system = with_world_seed_output_example(
-        "Create a compact tabletop RP starting scene from the user's brief. Return JSON only. \
-This is not prose for the player; it is a seed that code will validate. Keep it small: \
-2-4 NPCs, 2-5 visible objects, 1-3 visible exits, 3-6 public facts. \
-Include `story_brief`: 2-4 short Russian sentences shown to the player at the start: \
-who they are, where they are, what just happened, and what is expected from them. \
-Do not put hidden truth, GM-only causes, future spoilers, or mechanical meta-information in `story_brief`. \
-NPC ids must be lowercase ascii snake_case. Put only NPC ids in scene.present_npcs. \
-Every present NPC must also have a full object in `npcs` with id, exact display name, \
-role, gender marker if known, persona, voice, goals, knowledge, and secret. Use `gender` \
-as M, F, N, PL, OTHER, or a short custom Russian note: M=он/masculine, F=она/feminine, \
-N=оно/neuter, PL=они/plural. If the \
-user gives NPC names, preserve those names exactly in `name`; never return only ids \
-like iva/run without display names. \
-All player-facing seed text must be in Russian: story_brief, public_intro, scene title, scene \
-description, item names, exit names, public facts, NPC display names, NPC roles, \
-NPC persona/voice/goals summaries, gender custom notes, and scene positions/activities. Preserve \
-Russian proper nouns from the brief exactly; do not translate them. \
-The scene must contain enough concrete state to start play: where the player is, \
-who is present, what is visible, what exits exist, and what physical limits matter. \
-Do not create action ids or intent ids; characters will act in free text.",
-    );
+    let system = render_world_seed_system(false);
 
     let brief_user = {
         let t = brief.trim();
@@ -313,23 +313,10 @@ Do not create action ids or intent ids; characters will act in free text.",
     if !seed_needs_npc_repair(&seed) && !seed_needs_text_repair(&seed, brief) {
         return Ok(seed);
     }
-    let repair_system = with_world_seed_output_example(
-        "Repair this tabletop RP world seed into the required strict JSON shape. Return JSON \
-only. Keep the same scene idea, visible objects, exits, and public facts. Create a \
-`npcs` array with one full NPC object for every id in scene.present_npcs or \
-present_npcs. Preserve exact user-provided display names from the brief, especially \
-Cyrillic names. NPC ids remain lowercase ascii snake_case; NPC `name` is the display \
-name shown to the player. Include `story_brief`: 2-4 short Russian sentences for the \
-player's start card with no hidden truth, future spoilers, or mechanics. All player-facing \
-strings must be in Russian: story_brief, scene title, scene description, item names, exit names, public facts, NPC display names, NPC roles, \
-NPC persona/voice/goals summaries, gender custom notes, and scene positions/activities. \
-Use `gender` as M, F, N, PL, OTHER, or a short custom Russian note. Keep \
-proper nouns from the brief exactly, for example do not translate Russian names of \
-places, ships, people, factions, or objects. Do not add action ids or intent ids.",
-    );
+    let repair_system = render_world_seed_system(true);
 
     let broken = serde_json::to_string(&seed).unwrap_or_default();
-    let repair_user = format!("USER BRIEF:\n{}\n\nBROKEN SEED:\n{}", brief_user, broken);
+    let repair_user = render_world_seed_repair_user(&brief_user, &broken);
     let repair_messages = json!([
         {"role": "system", "content": repair_system},
         {"role": "user", "content": repair_user},
@@ -370,27 +357,10 @@ pub async fn extract_scene_delta(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system = format!(
-        "Extract only explicit current-scene NPC roster changes from the GM narration. \
-Use only npc_id values from the roster. Return JSON only. \
-A move with present=true means the NPC explicitly entered/arrived/is now in the \
-current scene or can hear it. A move with present=false means the NPC explicitly \
-left/exited/went to another room/is no longer able to hear. \
-Track the roster at the END of the narration for the CURRENT SCENE only. If the \
-narration moves the player and an NPC outside the current scene, do not add that \
-NPC to the old current scene. \
-Do NOT infer from wishes, requests, plans, future possibilities, searches, rumors, \
-or someone being mentioned as absent. Every non-empty move MUST contain npc_id, \
-present, and reason. Optional fields are location, visible, can_hear, activity, and \
-attitude. Example: {SCENE_DELTA_OUTPUT_EXAMPLE} If there is no explicit roster \
-change, return {{\"moves\":[]}}."
-    );
+    let system = render_scene_delta_system();
 
     let scene_context = world.scene_context();
-    let user = format!(
-        "ROSTER:\n{}\n\nCURRENT SCENE:\n{}\n\nGM NARRATION:\n{}",
-        roster, scene_context, narration
-    );
+    let user = render_scene_delta_user(&roster, &scene_context, narration);
     let messages = json!([
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -408,8 +378,26 @@ mod tests {
 
     #[test]
     fn world_seed_output_example_is_valid_and_complete() {
+        let initial = render_world_seed_system(false);
+        let repair = render_world_seed_system(true);
+        assert!(initial.starts_with("Create a compact tabletop RP starting scene"));
+        assert!(!initial.contains("Repair this tabletop RP world seed"));
+        assert!(repair.starts_with("Repair this tabletop RP world seed"));
+        assert!(!repair.contains("Create a compact tabletop RP starting scene"));
+
+        let marker =
+            "\n\nReturn exactly one JSON object with this shape; repeat array entries as needed:\n";
+        let initial_example = initial
+            .split_once(marker)
+            .map(|(_, example)| example)
+            .expect("initial world seed example");
+        let repair_example = repair
+            .split_once(marker)
+            .map(|(_, example)| example)
+            .expect("repair world seed example");
+        assert_eq!(initial_example, repair_example);
         let example: Value =
-            serde_json::from_str(WORLD_SEED_OUTPUT_EXAMPLE).expect("valid world seed example");
+            serde_json::from_str(initial_example).expect("valid world seed example");
         for key in [
             "story_brief",
             "public_intro",
@@ -435,13 +423,22 @@ mod tests {
         ] {
             assert!(scene.get(key).is_some(), "missing scene field {key}");
         }
-        assert!(with_world_seed_output_example("base").ends_with(WORLD_SEED_OUTPUT_EXAMPLE));
+        let repair_user = render_world_seed_repair_user("Бриф", "{\"broken\":true}");
+        assert_eq!(
+            repair_user,
+            "USER BRIEF:\nБриф\n\nBROKEN SEED:\n{\"broken\":true}"
+        );
     }
 
     #[test]
     fn scene_delta_output_example_has_required_and_optional_fields() {
-        let example: Value =
-            serde_json::from_str(SCENE_DELTA_OUTPUT_EXAMPLE).expect("valid scene delta example");
+        let system = render_scene_delta_system();
+        let example_json = system
+            .split_once("Example: ")
+            .and_then(|(_, tail)| tail.split_once(" If there is no explicit roster change"))
+            .map(|(example, _)| example)
+            .expect("scene delta example");
+        let example: Value = serde_json::from_str(example_json).expect("valid scene delta example");
         let row = example["moves"][0].as_object().expect("move example");
         for key in ["npc_id", "present", "reason"] {
             assert!(row.contains_key(key), "missing required move field {key}");
@@ -449,5 +446,9 @@ mod tests {
         for key in ["location", "visible", "can_hear", "activity", "attitude"] {
             assert!(row.contains_key(key), "missing optional move field {key}");
         }
+        assert_eq!(
+            render_scene_delta_user("npc", "scene", "narration"),
+            "ROSTER:\nnpc\n\nCURRENT SCENE:\nscene\n\nGM NARRATION:\nnarration"
+        );
     }
 }

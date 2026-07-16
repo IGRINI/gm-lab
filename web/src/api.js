@@ -140,6 +140,21 @@ export const api = {
       { signal }
     ),
 
+  // GET /architect/active?kind=&id= -> {ok, kind, id, active:bool}. Whether an
+  // architect turn is still generating for this package (world/story/character)
+  // — a reopened panel re-attaches instead of showing a stale "sent" tail.
+  architectActive: (kind, id, { signal } = {}) =>
+    getJSON(withQuery("/architect/active", { kind, id }), { signal }),
+
+  // GET /turn/active?chat_id= -> {ok, chat_id, request_id|null}. The server
+  // owns turn execution, so after a reload this is the only way to learn that
+  // a turn is still running and should be re-attached instead of re-sent.
+  activeTurn: (chatId, { signal } = {}) =>
+    getJSON(
+      withQuery("/turn/active", chatId ? { chat_id: chatId } : {}),
+      { signal }
+    ),
+
   deleteChat: (chatId) => _post(`/chats/${encodeURIComponent(chatId)}/delete`),
 
   deleteWorld: (worldId) => _post(`/worlds/${encodeURIComponent(worldId)}/delete`),
@@ -340,6 +355,11 @@ async function streamArchitectAt(endpoint, body, onEvent) {
       })
     );
   }
+  await readArchitectStream(resp, onEvent);
+}
+
+// Shared SSE reader for architect turn streams (live POST and re-attach GET).
+async function readArchitectStream(resp, onEvent) {
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -358,6 +378,33 @@ async function streamArchitectAt(endpoint, body, onEvent) {
       }
     }
   }
+}
+
+// Re-attach to an architect turn the server is still running for this package.
+// Replays every buffered event, then tails to the end — the same event
+// vocabulary as the live stream. Returns true when a turn was attached,
+// false when nothing is running (the stored architect state is the truth).
+export async function attachArchitect(kind, id, onEvent) {
+  const resp = await fetch(
+    `/architect/stream?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`
+  );
+  if (resp.status === 404) return false;
+  if (!resp.ok) {
+    let message = "";
+    try {
+      const data = await resp.json();
+      message = typeof data?.error === "string" ? data.error : "";
+    } catch {
+      // non-JSON error body — fall through to the status line
+    }
+    throw new Error(
+      message || apiText("architectUnavailable", `архитектор недоступен (HTTP ${resp.status})`, {
+        status: resp.status,
+      })
+    );
+  }
+  await readArchitectStream(resp, onEvent);
+  return true;
 }
 
 // Stream a WORLD-architect turn. Endpoint defaults to the world path so existing
@@ -478,6 +525,52 @@ export async function streamTurn(
       retryableTurnStatus(resp.status)
     );
   }
+  return readTurnStream(resp, requestId, onEvent);
+}
+
+// Re-attach to a turn the server is still running (or has just committed).
+// Replays every buffered event, then tails the live stream to the terminal
+// `done` frame — same framing contract as `streamTurn`. A turn that is gone
+// without a durable commit throws a non-retryable error with
+// `code === "turn_not_running"`.
+export async function attachTurn(chatId, requestId, onEvent, { signal } = {}) {
+  if (!requestId || typeof onEvent !== "function") {
+    throw turnStreamError(apiText("invalidTurnRequest", "Некорректный запрос хода"), false);
+  }
+  const query = String(chatId || "").trim()
+    ? `?chat_id=${encodeURIComponent(String(chatId).trim())}`
+    : "";
+  const resp = await fetch(
+    `/turn/${encodeURIComponent(requestId)}/stream${query}`,
+    { signal }
+  );
+  if (!resp.ok) {
+    const body = await resp.text();
+    let code = "";
+    try {
+      code = JSON.parse(body)?.code || "";
+    } catch {
+      code = "";
+    }
+    if (code === "turn_not_running") {
+      const error = turnStreamError(
+        apiText("turnNotRunning", "Ход уже не выполняется на сервере"),
+        false
+      );
+      error.code = code;
+      throw error;
+    }
+    throw turnStreamError(
+      responseErrorMessage(resp, body, apiText("turnFailed", "ход не выполнен")),
+      retryableTurnStatus(resp.status)
+    );
+  }
+  return readTurnStream(resp, requestId, onEvent);
+}
+
+// Shared SSE reader for `streamTurn`/`attachTurn`: parses `data:` frames,
+// forwards events, validates and returns the single terminal `done` frame.
+async function readTurnStream(resp, requestId, onEvent) {
   if (!resp.body) {
     throw new Error(apiText("turnStreamMissing", "Сервер не открыл поток хода"));
   }

@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 
 use gml_config::RuntimeSettings;
 use gml_llm::{channel, BackendError, ChatStreamOutput, DeltaSink};
+use gml_prompts::{render_prompt, PromptId};
 use gml_types::{event_kind, Event, NpcBeat, ParsedCall, Role, ToolExecutionResult};
 
 use crate::compact::{
@@ -21,7 +22,7 @@ use crate::compact::{
 };
 use crate::helpers::{
     json_compact, player_facing_payload, tool_error, tool_reminder, tool_result,
-    with_model_reminder, VISIBLE_CONTINUATION_REMINDER,
+    visible_continuation_reminder, with_model_reminder,
 };
 use crate::helpers::{model_player_options_text, model_roll_text};
 use crate::memory_crystals::maybe_consolidate_memory_semantic;
@@ -488,7 +489,7 @@ async fn drive(
             let tool_visible_output = tool_emits_visible_output(&name, &result);
             let terminal_result = result.terminal;
             if (turn_visible_output_seen || tool_visible_output) && !terminal_result {
-                result = with_model_reminder(result, VISIBLE_CONTINUATION_REMINDER);
+                result = with_model_reminder(result, visible_continuation_reminder());
             }
             session.gm_messages.push(json!({
                 "role": "tool",
@@ -3598,12 +3599,11 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
                 "candidates": candidates,
                 "dedup": dedup.status,
             });
-            let model_message = "Похоже, такой персонаж уже есть в ростере. Используйте \
-                существующего через move_npc/ask_npc, либо повторите generate_npc с retry=true и \
-                укажите в request, чем предложенные кандидаты не подходят.";
+            let model_message = render_prompt(PromptId::NpcGeneratorDuplicateCandidates, ())
+                .expect("embedded NPC-generator duplicate-candidates prompt must render");
             return tool_result(
                 &json_compact(&payload),
-                Some(model_message),
+                Some(&model_message),
                 Some(tool_reminder("generate_npc")),
                 false,
             );
@@ -3694,8 +3694,8 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
                 "agenda": applied.get("agenda").cloned().unwrap_or(Value::Null),
                 "present": applied.get("present").cloned().unwrap_or(Value::Bool(present)),
             },
-            "note": "NPC committed and available NOW. Voice them via ask_npc with this \
-                     npc_id. Do NOT call generate_npc again for the same person.",
+            "note": render_prompt(PromptId::NpcGeneratorCommittedNote, ())
+                .expect("embedded NPC-generator committed-note prompt must render"),
             "dedup": dedup_status,
         })
     } else {
@@ -3747,12 +3747,14 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
         .and_then(Value::as_str)
         .unwrap_or("персонаж");
     let model_message = if applied_ok {
-        format!(
-            "Генератор создал персонажа: {name}. Он уже в ростере — говори с ним через \
-             ask_npc, повторный generate_npc для него не нужен."
+        render_prompt(
+            PromptId::NpcGeneratorCreatedMessage,
+            json!({ "name": name }),
         )
+        .expect("embedded NPC-generator created-message prompt must render")
     } else {
-        "Генератор подготовил персонажа, но канон отклонил коммит.".to_string()
+        render_prompt(PromptId::NpcGeneratorCommitRejectedMessage, ())
+            .expect("embedded NPC-generator commit-rejected prompt must render")
     };
     tool_result(
         &json_compact(&public_payload),
@@ -4575,15 +4577,7 @@ only absence, travel/search, or generic scene response."
         "beats": beats,
         "speech_ru": speech,
         "action_ru": action,
-        "gm_instruction":
-            "This exact NPC speech/action has already been emitted to the player by the \
-    engine. If more NPCs should react, call ask_npc for them now. In final \
-    narration, do not rewrite, retell, embellish, or paraphrase this NPC \
-    speech/action. Do not mention this NPC's name, body, speech, action, \
-    expression, posture, gesture, or emotion again. Final narration should be \
-    only 0-2 short sentences about surrounding scene consequences. If there is no \
-    new non-NPC consequence, produce empty final narration. Do not add another \
-    named NPC's reaction; call ask_npc for that NPC if you need it.",
+        "gm_instruction": gml_prompts::npc_final_instruction(),
     });
     tool_result(
         &json_compact(&payload),

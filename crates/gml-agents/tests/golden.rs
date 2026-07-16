@@ -604,6 +604,45 @@ fn search_select_and_keyword() {
     );
 }
 
+#[test]
+fn tool_next_step_prompts_preserve_each_status_text() {
+    let empty_search = agents::search_gm_tools("   ", 5, None, false);
+    assert_eq!(
+        empty_search["next"],
+        "Search with keywords or select:tool_name, then call load_tool_schema for one exact schema. For non-visible tools, call invoke_loaded_tool next."
+    );
+
+    let search_results = agents::search_gm_tools("select:move_npc", 5, None, false);
+    assert_eq!(
+        search_results["next"],
+        "Call load_tool_schema with exactly one match.name. For non-visible tools, then call invoke_loaded_tool with that name and schema-matching arguments."
+    );
+
+    let invalid = agents::load_gm_tool_schema("   ", None, false);
+    assert_eq!(
+        invalid["next"],
+        "Pass one exact canonical tool name returned by tool_search."
+    );
+
+    let missing = agents::load_gm_tool_schema("not_a_gm_tool", None, false);
+    assert_eq!(
+        missing["next"],
+        "Call tool_search again with keywords or select:tool_name."
+    );
+
+    let loaded = agents::load_gm_tool_schema("ask_npc", None, false);
+    assert_eq!(
+        loaded["next"],
+        "The schema is already visible; call the tool directly when needed."
+    );
+
+    let newly_loaded = agents::load_gm_tool_schema("move_npc", None, false);
+    assert_eq!(
+        newly_loaded["next"],
+        "Call invoke_loaded_tool with this exact name and arguments matching the returned schema."
+    );
+}
+
 // --- NPC contract ----------------------------------------------------------
 
 #[test]

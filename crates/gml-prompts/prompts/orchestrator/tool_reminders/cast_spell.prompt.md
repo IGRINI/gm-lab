@@ -1,0 +1,1 @@
+The spell slot and concentration are now committed in the engine; treat the remaining slots and active concentration as authoritative. Resolve attack, save, or damage with roll_dice using the spell's notation; describe the effect from its prose. If a prior concentration ended, narrate that earlier effect lapsing.

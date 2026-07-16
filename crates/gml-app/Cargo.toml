@@ -33,6 +33,7 @@ gml-openai-compatible = { workspace = true }
 gml-mock = { workspace = true }
 gml-stories = { workspace = true }
 gml-orchestrator = { workspace = true }
+gml-prompts = { workspace = true }
 
 # async + http (the same axum/tokio/reqwest the server library uses)
 tokio = { workspace = true }

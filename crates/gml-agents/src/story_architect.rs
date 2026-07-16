@@ -19,9 +19,12 @@
 //! cards), so `draft_story_plot` is a nested schema and the merge is a shallow
 //! top-level merge with a special-case deep merge for `scene`.
 
+use std::sync::LazyLock;
+
 use serde_json::{json, Map, Value};
 
 use gml_llm::{Backend, BackendError};
+use gml_prompts::{render_prompt, PromptId};
 
 use crate::architect_runner::{
     architect_messages_with_system_blocks, architect_turn, ArchitectConfig, ArchitectOutput,
@@ -32,63 +35,20 @@ use crate::architect_runner::{
 /// domain name (mirrors `WorldArchitectOutput`).
 pub type StoryArchitectOutput = ArchitectOutput;
 
-/// Canon-authoring rules for the STORY architect. Russian canon like the world
-/// one; authors plots ONLY within the given world bible; questions go in the
-/// chat reply, not a tool field; same agent-loop discipline.
-pub const STORY_ARCHITECT_SYSTEM: &str = r#"You are the GM-Lab story architect. You help the user author a reusable STORY
-(a plot) that runs ON TOP OF an already-built world bible. The bound world's
-canon is given to you below as a read-only reference — you do NOT edit the world,
-only write a story that lives inside it. Write all story text in Russian; keep it
-concrete.
+/// Story-architect prompt retained as a public constant for compatibility.
+/// Runtime assembly uses [`story_architect_system`].
+pub const STORY_ARCHITECT_SYSTEM: &str = gml_prompts::STORY_ARCHITECT_SYSTEM;
 
-You author a playthrough START, not new world canon: define the opening situation
-of ONE story — its premise, hidden truth, the suggested protagonist, the starting
-scene, the people in it, the public facts and initial state. Everything you write
-must be consistent with the bound world bible (its laws, powers, factions,
-secrets); reuse its proper nouns and honor its location_rules and taboos. Do not
-invent world-level canon that contradicts the bible.
+static STORY_ARCHITECT_SYSTEM_RENDERED: LazyLock<String> = LazyLock::new(|| {
+    render_prompt(PromptId::StoryArchitectSystem, json!({}))
+        .expect("embedded story architect system prompt must render")
+});
 
-Build the plot with draft_story_plot. Make the first draft rich and playable:
-a clear story_brief (what the player is and what pulls them in), a player-safe
-public_intro, a GM-only hidden_truth, a concrete starting scene with a couple of
-present NPCs, a few public_facts, and a suggested player_character. The tool's
-field descriptions define what each field means and what is player-facing vs
-GM-only — follow them. hidden_truth and NPC secrets are GM-only and must not leak
-into public_intro or public_facts.
-
-Once a plot exists, make changes with edit_story_plot — patch only what differs
-(set a scalar or a whole object like scene/player_character; add/remove/replace
-entries in the list sections npcs, public_facts, state_records, proper_nouns, and
-in the scene lists present_npcs, exits, items). Do NOT resend the whole plot with
-draft_story_plot for a small change; reserve draft_story_plot for the first build
-or a deliberate full rebuild.
-
-The plot itself lives on the server; user messages carry ONLY the user's text.
-The single source of the current state is the read_story_plot tool. When the
-conversation is empty and the user asks for a new story, build it straight away
-with draft_story_plot. In every other case, before editing existing content,
-before removing/replacing specific entries, and before making claims about what
-the plot already says — call read_story_plot for the relevant sections (or the
-whole plot) and act on what it returns. The state may have changed between
-turns (the user edits fields by hand in the form). Never invent or guess
-current content, and never ask the user to paste it.
-
-The player_character you author is only a SUGGESTED protagonist — the player may
-pick a different hero at launch, so write the story so its facts and NPCs still
-read sensibly around a different protagonist where possible.
-
-Ask the user a question only when something important is genuinely missing or
-unclear, and ask it in your chat reply, not in a tool field. Otherwise just note
-briefly what you built or changed; questions are not required every turn.
-
-How you work, like an agent: think about what the plot needs, then update it with
-a tool (draft_story_plot to build, edit_story_plot to change), then finish the
-turn with a short chat reply about what you built or changed. You may call tools
-more than once per turn. Each tool result comes back to you, so you can keep going
-or wrap up — but always end the turn with a reply, never on a bare tool call.
-
-Do NOT author acts, objectives, chapters or endings — this engine does not track
-them yet. Author only the opening state listed above."#;
+/// Canon-authoring rules for the STORY architect. Rendered once from the shared
+/// prompt catalog so the cache prefix is byte-stable across turns.
+pub fn story_architect_system() -> &'static str {
+    STORY_ARCHITECT_SYSTEM_RENDERED.as_str()
+}
 
 // The plot field families the tool schema targets (documented in each tool
 // description rather than looked up here — the ops route by key prefix, not by a
@@ -116,7 +76,7 @@ pub fn story_architect_messages(
     user_text: &str,
 ) -> Vec<Value> {
     architect_messages_with_system_blocks(
-        STORY_ARCHITECT_SYSTEM,
+        story_architect_system(),
         &[world_lore_block.to_string()],
         history,
         json!({"role": "user", "content": user_text.trim()}),
@@ -181,12 +141,11 @@ pub fn story_architect_world_lore_block(world_lore: &Value) -> String {
     }
     let json =
         serde_json::to_string_pretty(&Value::Object(lore)).unwrap_or_else(|_| "{}".to_string());
-    format!(
-        "## BOUND WORLD BIBLE (read-only reference)\n\
-        This is the canon of the world your story runs in. Do NOT edit it — write a plot that fits it. \
-        The hidden_premise/hidden_secrets are GM-only truths; you may use them to author hidden_truth and NPC secrets, but they must not leak into player-facing fields.\n\n\
-        {json}"
+    render_prompt(
+        PromptId::StoryArchitectWorldReference,
+        json!({"json": json}),
     )
+    .expect("embedded story architect world-reference prompt must render")
 }
 
 /// The `draft_story_plot` tool schema — a NESTED plot draft faithful to the
@@ -546,7 +505,7 @@ struct StoryArchitectConfig {
 
 impl ArchitectConfig for StoryArchitectConfig {
     fn system_prompt(&self) -> &str {
-        STORY_ARCHITECT_SYSTEM
+        story_architect_system()
     }
 
     fn extra_system_blocks(&self) -> Vec<String> {
@@ -578,7 +537,8 @@ impl ArchitectConfig for StoryArchitectConfig {
                 ToolApplication {
                     args: Value::Object(args.clone()),
                     changed: true,
-                    result: "Черновик сюжета создан/обновлён и показан пользователю. Дальше правь точечно через edit_story_plot (не пересылай весь сюжет), либо кратко ответь пользователю в чат.".to_string(),
+                    result: render_prompt(PromptId::StoryArchitectDraftSuccess, json!({}))
+                        .expect("embedded story architect draft-success prompt must render"),
                 }
             }
             "edit_story_plot" => {
@@ -743,7 +703,10 @@ fn story_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
     if lines.is_empty() {
         return "Правка НИЧЕГО не изменила (пустые операции). Прочитай нужный раздел read_story_plot и повтори с точными данными.".to_string();
     }
-    lines.push("Продолжай точечные правки или кратко ответь в чат.".to_string());
+    lines.push(
+        render_prompt(PromptId::ArchitectEditSuccess, json!({}))
+            .expect("embedded architect edit-success prompt must render"),
+    );
     lines.join("\n")
 }
 

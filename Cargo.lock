@@ -1603,6 +1603,7 @@ dependencies = [
  "gml-openai-compatible",
  "gml-orchestrator",
  "gml-persistence",
+ "gml-prompts",
  "gml-server",
  "gml-stories",
  "gml-supergrok",
@@ -1787,6 +1788,9 @@ version = "0.1.0"
 dependencies = [
  "gml-config",
  "gml-types",
+ "minijinja",
+ "minijinja-embed",
+ "serde",
  "serde_json",
  "sha2",
 ]
@@ -1798,6 +1802,7 @@ dependencies = [
  "base64 0.22.1",
  "blake2",
  "gml-config",
+ "gml-prompts",
  "gml-types",
  "once_cell",
  "regex",
@@ -2721,6 +2726,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
+name = "memo-map"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d1115007560874e373613744c6fba374c17688327a71c1476d1a5954cc857b"
+
+[[package]]
 name = "memoffset"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2744,6 +2755,23 @@ dependencies = [
  "mime",
  "unicase",
 ]
+
+[[package]]
+name = "minijinja"
+version = "2.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb3d648e68cea56d9858d535ee28f9538404e2dd8cb08ed0bd05dca379477f39"
+dependencies = [
+ "aho-corasick",
+ "memo-map",
+ "serde",
+]
+
+[[package]]
+name = "minijinja-embed"
+version = "2.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf74fd3b5645c9aeaddb3ddb0d7fc2055a70682c40a5cb0b930781f13b2a009b"
 
 [[package]]
 name = "minimal-lexical"

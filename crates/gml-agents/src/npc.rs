@@ -9,7 +9,7 @@
 
 use serde_json::{json, Map, Value};
 
-use gml_prompts::{render_npc_card, NpcCardFields};
+use gml_prompts::{render_npc_card, render_prompt, NpcCardFields, PromptId};
 use gml_world::Npc;
 
 /// Header of the opening persisted NPC-card message.
@@ -19,19 +19,8 @@ pub const NPC_CARD_HEADER: &str = "CURRENT NPC CARD:";
 /// `card_revision` bump).
 pub const NPC_CARD_UPDATE_HEADER: &str = "NPC CARD UPDATED:";
 
-/// `_NPC_PERCEPTION_BRIEF_RULES` — verbatim.
-pub const NPC_PERCEPTION_BRIEF_RULES: &str = "NPC PERCEPTION BRIEF RULES:
-- CURRENT SITUATION is what this NPC can see/hear/know or plausibly infer right now, not
-  a GM truth dump.
-- If CURRENT SITUATION contains author certainty about hidden truth, player sheet
-  validation, whether the player is bluffing/lying, lacks proof, lacks a spell/item/weapon,
-  or whether a threat is truly impossible, treat that certainty as unknown unless it is
-  directly observable in YOUR CURRENT SCENE SLICE or already in your memory/card.
-- Roll/check outcomes sent by the GM are authoritative for how strongly the attempt lands
-  on you. Follow the grade, margin, and stakes as your social pressure, fear, doubt,
-  credibility, confidence, or apparent danger. A strong intimidation/deception result can
-  make a threat or claim feel credible even when you cannot verify the truth.
-";
+/// `_NPC_PERCEPTION_BRIEF_RULES` — retained for public API compatibility.
+pub const NPC_PERCEPTION_BRIEF_RULES: &str = gml_prompts::NPC_PERCEPTION_BRIEF_RULES;
 
 /// `_constraints_text(constraints)`.
 fn constraints_text(constraints: &[String]) -> String {
@@ -197,56 +186,25 @@ pub fn npc_user_message_with_contact(
     constraints: &[String],
     scene_slice: &str,
 ) -> Value {
-    let mut parts: Vec<String> = vec![
-        NPC_PERCEPTION_BRIEF_RULES.to_string(),
-        format!("CURRENT SITUATION (what's happening now, what you react to): {situation}"),
-    ];
-    if !last_contact.is_empty() {
-        parts.push(format!(
-            "LAST DIRECT CONTACT WITH THE PLAYER:\n{last_contact}"
-        ));
-    }
-    if !scene_slice.is_empty() {
-        parts.push(format!(
-            "YOUR CURRENT SCENE SLICE (what is actually around you):\n{scene_slice}"
-        ));
-    }
-    if !constraints.is_empty() {
-        parts.push(format!(
-            "VISIBLE SCENE LIMITS (physical facts you must obey):\n{}",
-            constraints_text(constraints)
-        ));
-    }
-    parts.push(format!(
-        "YOUR MEMORY (what you've already said/done — stay consistent):\n{}",
-        if commitments.is_empty() {
-            "(nothing yet)"
-        } else {
-            commitments
-        }
-    ));
     let observation_heading = if last_contact.is_empty() {
         "WHAT YOU SAW/HEARD EARLIER"
     } else {
         "COMPACT ROOM OBSERVATION SINCE YOU WERE LAST CAUGHT UP"
     };
-    parts.push(format!(
-        "{observation_heading}:\n{}",
-        if observations.is_empty() {
-            "(nothing)"
-        } else {
-            observations
-        }
-    ));
-    let mut user = parts.join("\n\n");
-    if let Some(fb) = feedback {
-        if !fb.is_empty() {
-            user.push_str(&format!(
-                "\n\nGM NOTE — your previous action did not pass: {fb}\n\
-REDO: give a new reaction that takes the note into account."
-            ));
-        }
-    }
+    let user = render_prompt(
+        PromptId::NpcTurnUser,
+        json!({
+            "situation": situation,
+            "last_contact": last_contact,
+            "scene_slice": scene_slice,
+            "constraints": constraints_text(constraints),
+            "commitments": if commitments.is_empty() { "(nothing yet)" } else { commitments },
+            "observation_heading": observation_heading,
+            "observations": if observations.is_empty() { "(nothing)" } else { observations },
+            "feedback": feedback.filter(|value| !value.is_empty()).unwrap_or(""),
+        }),
+    )
+    .unwrap_or_else(|error| panic!("failed to render NPC turn prompt: {error:#}"));
     json!({"role": "user", "content": user})
 }
 
@@ -332,7 +290,8 @@ pub fn npc_request_messages(
     if !summary.is_empty() {
         messages.push(json!({
             "role": "system",
-            "content": format!("YOUR PRIVATE MEMORY SO FAR (compact):\n{summary}"),
+            "content": render_prompt(PromptId::NpcPrivateMemory, json!({"summary": summary}))
+                .unwrap_or_else(|error| panic!("failed to render NPC memory prompt: {error:#}")),
         }));
     }
     messages.extend(history.iter().map(historical_npc_message));

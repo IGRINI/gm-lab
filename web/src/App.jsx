@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import i18n from "./i18n/index.js";
 import {
   api,
+  attachArchitect,
+  attachTurn,
   createTurnRequestId,
   streamTurn,
   streamArchitect,
@@ -53,6 +55,12 @@ import {
 
 const CONNECTOR_AUTH_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const CONNECTOR_AUTH_CANCEL_TIMEOUT_MS = 15 * 1000;
+
+// The server keeps a turn running after this client loses the stream, so a
+// dropped connection is recovered by re-attaching to the live feed instead of
+// failing the turn.
+const TURN_RECONNECT_ATTEMPTS = 2;
+const TURN_RECONNECT_DELAY_MS = 1500;
 
 function appText(key, options = {}) {
   return i18n.t(key, { ns: "app", ...options });
@@ -311,6 +319,12 @@ export default function App() {
   useEffect(() => () => turnAbortRef.current?.abort(), []);
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState("");
+  // Current value for async flows (turn re-attach) that outlive the closure
+  // they were created in.
+  const activeChatIdRef = useRef("");
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
   const [chatsOpen, setChatsOpen] = useState(() => {
     // Desktop: docked sidebar starts expanded; mobile: drawer starts closed.
     // A saved choice (localStorage) wins so a collapse/expand sticks across reloads.
@@ -669,6 +683,11 @@ export default function App() {
         notify(e.message || appText("errors.transcriptLoad"));
       }
       setStatus("");
+      // The server may still be running a turn started before this page load;
+      // re-attach to its live feed instead of showing a silently missing
+      // turn. Via the ref: the awaits above re-rendered the app with loaded
+      // usage/options, and the attach must run against that fresh closure.
+      await resumeActiveTurnRef.current("");
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -677,8 +696,12 @@ export default function App() {
     async (rawText, previousRequestId = "", retryOptions = {}) => {
       const text = textValue(rawText);
       const historyMutation = retryOptions?.historyMutation === true;
+      // Attach mode joins a turn the server is already running (after a page
+      // reload or a lost stream); the player text is unknown until the feed
+      // replays the `player` event.
+      const attach = retryOptions?.attach === true;
       if (
-        !text ||
+        (!text && !attach) ||
         turnInFlightRef.current ||
         busy ||
         (!historyMutation && chatActionBusy)
@@ -686,6 +709,7 @@ export default function App() {
       const legacyResume = retryOptions?.legacyResume === true;
 
       let requestId = textValue(previousRequestId);
+      if (attach && !requestId) return;
       try {
         if (!requestId) requestId = createTurnRequestId();
       } catch (error) {
@@ -710,6 +734,7 @@ export default function App() {
         requestId,
         legacyResume,
         history,
+        attach,
       };
       const activeTurn = {
         chatId: attemptChatId,
@@ -738,9 +763,10 @@ export default function App() {
       let streamError = null;
       let playerEventSeen = false;
       let terminal = null;
-      try {
-        try {
-          terminal = await streamTurn(text, requestId, (ev) => {
+      // A reconnect replays the feed from the start; each narration/speech may
+      // reach this handler several times but must be voiced at most once.
+      const ttsSeenKeys = new Set();
+      const handleTurnEvent = (ev) => {
             store.dispatch(ev);
             if (ev.kind === "error") {
               streamError = {
@@ -750,7 +776,12 @@ export default function App() {
             }
             const auto = ttsAutoplayRef.current;
             if (auto || ttsEnabledRef.current) {
-              const emit = (key, segs) => (auto ? ttsAutoEnqueue(key, segs) : ttsPrime(key, segs));
+              const emit = (key, segs) => {
+                if (ttsSeenKeys.has(key)) return;
+                ttsSeenKeys.add(key);
+                if (auto) ttsAutoEnqueue(key, segs);
+                else ttsPrime(key, segs);
+              };
               if (ev.kind === "gm_narration" && typeof ev.data === "string" && ev.data.trim())
                 emit(`${ev.sid}:narration`, gmSegments(ev.data));
               else if (ev.kind === "npc_speech" && (ev.data?.response || ev.data?.speech || ev.data?.action)) {
@@ -773,6 +804,11 @@ export default function App() {
             if (ev.kind === "player_options") setPlayerOptions(normalizePlayerOptions(ev.data));
             if (ev.kind === "player") {
               playerEventSeen = true;
+              // The replayed feed is the only place an attached client learns
+              // the player text; keep it for the manual-retry checkpoint.
+              if (typeof ev.data === "string" && ev.data.trim()) {
+                failedAttempt.text = ev.data;
+              }
               setPlayerOptions(null);
             }
             if (ev.kind === "meta_total") {
@@ -785,12 +821,45 @@ export default function App() {
               setStatus(appText("status.npcTyping", { name: ev.agent }));
             }
             else if (ev.kind === "npc_speech") setStatus("");
-          }, {
-            signal: controller.signal,
-            legacyResume,
-            chatId: attemptChatId,
-            history,
-          });
+      };
+      // First attempt starts (or replays) the turn; reconnect attempts join
+      // the live feed the server kept running. Every attempt replays the feed
+      // from the beginning, so partial optimistic rows are rebuilt each time.
+      const streamAttempt = (attemptIndex) =>
+        attemptIndex === 0 && !attach
+          ? streamTurn(text, requestId, handleTurnEvent, {
+              signal: controller.signal,
+              legacyResume,
+              chatId: attemptChatId,
+              history,
+            })
+          : attachTurn(attemptChatId, requestId, handleTurnEvent, {
+              signal: controller.signal,
+            });
+      try {
+        try {
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              terminal = await streamAttempt(attempt);
+              break;
+            } catch (error) {
+              const reconnectable =
+                error?.retryable !== false &&
+                !controller.signal.aborted &&
+                !isAbortError(error) &&
+                attempt < TURN_RECONNECT_ATTEMPTS;
+              if (!reconnectable) throw error;
+              streamError = null;
+              playerEventSeen = false;
+              store.rollbackTurn();
+              store.beginTurn();
+              setStatus(appText("status.turnReconnecting"));
+              await waitForAbortable(
+                TURN_RECONNECT_DELAY_MS * (attempt + 1),
+                controller.signal
+              );
+            }
+          }
           setTurnGenerating(false);
         } catch (e) {
           if (controller.signal.aborted || isAbortError(e)) {
@@ -812,6 +881,25 @@ export default function App() {
             agent: "ГМ",
             text: e?.message || appText("errors.turnFailed"),
           };
+          if (e?.code === "turn_not_running") {
+            // The server neither runs nor committed this request, so the
+            // pre-turn state is canonical. Keep the checkpoint open (like the
+            // retryable-failure path): the retry's rollbackTurn then removes
+            // these rows, so the replayed player event is not duplicated.
+            const retryText = textValue(failedAttempt.text);
+            if (!playerEventSeen && retryText)
+              store.pushLocal({ type: "player", text: retryText });
+            store.pushLocal({ type: "error", ...errorRow });
+            setFailedTurn(retryText ? { ...failedAttempt, attach: false } : null);
+            return {
+              ok: false,
+              cancelled: false,
+              retryable: Boolean(retryText),
+              error: errorRow.text,
+              request_id: requestId,
+              chat_id: attemptChatId,
+            };
+          }
           if (e?.retryable === false) {
             store.rollbackTurn();
             store.pushLocal({ type: "error", ...errorRow });
@@ -822,7 +910,8 @@ export default function App() {
             store.rollbackTurn();
             setFailedTurn(failedAttempt);
           } else {
-            if (!playerEventSeen) store.pushLocal({ type: "player", text });
+            if (!playerEventSeen && textValue(failedAttempt.text))
+              store.pushLocal({ type: "player", text: failedAttempt.text });
             if (!streamError) store.pushLocal({ type: "error", ...errorRow });
             else store.flush();
             setFailedTurn(failedAttempt);
@@ -852,7 +941,8 @@ export default function App() {
             agent: "ГМ",
             text: textValue(terminal.error) || appText("errors.turnFailed"),
           };
-          if (!legacyResume && !playerEventSeen) store.pushLocal({ type: "player", text });
+          if (!legacyResume && !playerEventSeen && textValue(failedAttempt.text))
+            store.pushLocal({ type: "player", text: failedAttempt.text });
           if (!legacyResume && !streamError) {
             streamError = errorRow;
             store.pushLocal({ type: "error", ...errorRow });
@@ -860,7 +950,12 @@ export default function App() {
           if (terminal.retryable) {
             if (legacyResume) store.rollbackTurn();
             else store.flush();
-            setFailedTurn(failedAttempt);
+            // The turn itself ended; a manual retry must re-send, not attach.
+            setFailedTurn(
+              textValue(failedAttempt.text)
+                ? { ...failedAttempt, attach: false }
+                : null
+            );
           } else {
             // The server did not commit this attempt and explicitly forbids a
             // replay. Drop partial rows, retaining only an explanatory error.
@@ -893,7 +988,8 @@ export default function App() {
               store.rollbackTurn();
               notify(error?.message || appText("errors.turnCommittedTranscriptRefresh"));
             } else {
-              if (!playerEventSeen) store.pushLocal({ type: "player", text });
+              if (!playerEventSeen && textValue(failedAttempt.text))
+                store.pushLocal({ type: "player", text: failedAttempt.text });
               store.pushLocal({
                 type: "error",
                 agent: "ГМ",
@@ -997,6 +1093,59 @@ export default function App() {
     activeTurn.cancelPromise = cancelPromise;
     await cancelPromise;
   }, [notify, restoreChatSession]);
+
+  // The server owns turn execution, so a turn survives page reloads and chat
+  // switches. Ask whether one is still running for this chat and re-attach to
+  // its live feed; without this a reopened tab would show the pre-turn state
+  // and invite a double send. The discovery response carries the turn's
+  // fingerprint (text/history/legacy_resume) so a later manual retry repeats
+  // the exact same work instead of degrading an edit/branch into a plain turn.
+  const resumeActiveTurn = useCallback(
+    async (chatId = "") => {
+      if (turnInFlightRef.current) return;
+      let active = null;
+      try {
+        active = await api.activeTurn(chatId);
+      } catch {
+        return; // discovery is best-effort; the turn stays reachable later
+      }
+      const requestId = textValue(active?.request_id);
+      if (!requestId || turnInFlightRef.current) return;
+      const targetChatId = textValue(active?.chat_id) || chatId;
+      // The user may have switched chats while discovery was in flight; do
+      // not stream another chat's turn into the current timeline.
+      if (
+        activeChatIdRef.current &&
+        !sameChatId(targetChatId, activeChatIdRef.current)
+      ) {
+        return;
+      }
+      const history =
+        active?.history &&
+        (active.history.kind === "edit" || active.history.kind === "branch")
+          ? {
+              kind: active.history.kind,
+              turn: active.history.turn,
+              ...(textValue(active.history.title)
+                ? { title: textValue(active.history.title) }
+                : {}),
+            }
+          : null;
+      await sendTurn(textValue(active?.text), requestId, {
+        attach: true,
+        chatId: targetChatId,
+        legacyResume: active?.legacy_resume === true,
+        history,
+      });
+    },
+    [sendTurn]
+  );
+  // Async flows (mount effect, chat activation) must call the LATEST closure:
+  // the first-render sendTurn would restore pre-load usage/options on failure.
+  const resumeActiveTurnRef = useRef(resumeActiveTurn);
+  useEffect(() => {
+    resumeActiveTurnRef.current = resumeActiveTurn;
+  }, [resumeActiveTurn]);
 
   const sendCommand = useCallback(
     async (text) => {
@@ -1447,6 +1596,53 @@ export default function App() {
     []
   );
 
+  // Re-attach wrappers: architect turns run detached on the server, so a
+  // reopened panel joins the live feed. The replayed `architect_done` carries
+  // the same payload as a live one — apply the identical catalog/selection
+  // side effects before handing it to the panel.
+  const onWorldArchitectAttach = useCallback(
+    (onEvent) =>
+      attachArchitect("world", selectedWorldId, (ev) => {
+        if (ev.kind === "architect_done") {
+          const data = ev.data || {};
+          if (Array.isArray(data.worlds)) setWorlds(data.worlds);
+          if (data.world?.id) setSelectedWorldId(data.world.id);
+        }
+        onEvent(ev);
+      }),
+    [selectedWorldId]
+  );
+
+  const onStoryArchitectAttach = useCallback(
+    (onEvent) =>
+      attachArchitect("story", selectedStoryArchitectId, (ev) => {
+        if (ev.kind === "architect_done") {
+          const data = ev.data || {};
+          if (Array.isArray(data.stories)) {
+            setStories(normalizeStories({ stories: data.stories }));
+          }
+          const newId = data.story_id == null ? "" : String(data.story_id).trim();
+          if (newId) setSelectedStoryArchitectId(newId);
+        }
+        onEvent(ev);
+      }),
+    [selectedStoryArchitectId]
+  );
+
+  const onCharacterArchitectAttach = useCallback(
+    (onEvent) =>
+      attachArchitect("character", selectedCharacterArchitectId, (ev) => {
+        if (ev.kind === "architect_done") {
+          const data = ev.data || {};
+          if (Array.isArray(data.characters)) setCharacters(data.characters);
+          const newId = data.character_id == null ? "" : String(data.character_id).trim();
+          if (newId) setSelectedCharacterArchitectId(newId);
+        }
+        onEvent(ev);
+      }),
+    [selectedCharacterArchitectId]
+  );
+
   // Direct manual save from the character studio (POST /characters or
   // /characters/{id}/draft, done inside the panel). Pin the returned id WITHOUT
   // bumping `characterStudioEpoch` so the live panel is not remounted, and
@@ -1495,6 +1691,12 @@ export default function App() {
         setChatActionBusy(false);
         setStatus("");
       }
+      // The opened chat may have a turn still running server-side. Scheduled
+      // after the busy flags clear (macrotask, so React has re-rendered) —
+      // the fresh closure would otherwise see chatActionBusy=true and skip.
+      window.setTimeout(() => {
+        void resumeActiveTurnRef.current(chatId);
+      }, 0);
     },
     [activeChatId, busy, chatActionBusy, restoreChatSession, refreshChats, closeChatsOnMobile, notify, notifyApiError]
   );
@@ -1853,6 +2055,7 @@ export default function App() {
       history: retryableTurn.history || null,
       chatId: retryableTurn.chatId,
       historyMutation: Boolean(retryableTurn.history),
+      attach: retryableTurn.attach === true,
     });
   }, [regenerateFromTurn, retryableTurn, sendTurn]);
 
@@ -2232,6 +2435,7 @@ export default function App() {
                 onConnectorAuthCancel={onConnectorAuthCancel}
                 onCreateWorld={onCreateWorld}
                 onArchitectStream={onWorldArchitectStream}
+                onArchitectAttach={onWorldArchitectAttach}
                 onGenerateImage={onGenerateImage}
                 onPlayWorld={onPlayWorld}
                 onCreateStory={onCreateStory}
@@ -2264,6 +2468,7 @@ export default function App() {
                 onConnectorAuthStart={onConnectorAuthStart}
                 onConnectorAuthCancel={onConnectorAuthCancel}
                 onArchitectStream={onStoryArchitectStream}
+                onArchitectAttach={onStoryArchitectAttach}
                 onPlayStory={onPlayStory}
                 onSaveProtagonist={onSaveProtagonist}
               />
@@ -2296,6 +2501,7 @@ export default function App() {
                 onConnectorAuthStart={onConnectorAuthStart}
                 onConnectorAuthCancel={onConnectorAuthCancel}
                 onArchitectStream={onCharacterArchitectStream}
+                onArchitectAttach={onCharacterArchitectAttach}
                 onPlayCharacter={onPlayCharacter}
                 onCharacterPersisted={onCharacterPersisted}
                 notify={notify}

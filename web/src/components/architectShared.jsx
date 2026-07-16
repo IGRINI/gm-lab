@@ -35,6 +35,16 @@ export function rawText(value) {
   return typeof value === "string" ? value : String(value);
 }
 
+// Text of the last user message — the retry seed for a re-attached turn whose
+// live continuation failed (the panel never saw the original send happen).
+export function lastUserMessageText(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i]?.role === "user") return rawText(list[i].content).trim();
+  }
+  return "";
+}
+
 export function normalizeVisibleMessage(value) {
   if (!value || typeof value !== "object") return null;
   const role = textValue(value.role);

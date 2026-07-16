@@ -15,11 +15,10 @@ pub(crate) fn build_request(
     // while system messages are serialized separately as `instructions`.
     // Append the hint so the cacheable prefix remains unchanged.
     if json_mode && !input_items_mention_json(&input) {
-        input.push(message_item(
-            "user",
-            "input_text",
-            "Return the result strictly as a JSON object.",
-        ));
+        let json_hint =
+            gml_prompts::render_prompt(gml_prompts::PromptId::JsonObjectInputHint, json!({}))
+                .expect("embedded JSON-object input hint must render");
+        input.push(message_item("user", "input_text", &json_hint));
     }
     let mut request = Map::new();
     request.insert("model".into(), Value::String(model.to_string()));

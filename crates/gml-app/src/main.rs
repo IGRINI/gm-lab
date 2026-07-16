@@ -66,9 +66,11 @@ fn main() {
             println!("gml-app {}", env!("CARGO_PKG_VERSION"));
         }
         Mode::Server => {
+            gml_prompts::validate_prompt_catalog();
             run_with_runtime(run_server());
         }
         Mode::Desktop => {
+            gml_prompts::validate_prompt_catalog();
             // The desktop window path is feature-gated. When the GUI feature is
             // off (headless-only build), fall back to the server mode so the
             // binary is still useful.
@@ -355,6 +357,7 @@ async fn build_app() -> Result<App, String> {
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         turn_registry: Arc::new(TurnRegistry::default()),
+            architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
         index_html: Arc::new(resolve_index_html(&dirs)),
     };
 

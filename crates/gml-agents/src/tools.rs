@@ -16,6 +16,8 @@ use std::collections::BTreeSet;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
+use gml_prompts::{render_prompt, PromptId};
+
 use crate::tool_guidance;
 
 /// `_SITUATION_DESC` — verbatim.
@@ -1610,6 +1612,16 @@ fn score_tool(query_terms: &[String], required_terms: &[String], tool: &Value) -
     score
 }
 
+fn gm_tool_search_next(state: &str) -> String {
+    render_prompt(PromptId::GmToolSearchNext, json!({ "state": state }))
+        .expect("embedded GM tool-search next-step prompt must render")
+}
+
+fn gm_tool_schema_next(status: &str) -> String {
+    render_prompt(PromptId::GmToolSchemaNext, json!({ "status": status }))
+        .expect("embedded GM tool-schema next-step prompt must render")
+}
+
 /// `search_gm_tools(world, query, max_results, already_loaded, include_player_options_tool)`.
 pub fn search_gm_tools(
     query: &str,
@@ -1635,7 +1647,7 @@ pub fn search_gm_tools(
             "total_searchable_tools": searchable.len(),
             "load_tool": LOAD_TOOL_SCHEMA_TOOL_NAME,
             "invoke_tool": INVOKE_LOADED_TOOL_NAME,
-            "next": "Search with keywords or select:tool_name, then call load_tool_schema for one exact schema. For non-visible tools, call invoke_loaded_tool next.",
+            "next": gm_tool_search_next("empty"),
             "message": "Запрос пустой. Используй keywords или select:tool_name.",
         });
     }
@@ -1735,7 +1747,7 @@ pub fn search_gm_tools(
         "total_searchable_tools": searchable.len(),
         "load_tool": LOAD_TOOL_SCHEMA_TOOL_NAME,
         "invoke_tool": INVOKE_LOADED_TOOL_NAME,
-        "next": "Call load_tool_schema with exactly one match.name. For non-visible tools, then call invoke_loaded_tool with that name and schema-matching arguments.",
+        "next": gm_tool_search_next("results"),
         "message": message,
     })
 }
@@ -1755,7 +1767,7 @@ pub fn load_gm_tool_schema(
             "already_loaded": [],
             "missing": [],
             "schema": null,
-            "next": "Pass one exact canonical tool name returned by tool_search.",
+            "next": gm_tool_schema_next("invalid"),
             "message": "Имя инструмента пустое. Передай точный name из tool_search.",
         });
     }
@@ -1778,7 +1790,7 @@ pub fn load_gm_tool_schema(
             "already_loaded": [],
             "missing": [raw_name],
             "schema": null,
-            "next": "Call tool_search again with keywords or select:tool_name.",
+            "next": gm_tool_schema_next("missing"),
             "message": "Инструмент не найден или не загружается через load_tool_schema.",
         });
     };
@@ -1792,7 +1804,7 @@ pub fn load_gm_tool_schema(
             "already_loaded": [canonical_name],
             "missing": [],
             "schema": schema,
-            "next": "The schema is already visible; call the tool directly when needed.",
+            "next": gm_tool_schema_next("already_loaded"),
             "message": "Инструмент уже доступен; схема возвращена для подтверждения.",
         });
     }
@@ -1805,7 +1817,7 @@ pub fn load_gm_tool_schema(
         "already_loaded": [],
         "missing": [],
         "schema": schema,
-        "next": "Call invoke_loaded_tool with this exact name and arguments matching the returned schema.",
+        "next": gm_tool_schema_next("loaded_schema"),
         "message": "Схема инструмента загружена в конец контекста; список top-level tools не изменён.",
     })
 }

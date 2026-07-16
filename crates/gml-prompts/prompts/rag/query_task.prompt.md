@@ -1,0 +1,1 @@
+Given a game master's query, retrieve relevant public world facts, current scene facts, known NPC whereabouts, evidence, and unconfirmed witness statements for a tabletop RPG. Do not retrieve hidden canon or private secrets.

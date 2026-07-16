@@ -1,0 +1,1 @@
+The new place is now authored in the canon and the player has moved into it; the live scene is rebuilt from the canon. If a named NPC in this place must speak or react, call ask_npc; do not invent personal speech/action in narration.

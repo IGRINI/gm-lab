@@ -1,0 +1,1 @@
+Do not rewrite, retell, paraphrase, embellish, or mention this NPC's speech/action/body/emotion again. Final narration may add only non-NPC scene consequences; output empty if none. For another named NPC reaction, call ask_npc for that NPC.

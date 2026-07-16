@@ -27,6 +27,7 @@ const API_PATHS = [
   "/world-assets",
   "/characters",
   "/library",
+  "/architect",
   "/world-architect",
   "/story-architect",
   "/character-architect",

@@ -148,15 +148,15 @@ fn render_memory_crystal_prompt(next_tier: &MemoryTier, sources: &[MemoryUnit]) 
         .collect::<Vec<_>>()
         .join("\n");
 
-    format!(
-        "Сожми эти связанные записи памяти в одну смысловую memory crystal уровня {}.\n\
-         Пиши по-русски. Верни только короткую выжимку в 1-2 предложения.\n\
-         Не добавляй новых фактов, не раскрывай скрытое шире исходного owner_scope, \
-         не превращай слух/версию/убеждение в доказанный факт.\n\
-         owner_scope: {owner_scope}\n\
-         sources:\n{source_block}",
-        next_tier.as_str()
+    gml_prompts::render_prompt(
+        gml_prompts::PromptId::MemoryCrystal,
+        json!({
+            "next_tier": next_tier.as_str(),
+            "owner_scope": owner_scope,
+            "source_block": source_block,
+        }),
     )
+    .unwrap_or_else(|error| panic!("failed to render memory-crystal prompt: {error:#}"))
 }
 
 fn semantic_crystal_unit(

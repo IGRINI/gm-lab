@@ -1,0 +1,1 @@
+Use returned mechanics/status/profile fields internally for resolution. The player sees only observable fiction; do not reveal raw NPC stats, secrets, private knowledge/goals, hidden card data, or meta-information.

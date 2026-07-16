@@ -15,7 +15,8 @@
     "stopping": "Останавливаю…",
     "launchingGame": "Запускаю игру…",
     "savingWorld": "Сохраняю мир…",
-    "openingGame": "Открываю игру…"
+    "openingGame": "Открываю игру…",
+    "turnReconnecting": "Переподключение к ходу…"
   },
   "commands": {
     "newGame": "Новая партия",
@@ -39,7 +40,8 @@
     "eventAfterTurn": "Сервер прислал событие после завершения хода",
     "turnResultUnconfirmed": "Сервер не подтвердил результат хода",
     "wrongTurnConfirmed": "Сервер подтвердил другой ход",
-    "connectionClosedBeforeTurn": "Соединение закрылось до подтверждения хода"
+    "connectionClosedBeforeTurn": "Соединение закрылось до подтверждения хода",
+    "turnNotRunning": "Ход уже не выполняется на сервере"
   },
   "notices": {
     "turnAlreadyCommitted": "Ход уже успел сохраниться — показан его итог.",

@@ -379,6 +379,207 @@ fn pending_turn_state(
     (state, started, cancelled)
 }
 
+/// A backend whose FIRST `chat_stream` call (process-wide, shared via `gate`)
+/// pauses until `release` fires, then delegates to the inner mock. `dropped`
+/// flips only if that gated provider future is dropped mid-call — i.e. the
+/// model call was aborted rather than allowed to finish.
+struct GatedTurnBackend {
+    inner: MockClient,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    gate: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct DropFlagGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropFlagGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl Backend for GatedTurnBackend {
+    fn model(&self) -> String {
+        self.inner.model()
+    }
+
+    fn set_model(&self, model: &str) {
+        self.inner.set_model(model);
+    }
+
+    async fn list_models(&self) -> Vec<Value> {
+        self.inner.list_models().await
+    }
+
+    async fn chat(
+        &self,
+        messages: &Value,
+        tools: Option<&Value>,
+        think: Option<bool>,
+        reasoning_role: &str,
+    ) -> Result<ChatOutput, BackendError> {
+        self.inner
+            .chat(messages, tools, think, reasoning_role)
+            .await
+    }
+
+    async fn chat_json(
+        &self,
+        messages: &Value,
+        think: Option<bool>,
+        reasoning_role: &str,
+    ) -> Result<Map<String, Value>, BackendError> {
+        self.inner.chat_json(messages, think, reasoning_role).await
+    }
+
+    async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
+        self.inner.summarize(text, proper_nouns).await
+    }
+
+    async fn chat_stream(
+        &self,
+        messages: &Value,
+        tools: Option<&Value>,
+        think: Option<bool>,
+        reasoning_role: &str,
+        sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<ChatStreamOutput, BackendError> {
+        if self.gate.swap(false, Ordering::SeqCst) {
+            let guard = DropFlagGuard(self.dropped.clone());
+            self.started.notify_one();
+            self.release.notified().await;
+            // Reaching the release means the provider call survived; only an
+            // abort mid-gate may flip the flag.
+            std::mem::forget(guard);
+        }
+        self.inner
+            .chat_stream(messages, tools, think, reasoning_role, sink)
+            .await
+    }
+
+    async fn chat_json_stream(
+        &self,
+        messages: &Value,
+        think: Option<bool>,
+        reasoning_role: &str,
+        sink: &mut (dyn DeltaSink + Send),
+    ) -> Result<JsonStreamOutput, BackendError> {
+        self.inner
+            .chat_json_stream(messages, think, reasoning_role, sink)
+            .await
+    }
+}
+
+struct GatedTurnHandles {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    /// Armed by default; tests may disarm it to let setup turns run ungated
+    /// and re-arm it for the call under test.
+    gate: Arc<std::sync::atomic::AtomicBool>,
+}
+
+fn gated_turn_state(tmp: &tempfile::TempDir) -> (AppState, GatedTurnHandles) {
+    let mut state = mock_state(tmp);
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let factory_started = started.clone();
+    let factory_release = release.clone();
+    let factory_dropped = dropped.clone();
+    let factory_gate = gate.clone();
+    let factory: gml_orchestrator::ClientFactory = Arc::new(move || {
+        Arc::new(GatedTurnBackend {
+            inner: MockClient::new(),
+            started: factory_started.clone(),
+            release: factory_release.clone(),
+            dropped: factory_dropped.clone(),
+            gate: factory_gate.clone(),
+        }) as Arc<dyn Backend>
+    });
+    state.store = Arc::new(
+        DialogStore::new(
+            state.store.db_path().to_string(),
+            factory,
+            state.config.clone(),
+        )
+        .expect("reopen dialog store with gated backend"),
+    );
+    (
+        state,
+        GatedTurnHandles {
+            started,
+            release,
+            dropped,
+            gate,
+        },
+    )
+}
+
+/// Poll until the transcript carries a committed player row for `request_id`.
+async fn wait_for_committed_turn(
+    state: &AppState,
+    chat_id: &str,
+    request_id: &str,
+) -> gml_persistence::DialogRuntime {
+    for _ in 0..100 {
+        let runtime = state
+            .store
+            .load_chat("shared", chat_id)
+            .expect("load runtime while waiting for commit");
+        let committed = runtime.transcript.iter().any(|row| {
+            row.get("request_id").and_then(Value::as_str) == Some(request_id)
+        });
+        if committed {
+            return runtime;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("turn {request_id} did not commit in time");
+}
+
+/// POST /turn returning the raw response (streamed body untouched).
+async fn start_turn_response(
+    state: &AppState,
+    chat_id: &str,
+    text: &str,
+    request_id: &str,
+) -> axum::response::Response {
+    build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/turn")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "chat_id": chat_id,
+                        "text": text,
+                        "request_id": request_id,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// Read SSE frames from `body` until the player echo shows up.
+async fn read_player_frame(body: &mut Body) {
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), body.frame())
+        .await
+        .expect("player frame timed out")
+        .expect("turn body ended before player frame")
+        .expect("turn body frame failed");
+    let text = std::str::from_utf8(frame.data_ref().expect("SSE data frame"))
+        .expect("SSE frame must be UTF-8");
+    assert!(text.contains("\"kind\":\"player\""), "unexpected frame: {text}");
+}
+
 fn seed_completed_turn_checkpoint(state: &AppState, text: &str) -> String {
     let chat_id = state.store.get_active("shared").expect("active chat");
     let mut runtime = state
@@ -506,6 +707,7 @@ fn mock_state_with_infer_url(tmp: &tempfile::TempDir, infer_base_url: &str) -> A
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         turn_registry: Arc::new(TurnRegistry::default()),
+            architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
         index_html: Arc::new(None),
     }
 }
@@ -553,6 +755,7 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         turn_registry: Arc::new(TurnRegistry::default()),
+            architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
         index_html: Arc::new(None),
     }
 }
@@ -1591,59 +1794,329 @@ async fn staged_edit_model_failure_keeps_source_exact_and_can_retry() {
 }
 
 #[tokio::test]
-async fn dropping_turn_stream_cancels_model_call_and_keeps_checkpoint() {
+async fn dropping_turn_stream_keeps_model_running_and_commits() {
     let tmp = tempfile::tempdir().unwrap();
-    let (state, started, cancelled) = pending_turn_state(&tmp);
+    let (state, gate) = gated_turn_state(&tmp);
     let chat_id = state.store.get_active("shared").expect("active chat");
     let before = state
         .store
         .load_chat("shared", &chat_id)
         .expect("load pre-turn runtime");
+    let request_id = "orphaned-turn-contract";
 
-    let response = build_router(state.clone())
+    let response = start_turn_response(
+        &state,
+        &chat_id,
+        "Я закрываю вкладку посреди хода.",
+        request_id,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    read_player_frame(&mut body).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .expect("model call did not start");
+
+    // The tab closes: the SSE body drops, the turn must NOT be aborted.
+    drop(body);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !gate.dropped.load(Ordering::SeqCst),
+        "dropping the SSE body must not abort the provider stream"
+    );
+
+    // While the orphaned turn is still generating, the DB is the exact
+    // pre-turn checkpoint.
+    let staged = state
+        .store
+        .load_chat("shared", &chat_id)
+        .expect("load runtime mid-turn");
+    assert_eq!(staged.payload_json(), before.payload_json());
+
+    gate.release.notify_one();
+    let after = wait_for_committed_turn(&state, &chat_id, request_id).await;
+    assert_eq!(after.turn_count, before.turn_count + 1);
+    assert!(
+        !gate.dropped.load(Ordering::SeqCst),
+        "the provider stream must run to completion"
+    );
+}
+
+#[tokio::test]
+async fn reattach_replays_buffered_events_and_streams_to_done() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, gate) = gated_turn_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let request_id = "reattach-turn-contract";
+
+    let response = start_turn_response(
+        &state,
+        &chat_id,
+        "Я переподключаюсь к живому ходу.",
+        request_id,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    read_player_frame(&mut body).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .expect("model call did not start");
+    drop(body);
+
+    // Re-attach while the model is still running: the feed replays from the
+    // beginning and then tails the live turn.
+    let attach = build_router(state.clone())
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/turn")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "text": "Я останавливаю незавершённый ход.",
-                        "request_id": "cancel-turn-contract",
-                    }))
-                    .unwrap(),
+                .method("GET")
+                .uri(format!(
+                    "/turn/{request_id}/stream?chat_id={}",
+                    urlencoding::encode(&chat_id)
                 ))
+                .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(attach.status(), StatusCode::OK);
+    assert!(attach
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream")));
+    let mut attach_body = attach.into_body();
+    read_player_frame(&mut attach_body).await;
 
-    let mut body = response.into_body();
-    let first_frame = tokio::time::timeout(std::time::Duration::from_secs(2), body.frame())
+    gate.release.notify_one();
+    let remaining = tokio::time::timeout(std::time::Duration::from_secs(5), attach_body.collect())
         .await
-        .expect("player frame timed out")
-        .expect("turn body ended before player frame")
-        .expect("turn body frame failed");
-    let first_text = std::str::from_utf8(first_frame.data_ref().expect("SSE data frame"))
-        .expect("SSE frame must be UTF-8");
-    assert!(first_text.contains("\"kind\":\"player\""));
+        .expect("attached stream did not finish")
+        .unwrap()
+        .to_bytes();
+    let events = sse_payloads(std::str::from_utf8(&remaining).unwrap());
+    let done = events.last().expect("attached stream must end with done");
+    assert_eq!(done["kind"], "done");
+    assert_eq!(done["ok"], true);
+    assert_eq!(done["replayed"], false);
+    assert_eq!(done["request_id"], request_id);
+    assert_eq!(done["chat_id"], chat_id);
+    assert_eq!(done["turn"], 1);
 
-    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+    // Exactly one durable player receipt despite two subscribers having seen
+    // the player event.
+    let committed = wait_for_committed_turn(&state, &chat_id, request_id).await;
+    let receipts = committed
+        .transcript
+        .iter()
+        .filter(|row| row.get("request_id").and_then(Value::as_str) == Some(request_id))
+        .count();
+    assert_eq!(receipts, 1);
+
+    // A later attach resolves from the durable receipt: one replayed done.
+    let replay = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/turn/{request_id}/stream?chat_id={}",
+                    urlencoding::encode(&chat_id)
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay_bytes = replay.into_body().collect().await.unwrap().to_bytes();
+    let replay_events = sse_payloads(std::str::from_utf8(&replay_bytes).unwrap());
+    // The control may still be alive (full replay) or already gone (single
+    // durable-receipt frame); either way the terminal receipt must agree.
+    let replay_done = replay_events.last().expect("replay stream must end with done");
+    assert_eq!(replay_done["kind"], "done");
+    assert_eq!(replay_done["ok"], true);
+    assert_eq!(replay_done["turn"], 1);
+
+    // A never-started request id is a structured 404.
+    let missing = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/turn/no-such-turn/stream?chat_id={}",
+                    urlencoding::encode(&chat_id)
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let missing_body: Value = serde_json::from_slice(
+        &missing.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(missing_body["code"], "turn_not_running");
+}
+
+#[tokio::test]
+async fn duplicate_turn_post_attaches_to_live_feed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, gate) = gated_turn_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let request_id = "duplicate-post-contract";
+    let text = "Я отправляю тот же ход дважды.";
+
+    let first = start_turn_response(&state, &chat_id, text, request_id).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let mut first_body = first.into_body();
+    read_player_frame(&mut first_body).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
         .await
         .expect("model call did not start");
-    drop(body);
-    tokio::time::timeout(std::time::Duration::from_secs(2), cancelled.notified())
-        .await
-        .expect("dropping SSE did not cancel the model call");
 
-    let after = state
-        .store
-        .load_chat("shared", &chat_id)
-        .expect("load runtime after cancellation");
-    assert_eq!(after.turn_count, before.turn_count);
-    assert_eq!(after.transcript, before.transcript);
-    assert_eq!(after.payload_json(), before.payload_json());
+    // Same id + same payload joins the live feed instead of conflicting.
+    let second = start_turn_response(&state, &chat_id, text, request_id).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(second
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream")));
+    let mut second_body = second.into_body();
+    read_player_frame(&mut second_body).await;
+
+    // Same id + different payload is still a conflict.
+    let conflicting =
+        start_turn_response(&state, &chat_id, "Совсем другой текст.", request_id).await;
+    assert_eq!(conflicting.status(), StatusCode::CONFLICT);
+    let conflict_body: Value = serde_json::from_slice(
+        &conflicting.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(conflict_body["code"], "turn_in_progress");
+
+    gate.release.notify_one();
+    for (label, body) in [("first", first_body), ("second", second_body)] {
+        let bytes = tokio::time::timeout(std::time::Duration::from_secs(5), body.collect())
+            .await
+            .unwrap_or_else(|_| panic!("{label} subscriber did not finish"))
+            .unwrap()
+            .to_bytes();
+        let events = sse_payloads(std::str::from_utf8(&bytes).unwrap());
+        let done = events.last().expect("subscriber must receive done");
+        assert_eq!(done["kind"], "done", "{label} terminal frame");
+        assert_eq!(done["ok"], true, "{label} terminal frame: {done}");
+        assert_eq!(done["request_id"], request_id);
+    }
+
+    let committed = wait_for_committed_turn(&state, &chat_id, request_id).await;
+    assert_eq!(committed.turn_count, 1);
+}
+
+#[tokio::test]
+async fn active_turn_reports_live_request_and_clears_after_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, gate) = gated_turn_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let request_id = "active-turn-contract";
+
+    let (status, body) = get(&state, "/turn/active").await;
+    assert_eq!(status, StatusCode::OK);
+    let idle: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(idle["ok"], true);
+    assert_eq!(idle["request_id"], Value::Null);
+
+    let response =
+        start_turn_response(&state, &chat_id, "Я проверяю активный ход.", request_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut turn_body = response.into_body();
+    read_player_frame(&mut turn_body).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .expect("model call did not start");
+
+    let (status, body) = get(
+        &state,
+        &format!("/turn/active?chat_id={}", urlencoding::encode(&chat_id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let live: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(live["ok"], true);
+    assert_eq!(live["chat_id"], chat_id);
+    assert_eq!(live["request_id"], request_id);
+    // The fingerprint rides along so a reloaded client can retry faithfully.
+    assert_eq!(live["text"], "Я проверяю активный ход.");
+    assert_eq!(live["legacy_resume"], false);
+    assert_eq!(live["history"], Value::Null);
+
+    gate.release.notify_one();
+    let bytes = tokio::time::timeout(std::time::Duration::from_secs(5), turn_body.collect())
+        .await
+        .expect("turn stream did not finish")
+        .unwrap()
+        .to_bytes();
+    assert_successful_done(std::str::from_utf8(&bytes).unwrap());
+
+    let (status, body) = get(
+        &state,
+        &format!("/turn/active?chat_id={}", urlencoding::encode(&chat_id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let finished: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(finished["request_id"], Value::Null);
+}
+
+#[tokio::test]
+async fn deleting_chat_cancels_detached_turn_instead_of_resurrecting_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, gate) = gated_turn_state(&tmp);
+    let chat_id = state.store.get_active("shared").expect("active chat");
+    let request_id = "delete-live-turn-contract";
+
+    let response =
+        start_turn_response(&state, &chat_id, "Я удаляю чат с живым ходом.", request_id).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut turn_body = response.into_body();
+    read_player_frame(&mut turn_body).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .expect("model call did not start");
+    drop(turn_body);
+
+    let (status, body) = post(
+        &state,
+        &format!("/chats/{}/delete", urlencoding::encode(&chat_id)),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deleted: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(deleted["ok"], true);
+
+    // The delete cancelled the in-flight turn: its provider future is dropped
+    // and the chat is not re-created by a late commit.
+    for _ in 0..40 {
+        if gate.dropped.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        gate.dropped.load(Ordering::SeqCst),
+        "deleting the chat must abort its in-flight model call"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !state
+            .store
+            .chat_exists("shared", &chat_id)
+            .expect("chat_exists after delete"),
+        "a cancelled turn must not resurrect the deleted chat"
+    );
 }
 
 #[tokio::test]
@@ -2522,6 +2995,170 @@ fn architect_result(body: &[u8]) -> Value {
         }
     }
     error
+}
+
+#[tokio::test]
+async fn architect_turn_survives_disconnect_and_reattaches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (state, gate) = gated_turn_state(&tmp);
+
+    // Setup turn (ungated): create the world so the second turn registers in
+    // the architect feed registry under its package id.
+    gate.gate.store(false, Ordering::SeqCst);
+    let (status, body) = post(
+        &state,
+        "/world-architect/chat",
+        json!({"message": "Хочу мир для проверки переподключения.", "draft": {"genre": "fantasy"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let created = architect_result(&body);
+    assert_eq!(created["ok"], true);
+    let world_id = created["world_id"].as_str().expect("world id").to_string();
+
+    // No live turn for the fresh world: discovery is idle, attach is a 404.
+    let (status, body) = get(
+        &state,
+        &format!("/architect/active?kind=world&id={}", urlencoding::encode(&world_id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let idle: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(idle["active"], false);
+    let missing = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/architect/stream?kind=world&id={}",
+                    urlencoding::encode(&world_id)
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let missing_body: Value =
+        serde_json::from_slice(&missing.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(missing_body["code"], "architect_not_running");
+
+    // Gated turn on the existing world: the model call parks until released.
+    gate.gate.store(true, Ordering::SeqCst);
+    let response = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/world-architect/chat")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "message": "Добавь в мир северное королевство.",
+                        "world_id": world_id,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body();
+    tokio::time::timeout(std::time::Duration::from_secs(2), gate.started.notified())
+        .await
+        .expect("architect model call did not start");
+
+    // The tab closes: the architect turn must keep running.
+    drop(body);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !gate.dropped.load(Ordering::SeqCst),
+        "dropping the SSE body must not abort the architect model call"
+    );
+
+    // A reopened panel discovers the live turn and re-attaches.
+    let (status, body) = get(
+        &state,
+        &format!("/architect/active?kind=world&id={}", urlencoding::encode(&world_id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let live: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(live["active"], true);
+
+    let attach = build_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/architect/stream?kind=world&id={}",
+                    urlencoding::encode(&world_id)
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(attach.status(), StatusCode::OK);
+    assert!(attach
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream")));
+
+    gate.release.notify_one();
+    let attach_bytes = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        attach.into_body().collect(),
+    )
+    .await
+    .expect("attached architect stream did not finish")
+    .unwrap()
+    .to_bytes();
+    let done = architect_result(&attach_bytes);
+    assert_eq!(done["ok"], true, "replayed turn must finish: {done}");
+    assert_eq!(done["world_id"], world_id);
+    let frames = sse_payloads(std::str::from_utf8(&attach_bytes).unwrap());
+    assert_eq!(
+        frames.last().and_then(|frame| frame["kind"].as_str()),
+        Some("done"),
+        "attach stream must close with the synthetic done frame"
+    );
+
+    // The turn is over: discovery is idle again and the conversation persisted
+    // both the user message and the assistant reply.
+    let (status, body) = get(
+        &state,
+        &format!("/architect/active?kind=world&id={}", urlencoding::encode(&world_id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let after: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(after["active"], false);
+
+    let (status, body) = get(
+        &state,
+        &format!("/worlds/{}/architect", urlencoding::encode(&world_id)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let stored: Value = serde_json::from_slice(&body).unwrap();
+    let messages = stored["architect"]["messages"]
+        .as_array()
+        .expect("stored architect messages");
+    assert!(
+        messages.iter().any(|message| message["role"] == "user"
+            && message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("северное королевство"))),
+        "user message must be persisted"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["role"] == "assistant"),
+        "assistant reply must be persisted after the orphaned turn"
+    );
 }
 
 #[tokio::test]

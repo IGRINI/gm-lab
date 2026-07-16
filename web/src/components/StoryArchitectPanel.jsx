@@ -11,6 +11,7 @@ import {
   rawText,
   normalizeVisibleMessage,
   AutoTextarea,
+  lastUserMessageText,
   useLiveSegments,
   useLocalizedFallbackMessage,
   ArchitectChatPane,
@@ -259,6 +260,7 @@ export default function StoryArchitectPanel({
   onConnectorAuthStart,
   onConnectorAuthCancel,
   onArchitectStream,
+  onArchitectAttach,
   onPlayStory,
   onSaveProtagonist,
   className = "",
@@ -290,6 +292,9 @@ export default function StoryArchitectPanel({
   // for an existing story that means fetching its GM draft row on open, not just
   // when the id later changes.
   const loadedStoryIdRef = useRef(null);
+  // Current-value mirror of `architectBusy` for async attach flows whose
+  // closures predate the latest render.
+  const architectBusyRef = useRef(false);
   const {
     modelBinding,
     setModelBinding,
@@ -348,8 +353,12 @@ export default function StoryArchitectPanel({
           throw new Error(data?.error || t("story.errors.loadDraft"));
         }
         setStoryDraft(storyDraftFromSaved(data.story));
-        setMessages(architectMessagesFromChat(data.architect, t));
+        const restored = architectMessagesFromChat(data.architect, t);
+        setMessages(restored);
         resetModelBinding(data.architect?.model_binding);
+        // The server keeps generating after a closed tab; if a turn is still
+        // running for this story, re-attach to its live feed.
+        void maybeAttachArchitect(id, restored);
       })
       .catch((error) => {
         if (cancelled || loadedStoryIdRef.current !== id) return;
@@ -422,32 +431,42 @@ export default function StoryArchitectPanel({
   // One architect turn. `appendUser=false` is the RETRY path: the visible chat
   // already carries the user message (and the failure note) from the failed
   // attempt, so only the request is repeated.
-  const runArchitectTurn = async (text, appendUser) => {
+  const runArchitectTurn = async (text, appendUser, { attach = false, baseMessages = null } = {}) => {
+    const source = baseMessages || messages;
     const visibleMessages = appendUser
-      ? [...messages, { role: "user", content: text }]
-      : [...messages];
+      ? [...source, { role: "user", content: text }]
+      : [...source];
     setArchitectError("");
     setArchitectBusy(true);
+    architectBusyRef.current = true;
     clearLive();
     setMessages(visibleMessages);
     let adopted = false;
     let failure = "";
+    let attachResult;
     lockConnector();
     try {
       // The server owns the conversation (model history + cache ids live in the
       // package's architect.json). The body carries only the message, the target
       // ids, and the form's CONTENT draft — the server applies it as a normal
       // story update before the turn, so hand-edited fields are never lost.
-      await onArchitectStream?.(
-        {
-          message: text,
-          draft: draftPayload,
-          connector_id: modelBinding.connector_id,
-          model_id: modelBinding.model_id,
-          // A create relies on world_id; an edit carries the resolved story_id.
-          ...(currentStoryId ? { story_id: currentStoryId } : {}),
-          ...(worldId ? { world_id: worldId } : {}),
-        },
+      // An attach sends nothing: it replays the live feed.
+      const transport = attach
+        ? (handler) => onArchitectAttach?.(handler)
+        : (handler) =>
+            onArchitectStream?.(
+              {
+                message: text,
+                draft: draftPayload,
+                connector_id: modelBinding.connector_id,
+                model_id: modelBinding.model_id,
+                // A create relies on world_id; an edit carries the resolved story_id.
+                ...(currentStoryId ? { story_id: currentStoryId } : {}),
+                ...(worldId ? { world_id: worldId } : {}),
+              },
+              handler
+            );
+      attachResult = await transport(
         (ev) => {
           if (ev.kind === "architect_delta") {
             const d = ev.data || {};
@@ -515,7 +534,9 @@ export default function StoryArchitectPanel({
     } catch (error) {
       const message = error?.message || t("architect.errors.callFailed");
       setArchitectError(message);
-      setRetryText(text);
+      // A re-attached turn never saw the original send; seed the retry with
+      // the last persisted user message instead of the (empty) attach text.
+      setRetryText(attach ? lastUserMessageText(visibleMessages) : text);
       if (!adopted) {
         setMessages((current) => [
           ...current,
@@ -526,6 +547,38 @@ export default function StoryArchitectPanel({
       }
     } finally {
       setArchitectBusy(false);
+      architectBusyRef.current = false;
+    }
+    return attachResult;
+  };
+
+  // Reopened panel: if the server still runs an architect turn for this story,
+  // join its feed; a false attach (the turn ended between the active check and
+  // the GET) refetches the now-complete conversation instead.
+  const maybeAttachArchitect = async (id, restoredMessages) => {
+    if (!id || architectBusyRef.current || typeof onArchitectAttach !== "function") return;
+    let active = null;
+    try {
+      active = await api.architectActive("story", id);
+    } catch {
+      return; // discovery is best-effort; the stored chat is already shown
+    }
+    if (loadedStoryIdRef.current !== id || architectBusyRef.current) return;
+    if (active?.active !== true) return;
+    const attached = await runArchitectTurn("", false, {
+      attach: true,
+      baseMessages: restoredMessages,
+    });
+    if (attached === false && loadedStoryIdRef.current === id) {
+      try {
+        const data = await api.storyDraft(id);
+        if (data?.ok && data.story && loadedStoryIdRef.current === id) {
+          setStoryDraft(storyDraftFromSaved(data.story));
+          setMessages(architectMessagesFromChat(data.architect, t));
+        }
+      } catch {
+        // keep the restored view; the user can reload the panel
+      }
     }
   };
 

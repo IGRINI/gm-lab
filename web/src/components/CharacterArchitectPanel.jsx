@@ -10,6 +10,7 @@ import {
   textValue,
   normalizeVisibleMessage,
   AutoTextarea,
+  lastUserMessageText,
   useLiveSegments,
   useLocalizedFallbackMessage,
   ArchitectChatPane,
@@ -217,6 +218,7 @@ export default function CharacterArchitectPanel({
   onConnectorAuthStart,
   onConnectorAuthCancel,
   onArchitectStream,
+  onArchitectAttach,
   onPlayCharacter,
   onCharacterPersisted,
   notify,
@@ -249,6 +251,9 @@ export default function CharacterArchitectPanel({
   // Start as `null` (not the mount id) so the load effect ALWAYS runs on mount —
   // for an existing character that means restoring its conversation on open.
   const loadedCharacterIdRef = useRef(null);
+  // Current-value mirror of `architectBusy` for async attach flows whose
+  // closures predate the latest render.
+  const architectBusyRef = useRef(false);
   const {
     modelBinding,
     setModelBinding,
@@ -405,8 +410,12 @@ export default function CharacterArchitectPanel({
         if (!data?.ok) {
           throw new Error(data?.error || t("character.errors.loadChat"));
         }
-        setMessages(characterMessagesFromChat(data.architect, greeting));
+        const restored = characterMessagesFromChat(data.architect, greeting);
+        setMessages(restored);
         resetModelBinding(data.architect?.model_binding);
+        // The server keeps generating after a closed tab; if a turn is still
+        // running for this character, re-attach to its live feed.
+        void maybeAttachArchitect(id, restored);
       })
       .catch((error) => {
         if (cancelled || loadedCharacterIdRef.current !== id) return;
@@ -475,39 +484,49 @@ export default function CharacterArchitectPanel({
   // One architect turn. `appendUser=false` is the RETRY path: the visible chat
   // already carries the user message (and the failure note) from the failed
   // attempt, so only the request is repeated.
-  const runArchitectTurn = async (text, appendUser) => {
+  const runArchitectTurn = async (text, appendUser, { attach = false, baseMessages = null } = {}) => {
+    const source = baseMessages || messages;
     const visibleMessages = appendUser
-      ? [...messages, { role: "user", content: text }]
-      : [...messages];
+      ? [...source, { role: "user", content: text }]
+      : [...source];
     setArchitectError("");
     setArchitectBusy(true);
+    architectBusyRef.current = true;
     clearLive();
     setMessages(visibleMessages);
     let adopted = false;
     let failure = "";
+    let attachResult;
     lockConnector();
     try {
       // The server owns the conversation (model history + cache ids live in the
       // dialogs SQLite). The body carries only the message, the target id, and
       // the FULL sheet — the server snapshot-replaces the package with it before
       // the turn, so hand-edited fields are never lost.
-      await onArchitectStream?.(
-        {
-          message: text,
-          draft: draftPayload,
-          connector_id: modelBinding.connector_id,
-          model_id: modelBinding.model_id,
-          // A create sends no id; an edit carries the resolved character_id.
-          // The base world/story ids ride ONLY with the create (the server pins
-          // them into the new package; for an existing character it reads the
-          // stored refs and ignores request ids).
-          ...(currentCharacterId
-            ? { character_id: currentCharacterId }
-            : {
-                ...(worldId ? { world_id: worldId } : {}),
-                ...(storyId ? { story_id: storyId } : {}),
-              }),
-        },
+      // An attach sends nothing: it replays the live feed.
+      const transport = attach
+        ? (handler) => onArchitectAttach?.(handler)
+        : (handler) =>
+            onArchitectStream?.(
+              {
+                message: text,
+                draft: draftPayload,
+                connector_id: modelBinding.connector_id,
+                model_id: modelBinding.model_id,
+                // A create sends no id; an edit carries the resolved character_id.
+                // The base world/story ids ride ONLY with the create (the server pins
+                // them into the new package; for an existing character it reads the
+                // stored refs and ignores request ids).
+                ...(currentCharacterId
+                  ? { character_id: currentCharacterId }
+                  : {
+                      ...(worldId ? { world_id: worldId } : {}),
+                      ...(storyId ? { story_id: storyId } : {}),
+                    }),
+              },
+              handler
+            );
+      attachResult = await transport(
         (ev) => {
           if (ev.kind === "architect_delta") {
             const d = ev.data || {};
@@ -579,7 +598,9 @@ export default function CharacterArchitectPanel({
     } catch (error) {
       const message = error?.message || t("architect.errors.callFailed");
       setArchitectError(message);
-      setRetryText(text);
+      // A re-attached turn never saw the original send; seed the retry with
+      // the last persisted user message instead of the (empty) attach text.
+      setRetryText(attach ? lastUserMessageText(visibleMessages) : text);
       if (!adopted) {
         setMessages((current) => [
           ...current,
@@ -590,6 +611,37 @@ export default function CharacterArchitectPanel({
       }
     } finally {
       setArchitectBusy(false);
+      architectBusyRef.current = false;
+    }
+    return attachResult;
+  };
+
+  // Reopened panel: if the server still runs an architect turn for this
+  // character, join its feed; a false attach (the turn ended between the
+  // active check and the GET) refetches the now-complete conversation.
+  const maybeAttachArchitect = async (id, restoredMessages) => {
+    if (!id || architectBusyRef.current || typeof onArchitectAttach !== "function") return;
+    let active = null;
+    try {
+      active = await api.architectActive("character", id);
+    } catch {
+      return; // discovery is best-effort; the stored chat is already shown
+    }
+    if (loadedCharacterIdRef.current !== id || architectBusyRef.current) return;
+    if (active?.active !== true) return;
+    const attached = await runArchitectTurn("", false, {
+      attach: true,
+      baseMessages: restoredMessages,
+    });
+    if (attached === false && loadedCharacterIdRef.current === id) {
+      try {
+        const data = await api.characterArchitect(id);
+        if (data?.ok && loadedCharacterIdRef.current === id) {
+          setMessages(characterMessagesFromChat(data.architect, greeting));
+        }
+      } catch {
+        // keep the restored view; the user can reload the panel
+      }
     }
   };
 

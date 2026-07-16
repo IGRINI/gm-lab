@@ -131,13 +131,7 @@ pub fn compact_ask_npc_payload(payload: &Value) -> Value {
     out.insert("already_emitted".to_string(), Value::Bool(true));
     out.insert(
         "final_narration_rule".to_string(),
-        Value::String(
-            "Do not rewrite, retell, paraphrase, embellish, or mention this NPC's \
-speech/action/body/emotion again. Final narration may add only non-NPC \
-scene consequences; output empty if none. For another named NPC reaction, \
-call ask_npc for that NPC."
-                .to_string(),
-        ),
+        Value::String(gml_prompts::npc_final_payload_rule().to_string()),
     );
     Value::Object(out)
 }
@@ -738,8 +732,7 @@ pub fn model_ask_npc_text(payload: &Value) -> String {
             kv("speech", get(&compact, "speech_ru")),
             kv("action", get(&compact, "action_ru")),
             "already_emitted: yes".to_string(),
-            "final_narration: only new non-NPC consequences; ask_npc for another named NPC reaction."
-                .to_string(),
+            gml_prompts::npc_final_model_rule().to_string(),
         ],
     )
 }

@@ -236,7 +236,7 @@ impl Embedder for LocalEmbeddingClient {
             "input": [q],
             "encoding_format": self.encoding_format,
             "input_type": "query",
-            "task": crate::engine::QUERY_TASK,
+            "task": crate::engine::query_task(),
         });
         let body = post_json(&self.url, payload, self.timeout)?;
         let item = body

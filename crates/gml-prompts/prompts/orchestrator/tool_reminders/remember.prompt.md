@@ -1,0 +1,1 @@
+Use only these memory results as your own accessible recollection. Unknown means you do not currently remember or cannot access matching memory; answer in character with uncertainty, evasion, a guess, or silence rather than inventing certainty.

@@ -10,6 +10,7 @@ import {
   textValue,
   normalizeVisibleMessage,
   AutoTextarea,
+  lastUserMessageText,
   useLiveSegments,
   useLocalizedFallbackMessage,
   ArchitectChatPane,
@@ -300,6 +301,7 @@ export default function WorldArchitectPanel({
   onConnectorAuthCancel,
   onCreateWorld,
   onArchitectStream,
+  onArchitectAttach,
   onGenerateImage,
   onPlayWorld,
   onCreateStory,
@@ -334,6 +336,9 @@ export default function WorldArchitectPanel({
   // Start as `null` (not the mount id) so the load effect ALWAYS runs on mount —
   // for an existing world that means fetching its architect conversation on open.
   const loadedWorldIdRef = useRef(null);
+  // Current-value mirror of `architectBusy` for async attach flows whose
+  // closures predate the latest render.
+  const architectBusyRef = useRef(false);
   const {
     modelBinding,
     setModelBinding,
@@ -408,8 +413,12 @@ export default function WorldArchitectPanel({
         if (!data?.ok) {
           throw new Error(data?.error || t("world.errors.loadArchitect"));
         }
-        setMessages(architectMessagesFromChat(data.architect, t));
+        const restored = architectMessagesFromChat(data.architect, t);
+        setMessages(restored);
         resetModelBinding(data.architect?.model_binding);
+        // The server keeps generating after a closed tab; if a turn is still
+        // running for this world, re-attach to its live feed.
+        void maybeAttachArchitect(id, restored);
       })
       .catch((error) => {
         if (cancelled || loadedWorldIdRef.current !== id) return;
@@ -597,31 +606,43 @@ export default function WorldArchitectPanel({
 
   // One architect turn. `appendUser=false` is the RETRY path: the visible chat
   // already carries the user message (and the failure note) from the failed
-  // attempt, so only the request is repeated.
-  const runArchitectTurn = async (text, appendUser) => {
+  // attempt, so only the request is repeated. `attach` joins a turn the server
+  // is already running (after a reload) instead of starting one; the restored
+  // conversation rides in via `baseMessages` because the closure's `messages`
+  // may predate the restore.
+  const runArchitectTurn = async (text, appendUser, { attach = false, baseMessages = null } = {}) => {
+    const source = baseMessages || messages;
     const visibleMessages = appendUser
-      ? [...messages, { role: "user", content: text }]
-      : [...messages];
+      ? [...source, { role: "user", content: text }]
+      : [...source];
     setArchitectError("");
     setArchitectBusy(true);
+    architectBusyRef.current = true;
     clearLive();
     setMessages(visibleMessages);
     let adopted = false;
     let failure = "";
+    let attachResult;
     lockConnector();
     try {
       // The server owns the conversation (model history + cache ids live in the
       // package's architect.json). The body carries only the message and the
       // form's CONTENT draft — the server applies it as a normal world update
       // before the turn, so hand-edited fields are never lost. App injects the
-      // selected world_id.
-      await onArchitectStream?.(
-        {
-          message: text,
-          draft: worldPayload,
-          connector_id: modelBinding.connector_id,
-          model_id: modelBinding.model_id,
-        },
+      // selected world_id. An attach sends nothing: it replays the live feed.
+      const transport = attach
+        ? (handler) => onArchitectAttach?.(handler)
+        : (handler) =>
+            onArchitectStream?.(
+              {
+                message: text,
+                draft: worldPayload,
+                connector_id: modelBinding.connector_id,
+                model_id: modelBinding.model_id,
+              },
+              handler
+            );
+      attachResult = await transport(
         (ev) => {
           if (ev.kind === "architect_delta") {
             // Per-hop content/thinking delta. Reasoning streams into a collapsed
@@ -674,7 +695,9 @@ export default function WorldArchitectPanel({
     } catch (error) {
       const message = error?.message || t("architect.errors.callFailed");
       setArchitectError(message);
-      setRetryText(text);
+      // A re-attached turn never saw the original send; seed the retry with
+      // the last persisted user message instead of the (empty) attach text.
+      setRetryText(attach ? lastUserMessageText(visibleMessages) : text);
       if (!adopted) {
         // Keep whatever streamed before the failure, then append the error note.
         setMessages((current) => [
@@ -686,6 +709,37 @@ export default function WorldArchitectPanel({
       }
     } finally {
       setArchitectBusy(false);
+      architectBusyRef.current = false;
+    }
+    return attachResult;
+  };
+
+  // Reopened panel: if the server still runs an architect turn for this world,
+  // join its feed; a false attach (the turn ended between the active check and
+  // the GET) refetches the now-complete conversation instead.
+  const maybeAttachArchitect = async (id, restoredMessages) => {
+    if (!id || architectBusyRef.current || typeof onArchitectAttach !== "function") return;
+    let active = null;
+    try {
+      active = await api.architectActive("world", id);
+    } catch {
+      return; // discovery is best-effort; the stored chat is already shown
+    }
+    if (loadedWorldIdRef.current !== id || architectBusyRef.current) return;
+    if (active?.active !== true) return;
+    const attached = await runArchitectTurn("", false, {
+      attach: true,
+      baseMessages: restoredMessages,
+    });
+    if (attached === false && loadedWorldIdRef.current === id) {
+      try {
+        const data = await api.worldArchitect(id);
+        if (data?.ok && loadedWorldIdRef.current === id) {
+          setMessages(architectMessagesFromChat(data.architect, t));
+        }
+      } catch {
+        // keep the restored view; the user can reload the panel
+      }
     }
   };
 

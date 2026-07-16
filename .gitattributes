@@ -3,8 +3,9 @@
 tests/reference/** -text
 tests/reference/prompts/*.txt -text
 
-# Embedded verbatim prompt assets (added during the port) likewise stay raw.
-crates/gml-prompts/assets/** -text
+# Embedded prompt templates are Markdown and must stay LF-stable for provider
+# cache prefixes and the byte-identity golden tests.
+crates/gml-prompts/prompts/**/*.prompt.md text eol=lf
 
 # Source files: normalize to LF in the repo.
 *.rs text eol=lf

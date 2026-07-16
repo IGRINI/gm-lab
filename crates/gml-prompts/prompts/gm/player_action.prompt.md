@@ -1,0 +1,2 @@
+<< header >>
+<< player_text >>

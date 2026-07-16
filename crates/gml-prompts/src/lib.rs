@@ -1,22 +1,294 @@
-//! gml-prompts: verbatim system prompts and templates for the GM orchestrator
-//! and NPC sub-agents, ported faithfully from `gm-lab/prompts.py`.
+//! Embedded Markdown prompt templates for the GM orchestrator and NPC
+//! sub-agents.
 //!
-//! The prompt text is byte-identical to the Python source. In Python `GM_SYSTEM`
-//! is an f-string spliced ONCE at import time from `tool_guidance` module
-//! constants (all of which are themselves static module-level constants, not
-//! runtime values), so the fully-spliced text is itself a faithful static
-//! constant. We embed the captured verbatim text via `include_str!` from
-//! `assets/` (kept raw / LF by `.gitattributes`).
-//!
-//! Templates that carry RUNTIME placeholders — `NPC_CARD_TEMPLATE`,
-//! `NPC_COMPACT_SYSTEM`, `GM_COMPACT_SYSTEM` — are exposed both as the raw
-//! template string and via render functions that reproduce Python's
-//! `str.format(**named)` substitution semantics (named placeholders, with
-//! `{{`/`}}` as literal braces).
+//! Every `prompts/**/*.prompt.md` file is eagerly loaded into one MiniJinja
+//! catalog with strict undefined-variable handling and no auto-escaping. The
+//! prompt dialect uses `<< value >>`, `<% statement %>`, and `<# comment #>` so
+//! JSON examples remain ordinary text. Static constants are retained for
+//! compatibility and cache-prefix byte stability; runtime templates render
+//! through the shared catalog.
+
+mod catalog;
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use gml_types::{normalize_language_tag, DEFAULT_RESPONSE_LANGUAGE};
+use serde::Serialize;
+
+/// Compile-time identifier of an embedded prompt template.
+///
+/// The path remains private to this crate's catalog contract, so callers do not
+/// pass unchecked strings around the application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PromptId {
+    GmSystem,
+    GmCompactSystem,
+    GmProperNounsRule,
+    NpcSystem,
+    NpcSystemTemplate,
+    NpcCard,
+    NpcCompactSystem,
+    ResponseLanguage,
+    WorldArchitectSystem,
+    StoryArchitectSystem,
+    StoryArchitectWorldReference,
+    CharacterArchitectSystem,
+    CharacterArchitectBaseUnavailable,
+    CharacterArchitectWorldReference,
+    CharacterArchitectStoryReference,
+    CharacterGeneratorSystem,
+    CharacterGeneratorUser,
+    LocationGeneratorSystem,
+    LocationGeneratorUser,
+    WorldSeedSystem,
+    WorldSeedRepairUser,
+    SceneDeltaSystem,
+    SceneDeltaUser,
+    GmPreludeSystem,
+    GmPreludeUser,
+    GmWorldSetup,
+    GmWorldSnapshot,
+    GmOptionsNotice,
+    GmPlayerAction,
+    GmStorySummary,
+    NpcTurnUser,
+    NpcPrivateMemory,
+    MemoryCrystal,
+    RagQueryTask,
+    RagQuery,
+    JsonObjectInputHint,
+    WorldArchitectDraftSuccess,
+    StoryArchitectDraftSuccess,
+    CharacterArchitectDraftSuccess,
+    ArchitectEditSuccess,
+    GmToolSearchNext,
+    GmToolSchemaNext,
+    OrchestratorVisibleContinuation,
+    OrchestratorNpcFinalInstruction,
+    OrchestratorNpcFinalModelRule,
+    OrchestratorNpcFinalPayloadRule,
+    ToolReminderAskNpc,
+    ToolReminderRollDice,
+    ToolReminderGetWorldFact,
+    ToolReminderGetMemory,
+    ToolReminderRemember,
+    ToolReminderNoteMemory,
+    ToolReminderConsolidateMemory,
+    ToolReminderGetNpcProfile,
+    ToolReminderSetNpcWhereabouts,
+    ToolReminderMoveNpc,
+    ToolReminderSetScene,
+    ToolReminderMovePlayer,
+    ToolReminderUpdatePlayerCharacter,
+    ToolReminderCastSpell,
+    OrchestratorPlayerOptionsNext,
+    OrchestratorToolSearchDefaultNext,
+    OrchestratorLoadToolSchemaDefaultNext,
+    NpcGeneratorDuplicateCandidates,
+    NpcGeneratorCommittedNote,
+    NpcGeneratorCreatedMessage,
+    NpcGeneratorCommitRejectedMessage,
+}
+
+impl PromptId {
+    pub const ALL: &'static [Self] = &[
+        Self::GmSystem,
+        Self::GmCompactSystem,
+        Self::GmProperNounsRule,
+        Self::NpcSystem,
+        Self::NpcSystemTemplate,
+        Self::NpcCard,
+        Self::NpcCompactSystem,
+        Self::ResponseLanguage,
+        Self::WorldArchitectSystem,
+        Self::StoryArchitectSystem,
+        Self::StoryArchitectWorldReference,
+        Self::CharacterArchitectSystem,
+        Self::CharacterArchitectBaseUnavailable,
+        Self::CharacterArchitectWorldReference,
+        Self::CharacterArchitectStoryReference,
+        Self::CharacterGeneratorSystem,
+        Self::CharacterGeneratorUser,
+        Self::LocationGeneratorSystem,
+        Self::LocationGeneratorUser,
+        Self::WorldSeedSystem,
+        Self::WorldSeedRepairUser,
+        Self::SceneDeltaSystem,
+        Self::SceneDeltaUser,
+        Self::GmPreludeSystem,
+        Self::GmPreludeUser,
+        Self::GmWorldSetup,
+        Self::GmWorldSnapshot,
+        Self::GmOptionsNotice,
+        Self::GmPlayerAction,
+        Self::GmStorySummary,
+        Self::NpcTurnUser,
+        Self::NpcPrivateMemory,
+        Self::MemoryCrystal,
+        Self::RagQueryTask,
+        Self::RagQuery,
+        Self::JsonObjectInputHint,
+        Self::WorldArchitectDraftSuccess,
+        Self::StoryArchitectDraftSuccess,
+        Self::CharacterArchitectDraftSuccess,
+        Self::ArchitectEditSuccess,
+        Self::GmToolSearchNext,
+        Self::GmToolSchemaNext,
+        Self::OrchestratorVisibleContinuation,
+        Self::OrchestratorNpcFinalInstruction,
+        Self::OrchestratorNpcFinalModelRule,
+        Self::OrchestratorNpcFinalPayloadRule,
+        Self::ToolReminderAskNpc,
+        Self::ToolReminderRollDice,
+        Self::ToolReminderGetWorldFact,
+        Self::ToolReminderGetMemory,
+        Self::ToolReminderRemember,
+        Self::ToolReminderNoteMemory,
+        Self::ToolReminderConsolidateMemory,
+        Self::ToolReminderGetNpcProfile,
+        Self::ToolReminderSetNpcWhereabouts,
+        Self::ToolReminderMoveNpc,
+        Self::ToolReminderSetScene,
+        Self::ToolReminderMovePlayer,
+        Self::ToolReminderUpdatePlayerCharacter,
+        Self::ToolReminderCastSpell,
+        Self::OrchestratorPlayerOptionsNext,
+        Self::OrchestratorToolSearchDefaultNext,
+        Self::OrchestratorLoadToolSchemaDefaultNext,
+        Self::NpcGeneratorDuplicateCandidates,
+        Self::NpcGeneratorCommittedNote,
+        Self::NpcGeneratorCreatedMessage,
+        Self::NpcGeneratorCommitRejectedMessage,
+    ];
+
+    pub(crate) const fn path(self) -> &'static str {
+        match self {
+            Self::GmSystem => "gm/system.prompt.md",
+            Self::GmCompactSystem => "gm/compact_system.prompt.md",
+            Self::GmProperNounsRule => "gm/proper_nouns_rule.prompt.md",
+            Self::NpcSystem => "npc/system.prompt.md",
+            Self::NpcSystemTemplate => "npc/system_template.prompt.md",
+            Self::NpcCard => "npc/card.prompt.md",
+            Self::NpcCompactSystem => "npc/compact_system.prompt.md",
+            Self::ResponseLanguage => "shared/response_language.prompt.md",
+            Self::WorldArchitectSystem => "architects/world/system.prompt.md",
+            Self::StoryArchitectSystem => "architects/story/system.prompt.md",
+            Self::StoryArchitectWorldReference => "architects/story/world_reference.prompt.md",
+            Self::CharacterArchitectSystem => "architects/character/system.prompt.md",
+            Self::CharacterArchitectBaseUnavailable => {
+                "architects/character/base_unavailable.prompt.md"
+            }
+            Self::CharacterArchitectWorldReference => {
+                "architects/character/world_reference.prompt.md"
+            }
+            Self::CharacterArchitectStoryReference => {
+                "architects/character/story_reference.prompt.md"
+            }
+            Self::CharacterGeneratorSystem => "generators/character/system.prompt.md",
+            Self::CharacterGeneratorUser => "generators/character/user.prompt.md",
+            Self::LocationGeneratorSystem => "generators/location/system.prompt.md",
+            Self::LocationGeneratorUser => "generators/location/user.prompt.md",
+            Self::WorldSeedSystem => "seed/world_system.prompt.md",
+            Self::WorldSeedRepairUser => "seed/world_repair_user.prompt.md",
+            Self::SceneDeltaSystem => "seed/scene_delta_system.prompt.md",
+            Self::SceneDeltaUser => "seed/scene_delta_user.prompt.md",
+            Self::GmPreludeSystem => "gm/prelude_system.prompt.md",
+            Self::GmPreludeUser => "gm/prelude_user.prompt.md",
+            Self::GmWorldSetup => "gm/world_setup.prompt.md",
+            Self::GmWorldSnapshot => "gm/world_snapshot.prompt.md",
+            Self::GmOptionsNotice => "gm/options_notice.prompt.md",
+            Self::GmPlayerAction => "gm/player_action.prompt.md",
+            Self::GmStorySummary => "gm/story_summary.prompt.md",
+            Self::NpcTurnUser => "npc/turn_user.prompt.md",
+            Self::NpcPrivateMemory => "npc/private_memory.prompt.md",
+            Self::MemoryCrystal => "orchestrator/memory_crystal.prompt.md",
+            Self::RagQueryTask => "rag/query_task.prompt.md",
+            Self::RagQuery => "rag/query.prompt.md",
+            Self::JsonObjectInputHint => "shared/json_object_input_hint.prompt.md",
+            Self::WorldArchitectDraftSuccess => "architects/world/draft_success.prompt.md",
+            Self::StoryArchitectDraftSuccess => "architects/story/draft_success.prompt.md",
+            Self::CharacterArchitectDraftSuccess => "architects/character/draft_success.prompt.md",
+            Self::ArchitectEditSuccess => "architects/shared/edit_success.prompt.md",
+            Self::GmToolSearchNext => "gm/tool_search_next.prompt.md",
+            Self::GmToolSchemaNext => "gm/tool_schema_next.prompt.md",
+            Self::OrchestratorVisibleContinuation => {
+                "orchestrator/visible_continuation_reminder.prompt.md"
+            }
+            Self::OrchestratorNpcFinalInstruction => "orchestrator/npc_final_instruction.prompt.md",
+            Self::OrchestratorNpcFinalModelRule => "orchestrator/npc_final_model_rule.prompt.md",
+            Self::OrchestratorNpcFinalPayloadRule => {
+                "orchestrator/npc_final_payload_rule.prompt.md"
+            }
+            Self::ToolReminderAskNpc => "orchestrator/tool_reminders/ask_npc.prompt.md",
+            Self::ToolReminderRollDice => "orchestrator/tool_reminders/roll_dice.prompt.md",
+            Self::ToolReminderGetWorldFact => {
+                "orchestrator/tool_reminders/get_world_fact.prompt.md"
+            }
+            Self::ToolReminderGetMemory => "orchestrator/tool_reminders/get_memory.prompt.md",
+            Self::ToolReminderRemember => "orchestrator/tool_reminders/remember.prompt.md",
+            Self::ToolReminderNoteMemory => "orchestrator/tool_reminders/note_memory.prompt.md",
+            Self::ToolReminderConsolidateMemory => {
+                "orchestrator/tool_reminders/consolidate_memory.prompt.md"
+            }
+            Self::ToolReminderGetNpcProfile => {
+                "orchestrator/tool_reminders/get_npc_profile.prompt.md"
+            }
+            Self::ToolReminderSetNpcWhereabouts => {
+                "orchestrator/tool_reminders/set_npc_whereabouts.prompt.md"
+            }
+            Self::ToolReminderMoveNpc => "orchestrator/tool_reminders/move_npc.prompt.md",
+            Self::ToolReminderSetScene => "orchestrator/tool_reminders/set_scene.prompt.md",
+            Self::ToolReminderMovePlayer => "orchestrator/tool_reminders/move_player.prompt.md",
+            Self::ToolReminderUpdatePlayerCharacter => {
+                "orchestrator/tool_reminders/update_player_character.prompt.md"
+            }
+            Self::ToolReminderCastSpell => "orchestrator/tool_reminders/cast_spell.prompt.md",
+            Self::OrchestratorPlayerOptionsNext => {
+                "orchestrator/model_text/player_options_next.prompt.md"
+            }
+            Self::OrchestratorToolSearchDefaultNext => {
+                "orchestrator/model_text/tool_search_default_next.prompt.md"
+            }
+            Self::OrchestratorLoadToolSchemaDefaultNext => {
+                "orchestrator/model_text/load_tool_schema_default_next.prompt.md"
+            }
+            Self::NpcGeneratorDuplicateCandidates => {
+                "orchestrator/npc_generator/duplicate_candidates.prompt.md"
+            }
+            Self::NpcGeneratorCommittedNote => {
+                "orchestrator/npc_generator/committed_note.prompt.md"
+            }
+            Self::NpcGeneratorCreatedMessage => {
+                "orchestrator/npc_generator/created_message.prompt.md"
+            }
+            Self::NpcGeneratorCommitRejectedMessage => {
+                "orchestrator/npc_generator/commit_rejected_message.prompt.md"
+            }
+        }
+    }
+}
+
+/// Render one embedded prompt with strict variable checking.
+pub fn render_prompt<T: Serialize>(
+    prompt: PromptId,
+    context: T,
+) -> Result<String, minijinja::Error> {
+    match prompt {
+        PromptId::GmSystem => Ok(GM_SYSTEM.to_string()),
+        PromptId::NpcSystem | PromptId::NpcSystemTemplate => Ok(NPC_SYSTEM_STATIC.to_string()),
+        _ => catalog::render(prompt.path(), minijinja::Value::from_serialize(context)),
+    }
+}
+
+/// Parse every embedded prompt template now.
+///
+/// The shipped application calls this during startup so an invalid template
+/// fails before it can accept a model request. Rendering still performs strict
+/// validation of the variables supplied to each individual template.
+pub fn validate_prompt_catalog() {
+    std::sync::LazyLock::force(&catalog::PROMPT_CATALOG);
+}
 
 /// Prefix used to recognize the synthetic response-language instruction.
 pub const RESPONSE_LANGUAGE_INSTRUCTION_PREFIX: &str = "<gml-response-language ";
@@ -29,10 +301,9 @@ pub const RESPONSE_LANGUAGE_INSTRUCTION_PREFIX: &str = "<gml-response-language "
 pub fn response_language_instruction(language_tag: &str) -> String {
     let language_tag = normalize_language_tag(language_tag)
         .unwrap_or_else(|| DEFAULT_RESPONSE_LANGUAGE.to_string());
-    format!(
-        "{RESPONSE_LANGUAGE_INSTRUCTION_PREFIX}code=\"{language_tag}\">\n\
-The BCP-47 tag above is the required response language. This rule overrides any earlier language instruction or example. Use it for every natural-language part of the response, including narration, dialogue, visible reasoning, titles, descriptions, player options, JSON string values, and human-readable tool argument values. Keep JSON keys, tool names, identifiers, enum values, code, exact quotations, and proper nouns unchanged. Fields explicitly documented as English-only remain English.\n\
-</gml-response-language>"
+    render_embedded(
+        PromptId::ResponseLanguage.path(),
+        minijinja::context! { language_tag },
     )
 }
 
@@ -40,29 +311,142 @@ The BCP-47 tag above is the required response language. This rule overrides any 
 
 /// GM orchestrator system prompt. In Python this is an f-string fully spliced
 /// at import from `tool_guidance.*` static constants — a faithful constant.
-pub const GM_SYSTEM: &str = include_str!("../assets/GM_SYSTEM.txt");
+pub const GM_SYSTEM: &str = include_str!("../prompts/gm/system.prompt.md");
 
 /// Static NPC sub-agent system prompt.
-pub const NPC_SYSTEM_STATIC: &str = include_str!("../assets/NPC_SYSTEM_STATIC.txt");
+pub const NPC_SYSTEM_STATIC: &str = include_str!("../prompts/npc/system.prompt.md");
 
 /// Backward-compat alias of `NPC_SYSTEM_STATIC` (matches Python:
 /// `NPC_SYSTEM_TEMPLATE = NPC_SYSTEM_STATIC`). Byte-identical to it.
-pub const NPC_SYSTEM_TEMPLATE: &str = include_str!("../assets/NPC_SYSTEM_TEMPLATE.txt");
+pub const NPC_SYSTEM_TEMPLATE: &str = NPC_SYSTEM_STATIC;
+
+/// Legacy standalone character-architect prompt retained for public API
+/// compatibility in `gml-agents`.
+pub const CHARACTER_ARCHITECT_SYSTEM: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/CHARACTER_ARCHITECT_SYSTEM.txt"));
+
+/// Legacy based character-architect prompt retained for public API
+/// compatibility in `gml-agents`.
+pub const CHARACTER_ARCHITECT_SYSTEM_BASED: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/CHARACTER_ARCHITECT_SYSTEM_BASED.txt"
+));
+
+/// Legacy story-architect prompt retained for public API compatibility in
+/// `gml-agents`.
+pub const STORY_ARCHITECT_SYSTEM: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/STORY_ARCHITECT_SYSTEM.txt"));
+
+/// Legacy NPC-perception fragment retained for public API compatibility in
+/// `gml-agents`.
+pub const NPC_PERCEPTION_BRIEF_RULES: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/NPC_PERCEPTION_BRIEF_RULES.txt"));
+
+/// Cache-stable RAG query task retained for public API compatibility in
+/// `gml-rag`.
+pub const RAG_QUERY_TASK: &str = include_str!(concat!(env!("OUT_DIR"), "/RAG_QUERY_TASK.txt"));
 
 // --- Templates with runtime placeholders ----------------------------------
 
-/// Raw NPC card template. Contains `str.format` named fields:
-/// `{revision} {name} {role} {gender} {public_label} {age} {physical_type}`
-/// `{distinctive_features} {life_status} {condition} {persona} {personality}`
-/// `{values} {habits} {pressure_response} {boundaries} {voice} {goals}`
-/// `{knowledge} {mechanics} {secret}`.
-pub const NPC_CARD_TEMPLATE: &str = include_str!("../assets/NPC_CARD_TEMPLATE.txt");
+/// Raw MiniJinja NPC card template used by the shared prompt catalog.
+pub const NPC_CARD_PROMPT_TEMPLATE: &str = include_str!("../prompts/npc/card.prompt.md");
 
-/// Raw NPC compaction system prompt. Contains one named field: `{proper_nouns}`.
-pub const NPC_COMPACT_SYSTEM: &str = include_str!("../assets/NPC_COMPACT_SYSTEM.txt");
+/// Raw MiniJinja NPC compaction template used by the shared prompt catalog.
+pub const NPC_COMPACT_SYSTEM_PROMPT_TEMPLATE: &str =
+    include_str!("../prompts/npc/compact_system.prompt.md");
 
-/// Raw GM compaction system prompt. Contains one named field: `{proper_nouns_line}`.
-pub const GM_COMPACT_SYSTEM: &str = include_str!("../assets/GM_COMPACT_SYSTEM.txt");
+/// Raw MiniJinja GM compaction template used by the shared prompt catalog.
+pub const GM_COMPACT_SYSTEM_PROMPT_TEMPLATE: &str =
+    include_str!("../prompts/gm/compact_system.prompt.md");
+
+/// Legacy `{field}` NPC card template retained for public API compatibility.
+/// New model-facing code should use [`render_npc_card`].
+pub const NPC_CARD_TEMPLATE: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/NPC_CARD_TEMPLATE.txt"));
+
+/// Legacy `{proper_nouns}` template retained for public API compatibility.
+/// New model-facing code should use [`render_npc_compact_system`].
+pub const NPC_COMPACT_SYSTEM: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/NPC_COMPACT_SYSTEM.txt"));
+
+/// Legacy `{proper_nouns_line}` template retained for public API compatibility.
+/// New model-facing code should use [`render_gm_compact_system`].
+pub const GM_COMPACT_SYSTEM: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/GM_COMPACT_SYSTEM.txt"));
+
+/// Cache-safe instruction appended after already-visible output in one turn.
+pub const VISIBLE_CONTINUATION_REMINDER: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/VISIBLE_CONTINUATION_REMINDER.txt"
+));
+
+macro_rules! cached_static_prompt {
+    ($static_name:ident, $prompt_id:ident) => {
+        static $static_name: LazyLock<String> =
+            LazyLock::new(|| render_embedded(PromptId::$prompt_id.path(), minijinja::context! {}));
+    };
+}
+
+cached_static_prompt!(VISIBLE_CONTINUATION, OrchestratorVisibleContinuation);
+cached_static_prompt!(NPC_FINAL_INSTRUCTION, OrchestratorNpcFinalInstruction);
+cached_static_prompt!(NPC_FINAL_MODEL_RULE, OrchestratorNpcFinalModelRule);
+cached_static_prompt!(NPC_FINAL_PAYLOAD_RULE, OrchestratorNpcFinalPayloadRule);
+cached_static_prompt!(REMINDER_ASK_NPC, ToolReminderAskNpc);
+cached_static_prompt!(REMINDER_ROLL_DICE, ToolReminderRollDice);
+cached_static_prompt!(REMINDER_GET_WORLD_FACT, ToolReminderGetWorldFact);
+cached_static_prompt!(REMINDER_GET_MEMORY, ToolReminderGetMemory);
+cached_static_prompt!(REMINDER_REMEMBER, ToolReminderRemember);
+cached_static_prompt!(REMINDER_NOTE_MEMORY, ToolReminderNoteMemory);
+cached_static_prompt!(REMINDER_CONSOLIDATE_MEMORY, ToolReminderConsolidateMemory);
+cached_static_prompt!(REMINDER_GET_NPC_PROFILE, ToolReminderGetNpcProfile);
+cached_static_prompt!(REMINDER_SET_NPC_WHEREABOUTS, ToolReminderSetNpcWhereabouts);
+cached_static_prompt!(REMINDER_MOVE_NPC, ToolReminderMoveNpc);
+cached_static_prompt!(REMINDER_SET_SCENE, ToolReminderSetScene);
+cached_static_prompt!(REMINDER_MOVE_PLAYER, ToolReminderMovePlayer);
+cached_static_prompt!(
+    REMINDER_UPDATE_PLAYER_CHARACTER,
+    ToolReminderUpdatePlayerCharacter
+);
+cached_static_prompt!(REMINDER_CAST_SPELL, ToolReminderCastSpell);
+
+/// Cache-safe instruction appended after already-visible output in one turn.
+pub fn visible_continuation_reminder() -> &'static str {
+    VISIBLE_CONTINUATION.as_str()
+}
+
+/// Model-facing post-tool policy for a tool, or an empty string when the tool
+/// has no dedicated reminder.
+pub fn tool_reminder(name: &str) -> &'static str {
+    match name {
+        "ask_npc" => REMINDER_ASK_NPC.as_str(),
+        "roll_dice" => REMINDER_ROLL_DICE.as_str(),
+        "get_world_fact" => REMINDER_GET_WORLD_FACT.as_str(),
+        "get_memory" => REMINDER_GET_MEMORY.as_str(),
+        "remember" => REMINDER_REMEMBER.as_str(),
+        "note_memory" => REMINDER_NOTE_MEMORY.as_str(),
+        "consolidate_memory" => REMINDER_CONSOLIDATE_MEMORY.as_str(),
+        "get_npc_profile" => REMINDER_GET_NPC_PROFILE.as_str(),
+        "set_npc_whereabouts" => REMINDER_SET_NPC_WHEREABOUTS.as_str(),
+        "move_npc" => REMINDER_MOVE_NPC.as_str(),
+        "set_scene" => REMINDER_SET_SCENE.as_str(),
+        "move_player" => REMINDER_MOVE_PLAYER.as_str(),
+        "update_player_character" => REMINDER_UPDATE_PLAYER_CHARACTER.as_str(),
+        "cast_spell" => REMINDER_CAST_SPELL.as_str(),
+        _ => "",
+    }
+}
+
+pub fn npc_final_payload_rule() -> &'static str {
+    NPC_FINAL_PAYLOAD_RULE.as_str()
+}
+
+pub fn npc_final_model_rule() -> &'static str {
+    NPC_FINAL_MODEL_RULE.as_str()
+}
+
+pub fn npc_final_instruction() -> &'static str {
+    NPC_FINAL_INSTRUCTION.as_str()
+}
 
 // --- Accessors ------------------------------------------------------------
 
@@ -84,80 +468,69 @@ pub fn npc_system_template() -> &'static str {
     NPC_SYSTEM_TEMPLATE
 }
 
-// --- Python str.format-equivalent named substitution ----------------------
+// --- Legacy Python str.format-compatible public API -----------------------
 
 /// Error from [`format_named`] when the template is malformed or a field is
-/// missing — mirrors the failure modes Python's `str.format` would raise.
+/// missing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatError {
-    /// A `{field}` referenced a key absent from the supplied map (Python `KeyError`).
     MissingField(String),
-    /// A single unmatched `{` or `}` (Python `ValueError`).
     UnmatchedBrace,
 }
 
 impl std::fmt::Display for FormatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FormatError::MissingField(k) => write!(f, "missing format field: {k}"),
-            FormatError::UnmatchedBrace => write!(f, "single unmatched brace in template"),
+            Self::MissingField(key) => write!(f, "missing format field: {key}"),
+            Self::UnmatchedBrace => write!(f, "single unmatched brace in template"),
         }
     }
 }
 
 impl std::error::Error for FormatError {}
 
-/// Reproduce Python `template.format(**fields)` for the simple named-placeholder
-/// subset used by these prompts: `{name}` substitution, `{{` / `}}` -> literal
-/// `{` / `}`. No conversions, format specs, or positional/indexed fields are
-/// used by the GM-Lab templates, so they are not implemented (an unsupported
-/// construct would surface as a missing field / unmatched brace, matching
-/// Python's behaviour for those exact templates).
+/// Format the legacy `{field}` prompt constants.
+///
+/// This compatibility helper supports the named-placeholder subset used by the
+/// former prompt assets, including `{{` and `}}` for literal braces. New prompt
+/// assembly should use [`render_prompt`] and the shared MiniJinja catalog.
 pub fn format_named(template: &str, fields: &HashMap<&str, String>) -> Result<String, FormatError> {
-    let mut out = String::with_capacity(template.len());
-    let bytes = template.as_bytes();
+    let mut output = String::with_capacity(template.len());
     let mut chars = template.char_indices().peekable();
 
-    while let Some((i, c)) = chars.next() {
-        match c {
+    while let Some((index, character)) = chars.next() {
+        match character {
+            '{' if matches!(chars.peek(), Some(&(_, '{'))) => {
+                chars.next();
+                output.push('{');
+            }
             '{' => {
-                // `{{` -> literal `{`
-                if matches!(chars.peek(), Some(&(_, '{'))) {
-                    chars.next();
-                    out.push('{');
-                    continue;
-                }
-                // Otherwise read field name up to the closing `}`.
-                let start = i + 1;
+                let start = index + 1;
                 let mut end = None;
-                for (j, cc) in chars.by_ref() {
-                    if cc == '}' {
-                        end = Some(j);
+                for (field_end, character) in chars.by_ref() {
+                    if character == '}' {
+                        end = Some(field_end);
                         break;
                     }
                 }
                 let end = end.ok_or(FormatError::UnmatchedBrace)?;
                 let key = &template[start..end];
-                let val = fields
-                    .get(key)
-                    .ok_or_else(|| FormatError::MissingField(key.to_string()))?;
-                out.push_str(val);
+                output.push_str(
+                    fields
+                        .get(key)
+                        .ok_or_else(|| FormatError::MissingField(key.to_string()))?,
+                );
             }
-            '}' => {
-                // `}}` -> literal `}`; a lone `}` is an error.
-                if matches!(chars.peek(), Some(&(_, '}'))) {
-                    chars.next();
-                    out.push('}');
-                } else {
-                    return Err(FormatError::UnmatchedBrace);
-                }
+            '}' if matches!(chars.peek(), Some(&(_, '}'))) => {
+                chars.next();
+                output.push('}');
             }
-            _ => out.push(c),
+            '}' => return Err(FormatError::UnmatchedBrace),
+            _ => output.push(character),
         }
     }
-    // `bytes` kept only to assert we consumed UTF-8 cleanly above.
-    debug_assert_eq!(bytes.len(), template.len());
-    Ok(out)
+
+    Ok(output)
 }
 
 /// Fields for [`render_npc_card`]. Field set and names match the Python
@@ -187,50 +560,58 @@ pub struct NpcCardFields<'a> {
     pub secret: &'a str,
 }
 
-/// Render [`NPC_CARD_TEMPLATE`] with the same substitution semantics as the
-/// Python caller. The template text is never altered.
-pub fn render_npc_card(f: &NpcCardFields<'_>) -> String {
-    let mut m: HashMap<&str, String> = HashMap::with_capacity(21);
-    m.insert("revision", f.revision.to_string());
-    m.insert("name", f.name.to_string());
-    m.insert("role", f.role.to_string());
-    m.insert("gender", f.gender.to_string());
-    m.insert("public_label", f.public_label.to_string());
-    m.insert("age", f.age.to_string());
-    m.insert("physical_type", f.physical_type.to_string());
-    m.insert("distinctive_features", f.distinctive_features.to_string());
-    m.insert("life_status", f.life_status.to_string());
-    m.insert("condition", f.condition.to_string());
-    m.insert("persona", f.persona.to_string());
-    m.insert("personality", f.personality.to_string());
-    m.insert("values", f.values.to_string());
-    m.insert("habits", f.habits.to_string());
-    m.insert("pressure_response", f.pressure_response.to_string());
-    m.insert("boundaries", f.boundaries.to_string());
-    m.insert("voice", f.voice.to_string());
-    m.insert("goals", f.goals.to_string());
-    m.insert("knowledge", f.knowledge.to_string());
-    m.insert("mechanics", f.mechanics.to_string());
-    m.insert("secret", f.secret.to_string());
-    // The template uses only known fields, so this cannot fail.
-    format_named(NPC_CARD_TEMPLATE, &m).expect("NPC_CARD_TEMPLATE render")
+fn render_embedded(name: &str, context: minijinja::Value) -> String {
+    catalog::render(name, context)
+        .unwrap_or_else(|error| panic!("failed to render embedded prompt `{name}`: {error:#}"))
 }
 
-/// Render [`NPC_COMPACT_SYSTEM`] by filling `{proper_nouns}`.
+/// Render [`NPC_CARD_PROMPT_TEMPLATE`] with the shared strict MiniJinja catalog.
+pub fn render_npc_card(f: &NpcCardFields<'_>) -> String {
+    render_embedded(
+        PromptId::NpcCard.path(),
+        minijinja::context! {
+            revision => f.revision,
+            name => f.name,
+            role => f.role,
+            gender => f.gender,
+            public_label => f.public_label,
+            age => f.age,
+            physical_type => f.physical_type,
+            distinctive_features => f.distinctive_features,
+            life_status => f.life_status,
+            condition => f.condition,
+            persona => f.persona,
+            personality => f.personality,
+            values => f.values,
+            habits => f.habits,
+            pressure_response => f.pressure_response,
+            boundaries => f.boundaries,
+            voice => f.voice,
+            goals => f.goals,
+            knowledge => f.knowledge,
+            mechanics => f.mechanics,
+            secret => f.secret,
+        },
+    )
+}
+
+/// Render [`NPC_COMPACT_SYSTEM_PROMPT_TEMPLATE`] by filling `proper_nouns`.
 /// Matches `orchestrator.py`: `proper_nouns = ", ".join(world.proper_nouns())`.
 pub fn render_npc_compact_system(proper_nouns: &str) -> String {
-    let mut m: HashMap<&str, String> = HashMap::with_capacity(1);
-    m.insert("proper_nouns", proper_nouns.to_string());
-    format_named(NPC_COMPACT_SYSTEM, &m).expect("NPC_COMPACT_SYSTEM render")
+    render_embedded(
+        PromptId::NpcCompactSystem.path(),
+        minijinja::context! { proper_nouns },
+    )
 }
 
-/// Render [`GM_COMPACT_SYSTEM`] by filling `{proper_nouns_line}`.
+/// Render [`GM_COMPACT_SYSTEM_PROMPT_TEMPLATE`] by filling `proper_nouns_line`.
 /// The caller (llm_client.py / codex_client.py) builds `proper_nouns_line`
 /// from the proper-noun set; see [`gm_compact_proper_nouns_line`].
 pub fn render_gm_compact_system(proper_nouns_line: &str) -> String {
-    let mut m: HashMap<&str, String> = HashMap::with_capacity(1);
-    m.insert("proper_nouns_line", proper_nouns_line.to_string());
-    format_named(GM_COMPACT_SYSTEM, &m).expect("GM_COMPACT_SYSTEM render")
+    render_embedded(
+        PromptId::GmCompactSystem.path(),
+        minijinja::context! { proper_nouns_line },
+    )
 }
 
 /// Build the `proper_nouns_line` fragment exactly as `llm_client._proper_nouns_line`:
@@ -245,16 +626,29 @@ where
         .map(|s| s.as_ref().trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    if names.is_empty() {
-        "Keep proper nouns exactly as written in the transcript; never transliterate them."
-            .to_string()
-    } else {
-        format!(
-            "Keep these proper nouns exactly as written if they appear; never translate or \
-             transliterate them: {}.",
-            names.join(", ")
-        )
-    }
+    render_embedded(
+        PromptId::GmProperNounsRule.path(),
+        minijinja::context! { names => names.join(", "), detailed => true },
+    )
+}
+
+/// Connector-compatible compact-summary proper-noun rule used by Codex and
+/// SuperGrok. The wording stays byte-identical to their previous local copies.
+pub fn gm_compact_connector_proper_nouns_line<I, S>(proper_nouns: I) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let names = proper_nouns
+        .into_iter()
+        .map(|name| name.as_ref().trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    render_embedded(
+        PromptId::GmProperNounsRule.path(),
+        minijinja::context! { names, detailed => false },
+    )
 }
 
 #[cfg(test)]
@@ -289,7 +683,6 @@ mod tests {
         "5d9d761fc72569c21b51f66e26848c56fd432c5aff0317d470f9ad191c66bdbf";
     const GM_COMPACT_SYSTEM_SHA: &str =
         "33bb15fd2904ca47d324238c3e15d75458c48ce246b16beb54a26b7f8de651c8";
-
     // Byte-identity against the golden fixtures (raw include_bytes! avoids any
     // EOL ambiguity).
     macro_rules! assert_bytes_eq {
@@ -325,6 +718,16 @@ mod tests {
     }
 
     #[test]
+    fn legacy_public_templates_remain_byte_identical() {
+        assert_bytes_eq!(NPC_CARD_TEMPLATE, "NPC_CARD_TEMPLATE.txt");
+        assert_bytes_eq!(NPC_COMPACT_SYSTEM, "NPC_COMPACT_SYSTEM.txt");
+        assert_bytes_eq!(GM_COMPACT_SYSTEM, "GM_COMPACT_SYSTEM.txt");
+        assert_eq!(sha256_hex(NPC_CARD_TEMPLATE), NPC_CARD_TEMPLATE_SHA);
+        assert_eq!(sha256_hex(NPC_COMPACT_SYSTEM), NPC_COMPACT_SYSTEM_SHA);
+        assert_eq!(sha256_hex(GM_COMPACT_SYSTEM), GM_COMPACT_SYSTEM_SHA);
+    }
+
+    #[test]
     fn npc_system_output_example_is_valid_json() {
         let example = NPC_SYSTEM_STATIC
             .lines()
@@ -337,45 +740,122 @@ mod tests {
         assert!(parsed.get("claims").is_some());
     }
 
-    #[test]
-    fn npc_card_template_byte_identical() {
-        assert_bytes_eq!(NPC_CARD_TEMPLATE, "NPC_CARD_TEMPLATE.txt");
-        assert_eq!(sha256_hex(NPC_CARD_TEMPLATE), NPC_CARD_TEMPLATE_SHA);
-        assert_eq!(NPC_CARD_TEMPLATE.len(), 571);
+    fn render_legacy_fixture(template: &str, fields: &[(&str, &str)]) -> String {
+        fields
+            .iter()
+            .fold(template.to_string(), |rendered, (name, value)| {
+                rendered.replace(&format!("{{{name}}}"), value)
+            })
     }
 
     #[test]
-    fn npc_compact_system_byte_identical() {
-        assert_bytes_eq!(NPC_COMPACT_SYSTEM, "NPC_COMPACT_SYSTEM.txt");
-        assert_eq!(sha256_hex(NPC_COMPACT_SYSTEM), NPC_COMPACT_SYSTEM_SHA);
-        assert_eq!(NPC_COMPACT_SYSTEM.len(), 444);
-    }
-
-    #[test]
-    fn gm_compact_system_byte_identical() {
-        assert_bytes_eq!(GM_COMPACT_SYSTEM, "GM_COMPACT_SYSTEM.txt");
-        assert_eq!(sha256_hex(GM_COMPACT_SYSTEM), GM_COMPACT_SYSTEM_SHA);
-        assert_eq!(GM_COMPACT_SYSTEM.len(), 608);
-    }
-
-    #[test]
-    fn format_named_basic_and_braces() {
-        let mut m: HashMap<&str, String> = HashMap::new();
-        m.insert("a", "X".to_string());
-        assert_eq!(format_named("{a}", &m).unwrap(), "X");
-        assert_eq!(format_named("[{a}]", &m).unwrap(), "[X]");
-        assert_eq!(format_named("{{a}}", &m).unwrap(), "{a}");
-        assert_eq!(format_named("{{{a}}}", &m).unwrap(), "{X}");
+    fn catalog_eagerly_loads_every_prompt() {
+        let loaded = catalog::PROMPT_CATALOG.template_names();
+        let registered = PromptId::ALL
+            .iter()
+            .map(|prompt| prompt.path())
+            .collect::<std::collections::BTreeSet<_>>();
+        let embedded = loaded
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
-            format_named("{b}", &m).unwrap_err(),
+            embedded, registered,
+            "every embedded production prompt must have a typed PromptId"
+        );
+        for prompt in PromptId::ALL {
+            assert!(
+                loaded.contains(&prompt.path()),
+                "embedded prompt is missing: {}",
+                prompt.path()
+            );
+        }
+        for prompt in [
+            PromptId::GmSystem,
+            PromptId::NpcSystem,
+            PromptId::NpcSystemTemplate,
+        ] {
+            assert!(!catalog::render(prompt.path(), minijinja::context! {})
+                .unwrap()
+                .is_empty());
+        }
+
+        assert_eq!(
+            render_prompt(PromptId::GmSystem, serde_json::Value::Null).unwrap(),
+            GM_SYSTEM
+        );
+        assert_eq!(
+            render_prompt(PromptId::NpcSystem, serde_json::Value::Null).unwrap(),
+            NPC_SYSTEM_STATIC
+        );
+        assert_eq!(
+            render_prompt(PromptId::NpcSystemTemplate, serde_json::Value::Null).unwrap(),
+            NPC_SYSTEM_TEMPLATE
+        );
+    }
+
+    #[test]
+    fn generated_compatibility_constants_match_catalog_rendering() {
+        assert_eq!(
+            render_prompt(
+                PromptId::CharacterArchitectSystem,
+                serde_json::json!({"based": false}),
+            )
+            .unwrap(),
+            CHARACTER_ARCHITECT_SYSTEM
+        );
+        assert_eq!(
+            render_prompt(
+                PromptId::CharacterArchitectSystem,
+                serde_json::json!({"based": true}),
+            )
+            .unwrap(),
+            CHARACTER_ARCHITECT_SYSTEM_BASED
+        );
+        assert_eq!(
+            render_prompt(PromptId::StoryArchitectSystem, serde_json::Value::Null).unwrap(),
+            STORY_ARCHITECT_SYSTEM
+        );
+        assert_eq!(
+            render_prompt(PromptId::RagQueryTask, serde_json::Value::Null).unwrap(),
+            RAG_QUERY_TASK
+        );
+    }
+
+    #[test]
+    fn catalog_uses_the_prompt_dialect_and_strict_undefined_values() {
+        for cache_prefix in [GM_SYSTEM, NPC_SYSTEM_STATIC] {
+            assert!(!cache_prefix.contains("<<"));
+            assert!(!cache_prefix.contains("<%"));
+            assert!(!cache_prefix.contains("<#"));
+        }
+        assert!(NPC_CARD_PROMPT_TEMPLATE.contains("<< revision >>"));
+        assert!(NPC_COMPACT_SYSTEM_PROMPT_TEMPLATE.contains("<< proper_nouns >>"));
+        assert!(GM_COMPACT_SYSTEM_PROMPT_TEMPLATE.contains("<< proper_nouns_line >>"));
+
+        let error = catalog::render(PromptId::NpcCard.path(), minijinja::context! {})
+            .expect_err("missing card fields must fail");
+        assert_eq!(error.kind(), minijinja::ErrorKind::UndefinedError);
+    }
+
+    #[test]
+    fn legacy_named_formatter_remains_compatible() {
+        let mut fields = HashMap::new();
+        fields.insert("a", "X".to_string());
+        assert_eq!(format_named("{a}", &fields).unwrap(), "X");
+        assert_eq!(format_named("[{a}]", &fields).unwrap(), "[X]");
+        assert_eq!(format_named("{{a}}", &fields).unwrap(), "{a}");
+        assert_eq!(format_named("{{{a}}}", &fields).unwrap(), "{X}");
+        assert_eq!(
+            format_named("{b}", &fields).unwrap_err(),
             FormatError::MissingField("b".to_string())
         );
         assert_eq!(
-            format_named("{a", &m).unwrap_err(),
+            format_named("{a", &fields).unwrap_err(),
             FormatError::UnmatchedBrace
         );
         assert_eq!(
-            format_named("a}", &m).unwrap_err(),
+            format_named("a}", &fields).unwrap_err(),
             FormatError::UnmatchedBrace
         );
     }
@@ -402,23 +882,55 @@ mod tests {
             voice: "низкий",
             goals: "защитить дочь",
             knowledge: "видел чужака",
-            mechanics: "{\"hp\":{\"current\":11}}",
+            mechanics: "<raw>&{\"hp\":{\"current\":11}}",
             secret: "прячет письмо",
         };
         let out = render_npc_card(&f);
+        let legacy = include_str!("../../../tests/reference/prompts/NPC_CARD_TEMPLATE.txt");
+        let expected = render_legacy_fixture(
+            legacy,
+            &[
+                ("revision", f.revision),
+                ("name", f.name),
+                ("role", f.role),
+                ("gender", f.gender),
+                ("public_label", f.public_label),
+                ("age", f.age),
+                ("physical_type", f.physical_type),
+                ("distinctive_features", f.distinctive_features),
+                ("life_status", f.life_status),
+                ("condition", f.condition),
+                ("persona", f.persona),
+                ("personality", f.personality),
+                ("values", f.values),
+                ("habits", f.habits),
+                ("pressure_response", f.pressure_response),
+                ("boundaries", f.boundaries),
+                ("voice", f.voice),
+                ("goals", f.goals),
+                ("knowledge", f.knowledge),
+                ("mechanics", f.mechanics),
+                ("secret", f.secret),
+            ],
+        );
+        assert_eq!(out.as_bytes(), expected.as_bytes());
         assert!(out.starts_with("CURRENT NPC CARD (revision 3)\nName: Борин\n"));
         assert!(out.contains("Gender: M\n"));
-        assert!(out.contains("Mechanics: {\"hp\":{\"current\":11}}\n"));
+        assert!(out.contains("Mechanics: <raw>&{\"hp\":{\"current\":11}}\n"));
         assert!(out.ends_with("This card overrides older memory if there is a conflict."));
-        // No unsubstituted placeholders remain.
-        assert!(!out.contains('{') || out.contains("{\"hp\""));
     }
 
     #[test]
     fn render_compact_systems() {
-        let npc = render_npc_compact_system("Борин, «Серый грифон»");
+        let proper_nouns = "Борин, «Серый грифон»";
+        let npc = render_npc_compact_system(proper_nouns);
+        let legacy_npc = include_str!("../../../tests/reference/prompts/NPC_COMPACT_SYSTEM.txt");
+        assert_eq!(
+            npc.as_bytes(),
+            render_legacy_fixture(legacy_npc, &[("proper_nouns", proper_nouns)]).as_bytes()
+        );
         assert!(npc.ends_with("Keep proper nouns exactly as written: Борин, «Серый грифон»."));
-        assert!(!npc.contains("{proper_nouns}"));
+        assert!(!npc.contains("<< proper_nouns >>"));
 
         let line_empty = gm_compact_proper_nouns_line(Vec::<String>::new());
         assert_eq!(
@@ -432,8 +944,62 @@ mod tests {
              transliterate them: Борин, Нордхольм."
         );
         let gm = render_gm_compact_system(&line);
+        let legacy_gm = include_str!("../../../tests/reference/prompts/GM_COMPACT_SYSTEM.txt");
+        assert_eq!(
+            gm.as_bytes(),
+            render_legacy_fixture(legacy_gm, &[("proper_nouns_line", &line)]).as_bytes()
+        );
         assert!(gm.ends_with(&line));
-        assert!(!gm.contains("{proper_nouns_line}"));
+        assert!(!gm.contains("<< proper_nouns_line >>"));
+
+        assert_eq!(
+            gm_compact_connector_proper_nouns_line(Vec::<String>::new()),
+            "Keep proper nouns exactly as written; never translate or transliterate them."
+        );
+        assert_eq!(
+            gm_compact_connector_proper_nouns_line(["Борин", "  ", "Нордхольм"]),
+            "Keep these proper nouns exactly as written: Борин, Нордхольм."
+        );
+    }
+
+    #[test]
+    fn static_orchestrator_prompts_are_nonempty_and_line_stable() {
+        validate_prompt_catalog();
+
+        assert!(!visible_continuation_reminder().is_empty());
+        assert_eq!(
+            visible_continuation_reminder(),
+            VISIBLE_CONTINUATION_REMINDER
+        );
+        assert!(!visible_continuation_reminder().ends_with(['\r', '\n']));
+        assert!(!npc_final_payload_rule().is_empty());
+        assert!(!npc_final_model_rule().is_empty());
+        assert!(!npc_final_instruction().is_empty());
+
+        for name in [
+            "ask_npc",
+            "roll_dice",
+            "get_world_fact",
+            "get_memory",
+            "remember",
+            "note_memory",
+            "consolidate_memory",
+            "get_npc_profile",
+            "set_npc_whereabouts",
+            "move_npc",
+            "set_scene",
+            "move_player",
+            "update_player_character",
+            "cast_spell",
+        ] {
+            let reminder = tool_reminder(name);
+            assert!(!reminder.is_empty(), "missing reminder for {name}");
+            assert!(
+                !reminder.ends_with(['\r', '\n']),
+                "reminder for {name} has a trailing newline"
+            );
+        }
+        assert_eq!(tool_reminder("unknown_tool"), "");
     }
 
     #[test]

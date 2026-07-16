@@ -15,7 +15,8 @@
     "stopping": "Stopping…",
     "launchingGame": "Starting game…",
     "savingWorld": "Saving world…",
-    "openingGame": "Opening game…"
+    "openingGame": "Opening game…",
+    "turnReconnecting": "Reconnecting to the turn…"
   },
   "commands": {
     "newGame": "New game",
@@ -39,7 +40,8 @@
     "eventAfterTurn": "The server sent an event after the turn had finished",
     "turnResultUnconfirmed": "The server did not confirm the turn result",
     "wrongTurnConfirmed": "The server confirmed another turn",
-    "connectionClosedBeforeTurn": "The connection closed before the turn was confirmed"
+    "connectionClosedBeforeTurn": "The connection closed before the turn was confirmed",
+    "turnNotRunning": "The turn is no longer running on the server"
   },
   "notices": {
     "turnAlreadyCommitted": "The turn had already been saved; its result is now shown.",

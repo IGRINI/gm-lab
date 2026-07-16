@@ -41,6 +41,7 @@ pub mod world_architect;
 use serde_json::{json, Map, Value};
 
 use gml_llm::{Backend, BackendError, ChatOutput, ChatStreamOutput, DeltaSink, JsonStreamOutput};
+use gml_prompts::{render_prompt, PromptId};
 use gml_types::Role;
 use gml_world::World;
 
@@ -49,9 +50,9 @@ pub use architect_runner::{ArchitectOutput, ArchitectStream, NullArchitectStream
 pub use character::{character_generator_messages, generate_character};
 pub use character_architect::{
     character_architect_base_unavailable_block, character_architect_messages,
-    character_architect_story_block, character_architect_tools, character_architect_turn,
-    character_architect_world_block, CharacterArchitectOutput, CHARACTER_ARCHITECT_SYSTEM,
-    CHARACTER_ARCHITECT_SYSTEM_BASED,
+    character_architect_story_block, character_architect_system, character_architect_tools,
+    character_architect_turn, character_architect_world_block, CharacterArchitectOutput,
+    CHARACTER_ARCHITECT_SYSTEM, CHARACTER_ARCHITECT_SYSTEM_BASED,
 };
 pub use coerce::{as_list, claims, norm_npc, norm_npc_with_reasoning, text};
 pub use gm::{
@@ -68,7 +69,7 @@ pub use npc::{
 };
 pub use seed::{build_world_seed, extract_scene_delta};
 pub use story_architect::{
-    story_architect_messages, story_architect_tools, story_architect_turn,
+    story_architect_messages, story_architect_system, story_architect_tools, story_architect_turn,
     story_architect_world_lore_block, StoryArchitectOutput, STORY_ARCHITECT_SYSTEM,
 };
 pub use tools::{
@@ -146,6 +147,29 @@ pub async fn gm_turn_stream(
 
 /// `gm_prelude_stream(client, world, player_text, calls)` — player-facing setup
 /// narration shown before visible tool resolution.
+fn render_gm_prelude_system() -> String {
+    render_prompt(PromptId::GmPreludeSystem, json!({"trailing_newline": "\n"}))
+        .expect("embedded GM prelude system prompt must render")
+}
+
+fn render_gm_prelude_user(
+    scene_context: &str,
+    entity_refs: &str,
+    player_text: &str,
+    pending_calls_json: &str,
+) -> String {
+    render_prompt(
+        PromptId::GmPreludeUser,
+        json!({
+            "scene_context": scene_context,
+            "entity_refs": entity_refs,
+            "player_text": player_text,
+            "pending_calls_json": pending_calls_json,
+        }),
+    )
+    .expect("embedded GM prelude user prompt must render")
+}
+
 pub async fn gm_prelude_stream(
     client: &dyn Backend,
     world: &mut World,
@@ -170,36 +194,17 @@ pub async fn gm_prelude_stream(
             "arguments": args,
         }));
     }
-    let system =
-        "You are the Game Master writing visible scene narration BEFORE a pending tool resolution
-in a tabletop D&D 5e roleplay scene.
-
-Write in Russian only. Use the length the moment deserves: usually one vivid paragraph,
-or two compact paragraphs when there is public attention, travel, threat, searching,
-social pressure, or a tense pause.
-Address the player character as \"ты\"; do not call them \"игрок\" in the visible text.
-Describe only what is already visible or directly declared by the player: where they
-stand, who they address, how loudly/quietly they speak, what the room can notice, and
-what sensory details and unresolved tension matter.
-Do not resolve the action. Do not make NPCs answer, obey, refuse, enter, leave, reveal
-facts, or react personally. Do not mention tools, checks, prompts, or internal mechanics.
-Keep proper nouns exactly as written.
-When important people or places are mentioned and the id is listed in ENTITY REFERENCE
-MARKUP, use refs in the same shape, with the current player-facing label.
-";
+    let system = render_gm_prelude_system();
     // json.dumps(call_brief, ensure_ascii=False)[:PRELUDE_CALLBRIEF_CHARS] — char slice.
     let brief_json = serde_json::to_string(&Value::Array(call_brief)).unwrap_or_default();
     let brief_clip: String = brief_json.chars().take(prelude_callbrief_chars).collect();
     let scene_context = world.scene_context();
     let entity_refs = world.entity_reference_context();
-    let user = format!(
-        "CURRENT SCENE STATE:\n{}\n\nENTITY REFERENCE MARKUP:\n{}\n\nPLAYER ACTION:\n{}\n\n\
-PENDING RESOLUTION CONTEXT (do not mention this as mechanics):\n{}\n\n\
-Write the pre-tool narration now.",
-        scene_context,
-        entity_refs,
+    let user = render_gm_prelude_user(
+        &scene_context,
+        &entity_refs,
         player_text.trim(),
-        brief_clip
+        &brief_clip,
     );
     let messages = json!([
         {"role": "system", "content": system},
@@ -267,4 +272,20 @@ pub async fn npc_turn_stream(
         .chat_json_stream(&msgs, Some(true), Role::Npc.as_str(), sink)
         .await?;
     Ok((norm_npc(&Value::Object(data)), stats))
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn gm_prelude_templates_render_the_legacy_message_shape() {
+        let system = render_gm_prelude_system();
+        assert!(system.starts_with("You are the Game Master writing visible scene narration"));
+        assert!(system.ends_with("current player-facing label.\n"));
+        assert_eq!(
+            render_gm_prelude_user("scene", "refs", "action", "calls"),
+            "CURRENT SCENE STATE:\nscene\n\nENTITY REFERENCE MARKUP:\nrefs\n\nPLAYER ACTION:\naction\n\nPENDING RESOLUTION CONTEXT (do not mention this as mechanics):\ncalls\n\nWrite the pre-tool narration now."
+        );
+    }
 }

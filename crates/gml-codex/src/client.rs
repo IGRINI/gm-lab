@@ -135,12 +135,15 @@ impl CodexClient {
         // system prompt lands). Append a trailing hint message when absent —
         // appending keeps the shared prompt-cache prefix byte-identical.
         if json_mode && !input_items_mention_json(&input_items) {
+            let json_hint =
+                gml_prompts::render_prompt(gml_prompts::PromptId::JsonObjectInputHint, json!({}))
+                    .expect("embedded JSON-object input hint must render");
             input_items.push(json!({
                 "type": "message",
                 "role": "user",
                 "content": [{
                     "type": "input_text",
-                    "text": "Return the result strictly as a JSON object."
+                    "text": json_hint
                 }],
             }));
         }
@@ -542,22 +545,7 @@ impl Backend for CodexClient {
     }
 
     async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
-        // names = [str(name).strip() for name in proper_nouns if str(name).strip()]
-        let names: Vec<String> = proper_nouns
-            .iter()
-            .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty())
-            .collect();
-        // Codex-specific proper_nouns_line (DIFFERENT wording from llm_client's).
-        let proper_nouns_line = if names.is_empty() {
-            "Keep proper nouns exactly as written; never translate or transliterate them."
-                .to_string()
-        } else {
-            format!(
-                "Keep these proper nouns exactly as written: {}.",
-                names.join(", ")
-            )
-        };
+        let proper_nouns_line = gml_prompts::gm_compact_connector_proper_nouns_line(proper_nouns);
         let sys = gml_prompts::render_gm_compact_system(&proper_nouns_line);
         // text[:config.COMPACT_INPUT_CHARS] — clip by chars (Unicode scalars).
         let clipped: String = text
@@ -1244,13 +1232,10 @@ mod tests {
         assert_eq!(input.len(), 2);
         let hint = input.last().unwrap();
         assert_eq!(hint.pointer("/role").unwrap(), "user");
-        assert!(hint
-            .pointer("/content/0/text")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_lowercase()
-            .contains("json"));
+        assert_eq!(
+            hint.pointer("/content/0/text").unwrap(),
+            "Return the result strictly as a JSON object."
+        );
     }
 
     #[test]

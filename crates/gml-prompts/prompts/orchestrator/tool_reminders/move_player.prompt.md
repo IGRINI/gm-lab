@@ -1,0 +1,1 @@
+The player moved through the canon and the live scene is rebuilt from it. Use the new current place as authoritative. If a named NPC now present must speak or react, call ask_npc; do not invent personal speech/action in narration.

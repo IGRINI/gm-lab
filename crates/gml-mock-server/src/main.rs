@@ -861,6 +861,48 @@ fn turn_done(request_id: &str, ok: bool, retryable: bool, replayed: bool) -> Val
     })
 }
 
+/// Discovery stub: the mock's scripted turns finish within one request, so
+/// there is never a live turn to re-attach to.
+async fn get_active_turn(State(state): State<Shared>) -> Response {
+    let chat_id = {
+        let state = state.lock().expect("mock state lock");
+        state.active_chat_id.clone()
+    };
+    json_response(
+        json!({"ok": true, "chat_id": chat_id, "request_id": Value::Null}),
+        StatusCode::OK,
+    )
+}
+
+/// Re-attach stub: a committed request id answers with one replayed `done`
+/// frame, anything else mirrors the real server's `turn_not_running`.
+async fn get_turn_stream(
+    State(state): State<Shared>,
+    AxPath(request_id): AxPath<String>,
+) -> Response {
+    let committed = {
+        let state = state.lock().expect("mock state lock");
+        let key = (state.active_chat_id.clone(), request_id.clone());
+        state.completed_turn_requests.contains_key(&key)
+    };
+    if committed {
+        let frame = format!(
+            "data: {}\n\n",
+            serde_json::to_string(&turn_done(&request_id, true, false, true))
+                .unwrap_or_default()
+        );
+        return turn_sse_response(Body::from(frame));
+    }
+    json_response(
+        json!({
+            "ok": false,
+            "code": "turn_not_running",
+            "error": "this turn request is not running and was not committed",
+        }),
+        StatusCode::NOT_FOUND,
+    )
+}
+
 /// `_stream_turn()` — the scripted live turn. Each event is wrapped as a
 /// `data: {json}\n\n` frame and ends with the real server's structured `done`.
 async fn post_turn(State(state): State<Shared>, body: Bytes) -> Response {
@@ -1016,6 +1058,8 @@ fn build_router(state: Shared) -> Router {
         .route("/codex/login", post(post_ok_state))
         .route("/codex/logout", post(post_ok_state))
         .route("/turn", post(post_turn))
+        .route("/turn/active", get(get_active_turn))
+        .route("/turn/{request_id}/stream", get(get_turn_stream))
         .route("/debug/roll", post(post_debug_roll))
         .route("/debug/fact", post(post_debug_fact))
         .route("/debug/fact_delete", post(post_debug_fact_delete))

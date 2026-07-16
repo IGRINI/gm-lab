@@ -553,20 +553,7 @@ impl Backend for SuperGrokClient {
     }
 
     async fn summarize(&self, text: &str, proper_nouns: &[String]) -> Result<String, BackendError> {
-        let names = proper_nouns
-            .iter()
-            .map(|name| name.trim())
-            .filter(|name| !name.is_empty())
-            .collect::<Vec<_>>();
-        let noun_rule = if names.is_empty() {
-            "Keep proper nouns exactly as written; never translate or transliterate them."
-                .to_string()
-        } else {
-            format!(
-                "Keep these proper nouns exactly as written: {}.",
-                names.join(", ")
-            )
-        };
+        let noun_rule = gml_prompts::gm_compact_connector_proper_nouns_line(proper_nouns);
         let system = gml_prompts::render_gm_compact_system(&noun_rule);
         let clipped = text
             .chars()

@@ -16,7 +16,13 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
+use gml_prompts::{render_prompt, PromptId};
 use gml_world::World;
+
+fn render(prompt: PromptId, context: Value) -> String {
+    render_prompt(prompt, context)
+        .unwrap_or_else(|error| panic!("failed to render prompt {prompt:?}: {error:#}"))
+}
 
 /// Header prefix identifying a WORLD SNAPSHOT user message in `gm_messages`.
 /// Used to detect whether a (possibly legacy) history already carries a
@@ -37,11 +43,10 @@ pub fn gm_system() -> &'static str {
 
 /// `_gm_world_setup(world)` — stable public premise (PUBLIC INTRO only).
 pub fn gm_world_setup(world: &World) -> String {
-    let parts = [
-        "WORLD SETUP (stable public premise; cacheable):".to_string(),
-        format!("PUBLIC INTRO:\n{}", world.public),
-    ];
-    parts.join("\n\n")
+    render(
+        PromptId::GmWorldSetup,
+        json!({"public_intro": world.public}),
+    )
 }
 
 /// `gm_world_snapshot(world, recent_contact_ids, include_player_options_tool)` —
@@ -68,54 +73,45 @@ pub fn gm_world_snapshot(
         .map(|r| r.text.clone())
         .collect();
 
-    let mut system = String::from(SNAPSHOT_HEADER);
-    system.push('\n');
-    system.push_str(&format!("\nTIME STATE:\n{}", world.time_context()));
-    system.push_str(&format!(
-        "\n\nDYNAMIC NPC ROSTER (relevant/nearby now; tool ids; internal_name is GM-only \
-unless player_label matches it; use read_state(roster) for the full list):\n{roster}"
-    ));
-    if !public_facts.is_empty() {
-        system.push_str("\n\nCURRENT PUBLIC FACTS:\n");
-        let capped: Vec<String> = public_facts
-            .iter()
-            .take(12)
-            .map(|f| format!("- {f}"))
-            .collect();
-        system.push_str(&capped.join("\n"));
-    }
-    system.push_str("\n\nPLAYER CHARACTER CARD (current sheet; GM-only notes may be present):\n");
-    system.push_str(&world.player_character_context());
-    system.push_str(&format!(
-        "\n\nCURRENT SCENE STATE:\n{}",
-        world.scene_context()
-    ));
+    let public_facts = public_facts
+        .iter()
+        .take(12)
+        .map(|fact| format!("- {fact}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let canon_world = world.canon_world_context();
-    if !canon_world.is_empty() {
-        system.push_str(&format!(
-            "\n\nCANON WORLD (structured truth — region, settlement, factions, recent history):\n{canon_world}"
-        ));
-    }
     let memory_context = world.gm_memory_context();
-    if !memory_context.is_empty() {
-        system.push_str(&format!("\n\nLIVING MEMORY SNAPSHOT:\n{memory_context}"));
-    }
-    system.push_str(&format!(
-        "\n\nENTITY REFERENCE MARKUP:\n{}",
-        world.entity_reference_context()
-    ));
-    if !world.constraints.is_empty() {
-        system.push_str("\n\nSCENE CONSTRAINTS (must enforce when reviewing NPC responses):\n");
-        let lines: Vec<String> = world.constraints.iter().map(|c| format!("- {c}")).collect();
-        system.push_str(&lines.join("\n"));
-    }
+    let constraints = world
+        .constraints
+        .iter()
+        .map(|constraint| format!("- {constraint}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let time_state = world.time_context();
+    let player_card = world.player_character_context();
+    let scene_context = world.scene_context();
+    let entity_refs = world.entity_reference_context();
     let options_state = if include_player_options_tool {
         "enabled"
     } else {
         "disabled"
     };
-    system.push_str(&format!("\n\nPLAYER OPTION SUGGESTIONS:\n{options_state}"));
-    system
+    render(
+        PromptId::GmWorldSnapshot,
+        json!({
+            "snapshot_header": SNAPSHOT_HEADER,
+            "time_state": time_state,
+            "roster": roster,
+            "public_facts": public_facts,
+            "player_card": player_card,
+            "scene_context": scene_context,
+            "canon_world": canon_world,
+            "memory_context": memory_context,
+            "entity_refs": entity_refs,
+            "constraints": constraints,
+            "options_state": options_state,
+        }),
+    )
 }
 
 /// Wrap a snapshot string as the `role:"user"` snapshot message.
@@ -147,14 +143,23 @@ pub fn gm_options_notice_message(include_player_options_tool: bool) -> Value {
     } else {
         "disabled"
     };
-    json!({"role": "user", "content": format!("{OPTIONS_NOTICE_PREFIX}{state}")})
+    json!({
+        "role": "user",
+        "content": render(
+            PromptId::GmOptionsNotice,
+            json!({"prefix": OPTIONS_NOTICE_PREFIX, "state": state}),
+        ),
+    })
 }
 
 /// `gm_user_message(player_text)` — the bare per-turn player action message.
 pub fn gm_user_message(player_text: &str) -> Value {
     json!({
         "role": "user",
-        "content": format!("{PLAYER_ACTION_HEADER}\n{}", player_text.trim()),
+        "content": render(
+            PromptId::GmPlayerAction,
+            json!({"header": PLAYER_ACTION_HEADER, "player_text": player_text.trim()}),
+        ),
     })
 }
 
@@ -167,7 +172,7 @@ pub fn gm_request_messages(world: &World, gm_messages: &[Value], summary: &str) 
     if !summary.is_empty() {
         messages.push(json!({
             "role": "system",
-            "content": format!("STORY SO FAR (compact): {summary}"),
+            "content": render(PromptId::GmStorySummary, json!({"summary": summary})),
         }));
     }
     messages.extend(gm_messages.iter().cloned());

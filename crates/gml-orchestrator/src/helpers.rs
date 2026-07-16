@@ -7,6 +7,7 @@
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
+use gml_prompts::{render_prompt, PromptId};
 use gml_types::ToolExecutionResult;
 use gml_world::World;
 
@@ -51,98 +52,16 @@ pub fn collapse_ws(text: &str) -> String {
 }
 
 /// `_VISIBLE_CONTINUATION_REMINDER`.
-pub const VISIBLE_CONTINUATION_REMINDER: &str =
-    "The player has already seen prior assistant content and player-facing tool output \
-from this same turn. Treat those prior messages as visible scene beats, not drafts \
-or source material. Continue after them; do not recap, rewrite, restage, or quote \
-them. If another tool is needed, any new assistant content before that tool must \
-only cover new visible changes since the last visible beat.";
+pub const VISIBLE_CONTINUATION_REMINDER: &str = gml_prompts::VISIBLE_CONTINUATION_REMINDER;
+
+/// `_VISIBLE_CONTINUATION_REMINDER`.
+pub fn visible_continuation_reminder() -> &'static str {
+    VISIBLE_CONTINUATION_REMINDER
+}
 
 /// The static `_TOOL_REMINDERS` map. Returns the reminder for a tool name (or "").
 pub fn tool_reminder(name: &str) -> &'static str {
-    match name {
-        "ask_npc" => {
-            "After this NPC response, do a state-update pass before final narration. If \
-the exchange changed durable testimony, rumor, npc_memory, what an NPC \
-knows/remembers, what the player learned privately, a promise, threat, lead, \
-suspicion, clue, local rumor, faction knowledge, or GM-private secret, call \
-note_memory with the correct owner_scope, visibility_scopes, topic_tags, and \
-entity metadata. Store relationship and goal changes as scoped memory cards \
-unless a dedicated canon tool exists for the change. \
-Private leads from an NPC to the player are usually one actor-owned memory \
-visible to player, not public fact. Use short summaries; put long details only \
-for explicit drill-down. Call update_player_character for player-sheet changes \
-or GM-only player notes. If time passed, call advance_time. If nothing durable \
-changed, do not write filler memory. Do not restate NPC speech."
-        }
-        "roll_dice" => {
-            "Use the returned total, grade, and margin as fixed. Success means the locked \
-intent works within the established fiction; critical success means the best \
-plausible version of that success. If a damage roll was made, the damaging \
-effect happened as framed. Do not invent a misfire, failed detonation, or \
-no-effect twist after the roll. If an established constraint limits the full \
-effect, explain why and still grant a concrete benefit from the success."
-        }
-        "get_world_fact" => {
-            "Unknown or unconfirmed lookup results are not established facts. If you use \
-them, narrate uncertainty honestly and do not upgrade testimony into truth. \
-Player-facing narration may include only lore the player can know right now; \
-do not reveal hidden sources, secrets, or meta-information."
-        }
-        "get_memory" => {
-            "Use returned memory only through the requested access lens. Results are short \
-summaries by default; do not reveal hidden scopes, private thoughts, ids, hashes, \
-or meta-information to the player."
-        }
-        "remember" => {
-            "Use only these memory results as your own accessible recollection. Unknown means \
-you do not currently remember or cannot access matching memory; answer in character \
-with uncertainty, evasion, a guess, or silence rather than inventing certainty."
-        }
-        "note_memory" => {
-            "Memory was stored in the scoped living-memory layer. Continue using only the \
-fictionally visible meaning; do not narrate owner_scope, visibility_scopes, ids, \
-truth_status, or other meta-information."
-        }
-        "consolidate_memory" => {
-            "The source memories were kept for explicit drill-down and marked cold, not \
-deleted. Use the new crystal summary for ordinary recall."
-        }
-        "get_npc_profile" => {
-            "Use returned mechanics/status/profile fields internally for resolution. The \
-player sees only observable fiction; do not reveal raw NPC stats, secrets, \
-private knowledge/goals, hidden card data, or meta-information."
-        }
-        "set_npc_whereabouts" => {
-            "This only updates offscreen location knowledge. If the named NPC must speak or \
-react, bring them into the scene if appropriate and call ask_npc."
-        }
-        "move_npc" => {
-            "This only changes current-scene presence. If this named NPC must speak or react, \
-call ask_npc; do not invent personal speech/action in narration."
-        }
-        "set_scene" => {
-            "The new place is now authored in the canon and the player has moved into it; \
-the live scene is rebuilt from the canon. If a named NPC in this place must speak \
-or react, call ask_npc; do not invent personal speech/action in narration."
-        }
-        "move_player" => {
-            "The player moved through the canon and the live scene is rebuilt from it. Use \
-the new current place as authoritative. If a named NPC now present must speak or \
-react, call ask_npc; do not invent personal speech/action in narration."
-        }
-        "update_player_character" => {
-            "Use the changed character-sheet fields in future resolution. Do not reveal \
-GM-only player notes directly."
-        }
-        "cast_spell" => {
-            "The spell slot and concentration are now committed in the engine; treat the \
-remaining slots and active concentration as authoritative. Resolve attack, save, or \
-damage with roll_dice using the spell's notation; describe the effect from its prose. \
-If a prior concentration ended, narrate that earlier effect lapsing."
-        }
-        _ => "",
-    }
+    gml_prompts::tool_reminder(name)
 }
 
 // =========================================================================
@@ -504,12 +423,14 @@ pub fn model_player_options_text(payload: &Value) -> String {
         Some(Value::Array(a)) => a.len(),
         _ => 0,
     };
+    let next = render_prompt(PromptId::OrchestratorPlayerOptionsNext, ())
+        .expect("embedded player-options next-step prompt must render");
     plain_lines(
         "PLAYER OPTIONS",
         &[
             kv_str("status", "buttons shown to player"),
             kv("shown", &Value::from(count)),
-            "next: write the final player-facing narration now, then stop; do not call ask_player again.".to_string(),
+            next,
         ],
     )
 }
@@ -534,13 +455,17 @@ pub fn model_tool_search_text(payload: &Value) -> String {
     };
     let next = get(payload, "next")
         .as_str()
-        .unwrap_or("call load_tool_schema with one exact match.name");
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            render_prompt(PromptId::OrchestratorToolSearchDefaultNext, ())
+                .expect("embedded tool-search default next-step prompt must render")
+        });
     plain_lines(
         "TOOL SEARCH",
         &[
             kv("matches", &matches),
             kv("missing", &missing),
-            kv_str("next", next),
+            kv_str("next", &next),
         ],
     )
 }
@@ -557,7 +482,11 @@ pub fn model_load_tool_schema_text(payload: &Value) -> String {
     };
     let next = get(payload, "next")
         .as_str()
-        .unwrap_or("call invoke_loaded_tool with the loaded schema");
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            render_prompt(PromptId::OrchestratorLoadToolSchemaDefaultNext, ())
+                .expect("embedded load-tool-schema default next-step prompt must render")
+        });
     let invoke_tool = get(payload, "invoke_tool")
         .as_str()
         .unwrap_or("invoke_loaded_tool");
@@ -576,7 +505,7 @@ pub fn model_load_tool_schema_text(payload: &Value) -> String {
             kv("already_loaded", &already_loaded),
             kv("missing", &missing),
             schema_line,
-            kv_str("next", next),
+            kv_str("next", &next),
         ],
     )
 }
@@ -699,4 +628,26 @@ pub fn dedup_preserve(items: impl IntoIterator<Item = String>) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn model_routing_guidance_keeps_legacy_text() {
+        assert_eq!(
+            model_player_options_text(&json!({ "options": [{}, {}] })),
+            "PLAYER OPTIONS\nstatus: buttons shown to player\nshown: 2\nnext: write the final player-facing narration now, then stop; do not call ask_player again."
+        );
+        assert_eq!(
+            model_tool_search_text(&json!({})),
+            "TOOL SEARCH\nmatches: none\nmissing: none\nnext: call load_tool_schema with one exact match.name"
+        );
+        assert_eq!(
+            model_load_tool_schema_text(&json!({})),
+            "LOAD TOOL SCHEMA\ninvoke_tool: invoke_loaded_tool\nalready_loaded: none\nmissing: none\nnext: call invoke_loaded_tool with the loaded schema"
+        );
+    }
 }
