@@ -22,7 +22,7 @@ use crate::tool_guidance;
 
 /// `_SITUATION_DESC` — verbatim.
 const SITUATION_DESC: &str =
-    "Russian neutral third-person NPC-perception brief of what is happening RIGHT NOW: \
+    "Neutral third-person NPC-perception brief of what is happening RIGHT NOW: \
 only what this NPC can see, hear, already know, or plausibly infer from visible \
 pressure. Include the player's action and exact addressed words; quote player phrases \
 unchanged when precision matters. Preserve declared delivery exactly: whisper, quiet \
@@ -49,12 +49,13 @@ written in the current world.";
 /// `world_mod.NPC_PROFILE_FIELDS` — the sorted union of all profile-preset
 /// fields. Static engine data; embedded here so `get_npc_profile.fields.items`
 /// can enumerate it. (gml-world keeps this private; the list is closed.)
-const NPC_PROFILE_FIELDS: [&str; 25] = [
+const NPC_PROFILE_FIELDS: [&str; 26] = [
     "abilities",
     "ac",
     "age",
     "boundaries",
     "condition",
+    "current_appearance",
     "distinctive_features",
     "habits",
     "hp",
@@ -90,7 +91,7 @@ pub(crate) const INITIAL_GM_TOOL_NAMES: [&str; 11] = [
     "get_world_fact",
     "get_memory",
     "note_memory",
-    "update_player_character",
+    "update_character",
     "advance_time",
     "move_player",
     "load_tool_schema",
@@ -109,113 +110,108 @@ pub(crate) const INVOKE_LOADED_TOOL_NAME: &str = "invoke_loaded_tool";
 pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 22] = [
     (
         "ask_npc",
-        "npc нпс персонаж поговорить спросить допросить ответить реакция речь \
-угроза угрожать убедить обмануть торг приказать",
+        "npc character talk ask question interrogate answer response reaction speech \
+threat threaten persuade convince deceive bargain trade order command",
     ),
     (
         "move_npc",
-        "npc нпс персонаж входит выходит появился ушел переместить присутствует \
-сцена слышит видит visibility presence пришел ушел",
+        "npc character enters exits appears leaves move relocate present scene \
+hears sees visibility presence arrives departs",
     ),
     (
         "set_npc_whereabouts",
-        "npc нпс местонахождение где искать куда ушел где находится известное \
-вероятное слух whereabouts absent offscreen",
+        "npc character whereabouts location where find search went located known \
+likely rumored rumor absent offscreen",
     ),
     (
         "set_scene",
-        "сцена локация перейти войти выйти добраться место комната улица здание \
-travel location scene exits items present_npcs канон canon place",
+        "scene location transition enter exit reach place room street building \
+travel exits items present_npcs canon patch fallback",
     ),
     (
         "move_player",
-        "идти перейти выход проход дверь покинуть уйти добраться двигаться канон \
-move player transition exit travel walk leave traversal place",
+        "go move transition exit passage door leave depart reach travel walk \
+traversal player canon place",
     ),
     (
         "world_debug",
-        "debug отладка канон граф мест переходов актёров причинный лог replay \
-world debug causal log canon dump snapshot",
+        "debug diagnostics canon graph places transitions actors causal log replay \
+world dump snapshot",
     ),
     (
         "generate_location",
-        "генератор локация сцена помещение комната город деревня данж дорожная ситуация \
-location scene room city village dungeon travel situation encounter anti-repeat",
+        "generator generate location scene area room city village dungeon road travel \
+situation encounter point of interest anti-repeat",
     ),
     (
         "take_item",
-        "взять поднять забрать подобрать предмет вещь из сцены в инвентарь \
-take pick up grab loot item scene inventory карман",
+        "take pick up grab collect loot item object thing scene inventory pocket",
     ),
     (
         "drop_item",
-        "выложить бросить оставить положить предмет вещь из инвентаря в сцену \
-drop put down leave item inventory scene на стол на землю",
+        "drop put down leave place set item object thing inventory scene table ground",
     ),
     (
         "cast_spell",
-        "заклинание спелл каст сотворить прочитать колдовать магия слот концентрация \
-заговор апкаст cast spell slot cantrip concentration magic ритуал",
+        "spell cast invoke incantation magic slot concentration cantrip upcast ritual",
     ),
     (
         "generate_npc",
-        "нпс npc персонаж житель встреча значимый именной новый создать сгенерировать \
-герой сюжета character generate significant named recurring encounter roster",
+        "npc character resident encounter significant named new create generate story \
+recurring consequential roster",
     ),
     (
         "read_state",
-        "состояние время сцена лист ростер факты текущее проверить посмотреть узнать \
-current state time scene sheet roster facts check inspect look up",
+        "current state time scene sheet roster facts check inspect look up verify read",
     ),
     (
         "long_rest",
-        "долгий отдых передышка выспаться ночёвка спать сон восстановить слоты хп \
-концентрация полный отдых night sleep long rest recover restore slots hp full",
+        "long rest respite sleep overnight night recover restore slots hp concentration \
+full recovery",
     ),
     (
         "get_npc_profile",
-        "npc profile карточка персонаж статы механика abilities skills saves passive perception \
-ac hp speed senses languages personality habits voice внешний вид приметы состояние",
+        "npc profile card character stats mechanics abilities skills saves passive perception \
+ac hp speed senses languages personality habits voice appearance features condition",
     ),
     (
         "advance_time",
-        "time время часы календарь прошло минут ожидать подождать спустя пауза день ночь \
-advance clock elapsed minutes",
+        "time hours clock calendar elapsed minutes wait pause later day night advance",
     ),
     (
         "roll_dice",
-        "куб кубик бросок проверка d20 dice roll внимание расследование insight \
-perception investigation stealth persuasion deception intimidation attack save damage",
+        "die dice roll check d20 perception investigation insight stealth persuasion \
+deception intimidation attack save damage",
     ),
     (
         "get_world_fact",
-        "факт память мир lore зацепка улика слух показание где кто что известно \
-fact memory rag testimony rumor lead source provenance player-safe answer public",
+        "fact memory world lore lead clue evidence rumor testimony where who what known \
+rag source provenance player-safe answer public",
     ),
     (
         "get_memory",
-        "память воспоминание знание кто знает что помнит секрет слух город таверна \
-memory scoped recall player npc actor place faction public private crystal source",
+        "memory recollection knowledge who knows remembers secret rumor city tavern scoped \
+recall player npc actor place faction public private crystal source",
     ),
     (
         "note_memory",
-        "записать память воспоминание слух секрет событие игрок npc город место фракция \
-write memory note scoped owner visibility summary details source event",
+        "write save record memory recollection rumor secret event player npc city place \
+faction note scoped owner visibility summary details source",
     ),
     (
         "consolidate_memory",
-        "кристалл память сжать суммаризировать raw episode arc durable consumed cold \
-consolidate crystal memory sources summarize archive",
+        "crystal memory compress summarize raw episode arc durable consumed cold \
+consolidate sources archive",
     ),
     (
-        "update_player_character",
-        "player character персонаж игрока лист персонажа карточка игрок hp ac abilities skills \
-inventory equipment feature condition status update damage heal предмет инвентарь",
+        "update_character",
+        "character player npc card appearance clothing features scar hp ac abilities \
+skills inventory equipment condition status update damage heal",
     ),
     (
         "ask_player",
-        "варианты действия реплики кнопки быстрый ответ player options quick replies \
-suggest choices задать вопрос что делать дальше",
+        "player options actions dialogue lines buttons quick replies suggest choices \
+ask question what to do next",
     ),
 ];
 
@@ -285,7 +281,7 @@ fn roll_dice_tool() -> Value {
                                  "enum": ["trivial", "easy", "moderate", "hard", "very_hard", "nearly_impossible", "custom"],
                                  "description": "Human label for target_number. Prefer easy=10, moderate=15, hard=20 when improvising."},
             "modifier_note": {"type": "string",
-                              "description": "Player-facing SHORT RUSSIAN phrase naming only the SOURCE of the modifier or advantage/disadvantage, WITHOUT the number (the UI prints the number itself). Only include when notation itself contains a real +N/-N, kh1, or kl1 from a known source, e.g. 'навык Внимательности', 'помощь союзника', 'выгодная позиция', 'преимущество от засады', 'помеха из-за темноты'. For plain unmodified rolls like 1d20, omit this field entirely. Do not use for leverage, stakes, difficulty, or placeholder text."},
+                               "description": "Player-facing SHORT phrase in the configured response language naming only the SOURCE of the modifier or advantage/disadvantage, WITHOUT the number (the UI prints the number itself). Only include when notation itself contains a real +N/-N, kh1, or kl1 from a known source, e.g. 'Perception skill', 'an ally's help', 'favorable position', 'advantage from an ambush', 'disadvantage from darkness'. For plain unmodified rolls like 1d20, omit this field entirely. Do not use for leverage, stakes, difficulty, or placeholder text."},
             "stakes": {"type": "object", "properties": {
                 "intent": {"type": "string",
                            "description": "Short English pre-roll goal the player is trying to achieve."},
@@ -321,7 +317,7 @@ fn get_fact_tool() -> Value {
     already_delivered. After GM history compaction, this delivery memory resets.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string",
-                      "description": "What you want to know, in Russian. Keep proper nouns exactly as written."},
+                       "description": "What you want to know. Keep proper nouns exactly as written."},
         }, "required": ["query"], "additionalProperties": false},
     }})
 }
@@ -332,7 +328,7 @@ fn tool_search_tool() -> Value {
         "description": tool_guidance::TOOL_SEARCH_DESCRIPTION,
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string",
-                      "description": "Search query in Russian or English, or select:tool_name for exact catalog lookup."},
+                       "description": "Search query using English keywords, or select:tool_name for exact catalog lookup."},
             "max_results": {"type": "integer",
                             "description": "Maximum number of catalog cards to return. Default 5."},
         }, "required": ["query"], "additionalProperties": false},
@@ -394,7 +390,7 @@ pub fn build_gm_tools() -> Vec<Value> {
             "situation": {"type": "string", "description": SITUATION_DESC},
             "correction": {"type": "string",
                            "description": "Fill in ONLY when sending an NPC response back for a redo: \
-    what is wrong and what to fix, in Russian. Omit this \
+    what is wrong and what to fix. Omit this \
     field on the first ask_npc call for a fresh player \
     action."},
         }, "required": ["npc_id", "situation"], "additionalProperties": false},
@@ -427,7 +423,7 @@ pub fn build_gm_tools() -> Vec<Value> {
             "attitude": {"type": "string",
                          "description": "Optional short mood/relationship note."},
             "reason": {"type": "string",
-                       "description": "Why the scene roster changed, in Russian."},
+                        "description": "Why the scene roster changed."},
         }, "required": ["npc_id", "present", "reason"], "additionalProperties": false},
     }});
     let set_npc_whereabouts = json!({"type": "function", "function": {
@@ -448,13 +444,13 @@ pub fn build_gm_tools() -> Vec<Value> {
             "location_id": {"type": "string",
                             "description": "Optional lowercase ascii snake_case id for the offscreen location."},
             "location_name": {"type": "string",
-                              "description": "Russian player/world-facing place name, if known."},
+                               "description": "Player/world-facing place name, if known."},
             "status": {"type": "string", "enum": ["known", "likely", "rumored", "unknown"],
                        "description": "How certain the whereabouts are."},
             "details": {"type": "string",
-                        "description": "Short Russian note: why this is the right place or what is known."},
+                         "description": "Short note: why this is the right place or what is known."},
             "source": {"type": "string",
-                       "description": "What established this, in Russian: witness, public lore, scene result, etc."},
+                        "description": "What established this: witness, public lore, scene result, etc."},
         }, "required": ["npc_id", "status"], "additionalProperties": false},
     }});
     let get_npc_profile = json!({"type": "function", "function": {
@@ -495,16 +491,16 @@ pub fn build_gm_tools() -> Vec<Value> {
     to go somewhere, failed travel, vague searching without arrival, or when a visible \
     exit already leads there (use move_player). Include only visible/public state. The \
     title must name the exact current area, e.g. \
-    'У входа в караульную' if they are still outside. Do not invent hidden facts or \
+    'Outside the guardhouse entrance' if they are still outside. Do not invent hidden facts or \
     conclusions. List in present_npcs only the npc_ids (from the current roster in \
     CURRENT TURN CONTEXT) of NPCs actually in the new place; unknown ids are ignored \
     and reported back so you can correct them. The result is compact structured text \
     with the new canonical place id, title, items, exits, and dropped NPC ids.",
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string",
-                      "description": "Russian player-facing title of the new current scene."},
+                       "description": "Player-facing title of the new current scene."},
             "description": {"type": "string",
-                            "description": "Russian visible description of the new current scene."},
+                             "description": "Visible description of the new current scene."},
             "location_id": {"type": "string",
                             "description": "Optional lowercase ascii snake_case id for the new location."},
             "present_npcs": {"type": "array",
@@ -529,7 +525,7 @@ pub fn build_gm_tools() -> Vec<Value> {
             "constraints": {"type": "array", "items": {"type": "string"}},
             "tension": {"type": "string"},
             "reason": {"type": "string",
-                       "description": "Why the current scene changed, in Russian."},
+                        "description": "Why the current scene changed."},
         }, "required": ["title", "description", "reason"], "additionalProperties": false},
     }});
     let advance_time = json!({"type": "function", "function": {
@@ -546,7 +542,7 @@ pub fn build_gm_tools() -> Vec<Value> {
             "minutes": {"type": "integer",
                         "description": "Elapsed in-world minutes, non-negative."},
             "reason": {"type": "string",
-                       "description": "Very short Russian reason."},
+                        "description": "Very short reason."},
         }, "required": ["minutes", "reason"], "additionalProperties": false},
     }});
     let ask_player = json!({"type": "function", "function": {
@@ -560,57 +556,71 @@ pub fn build_gm_tools() -> Vec<Value> {
     and do not continue with more tools after ask_player unless its arguments were \
     invalid. The engine will not synthesize fallback buttons if you skip this call. \
     Provide at least 4 current, concrete actions or dialogue lines that fit the \
-    situation without replacing free text input. Each option has a short Russian \
-    label displayed on the button and a fuller Russian message that will be sent as \
+    situation without replacing free text input. Each option has a short label \
+    displayed on the button and a fuller message that will be sent as \
     the player's next message if clicked. Do not use this tool for hidden facts, \
     spoilers, GM-only reasoning, NPC stats, or commands to the player. The result is \
     compact structured text confirming that the buttons were shown; after receiving \
     it, write the final narration for this turn.",
         "parameters": {"type": "object", "properties": {
             "question": {"type": "string",
-                         "description": "Short Russian prompt above the buttons, e.g. 'Что ты делаешь дальше?'."},
+                         "description": "Short prompt above the buttons, e.g. 'What do you do next?'."},
             "options": {"type": "array", "minItems": 4, "maxItems": 8,
                         "items": {"type": "object", "properties": {
                             "label": {"type": "string",
-                                      "description": "Short Russian button label, ideally 1-4 words."},
+                                      "description": "Short button label, ideally 1-4 words."},
                             "message": {"type": "string",
-                                        "description": "Full Russian player message to send when clicked."},
+                                        "description": "Full player message to send when clicked."},
                         }, "required": ["label", "message"], "additionalProperties": false},
                         "description": "Four to eight distinct playable options for the current situation."},
         }, "required": ["question", "options"], "additionalProperties": false},
     }});
-    let update_player_character = json!({"type": "function", "function": {
-        "name": "update_player_character",
+    let mut update_character = json!({"type": "function", "function": {
+        "name": "update_character",
         "strict": false,
         "description":
-            "Update the player character sheet after the fiction establishes a real change \
-    to the player's character: name/class/background details, life status, condition, \
-    HP, AC, abilities, skills, saves, passive Perception, senses, languages, \
-    inventory, equipment, features, or GM-only notes. Use this for the player \
-    character only, not for NPC memories, relationships, world facts, scene state, \
-    or time. Use it when the resolved fiction changes the sheet, or when a player-\
-    declared character detail is compatible with the current card and grants no \
-    unsupported item, authority, feature, expertise, or advantage. Do not record a \
-    contradictory or power-granting self-declaration as truth. Batch all player-sheet field changes \
-    for the turn in one call, but send only fields that changed; never echo the \
-    whole current card back to the tool. Omit optional fields when they did not \
-    change; do not send empty placeholders. The result is compact structured text \
-    with changed field names and card revision only.",
+            "Partially update the player card or one existing NPC card after the fiction \
+    establishes a real change or the GM establishes a previously unspecified, \
+    non-contradictory visible detail. Send only fields that changed; never echo a \
+    whole card. For target=npc, npc_id is required and the tool may update visible \
+    identity, current appearance, social portrayal, condition, or mechanics, but not \
+    private knowledge, secrets, or goals. Use current_appearance as the single complete \
+    description of clothing, hair, dirt, blood, disguise, and other changeable visible \
+    details right now. Use distinctive_features_add to append a newly revealed permanent \
+    trait without replacing earlier traits. Do not invent a contradictory trait, grant an \
+    unsupported capability, or rewrite an NPC merely to force a desired response. This tool \
+    updates character state only, not memories, relationships, world facts, scene state, or time.",
         "parameters": {"type": "object", "properties": {
+            "target": {"type": "string", "enum": ["player", "npc"],
+                       "description": "Which character card to patch."},
+            "npc_id": {"type": "string",
+                       "description": "Existing NPC id from the roster. Required only when target=npc; omit for player."},
             "fields": {"type": "object", "properties": {
                 "name": {"type": "string"},
                 "pronouns": {"type": "string"},
                 "class_role": {"type": "string"},
+                "role": {"type": "string", "description": "NPC role; valid only for target=npc."},
+                "public_label": {"type": "string", "description": "NPC player-facing label; valid only for target=npc."},
                 "level": {"type": "integer"},
                 "background": {"type": "string"},
                 "age": {"type": "string"},
                 "physical_type": {"type": "string"},
-                "distinctive_features": {"type": "string"},
+                "distinctive_features": {"type": "string",
+                                         "description": "Full permanent-traits replacement for target=player only. For an NPC, use distinctive_features_add so established traits cannot be erased."},
+                "distinctive_features_add": {"type": "array", "items": {"type": "string"},
+                                             "description": "Newly revealed permanent traits to append without replacing existing traits."},
+                "current_appearance": {"type": "string",
+                                       "description": "Complete visible appearance right now: clothing, hair, dirt, blood, disguise, and other changeable details."},
                 "life_status": {"type": "string"},
                 "life_status_note": {"type": "string"},
                 "condition": {"type": "string"},
+                "persona": {"type": "string", "description": "NPC portrayal summary; valid only for target=npc."},
                 "personality": {"type": "string"},
                 "values": {"type": "string"},
+                "habits": {"type": "string", "description": "NPC habits/tells; valid only for target=npc."},
+                "pressure_response": {"type": "string", "description": "NPC behavior under pressure; valid only for target=npc."},
+                "boundaries": {"type": "string", "description": "NPC boundaries; valid only for target=npc."},
+                "voice": {"type": "string", "description": "NPC manner of speech; valid only for target=npc."},
                 "gm_notes": {"type": "string",
                              "description": "GM-only notes about the player character; never narrate directly."},
                 "abilities": {"type": "object",
@@ -627,14 +637,14 @@ pub fn build_gm_tools() -> Vec<Value> {
                 "senses": {"type": "string"},
                 "languages": {"type": "string"},
                 "inventory": {"type": "array", "items": {"type": "string"},
-                              "description": "Full current inventory only when inventory changed. Each entry is a string; an optional description may follow the item name after ' — ' (e.g. 'кинжал — 1d4, скрыт в сапоге'). The name before ' — ' is the head used for all matching. For picking up an item already in the scene use take_item (it carries the same object with its details); for dropping one into the scene use drop_item."},
+                              "description": "Full current inventory only when inventory changed. Each entry is a string; an optional description may follow the item name after ' — ' (e.g. 'dagger — 1d4, hidden in a boot'). The name before ' — ' is the head used for all matching. For picking up an item already in the scene use take_item (it carries the same object with its details); for dropping one into the scene use drop_item."},
                 "equipment": {"type": "array", "items": {"type": "string"},
                               "description": "Full current equipment only when equipment changed. Same ' — ' name/description convention as inventory; matching is by the head before ' — '."},
                 "features": {"type": "array", "items": {"type": "string"},
                              "description": "Full current features only when features changed."},
                 "spells": {"type": "array", "items": {"type": "object", "properties": {
                     "name": {"type": "string"},
-                    "level": {"type": "integer", "description": "Spell level; 0 for a cantrip (заговор)."},
+                    "level": {"type": "integer", "description": "Spell level; 0 for a cantrip."},
                     "concentration": {"type": "boolean", "description": "True if the spell requires concentration."},
                     "ritual": {"type": "boolean", "description": "True if the spell can be cast as a ritual (display only in v1)."},
                     "effect": {"type": "string", "description": "Prose effect. Put school, casting time, range, duration, and upcast text HERE — the engine reads only name/level/concentration/ritual."},
@@ -655,11 +665,130 @@ pub fn build_gm_tools() -> Vec<Value> {
                 "equipment_remove": {"type": "array", "items": {"type": "string"},
                                      "description": "Equipment entries to drop, matched trimmed and exact; every occurrence is removed. Applied before equipment_add; do not send with a full equipment array."},
             }, "additionalProperties": false,
-                "description": "Only changed player-character fields. Omit unchanged or empty fields; never resend the full card."},
+                "description": "Only changed fields for the selected character. Omit unchanged fields; never resend the full card."},
             "reason": {"type": "string",
-                       "description": "Very short Russian reason for the sheet update."},
-        }, "required": ["fields", "reason"], "additionalProperties": false},
+                        "description": "Very short reason grounded in the fiction."},
+        }, "required": ["target", "fields", "reason"], "additionalProperties": false},
     }});
+
+    // Keep one public tool while making the target-specific field surface
+    // machine-checkable. The top-level property catalog supplies descriptions;
+    // these oneOf branches narrow it so an NPC-only/player-only mix is rejected
+    // by schema validation before the runtime's atomic safety check.
+    let all_character_fields = update_character
+        .pointer("/function/parameters/properties/fields/properties")
+        .and_then(Value::as_object)
+        .cloned()
+        .expect("update_character field catalog");
+    let fields_for = |names: &[&str]| {
+        let properties = names
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_string(),
+                    all_character_fields
+                        .get(*name)
+                        .cloned()
+                        .unwrap_or_else(|| panic!("missing update_character field schema: {name}")),
+                )
+            })
+            .collect::<Map<String, Value>>();
+        json!({
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": false,
+        })
+    };
+    let player_fields = fields_for(&[
+        "name",
+        "pronouns",
+        "class_role",
+        "level",
+        "background",
+        "age",
+        "physical_type",
+        "distinctive_features",
+        "distinctive_features_add",
+        "current_appearance",
+        "life_status",
+        "life_status_note",
+        "condition",
+        "personality",
+        "values",
+        "gm_notes",
+        "abilities",
+        "skills",
+        "saving_throws",
+        "passive_perception",
+        "ac",
+        "hp",
+        "speed",
+        "senses",
+        "languages",
+        "inventory",
+        "equipment",
+        "features",
+        "spells",
+        "spell_slots",
+        "spell_slots_max",
+        "concentration",
+        "inventory_add",
+        "inventory_remove",
+        "equipment_add",
+        "equipment_remove",
+    ]);
+    let npc_fields = fields_for(&[
+        "name",
+        "pronouns",
+        "role",
+        "public_label",
+        "age",
+        "physical_type",
+        "distinctive_features_add",
+        "current_appearance",
+        "life_status",
+        "life_status_note",
+        "condition",
+        "persona",
+        "personality",
+        "values",
+        "habits",
+        "pressure_response",
+        "boundaries",
+        "voice",
+        "abilities",
+        "skills",
+        "saving_throws",
+        "passive_perception",
+        "ac",
+        "hp",
+        "speed",
+        "senses",
+        "languages",
+    ]);
+    update_character
+        .pointer_mut("/function/parameters")
+        .and_then(Value::as_object_mut)
+        .expect("update_character parameters")
+        .insert(
+            "oneOf".to_string(),
+            json!([
+                {
+                    "properties": {
+                        "target": {"type": "string", "enum": ["player"]},
+                        "fields": player_fields,
+                    },
+                },
+                {
+                    "properties": {
+                        "target": {"type": "string", "enum": ["npc"]},
+                        "npc_id": {"type": "string", "minLength": 1},
+                        "fields": npc_fields,
+                    },
+                    "required": ["npc_id"],
+                },
+            ]),
+        );
     vec![
         ask_npc,
         move_npc,
@@ -668,7 +797,7 @@ pub fn build_gm_tools() -> Vec<Value> {
         set_scene,
         advance_time,
         ask_player,
-        update_player_character,
+        update_character,
         roll_dice_tool(),
         get_fact_tool(),
         tool_search_tool(),
@@ -729,7 +858,7 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
             "transition_id": {"type": "string",
                               "description": "Id of a visible, passable transition leaving the player's current place."},
             "reason": {"type": "string",
-                       "description": "Very short Russian reason for the move."},
+                        "description": "Very short reason for the move."},
         }, "required": ["transition_id"], "additionalProperties": false},
     }});
     let world_debug = json!({"type": "function", "function": {
@@ -768,11 +897,11 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
                         "enum": ["place", "local_place", "room", "travel_situation", "city_point", "village_point", "dungeon_point"],
                         "description": "What kind of thing to generate."},
             "request": {"type": "string",
-                        "description": "Short Russian brief: why this is needed, what should roughly be present, and what must be avoided."},
+                        "description": "Short brief: why this is needed, what should roughly be present, and what must be avoided."},
             "target_place_id": {"type": "string",
                                 "description": "Existing canon place to flesh out. Defaults to current place when commit=true."},
             "parent_place_id": {"type": "string",
-                                "description": "Parent/current place when a new place should be created."},
+                                "description": "Optional geographic/containment parent for a new place. When enter_after_commit=true, the engine always creates the entry route from the player's actual current place; do not use this field as a movement source."},
             "route_transition_id": {"type": "string",
                                     "description": "Transition id for a road/travel situation."},
             "commit": {"type": "boolean",
@@ -780,7 +909,9 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
             "player_observed": {"type": "boolean",
                                 "description": "True when the player can already see or directly learn this generated place/situation. This reveals only player-safe generated fields."},
             "enter_after_commit": {"type": "boolean",
-                                   "description": "True when the latest player action enters the generated place now. The tool commits the place and moves the player through the new/current transition atomically."},
+                                    "description": "True when the latest player action enters the generated place now. The tool commits the place and moves the player through the new/current transition atomically."},
+            "entry_time_minutes": {"type": "integer", "minimum": 1,
+                                   "description": "Optional established travel time from the current place to the generated place. Omit when unknown so the location generator estimates it from the brief."},
             "elapsed_minutes": {"type": "integer",
                                 "description": "For travel situations: minutes already travelled before the interruption."},
             "remaining_minutes": {"type": "integer",
@@ -812,7 +943,7 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
     taken and wait for the player, exactly like a rejected move. On success the scene item \
     is removed and appended to inventory as \"name — details\". DO NOT CALL for an item the \
     scene does not list (a gift, purchase, crafted or narratively-found object) — use \
-    update_player_character with inventory_add for those. The result is compact structured \
+    update_character with target=player and inventory_add for those. The result is compact structured \
     text with the taken item and the updated card, or a rejection reason to narrate.",
         "parameters": {"type": "object", "properties": {
             "item_id": {"type": "string",
@@ -820,7 +951,7 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
             "name": {"type": "string",
                      "description": "Item name to match against VISIBLE scene items when no item_id is given."},
             "reason": {"type": "string",
-                       "description": "Very short Russian reason for taking the item."},
+                        "description": "Very short reason for taking the item."},
         }, "required": [], "additionalProperties": false},
     }});
     let drop_item = json!({"type": "function", "function": {
@@ -833,17 +964,17 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
     case-insensitively; the details after \" — \" travel with it. If no inventory entry \
     matches, the tool returns unknown_item with the current inventory — do not invent an \
     item the player does not carry. On success the entry is removed from the card and a \
-    visible, portable scene item is inserted at the given location (or \"рядом\" by \
-    default). DO NOT CALL when an item is destroyed, consumed, or used up without leaving \
-    anything in the scene — use update_player_character with inventory_remove for those. \
+    visible, portable scene item is inserted at the given location (or the engine's \
+    default nearby position). DO NOT CALL when an item is destroyed, consumed, or used up without leaving \
+    anything in the scene — use update_character with target=player and inventory_remove for those. \
     The result is compact structured text with the dropped item and the updated card.",
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string",
                      "description": "Name (head before \" — \") of the inventory entry to drop."},
             "location": {"type": "string",
-                         "description": "Where in the scene the item ends up, e.g. 'на столе'. Defaults to 'рядом'."},
+                          "description": "Where in the scene the item ends up, e.g. 'on the table'. Defaults to the engine's nearby position."},
             "reason": {"type": "string",
-                       "description": "Very short Russian reason for dropping the item."},
+                        "description": "Very short reason for dropping the item."},
         }, "required": ["name"], "additionalProperties": false},
     }});
     let cast_spell = json!({"type": "function", "function": {
@@ -851,29 +982,30 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
         "description":
             "Cast a spell the player character KNOWS, spending the spell slot and setting \
     concentration in the engine. WHEN TO CALL: the player casts one of the spells listed \
-    on their card, once the fiction commits to the cast. Match by name (case-insensitive). \
+    on their card and a required slot is available (or it is a cantrip), before narrating \
+    the cast. Match by name (case-insensitive). \
     The engine is authoritative for slots and concentration: a cantrip (level 0) spends no \
     slot; a leveled spell spends one slot of its own level, or of slot_level when you cast \
-    it at a higher level (an upcast never drops below the spell's own level). If no slot of \
-    the needed level is free, the tool returns no_slots — that rejection is FICTION, not a \
-    retry: narrate the fizzled or aborted cast (the words falter, the gesture fails) and \
-    wait for the player, exactly like a rejected move. If the character does not know the \
-    spell, the tool returns unknown_spell with the known-spell list — do NOT invent a spell \
-    the card lacks; if it should be learnable, add it first via update_player_character. A \
+    it at a higher level (an upcast never drops below the spell's own level). If stale state \
+    produces no_slots, treat it as a pre-resolution reality correction: do not narrate an \
+    attempted or fizzled cast, spend time, or trigger reactions; offer established alternatives \
+    and wait. unknown_spell is handled the same way and includes the known-spell list. Do NOT \
+    invent a spell the card lacks; if it should be learnable, add it first via update_character \
+    only after the fiction genuinely teaches it. A \
     concentration spell replaces any concentration already held; the tool reports the \
     dropped one as concentration_ended so you can narrate the earlier effect lapsing. This \
     tool does NO dice, attack, save, or damage math — resolve those with roll_dice using \
     the spell's notation, and describe upcast/higher-level effects from the spell's effect \
     prose. To drop concentration WITHOUT a new cast, clear the concentration field via \
-    update_player_character. The result is compact structured text with the spent slot \
-    level, remaining slots, and concentration changes, or a rejection reason to narrate.",
+    update_character. The result is compact structured text with the spent slot \
+    level, remaining slots, and concentration changes, or a rejection reason to correct before fiction.",
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string",
                      "description": "Name of a spell on the player's card, matched case-insensitively."},
             "slot_level": {"type": "integer",
                            "description": "Optional higher slot level to upcast into; ignored for cantrips and clamped up to the spell's own level. Omit to spend a slot of the spell's base level."},
             "reason": {"type": "string",
-                       "description": "Very short Russian reason for casting the spell."},
+                        "description": "Very short reason for casting the spell."},
         }, "required": ["name"], "additionalProperties": false},
     }});
     let generate_npc = json!({"type": "function", "function": {
@@ -896,16 +1028,16 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
     retry is honored ONLY directly after a duplicate_candidates result and is ignored \
     otherwise. A status=created result means the NPC already exists and is present — go \
     straight to ask_npc with the returned npc_id; never call generate_npc twice for one \
-    person. Reflect the result into Russian prose; never name this tool to the player.",
+    person. Reflect the result into prose; never name this tool to the player.",
         "parameters": {"type": "object", "properties": {
             "request": {"type": "string",
-                        "description": "Russian qualitative brief: who this NPC is, why the story needs them, what they can do, and their power relative to the player. No numbers. On retry, also say why the suggested existing NPCs do not fit."},
+                        "description": "Qualitative brief: who this NPC is, why the story needs them, what they can do, and their power relative to the player. No numbers. On retry, also say why the suggested existing NPCs do not fit."},
             "role": {"type": "string",
-                     "description": "Short Russian role or profession, e.g. 'бармен', 'капитан стражи'."},
+                     "description": "Short role or profession, e.g. 'bartender', 'guard captain'."},
             "name": {"type": "string",
-                     "description": "Optional Russian name to fix; omit to let the generator name them."},
+                     "description": "Optional name to fix; omit to let the generator name them."},
             "appearance": {"type": "string",
-                           "description": "Optional Russian appearance to fix; omit to let the generator decide."},
+                            "description": "Optional appearance to fix; omit to let the generator decide."},
             "power_tier": {"type": "string",
                            "enum": ["much_weaker", "weaker", "comparable", "stronger", "much_stronger"],
                            "description": "Qualitative power versus the player; the generator calibrates numbers to it."},
@@ -953,7 +1085,7 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
     in-world time, the restored slots and HP, and whether concentration was dropped.",
         "parameters": {"type": "object", "properties": {
             "reason": {"type": "string",
-                       "description": "Very short Russian reason for the long rest, e.g. 'ночёвка на постоялом дворе'."},
+                        "description": "Very short reason for the long rest, e.g. 'an overnight stay at an inn'."},
         }, "required": [], "additionalProperties": false},
     }});
     vec![
@@ -985,7 +1117,7 @@ pub fn build_memory_gm_tools() -> Vec<Value> {
     current NPCs/places/factions.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string",
-                      "description": "Topic to recall, in Russian or exact ids from context."},
+                       "description": "Topic to recall, or exact ids from context."},
             "scope": {"type": "string",
                       "description": "Access lens: player, gm, actor, place, settlement, region, faction, route, group, public. Use npc_id for actor scope when available."},
             "npc_id": {"type": "string",
@@ -1011,7 +1143,7 @@ pub fn build_memory_gm_tools() -> Vec<Value> {
     canon facts/events; it records who remembers or can know what.",
         "parameters": {"type": "object", "properties": {
             "summary": {"type": "string",
-                        "description": "Short Russian memory summary. This is what normal recall returns."},
+                        "description": "Short memory summary. This is what normal recall returns."},
             "details": {"type": "string",
                         "description": "Optional detailed card for explicit include_details lookup only."},
             "owner_scope": {"type": "string",
@@ -1047,7 +1179,7 @@ pub fn build_memory_gm_tools() -> Vec<Value> {
             "source_memory_ids": {"type": "array", "items": {"type": "string"},
                                   "description": "Existing memories to consume into the crystal."},
             "summary": {"type": "string",
-                        "description": "Short Russian crystal summary."},
+                        "description": "Short crystal summary."},
             "details": {"type": "string",
                         "description": "Optional detailed derived card."},
             "owner_scope": {"type": "string",
@@ -1078,7 +1210,7 @@ pub fn build_npc_tools() -> Vec<Value> {
     or believe about a topic. Results are short summaries only.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string",
-                      "description": "What you are trying to remember, in Russian or exact names from the scene."},
+                       "description": "What you are trying to remember, or exact names from the scene."},
             "max_results": {"type": "integer",
                             "description": "1..8 short summaries; default 5."},
             "include_cold": {"type": "boolean",
@@ -1090,11 +1222,11 @@ pub fn build_npc_tools() -> Vec<Value> {
         "description":
             "Privately record what YOU, this NPC, now remember from this interaction. \
     Runtime binds the current NPC identity; you cannot write memory for another actor \
-    and this tool never makes a rumour globally public. Use short Russian text only. \
+    and this tool never makes a rumour globally public. Use short text only. \
     Public rumour spread must be established by the GM/world simulation separately.",
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string",
-                     "description": "Short Russian memory from this NPC's point of view."},
+                     "description": "Short memory from this NPC's point of view."},
             "kind": {"type": "string",
                      "enum": ["interaction", "observation", "belief", "goal", "relationship", "rumor", "secret", "other"],
                      "description": "Memory category. Default interaction."},
@@ -1269,24 +1401,24 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         name: "ask_npc",
         title: "Ask NPC",
         description: "Get one present NPC's visible speech and action.",
-        keywords: &["npc", "speech", "reaction", "dialogue", "допрос"],
-        aliases: &["talk", "question", "угроза"],
+        keywords: &["npc", "speech", "reaction", "dialogue", "interrogation"],
+        aliases: &["talk", "question", "threat"],
         capabilities: &["npc_dialogue", "visible_reaction"],
     },
     ToolSearchMetadata {
         name: "roll_dice",
         title: "Roll Dice",
         description: "Resolve uncertain checks, saves, attacks, damage, or chance.",
-        keywords: &["dice", "d20", "check", "roll", "проверка"],
-        aliases: &["кубик", "бросок"],
+        keywords: &["dice", "d20", "check", "roll", "test"],
+        aliases: &["die", "dice throw"],
         capabilities: &["mechanical_resolution", "stakes_locked_roll"],
     },
     ToolSearchMetadata {
         name: "get_world_fact",
         title: "World Fact",
         description: "Look up player-safe lore, leads, testimony, and known facts.",
-        keywords: &["fact", "lore", "memory", "rumor", "улика"],
-        aliases: &["rag", "lookup", "что известно"],
+        keywords: &["fact", "lore", "memory", "rumor", "clue"],
+        aliases: &["rag", "lookup", "what is known"],
         capabilities: &["player_safe_lookup", "source_dedup"],
     },
     ToolSearchMetadata {
@@ -1294,7 +1426,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Get Memory",
         description: "Read short scoped living-world memory summaries.",
         keywords: &["memory", "scope", "recall", "secret", "rumor"],
-        aliases: &["вспомнить", "что знает"],
+        aliases: &["remember", "what someone knows"],
         capabilities: &["scoped_memory", "access_filtered_recall"],
     },
     ToolSearchMetadata {
@@ -1302,7 +1434,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Note Memory",
         description: "Write one scoped living-world memory card.",
         keywords: &["write", "memory", "note", "rumor", "secret"],
-        aliases: &["save memory", "записать память"],
+        aliases: &["save memory", "record memory"],
         capabilities: &["memory_write", "scoped_visibility"],
     },
     ToolSearchMetadata {
@@ -1310,31 +1442,31 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Consolidate Memory",
         description: "Create a higher-tier memory crystal and mark sources cold.",
         keywords: &["crystal", "consolidate", "summary", "episode", "archive"],
-        aliases: &["сжать память", "memory crystal"],
+        aliases: &["compress memory", "memory crystal"],
         capabilities: &["hierarchical_memory", "source_retention"],
     },
     ToolSearchMetadata {
-        name: "update_player_character",
-        title: "Player Card",
-        description: "Update the player character card after established fiction changes it.",
-        keywords: &["player", "character", "hp", "inventory", "condition"],
-        aliases: &["pc card", "лист персонажа"],
-        capabilities: &["player_state_update"],
+        name: "update_character",
+        title: "Character Card",
+        description: "Partially update the player or one NPC after established fiction changes it.",
+        keywords: &["player", "npc", "character", "appearance", "condition"],
+        aliases: &["character card", "appearance", "update character"],
+        capabilities: &["character_state_update", "appearance_continuity"],
     },
     ToolSearchMetadata {
         name: "advance_time",
         title: "Advance Time",
         description: "Move the world clock by a known elapsed duration.",
-        keywords: &["time", "clock", "minutes", "wait", "время"],
-        aliases: &["подождать", "спустя"],
+        keywords: &["time", "clock", "minutes", "wait", "elapsed"],
+        aliases: &["wait for", "later"],
         capabilities: &["world_clock"],
     },
     ToolSearchMetadata {
         name: "ask_player",
         title: "Ask Player",
         description: "Show quick-reply choices or a focused question to the player.",
-        keywords: &["options", "choices", "player", "buttons", "варианты"],
-        aliases: &["quick replies", "что делать"],
+        keywords: &["options", "choices", "player", "buttons", "actions"],
+        aliases: &["quick replies", "what to do"],
         capabilities: &["player_prompt", "quick_replies"],
     },
     ToolSearchMetadata {
@@ -1342,15 +1474,15 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Move NPC",
         description: "Move an NPC into, out of, or within the current scene.",
         keywords: &["npc", "scene", "presence", "enters", "leaves"],
-        aliases: &["set_npc_presence", "вошел", "ушел"],
+        aliases: &["set_npc_presence", "entered", "left"],
         capabilities: &["scene_presence", "npc_movement"],
     },
     ToolSearchMetadata {
         name: "set_npc_whereabouts",
         title: "NPC Whereabouts",
         description: "Record an NPC's known or likely offscreen location.",
-        keywords: &["npc", "whereabouts", "absent", "location", "где"],
-        aliases: &["offscreen", "местонахождение"],
+        keywords: &["npc", "whereabouts", "absent", "location", "where"],
+        aliases: &["offscreen", "known location"],
         capabilities: &["offscreen_location", "whereabouts_memory"],
     },
     ToolSearchMetadata {
@@ -1358,7 +1490,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "NPC Profile",
         description: "Read player-safe NPC mechanics, persona, voice, or profile fields.",
         keywords: &["npc", "profile", "stats", "mechanics", "persona"],
-        aliases: &["card", "анкета", "статы"],
+        aliases: &["card", "character profile", "stats"],
         capabilities: &["npc_mechanics", "profile_fields"],
     },
     ToolSearchMetadata {
@@ -1374,7 +1506,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Move Player",
         description: "Move the player through a visible canon transition.",
         keywords: &["player", "move", "transition", "exit", "travel"],
-        aliases: &["идти", "выход", "дверь"],
+        aliases: &["go", "exit", "door"],
         capabilities: &["canon_travel", "transition_validation"],
     },
     ToolSearchMetadata {
@@ -1382,7 +1514,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "World Debug",
         description: "Read the living-world canon graph and causal log for debugging.",
         keywords: &["debug", "canon", "graph", "causal", "snapshot"],
-        aliases: &["отладка", "replay"],
+        aliases: &["diagnostics", "replay"],
         capabilities: &["debug_dump", "causal_log"],
     },
     ToolSearchMetadata {
@@ -1390,7 +1522,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Generate Location",
         description: "First-choice living-world tool to draft and commit a new location, room, point of interest, or road situation through a dedicated generator agent.",
         keywords: &["location", "scene", "room", "travel", "encounter", "anti-repeat"],
-        aliases: &["генератор", "ситуация", "локация"],
+        aliases: &["generator", "situation", "place"],
         capabilities: &["location_generation", "road_situation_generation", "anti_repeat_context"],
     },
     ToolSearchMetadata {
@@ -1398,7 +1530,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Take Item",
         description: "Move a present scene item's body into the player's inventory.",
         keywords: &["take", "pick", "grab", "loot", "item"],
-        aliases: &["взять", "подобрать", "предмет"],
+        aliases: &["take", "pick up", "object"],
         capabilities: &["scene_to_inventory", "item_transfer"],
     },
     ToolSearchMetadata {
@@ -1406,7 +1538,7 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Drop Item",
         description: "Put an inventory item down into the current scene.",
         keywords: &["drop", "put", "leave", "item", "inventory"],
-        aliases: &["выложить", "бросить", "оставить"],
+        aliases: &["set down", "discard", "leave behind"],
         capabilities: &["inventory_to_scene", "item_transfer"],
     },
     ToolSearchMetadata {
@@ -1414,31 +1546,31 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         title: "Cast Spell",
         description: "Spend a spell slot and set concentration for a known spell.",
         keywords: &["spell", "cast", "slot", "concentration", "cantrip"],
-        aliases: &["заклинание", "каст", "колдовать"],
+        aliases: &["spellcasting", "cast magic", "invoke spell"],
         capabilities: &["spell_slot_spend", "concentration_tracking"],
     },
     ToolSearchMetadata {
         name: "generate_npc",
         title: "Generate NPC",
         description: "Draft and commit one new significant NPC through a dedicated character generator agent.",
-        keywords: &["npc", "character", "significant", "named", "нпс", "персонаж"],
-        aliases: &["создать нпс", "новый персонаж", "герой"],
+        keywords: &["npc", "character", "significant", "named", "new", "generate"],
+        aliases: &["create npc", "new character", "story character"],
         capabilities: &["npc_generation", "power_calibration", "duplicate_gate"],
     },
     ToolSearchMetadata {
         name: "read_state",
         title: "Read State",
         description: "Read current engine state on demand — time, scene, player sheet, full roster, or public facts.",
-        keywords: &["state", "time", "scene", "roster", "facts", "состояние", "сцена"],
-        aliases: &["проверить состояние", "текущее время", "полный ростер"],
+        keywords: &["state", "time", "scene", "roster", "facts", "current", "inspect"],
+        aliases: &["check state", "current time", "full roster"],
         capabilities: &["state_read", "roster_full", "no_mutation"],
     },
     ToolSearchMetadata {
         name: "long_rest",
         title: "Long Rest",
         description: "Take a full long rest: restore spell slots and HP, drop concentration, advance 8 hours.",
-        keywords: &["rest", "sleep", "recover", "restore", "отдых", "выспаться"],
-        aliases: &["долгий отдых", "ночёвка", "night sleep"],
+        keywords: &["rest", "sleep", "recover", "restore", "overnight", "recovery"],
+        aliases: &["long rest", "overnight stay", "night sleep"],
         capabilities: &["full_restore", "slot_hp_recovery", "world_clock"],
     },
 ];
@@ -1648,7 +1780,7 @@ pub fn search_gm_tools(
             "load_tool": LOAD_TOOL_SCHEMA_TOOL_NAME,
             "invoke_tool": INVOKE_LOADED_TOOL_NAME,
             "next": gm_tool_search_next("empty"),
-            "message": "Запрос пустой. Используй keywords или select:tool_name.",
+            "message": "The query is empty. Use keywords or select:tool_name.",
         });
     }
     // limit = max(1, min(int(max_results or 5), 10))
@@ -1731,12 +1863,11 @@ pub fn search_gm_tools(
         s.into_iter().collect()
     };
     let message = if !matches.is_empty() {
-        "Найдены компактные карточки инструментов. Вызови load_tool_schema с точным name, \
-чтобы загрузить одну полную схему."
+        "Compact tool cards found. Call load_tool_schema with the exact name to load one full schema."
     } else if !already_loaded_result.is_empty() {
-        "Запрошенные инструменты уже доступны в текущем шаге ГМ."
+        "The requested tools are already available in the current GM step."
     } else {
-        "Подходящих инструментов не найдено. Попробуй select:tool_name или другие ключевые слова."
+        "No matching tools found. Try select:tool_name or different keywords."
     };
 
     json!({
@@ -1768,7 +1899,7 @@ pub fn load_gm_tool_schema(
             "missing": [],
             "schema": null,
             "next": gm_tool_schema_next("invalid"),
-            "message": "Имя инструмента пустое. Передай точный name из tool_search.",
+            "message": "The tool name is empty. Pass the exact name from tool_search.",
         });
     }
 
@@ -1791,7 +1922,7 @@ pub fn load_gm_tool_schema(
             "missing": [raw_name],
             "schema": null,
             "next": gm_tool_schema_next("missing"),
-            "message": "Инструмент не найден или не загружается через load_tool_schema.",
+            "message": "The tool was not found or cannot be loaded through load_tool_schema.",
         });
     };
 
@@ -1805,7 +1936,7 @@ pub fn load_gm_tool_schema(
             "missing": [],
             "schema": schema,
             "next": gm_tool_schema_next("already_loaded"),
-            "message": "Инструмент уже доступен; схема возвращена для подтверждения.",
+            "message": "The tool is already available; its schema is returned for confirmation.",
         });
     }
 
@@ -1818,6 +1949,6 @@ pub fn load_gm_tool_schema(
         "missing": [],
         "schema": schema,
         "next": gm_tool_schema_next("loaded_schema"),
-        "message": "Схема инструмента загружена в конец контекста; список top-level tools не изменён.",
+        "message": "The tool schema was loaded at the end of the context; the top-level tool list is unchanged.",
     })
 }

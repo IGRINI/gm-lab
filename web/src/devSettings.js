@@ -126,20 +126,33 @@ export const MEMORY_TOOLS = new Set([
 export const PLAYER_TOOLS = new Set([
   "roll_dice",
   "advance_time",
+  "update_character",
   "update_player_character",
 ]);
+
+function characterUpdateTarget(name, message) {
+  if (name === "update_player_character") return "player";
+  if (name !== "update_character") return "";
+  return message?.result?.target
+    || message?.payload?.target
+    || message?.args?.target
+    || "player";
+}
 
 // How to render one tool message given the effective visibility:
 //   'full'   — the developer card (request + raw JSON + result)
 //   'result' — header + result only (memory tools in dev with calls hidden)
 //   'player' — compact, player-friendly result (dice / time / sheet)
 //   'hidden' — render nothing
-export function toolMode(name, vis) {
+export function toolMode(name, vis, message) {
   if (MEMORY_TOOLS.has(name)) {
     if (!vis.memoryOps) return "hidden";
     return vis.toolCalls ? "full" : "result";
   }
   if (vis.toolCalls) return "full";
+  // NPC card maintenance is an internal continuity operation. Only player-sheet
+  // updates have a useful player-facing compact result.
+  if (characterUpdateTarget(name, message) === "npc") return "hidden";
   return PLAYER_TOOLS.has(name) ? "player" : "hidden";
 }
 
@@ -158,14 +171,14 @@ export function isMessageVisible(m, vis) {
     case "meta_total":
       return !!vis.messageTokens;
     case "tool": {
-      const mode = toolMode(m.name, vis);
+      const mode = toolMode(m.name, vis, m);
       if (mode === "hidden") return false;
       // Player-safe tools (dice/time/sheet) render nothing until their result lands.
       if (mode === "player" && m.result == null) return false;
       return true;
     }
     case "tool_result":
-      return toolMode(m.name, vis) !== "hidden";
+      return toolMode(m.name, vis, m) !== "hidden";
     default:
       return true;
   }

@@ -6,6 +6,7 @@ Public label: << public_label >>
 Age: << age >>
 Physical type: << physical_type >>
 Distinctive features: << distinctive_features >>
+Current appearance: << current_appearance >>
 Life status: << life_status >>
 Condition: << condition >>
 Description: << persona >>

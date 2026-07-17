@@ -44,12 +44,17 @@ export default function Tooltip({
   style,
   focusable = true,
   disabled = false,
+  pinnable = false,
 }) {
-  const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [pinned, setPinned] = useState(false);
   const refEl = useRef(null);
   const floatEl = useRef(null);
   const arrowEl = useRef(null);
+  const pinnedRef = useRef(false);
   const tipId = useId();
+  const open = !disabled && (hovered || focused || pinned);
 
   // WCAG 1.4.13 (dismissible): while a tip is open, Escape closes IT — captured
   // on document ahead of the modals' bubble-phase listeners, so Esc does not
@@ -59,11 +64,28 @@ export default function Tooltip({
     const onKey = (event) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      setOpen(false);
+      pinnedRef.current = false;
+      setPinned(false);
+      setHovered(false);
+      setFocused(false);
+      refEl.current?.blur?.();
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
   }, [open]);
+
+  useEffect(() => {
+    if (!pinned) return undefined;
+    const onPointerDown = (event) => {
+      if (refEl.current?.contains(event.target) || floatEl.current?.contains(event.target)) return;
+      pinnedRef.current = false;
+      setPinned(false);
+      setHovered(false);
+      setFocused(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [pinned]);
 
   useLayoutEffect(() => {
     if (!open || !refEl.current || !floatEl.current) return;
@@ -94,26 +116,58 @@ export default function Tooltip({
   }, [open]);
 
   useLayoutEffect(() => {
-    if (disabled) setOpen(false);
+    if (!disabled) return;
+    pinnedRef.current = false;
+    setPinned(false);
+    setHovered(false);
+    setFocused(false);
   }, [disabled]);
 
   if (disabled || content == null || content === "") return children;
 
-  const show = () => setOpen(true);
-  const hide = () => setOpen(false);
+  const togglePinned = (event) => {
+    if (!pinnable) return;
+    event.stopPropagation();
+    const next = !pinnedRef.current;
+    pinnedRef.current = next;
+    setPinned(next);
+    if (!next) {
+      setHovered(false);
+      setFocused(false);
+      refEl.current?.blur?.();
+    }
+  };
 
   const triggerProps = {
     ref: refEl,
-    className,
+    className: [className, pinnable ? "tooltip-pinnable" : ""].filter(Boolean).join(" "),
     style,
-    onMouseEnter: show,
-    onMouseLeave: hide,
-    onFocus: show,
-    onBlur: hide,
+    onMouseEnter: () => setHovered(true),
+    onMouseLeave: () => setHovered(false),
+    onFocus: () => setFocused(true),
+    onBlur: () => setFocused(false),
     // Screen readers only announce the tip when it is programmatically linked.
     "aria-describedby": open ? tipId : undefined,
   };
   if (focusable) triggerProps.tabIndex = 0;
+  if (pinnable) {
+    triggerProps.role = "button";
+    triggerProps.onClick = togglePinned;
+    triggerProps.onKeyDown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      togglePinned(event);
+    };
+    triggerProps["aria-expanded"] = pinned;
+    triggerProps["aria-controls"] = open ? tipId : undefined;
+  } else {
+    // Action controls keep focus after a click. Dismiss their transient tooltip
+    // immediately so it cannot remain floating until the next unrelated click.
+    triggerProps.onClick = () => {
+      setHovered(false);
+      setFocused(false);
+    };
+  }
 
   const trigger = createElement(as, triggerProps, children);
 
@@ -125,9 +179,12 @@ export default function Tooltip({
           <div
             ref={floatEl}
             id={tipId}
-            className={["tip", "show", tipClassName].filter(Boolean).join(" ")}
-            role="tooltip"
+            className={["tip", "show", pinnable ? "interactive" : "", tipClassName].filter(Boolean).join(" ")}
+            role={pinnable ? "dialog" : "tooltip"}
             style={{ visibility: "hidden" }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
           >
             {content}
             <div ref={arrowEl} className="tip-arrow" />

@@ -2,6 +2,7 @@ import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../api.js";
+import { ZoomableImage } from "./ImagePreview.jsx";
 import WorldDetailModal from "./WorldDetailModal.jsx";
 import useConnectorModelBinding from "../useConnectorModelBinding.js";
 import { bindingReady } from "../connectorCatalog.js";
@@ -33,6 +34,7 @@ import {
   AbilitiesEditor,
   MapRowsEditor,
   NamedListEditor,
+  PronounsSelect,
   SpellsEditor,
   SlotsEditor,
 } from "./sheetEditors.jsx";
@@ -706,6 +708,7 @@ export default function CharacterArchitectPanel({
   };
 
   const heroName = textValue(sheet.name);
+  const portraitUrl = textValue(sheet.portrait_url);
   const hpObj = asObject(sheet.hp) || {};
   const baseLabels = [];
   if (worldId) {
@@ -808,6 +811,14 @@ export default function CharacterArchitectPanel({
           </div>
 
           <div className="world-inspector-body">
+            {portraitUrl && (
+              <ZoomableImage
+                className="character-architect-portrait"
+                src={portraitUrl}
+                alt={heroName || t("character.unnamed")}
+                title={heroName || t("character.unnamed")}
+              />
+            )}
             <div className="world-field-grid">
               <label className="world-field">
                 <span>{t("character.fields.name.label")}</span>
@@ -832,10 +843,9 @@ export default function CharacterArchitectPanel({
             <div className="world-field-grid">
               <label className="world-field">
                 <span>{t("character.fields.pronouns.label")}</span>
-                <input
-                  value={scalarText(sheet.pronouns)}
-                  onChange={(event) => updateField("pronouns", event.target.value)}
-                  placeholder={t("character.fields.pronouns.placeholder")}
+                <PronounsSelect
+                  value={sheet.pronouns}
+                  onChange={(value) => updateField("pronouns", value)}
                   disabled={editDisabled}
                 />
               </label>
@@ -867,6 +877,16 @@ export default function CharacterArchitectPanel({
                 value={scalarText(sheet.physical_type)}
                 onChange={(event) => updateField("physical_type", event.target.value)}
                 placeholder={t("character.fields.appearance.placeholder")}
+                disabled={editDisabled}
+              />
+            </label>
+
+            <label className="world-field">
+              <span>{t("character.fields.currentAppearance.label")}</span>
+              <AutoTextarea
+                value={scalarText(sheet.current_appearance)}
+                onChange={(event) => updateField("current_appearance", event.target.value)}
+                placeholder={t("character.fields.currentAppearance.placeholder")}
                 disabled={editDisabled}
               />
             </label>
@@ -978,7 +998,9 @@ export default function CharacterArchitectPanel({
                   </label>
                   <label className="world-field">
                     <span>{t("character.combat.senses.label")}</span>
-                    <input
+                    {/* Чувства часто длиннее строки («острое зрение, острый слух,
+                        идеальный нюх…») — растущая textarea вместо input. */}
+                    <AutoTextarea
                       value={scalarText(sheet.senses)}
                       onChange={(e) => updateField("senses", e.target.value)}
                       placeholder={t("character.combat.senses.placeholder")}

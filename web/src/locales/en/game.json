@@ -163,6 +163,7 @@
     "fields": {
       "role": "role",
       "type": "type",
+      "appearance": "current appearance",
       "features": "features",
       "condition": "condition",
       "status": "status",
@@ -326,6 +327,7 @@
       "title": "Scene: {{title}}",
       "present": "Currently in scene: {{names}}",
       "prefix": "Scene:",
+      "openLocation": "Open the location card for “{{title}}”",
       "inScene": "is now in the scene",
       "outsideScene": "is now outside the scene"
     },

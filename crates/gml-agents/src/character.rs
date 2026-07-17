@@ -118,7 +118,7 @@ pub async fn generate_character(
 fn clip_phrase(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return "(без описания)".to_string();
+        return "(no description)".to_string();
     }
     let clipped: String = trimmed.chars().take(100).collect();
     if clipped.chars().count() < trimmed.chars().count() {

@@ -8,6 +8,7 @@
 mod client;
 mod config;
 mod connector;
+mod image;
 mod oauth;
 mod protocol;
 mod stream;

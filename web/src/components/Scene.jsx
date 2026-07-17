@@ -1,41 +1,7 @@
 import { useContext } from "react";
 import { StatusLabelsContext } from "../statusContext.js";
-import Tooltip from "./Tooltip.jsx";
+import NpcTooltip from "./NpcTooltip.jsx";
 import { useTranslation } from "react-i18next";
-
-function SceneTipRow({ label, value }) {
-  if (!value) return null;
-  return (
-    <div className="scene-tip-row">
-      <span>{label}</span>
-      <b>{value}</b>
-    </div>
-  );
-}
-
-function SceneNpcTip({ npc, label, status, place }) {
-  const { t } = useTranslation("game");
-  const role = npc?.role || "";
-  const type = npc?.physical_type || "";
-  const features = npc?.distinctive_features || "";
-  const condition = npc?.condition || "";
-  return (
-    <div className="scene-tip">
-      <div className="scene-tip-head">
-        <span>{place ? t("scene.whereToFind") : t("scene.inScene")}</span>
-        <b>{label}</b>
-      </div>
-      <div className="scene-tip-rows">
-        <SceneTipRow label={t("scene.fields.role")} value={role} />
-        <SceneTipRow label={t("scene.fields.type")} value={type} />
-        <SceneTipRow label={t("scene.fields.features")} value={features} />
-        <SceneTipRow label={t("scene.fields.condition")} value={condition} />
-        <SceneTipRow label={t("scene.fields.status")} value={status} />
-        <SceneTipRow label={t("scene.fields.landmark")} value={place} />
-      </div>
-    </div>
-  );
-}
 
 function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -98,15 +64,15 @@ export default function Scene({ storyBrief, scene, npcs }) {
       <div className="legend">
         <span className="legend-label">{t("scene.presentLabel")}</span>
         {present.length ? present.map((n) => (
-          <Tooltip
+          <NpcTooltip
             key={n.id || npcLabel(n)}
             className="scene-person-chip"
-            tipClassName="scene-tip-wrap"
-            content={<SceneNpcTip npc={n} label={npcLabel(n)} />}
+            npc={n}
+            label={npcLabel(n)}
           >
             <span className="dot" style={{ "--c": n.color || "var(--entity-unknown)" }} />
             <span style={{ color: n.color || "var(--entity-unknown)" }}>{npcLabel(n)}</span>
-          </Tooltip>
+          </NpcTooltip>
         )) : <span>{t("scene.noNamedCharacters")}</span>}
       </div>
       {offscreen.length > 0 && (
@@ -116,17 +82,19 @@ export default function Scene({ storyBrief, scene, npcs }) {
             const w = whereabouts[n.id] || {};
             const place = w.location_name || w.location_id || t("scene.placeUnknown");
             return (
-              <Tooltip
+              <NpcTooltip
                 as="div"
                 className="whereabouts-row"
-                tipClassName="scene-tip-wrap"
                 key={n.id || npcLabel(n)}
-                content={<SceneNpcTip npc={n} label={npcLabel(n)} status={statusText(w.status)} place={place} />}
+                npc={n}
+                label={npcLabel(n)}
+                status={statusText(w.status)}
+                place={place}
               >
                 <span className="dot" style={{ "--c": n.color || "var(--entity-unknown)" }} />
                 <b style={{ color: n.color || "var(--entity-unknown)" }}>{npcLabel(n)}</b>
                 <span>{statusText(w.status)} · {place}</span>
-              </Tooltip>
+              </NpcTooltip>
             );
           })}
         </div>

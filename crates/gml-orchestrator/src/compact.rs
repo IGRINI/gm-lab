@@ -64,7 +64,7 @@ pub fn msg_text_for_summary(m: &Value) -> String {
     let role = m.get("role").map(py_str).unwrap_or_default();
     let mut content = m.get("content").map(py_str).unwrap_or_default();
     if role == "user" {
-        if content.starts_with(gml_agents::SNAPSHOT_HEADER)
+        if content.starts_with(gml_agents::SNAPSHOT_PREFIX)
             || content.starts_with(gml_agents::OPTIONS_NOTICE_PREFIX)
         {
             return String::new();

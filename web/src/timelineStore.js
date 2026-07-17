@@ -63,8 +63,12 @@ export function createTimeline() {
     return false;
   };
   // Attach to the matching call, or fall back to a standalone result card.
-  const toolResult = (toolName, payload) => {
-    if (!attachResult(toolName, payload)) push({ type: "tool_result", name: toolName, payload });
+  const toolResult = (toolName, payload, aliases = []) => {
+    if (attachResult(toolName, payload)) return;
+    for (const alias of aliases) {
+      if (attachResult(alias, payload)) return;
+    }
+    push({ type: "tool_result", name: toolName, payload });
   };
 
   function applyEvent(ev) {
@@ -117,17 +121,27 @@ export function createTimeline() {
       toolResult("get_npc_profile", d);
     } else if (k === "time") {
       toolResult("advance_time", d);
+    } else if (k === "character_update") {
+      // The generic event/tool pair supersedes the player-only one. The alias
+      // keeps a restored legacy call attachable if its result was saved under
+      // the new event kind.
+      toolResult("update_character", d, ["update_player_character"]);
     } else if (k === "player_character_update") {
-      toolResult("update_player_character", d);
+      // Old transcripts retain their original card name, while a mixed-version
+      // history can still attach the result to the generic call.
+      toolResult("update_player_character", d, ["update_character"]);
     } else if (k === "tool_search") {
       toolResult("tool_search", { text: d });
     } else if (k === "scene_update") {
       if (d?.title || d?.scene_id) {
         push({
           type: "scene_update",
+          scene: { ...d, present_npcs: d.present_npcs || [] },
           scene_id: d.scene_id,
+          location_id: d.location_id,
           title: d.title,
           description: d.description,
+          image_url: d.image_url,
           present_npcs: d.present_npcs || [],
         });
       } else {

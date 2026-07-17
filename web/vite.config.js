@@ -32,6 +32,8 @@ const API_PATHS = [
   "/story-architect",
   "/character-architect",
   "/sidecar",
+  "/images",
+  "/image-files",
 ];
 
 // Optional LAN + HTTPS dev so a phone can connect WITH hot-reload (and mic,

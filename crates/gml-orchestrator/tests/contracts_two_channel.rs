@@ -1,6 +1,6 @@
 //! Contract tests for the two-channel tool-result split on the NON-worldstate
 //! tools, ported from `gm-lab/test_contracts.py`:
-//!   roll_dice, get_npc_profile, advance_time, update_player_character,
+//!   roll_dice, get_npc_profile, advance_time, update_character,
 //!   get_world_fact, ask_npc.
 //!
 //! The contract (PORT_PLAN §5.2): `.full` is the machine payload (JSON or the
@@ -396,16 +396,17 @@ fn advance_time_two_channel() {
 }
 
 // =========================================================================
-// update_player_character (Python ≈ 1857-1873)
+// update_character
 // =========================================================================
 
 #[test]
-fn update_player_character_two_channel() {
+fn update_character_player_two_channel() {
     let mut s = session();
     let (events, result) = tokio_block_on(run_tool_collect(
         &mut s,
-        "update_player_character",
+        "update_character",
         &json!({
+            "target": "player",
             "fields": {"condition": "ранен", "hp": {"current": 5, "max": 9}},
             "reason": "получил ранение",
         }),
@@ -422,7 +423,28 @@ fn update_player_character_two_channel() {
 }
 
 #[test]
-fn update_player_character_inventory_add_only_emits_event_and_bumps_revision() {
+fn legacy_update_player_character_dispatches_to_the_player() {
+    let mut s = session();
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "update_player_character",
+        &json!({
+            "fields": {"condition": "промок"},
+            "reason": "старое сохранённое имя инструмента"
+        }),
+    ));
+
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(full["target"], "player");
+    assert_eq!(full["updated"], json!(["condition"]));
+    assert_eq!(s.world.player_character.condition, "промок");
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "player_character_update"));
+}
+
+#[test]
+fn update_character_inventory_add_only_emits_event_and_bumps_revision() {
     // K2.2: the delta-op path (only inventory_add, no full-array field) must fire
     // the PLAYER_CHARACTER_UPDATE event and bump card_revision exactly like a
     // full rewrite.
@@ -432,8 +454,9 @@ fn update_player_character_inventory_add_only_emits_event_and_bumps_revision() {
 
     let (events, result) = tokio_block_on(run_tool_collect(
         &mut s,
-        "update_player_character",
+        "update_character",
         &json!({
+            "target": "player",
             "fields": {"inventory_add": ["найденный ключ"]},
             "reason": "подобрал ключ",
         }),
@@ -455,6 +478,118 @@ fn update_player_character_inventory_add_only_emits_event_and_bumps_revision() {
         .any(|item| item == "найденный ключ"));
     assert_eq!(s.world.player_character.card_revision, before_rev + 1);
     assert!(events.iter().any(|e| e.kind == "player_character_update"));
+}
+
+#[test]
+fn update_character_npc_patches_only_requested_visible_fields() {
+    let mut s = session();
+    let npc = s.world.npcs.get("borin").expect("seeded NPC");
+    let before_revision = npc.card_revision;
+    let before_secret = npc.secret.clone();
+
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "update_character",
+        &json!({
+            "target": "npc",
+            "npc_id": "borin",
+            "fields": {
+                "current_appearance": "В чистом фартуке поверх льняной рубахи; рукава закатаны.",
+                "distinctive_features_add": ["старый ожог на левой ладони"]
+            },
+            "reason": "ладонь стала видна, когда он закатал рукав"
+        }),
+    ));
+
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(full["target"], "npc");
+    assert_eq!(full["npc_id"], "borin");
+    assert_eq!(
+        full["updated"],
+        json!(["current_appearance", "distinctive_features"])
+    );
+    let npc = s.world.npcs.get("borin").expect("seeded NPC");
+    assert!(npc.current_appearance.contains("льняной рубахи"));
+    assert!(npc.distinctive_features.contains("ожог на левой ладони"));
+    assert_eq!(npc.secret, before_secret);
+    assert_eq!(npc.card_revision, before_revision + 1);
+    assert!(events.iter().any(|e| e.kind == "character_update"));
+}
+
+#[test]
+fn update_character_npc_rejects_private_fields_atomically() {
+    let mut s = session();
+    let before = s.world.npcs.get("borin").expect("seeded NPC").clone();
+
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "update_character",
+        &json!({
+            "target": "npc",
+            "npc_id": "borin",
+            "fields": {
+                "current_appearance": "Этот допустимый патч тоже не должен примениться.",
+                "secret": "переписанная тайна"
+            },
+            "reason": "недопустимый частичный патч"
+        }),
+    ));
+
+    assert!(result.full.contains("Fields are not editable"));
+    assert!(model_plain(&result.model).contains("code: invalid_character_update"));
+    let after = s.world.npcs.get("borin").expect("seeded NPC");
+    assert_eq!(after.current_appearance, before.current_appearance);
+    assert_eq!(after.secret, before.secret);
+    assert_eq!(after.card_revision, before.card_revision);
+    assert!(!events.iter().any(|e| e.kind == "character_update"));
+}
+
+#[test]
+fn update_character_npc_requires_an_exact_roster_id() {
+    let mut s = session();
+    let before = s.world.npcs.get("borin").expect("seeded NPC").clone();
+
+    let (events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "update_character",
+        &json!({
+            "target": "npc",
+            "npc_id": "bor",
+            "fields": {"current_appearance": "Ошибочное изменение."},
+            "reason": "неполный id"
+        }),
+    ));
+
+    assert!(result.full.contains("exact npc_id"));
+    assert!(model_plain(&result.model).contains("code: invalid_character_update"));
+    let after = s.world.npcs.get("borin").expect("seeded NPC");
+    assert_eq!(after.current_appearance, before.current_appearance);
+    assert_eq!(after.card_revision, before.card_revision);
+    assert!(!events.iter().any(|e| e.kind == "character_update"));
+}
+
+#[test]
+fn update_character_npc_does_not_duplicate_comma_separated_traits() {
+    let mut s = session();
+    let before = s.world.npcs.get("borin").expect("seeded NPC").clone();
+    assert!(before.distinctive_features.contains("хриплый голос"));
+
+    let (_events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "update_character",
+        &json!({
+            "target": "npc",
+            "npc_id": "borin",
+            "fields": {"distinctive_features_add": ["хриплый голос"]},
+            "reason": "повтор уже известной приметы"
+        }),
+    ));
+
+    let full: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(full["updated"], json!([]));
+    let after = s.world.npcs.get("borin").expect("seeded NPC");
+    assert_eq!(after.distinctive_features, before.distinctive_features);
+    assert_eq!(after.card_revision, before.card_revision);
 }
 
 // =========================================================================
@@ -694,7 +829,7 @@ fn ask_npc_success_two_channel_and_label() {
         .model
         .contains("Private leads from an NPC to the player"));
     assert!(result.model.contains("nothing durable changed"));
-    assert!(result.model.contains("update_player_character"));
+    assert!(result.model.contains("update_character"));
     assert!(!result.full.contains(REMINDER_OPEN));
 
     // Model plain uses the player-facing "Борин (borin)" line, never npc_name.

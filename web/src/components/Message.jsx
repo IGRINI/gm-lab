@@ -6,6 +6,8 @@ import Tooltip, { TipContent } from "./Tooltip.jsx";
 import ToolCard from "./ToolCard.jsx";
 import ToolResultCard from "./ToolResultCard.jsx";
 import DiceRoll from "./DiceRoll.jsx";
+import { ZoomableImage } from "./ImagePreview.jsx";
+import NpcTooltip from "./NpcTooltip.jsx";
 import { NpcRosterContext } from "../npcContext.js";
 import { StatusLabelsContext } from "../statusContext.js";
 import { VisibilityContext, toolMode } from "../devSettings.js";
@@ -28,6 +30,10 @@ import { useTranslation } from "react-i18next";
 function npcVoice(roster, npc_id, name) {
   const npc = (roster || []).find((n) => (npc_id && n.id === npc_id) || n.name === name);
   return genderVoice(npc?.pronouns ?? npc?.gender);
+}
+
+function npcFromRoster(roster, npc_id, name) {
+  return (roster || []).find((n) => (npc_id && n.id === npc_id) || n.name === name) || null;
 }
 
 // Speaker button shown top-right of GM narration and NPC cards. Click streams +
@@ -131,9 +137,42 @@ function namesFromIds(ids, roster) {
   return rows.map((id) => byId.get(id) || id).filter(Boolean);
 }
 
+function sceneSnapshotFromMessage(message, liveScene) {
+  const stored = message?.scene && typeof message.scene === "object"
+    ? message.scene
+    : {
+        scene_id: message?.scene_id,
+        location_id: message?.location_id,
+        title: message?.title,
+        description: message?.description,
+        image_url: message?.image_url,
+        present_npcs: message?.present_npcs || [],
+      };
+  const current = liveScene && typeof liveScene === "object" ? liveScene : null;
+  const storedIdentity = stored.location_id || stored.scene_id || "";
+  const currentIdentity = current?.location_id || current?.scene_id || "";
+  const matchesCurrent = Boolean(
+    current
+      && ((storedIdentity && currentIdentity && storedIdentity === currentIdentity)
+        || (!storedIdentity && stored.title && stored.title === current.title))
+  );
+  const fallback = matchesCurrent ? current : {};
+  return {
+    ...fallback,
+    ...stored,
+    image_url: stored.image_url || fallback.image_url || "",
+    present_npcs: stored.present_npcs || fallback.present_npcs || [],
+  };
+}
+
 // Inline colored character name (used in pills/steps where there's no markdown).
 function NameTag({ name, roster }) {
-  return <b style={{ color: nameColor(name, roster) }}>{name}</b>;
+  const npc = npcFromRoster(roster, null, name);
+  return (
+    <NpcTooltip npc={npc} label={name}>
+      <b style={{ color: nameColor(name, roster) }}>{name}</b>
+    </NpcTooltip>
+  );
 }
 
 function agentLabel(agent, t) {
@@ -261,6 +300,8 @@ function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
 
 function Message({
   m,
+  scene,
+  onOpenScene,
   onRetry,
   retryBusy = false,
   onEditFrom,
@@ -302,50 +343,63 @@ function Message({
 
     case "npc": {
       const npcAccent = nameColor(m.name, roster);
+      const npc = npcFromRoster(roster, m.npc_id, m.name);
+      const portraitUrl = npc?.portrait_url || "";
       return (
-        <div className="card has-tts" style={{ "--c": npcAccent }}>
-          <TtsButton
-            msgKey={`${m.sid}:npc`}
-            segments={npcSegments({
-              name: m.name,
-              response: m.response,
-              beats: m.beats,
-              speech: m.speech,
-              action: m.action,
-              voice: npcVoice(roster, m.npc_id, m.name),
-            })}
-          />
-          <div className="hd">
-            <span className="dot" style={{ "--c": npcAccent }} />
-            <b><MarkdownInline>{m.name}</MarkdownInline></b>
-          </div>
-          <div className="speech">
-            {m.revealed ? (
-              <span className="txt"><MarkdownInline>{m.response || m.speech}</MarkdownInline></span>
-            ) : (
-              <span className="typing">{t("message.typing")}</span>
+        <div className={`card npc-message has-tts${portraitUrl ? " has-portrait" : ""}`} style={{ "--c": npcAccent }}>
+          {portraitUrl && (
+            <ZoomableImage
+              className="npc-message-portrait"
+              src={portraitUrl}
+              alt={m.name || ""}
+              title={m.name || ""}
+              loading="lazy"
+            />
+          )}
+          <div className="npc-message-body">
+            <TtsButton
+              msgKey={`${m.sid}:npc`}
+              segments={npcSegments({
+                name: m.name,
+                response: m.response,
+                beats: m.beats,
+                speech: m.speech,
+                action: m.action,
+                voice: npcVoice(roster, m.npc_id, m.name),
+              })}
+            />
+            <div className="hd">
+              <span className="dot" style={{ "--c": npcAccent }} />
+              <b><MarkdownInline>{m.name}</MarkdownInline></b>
+            </div>
+            <div className="speech">
+              {m.revealed ? (
+                <span className="txt"><MarkdownInline>{m.response || m.speech}</MarkdownInline></span>
+              ) : (
+                <span className="typing">{t("message.typing")}</span>
+              )}
+            </div>
+            {vis.npcInternals && m.hidden != null && (
+              <Spoiler label={t("message.hiddenThoughts")}><MarkdownText>{m.hidden}</MarkdownText></Spoiler>
+            )}
+            {vis.npcInternals && Array.isArray(m.beats) && m.beats.length > 0 && (
+              <Spoiler label={t("message.visibleSteps")}>
+                <ListBody items={m.beats.map((beat) => `${beat.kind}: ${beat.text}`)} />
+              </Spoiler>
+            )}
+            {!m.response && m.action && <div className="action">— <MarkdownInline>{m.action}</MarkdownInline></div>}
+            {vis.npcInternals && m.claims != null && (
+              <Spoiler label={t("message.responseBasis")}>
+                <ListBody items={m.claims} />
+              </Spoiler>
             )}
           </div>
-          {vis.npcInternals && m.hidden != null && (
-            <Spoiler label={t("message.hiddenThoughts")}><MarkdownText>{m.hidden}</MarkdownText></Spoiler>
-          )}
-          {vis.npcInternals && Array.isArray(m.beats) && m.beats.length > 0 && (
-            <Spoiler label={t("message.visibleSteps")}>
-              <ListBody items={m.beats.map((beat) => `${beat.kind}: ${beat.text}`)} />
-            </Spoiler>
-          )}
-          {!m.response && m.action && <div className="action">— <MarkdownInline>{m.action}</MarkdownInline></div>}
-          {vis.npcInternals && m.claims != null && (
-            <Spoiler label={t("message.responseBasis")}>
-              <ListBody items={m.claims} />
-            </Spoiler>
-          )}
         </div>
       );
     }
 
     case "tool": {
-      const mode = toolMode(m.name, vis);
+      const mode = toolMode(m.name, vis, m);
       if (mode === "hidden") return null;
       return (
         <ToolCard
@@ -360,8 +414,11 @@ function Message({
     }
 
     case "tool_result": {
-      const mode = toolMode(m.name, vis);
+      const mode = toolMode(m.name, vis, m);
       if (mode === "hidden") return null;
+      if (mode === "player") {
+        return <ToolCard name={m.name} result={m.payload} mode="player" />;
+      }
       return <ToolResultCard name={m.name} payload={m.payload} showRaw={vis.toolCalls} />;
     }
 
@@ -379,16 +436,51 @@ function Message({
     case "dice":
       return <div className="step dice">🎲 <MarkdownInline>{m.text}</MarkdownInline></div>;
 
-    case "scene_update":
+    case "scene_update": {
       if (m.title || m.scene_id) {
+        const sceneSnapshot = sceneSnapshotFromMessage(m, scene);
+        const sceneTitle = sceneSnapshot.title || sceneSnapshot.scene_id;
+        const imageUrl = sceneSnapshot.image_url || "";
+        const canOpen = typeof onOpenScene === "function";
         return (
-          <div className="step">
-          <div className="pill ok">{t("message.sceneUpdate.title", { title: m.title || m.scene_id })}</div>
-          <div className="step-note">
-              <MarkdownText>{t("message.sceneUpdate.present", {
-                names: presentNames.join(", ") || t("scene.noNamedCharacters"),
-              })}</MarkdownText>
-          </div>
+          <div className="scene-update-card">
+            {imageUrl ? (
+              <ZoomableImage
+                className="scene-update-art"
+                src={imageUrl}
+                alt={sceneTitle}
+                title={sceneTitle}
+                loading="lazy"
+              />
+            ) : (
+              <div className="scene-update-art scene-update-art-placeholder" aria-hidden="true">
+                <Icon name="image" size={24} />
+              </div>
+            )}
+            <div className="scene-update-copy">
+              <span className="scene-update-kicker">{t("message.sceneUpdate.prefix")}</span>
+              {canOpen ? (
+                <button
+                  type="button"
+                  className="scene-update-title"
+                  onClick={() => onOpenScene(sceneSnapshot)}
+                  aria-label={t("message.sceneUpdate.openLocation", { title: sceneTitle })}
+                >
+                  <span>{sceneTitle}</span>
+                  <Icon name="chevron-right" size={16} />
+                </button>
+              ) : (
+                <strong className="scene-update-title-static">{sceneTitle}</strong>
+              )}
+              {sceneSnapshot.description && (
+                <div className="scene-update-description">{sceneSnapshot.description}</div>
+              )}
+              <div className="scene-update-present">
+                <MarkdownText>{t("message.sceneUpdate.present", {
+                  names: presentNames.join(", ") || t("scene.noNamedCharacters"),
+                })}</MarkdownText>
+              </div>
+            </div>
           </div>
         );
       }
@@ -404,6 +496,7 @@ function Message({
           </div>
         </div>
       );
+    }
 
     case "npc_whereabouts": {
       const w = m.whereabouts || {};

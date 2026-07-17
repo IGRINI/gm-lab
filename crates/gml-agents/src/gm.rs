@@ -28,7 +28,10 @@ fn render(prompt: PromptId, context: Value) -> String {
 /// Used to detect whether a (possibly legacy) history already carries a
 /// snapshot, and to exclude the snapshot from compaction summaries.
 pub const SNAPSHOT_HEADER: &str =
-    "WORLD SNAPSHOT (актуальное состояние на момент снимка; дальше следи за дельтами из результатов тулов)";
+    "WORLD SNAPSHOT (current state at capture time; then follow deltas from tool results)";
+
+/// Stable prefix shared by current and legacy snapshot headers.
+pub const SNAPSHOT_PREFIX: &str = "WORLD SNAPSHOT (";
 
 /// Prefix of the append-only player-options toggle notice.
 pub const OPTIONS_NOTICE_PREFIX: &str = "PLAYER OPTION SUGGESTIONS: ";
@@ -125,7 +128,7 @@ pub fn is_snapshot_message(message: &Value) -> bool {
         && message
             .get("content")
             .and_then(Value::as_str)
-            .map(|c| c.starts_with(SNAPSHOT_HEADER))
+            .map(|c| c.starts_with(SNAPSHOT_PREFIX))
             .unwrap_or(false)
 }
 

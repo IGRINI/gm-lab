@@ -206,8 +206,22 @@ fn move_player_commits_a_valid_traversal_through_the_canon() {
     let mut session = seeded_session();
     let start = session.world.world_canon.player_place_id.clone();
     let transition_id = a_valid_transition(&session);
+    let expected_minutes = session
+        .world
+        .world_canon
+        .transition(&transition_id)
+        .map(|transition| {
+            gml_world::canon::travel::normalized_time_cost(
+                &transition.kind,
+                &transition.label,
+                &transition.destination_hint,
+                transition.time_cost,
+            )
+        })
+        .expect("valid transition");
+    let before_minutes = session.world.time.absolute_minutes;
 
-    let (_events, result) = block_on(run_tool_collect(
+    let (events, result) = block_on(run_tool_collect(
         &mut session,
         "move_player",
         &json!({"transition_id": transition_id, "reason": "иду через выход"}),
@@ -230,6 +244,18 @@ fn move_player_commits_a_valid_traversal_through_the_canon() {
     );
     // At least the move_player event was committed to the canon log.
     assert!(payload["events"].as_i64().unwrap_or(0) >= 1);
+    assert_eq!(payload["elapsed_minutes"], json!(expected_minutes));
+    assert_eq!(
+        session.world.time.absolute_minutes,
+        before_minutes + expected_minutes
+    );
+    assert_eq!(
+        session.world.time.absolute_minutes, session.world.world_canon.clock_minutes,
+        "ordinary movement must keep the visible and canonical clocks aligned"
+    );
+    assert!(events.iter().any(|event| {
+        event.kind == "time" && event.data["elapsed_minutes"] == json!(expected_minutes)
+    }));
 }
 
 #[test]
@@ -533,6 +559,106 @@ fn generate_location_enter_after_commit_moves_player_to_generated_place() {
 }
 
 #[test]
+fn generated_entry_uses_current_place_and_syncs_symmetric_travel_time() {
+    let mut session = seeded_session();
+    let current_place_id = session.world.world_canon.player_place_id.clone();
+    let logical_parent_id = "turnvale".to_string();
+    session.world.world_canon.insert_place(Place {
+        place_id: logical_parent_id.clone(),
+        name: "Тёрнвейл".to_string(),
+        kind: "settlement".to_string(),
+        ..Default::default()
+    });
+    session.world.scene.scene_id = "market_backyard_scene".to_string();
+    session.world.scene.constraints = vec!["Старое ограничение".to_string()];
+    session.world.scene.tension = "Старое напряжение".to_string();
+    session.world.scene.player_seen = vec!["Старое наблюдение".to_string()];
+    let before_minutes = session.world.time.absolute_minutes;
+
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "generate_location",
+        &json!({
+            "purpose": "city_point",
+            "request": "Игрок идёт два переулка к новой лавке и входит туда сейчас.",
+            "parent_place_id": logical_parent_id,
+            "commit": true,
+            "enter_after_commit": true,
+        }),
+    ));
+    let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(payload["ok"], json!(true), "payload: {payload}");
+    assert_eq!(payload["applied"]["entered"], json!(true));
+    assert_eq!(payload["applied"]["entry_time_minutes"], json!(7));
+    assert_eq!(payload["applied"]["elapsed_minutes"], json!(7));
+
+    let place_id = payload["applied"]["place_id"]
+        .as_str()
+        .expect("generated place id");
+    let place = session
+        .world
+        .world_canon
+        .place(place_id)
+        .expect("generated place committed");
+    assert_eq!(place.parent, "turnvale", "logical parent is preserved");
+
+    let entry_transition_id = payload["applied"]["entry_transition_id"]
+        .as_str()
+        .expect("entry transition id");
+    let entry = session
+        .world
+        .world_canon
+        .transition(entry_transition_id)
+        .expect("entry transition committed");
+    assert_eq!(entry.from_place, current_place_id);
+    assert_eq!(entry.to_place, place_id);
+    assert_eq!(entry.time_cost, 7);
+    let back = session
+        .world
+        .world_canon
+        .exits_from(place_id)
+        .into_iter()
+        .find(|transition| transition.to_place == current_place_id)
+        .expect("symmetric return transition");
+    assert_eq!(back.time_cost, entry.time_cost);
+    assert_eq!(back.risk, entry.risk);
+    let back_transition_id = back.transition_id.clone();
+
+    assert_eq!(session.world.time.absolute_minutes, before_minutes + 7);
+    assert_eq!(
+        session.world.time.absolute_minutes,
+        session.world.world_canon.clock_minutes
+    );
+    assert!(events.iter().all(|event| event.kind != "error"));
+    assert!(events
+        .iter()
+        .any(|event| { event.kind == "time" && event.data["elapsed_minutes"] == json!(7) }));
+    assert_eq!(session.world.scene.scene_id, place_id);
+    assert!(session.world.scene.constraints.is_empty());
+    assert!(session.world.scene.tension.is_empty());
+    assert!(session.world.scene.player_seen.is_empty());
+
+    let (_events, return_result) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": back_transition_id, "reason": "возвращаюсь"}),
+    ));
+    let return_payload: Value =
+        serde_json::from_str(&return_result.full).expect("return result is JSON");
+    assert_eq!(return_payload["elapsed_minutes"], json!(7));
+    assert_eq!(session.world.scene.scene_id, "market_backyard_scene");
+    assert_eq!(
+        session.world.scene.constraints,
+        vec!["Старое ограничение".to_string()]
+    );
+    assert_eq!(session.world.scene.tension, "Старое напряжение");
+    assert_eq!(
+        session.world.scene.player_seen,
+        vec!["Старое наблюдение".to_string()]
+    );
+}
+
+#[test]
 fn generate_location_skips_duplicate_generated_return_exit_to_parent() {
     let world = World::from_seed_with_dice_seed(&default_story_seed(), 20260622);
     let here = world.world_canon.player_place_id.clone();
@@ -814,6 +940,60 @@ fn set_model_for_all_clients_updates_location_generator_state_and_cache_identity
 }
 
 #[test]
+fn move_player_auto_fills_lazy_destination_with_one_scene_update() {
+    let mut session = seeded_session();
+    let from = session.world.world_canon.player_place_id.clone();
+    let destination = "raw_cell".to_string();
+    session.world.world_canon.insert_place(Place {
+        place_id: destination.clone(),
+        name: "Сырая келья".to_string(),
+        kind: "room".to_string(),
+        provenance: Provenance::by("test", "lazy destination", 0),
+        ..Default::default()
+    });
+    let transition_id = "follow_tracks".to_string();
+    session.world.world_canon.insert_transition(Transition {
+        transition_id: transition_id.clone(),
+        source_exit_id: transition_id.clone(),
+        from_place: from,
+        to_place: destination.clone(),
+        destination_hint: "сырая келья".to_string(),
+        label: "Дальше по следу".to_string(),
+        kind: "passage".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 2,
+        risk: "low".to_string(),
+        provenance: Provenance::by("test", "short passage", 0),
+        ..Default::default()
+    });
+
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": transition_id, "reason": "иду дальше по следу"}),
+    ));
+    let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
+
+    assert_eq!(payload["ok"], json!(true));
+    assert_eq!(session.world.world_canon.player_place_id, destination);
+    assert!(
+        payload["generated_destination"]["applied"]["place_id"]
+            .as_str()
+            .is_some(),
+        "the lazy destination must be filled: {payload}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "scene_update")
+            .count(),
+        1,
+        "one move must publish exactly one final scene update: {events:?}"
+    );
+}
+
+#[test]
 fn move_player_auto_generates_long_road_situation_content() {
     let mut session = seeded_session();
     let from = session.world.world_canon.player_place_id.clone();
@@ -842,7 +1022,7 @@ fn move_player_auto_generates_long_road_situation_content() {
         ..Default::default()
     });
 
-    let (_events, result) = block_on(run_tool_collect(
+    let (events, result) = block_on(run_tool_collect(
         &mut session,
         "move_player",
         &json!({"transition_id": transition_id, "reason": "долгий путь"}),
@@ -871,6 +1051,14 @@ fn move_player_auto_generates_long_road_situation_content() {
             .values()
             .any(|m| m.created_by == "location_generator" && m.place_ids.contains(&current)),
         "generated road situation must write location memory"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "scene_update")
+            .count(),
+        1,
+        "an interrupted move must publish exactly one final scene update: {events:?}"
     );
 }
 
@@ -1893,7 +2081,7 @@ fn cast_spell_unknown_is_a_clean_tool_error_with_known_hint() {
 }
 
 #[test]
-fn cast_spell_no_slots_is_rejected_as_fiction() {
+fn cast_spell_no_slots_is_a_clean_pre_resolution_rejection() {
     let mut session = caster_session();
     // Spend the only level-1 slot, then try again -> no_slots.
     block_on(run_tool_collect(
@@ -2086,12 +2274,12 @@ fn long_rest_restores_slots_hp_concentration_and_advances_eight_hours() {
 
     // The result text carries the new-time line (as advance_time renders it).
     assert!(
-        result.model.contains(&session.world.time_summary()),
+        result.model.contains(&session.world.model_time_summary()),
         "result must carry the new time line: {}",
         result.model
     );
     assert!(
-        result.model.contains("восстановлено"),
+        result.model.contains("restored"),
         "result must summarize the restoration: {}",
         result.model
     );
@@ -2225,6 +2413,33 @@ fn tool_staleness_maps_round_trip_through_payload() {
         restored.loaded_gm_tools, session.loaded_gm_tools,
         "the exact loaded-tool set survives the round-trip"
     );
+
+    // Saves written before the public rename keep working without exposing the
+    // retired schema name to the next model turn. Collisions keep the newest
+    // staleness value.
+    let mut pre_rename = payload.clone();
+    let pre_rename_object = pre_rename.as_object_mut().expect("payload object");
+    pre_rename_object.insert(
+        "loaded_gm_tools".to_string(),
+        json!(["advance_time", "update_player_character"]),
+    );
+    pre_rename_object.insert(
+        "tool_last_used".to_string(),
+        json!({"update_character": 2, "update_player_character": 7}),
+    );
+    pre_rename_object.insert(
+        "tool_loaded_turn".to_string(),
+        json!({"update_player_character": 5}),
+    );
+    let migrated =
+        Session::from_payload(&pre_rename, client(), factory()).expect("old tool name migrates");
+    assert!(migrated.loaded_gm_tools.contains("update_character"));
+    assert!(!migrated.loaded_gm_tools.contains("update_player_character"));
+    assert_eq!(migrated.tool_last_used.get("update_character"), Some(&7));
+    assert_eq!(migrated.tool_loaded_turn.get("update_character"), Some(&5));
+    assert!(!migrated
+        .tool_last_used
+        .contains_key("update_player_character"));
 
     // A legacy payload with staleness maps reconstructs a deterministic safe
     // set: initial tools plus valid names evidenced by those maps.

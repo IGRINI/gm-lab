@@ -45,6 +45,8 @@ fn or_default<'a>(value: &'a str, default: &'a str) -> &'a str {
     }
 }
 
+const NOT_SPECIFIED: &str = "(not specified)";
+
 /// `npc_card_block(npc)` — the late CURRENT NPC CARD block.
 pub fn npc_card_block(npc: &Npc) -> String {
     // mechanics dict, then drop None/""/{}/[] entries, then compact-json.
@@ -85,20 +87,21 @@ pub fn npc_card_block(npc: &Npc) -> String {
     let fields = NpcCardFields {
         revision: &revision,
         name: &npc.name,
-        role: or_default(&npc.role, "(не указана)"),
+        role: or_default(&npc.role, NOT_SPECIFIED),
         gender: or_default(&npc.pronouns, "OTHER"),
-        public_label: or_default(&npc.public_label, "(не указан)"),
-        age: or_default(&npc.age, "(не указан)"),
-        physical_type: or_default(&npc.physical_type, "(не указан)"),
-        distinctive_features: or_default(&npc.distinctive_features, "(не указаны)"),
+        public_label: or_default(&npc.public_label, NOT_SPECIFIED),
+        age: or_default(&npc.age, NOT_SPECIFIED),
+        physical_type: or_default(&npc.physical_type, NOT_SPECIFIED),
+        distinctive_features: or_default(&npc.distinctive_features, NOT_SPECIFIED),
+        current_appearance: or_default(&npc.current_appearance, NOT_SPECIFIED),
         life_status: or_default(&npc.life_status, "alive"),
-        condition: or_default(&npc.condition, "(не указано)"),
+        condition: or_default(&npc.condition, NOT_SPECIFIED),
         persona: &npc.persona,
-        personality: or_default(&npc.personality, "(не указано)"),
-        values: or_default(&npc.values, "(не указаны)"),
-        habits: or_default(&npc.habits, "(не указаны)"),
-        pressure_response: or_default(&npc.pressure_response, "(не указано)"),
-        boundaries: or_default(&npc.boundaries, "(не указаны)"),
+        personality: or_default(&npc.personality, NOT_SPECIFIED),
+        values: or_default(&npc.values, NOT_SPECIFIED),
+        habits: or_default(&npc.habits, NOT_SPECIFIED),
+        pressure_response: or_default(&npc.pressure_response, NOT_SPECIFIED),
+        boundaries: or_default(&npc.boundaries, NOT_SPECIFIED),
         voice: &npc.voice,
         goals: &npc.goals,
         knowledge: &npc.knowledge,

@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { ZoomableImage } from "./ImagePreview.jsx";
 import Modal from "./Modal.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
+import NpcTooltip from "./NpcTooltip.jsx";
 
 // Player-facing detail modal for the world HUD: shows either the current
 // location (scene) or the player's own character sheet. All data comes from
@@ -253,7 +255,7 @@ function npcColor(n) {
   return n?.color || "var(--entity-unknown)";
 }
 function npcHint(n) {
-  return [n?.role, n?.physical_type, n?.distinctive_features, n?.condition].filter(Boolean).join(" · ");
+  return [n?.role, n?.physical_type, n?.current_appearance, n?.distinctive_features, n?.condition].filter(Boolean).join(" · ");
 }
 
 function LocationDetail({ scene, npcs, statusLabels }) {
@@ -279,14 +281,34 @@ function LocationDetail({ scene, npcs, statusLabels }) {
 
   return (
     <div className="wd">
+      {txt(scene?.image_url) && (
+        <ZoomableImage
+          className="wd-location-art"
+          src={scene.image_url}
+          alt={txt(scene?.title) || t("worldDetail.location.title")}
+          title={txt(scene?.title)}
+        />
+      )}
       {description && <p className="wd-desc">{description}</p>}
 
       <Section title={t("worldDetail.location.presentCharacters")} when={present.length > 0} tone="green">
         <div className="wd-npcs">
           {present.map((n) => (
             <div className="wd-npc" key={n.id || npcName(n, t)}>
-              <span className="dot" style={{ "--c": npcColor(n) }} />
-              <b style={{ color: npcColor(n) }}>{npcName(n, t)}</b>
+              {txt(n?.portrait_url) ? (
+                <ZoomableImage
+                  className="wd-npc-portrait"
+                  src={n.portrait_url}
+                  alt={npcName(n, t)}
+                  title={npcName(n, t)}
+                  loading="lazy"
+                />
+              ) : (
+                <span className="dot" style={{ "--c": npcColor(n) }} />
+              )}
+              <NpcTooltip npc={n} label={npcName(n, t)}>
+                <b style={{ color: npcColor(n) }}>{npcName(n, t)}</b>
+              </NpcTooltip>
               {npcHint(n) && <span className="wd-npc-hint">{npcHint(n)}</span>}
             </div>
           ))}
@@ -300,8 +322,25 @@ function LocationDetail({ scene, npcs, statusLabels }) {
             const place = txt(w.location_name) || txt(w.location_id) || t("worldDetail.location.placeUnknown");
             return (
               <div className="wd-npc" key={n.id || npcName(n, t)}>
-                <span className="dot" style={{ "--c": npcColor(n) }} />
-                <b style={{ color: npcColor(n) }}>{npcName(n, t)}</b>
+                {txt(n?.portrait_url) ? (
+                  <ZoomableImage
+                    className="wd-npc-portrait"
+                    src={n.portrait_url}
+                    alt={npcName(n, t)}
+                    title={npcName(n, t)}
+                    loading="lazy"
+                  />
+                ) : (
+                  <span className="dot" style={{ "--c": npcColor(n) }} />
+                )}
+                <NpcTooltip
+                  npc={n}
+                  label={npcName(n, t)}
+                  status={statusText(w.status)}
+                  place={place}
+                >
+                  <b style={{ color: npcColor(n) }}>{npcName(n, t)}</b>
+                </NpcTooltip>
                 <span className="wd-npc-hint">{statusText(w.status)} · {place}</span>
               </div>
             );
@@ -361,6 +400,14 @@ function CharacterDetail({ pc }) {
 
   return (
     <div className="wd wd-char">
+      {txt(pc?.portrait_url) && (
+        <ZoomableImage
+          className="wd-character-portrait"
+          src={pc.portrait_url}
+          alt={txt(pc?.name) || t("worldDetail.character.about")}
+          title={txt(pc?.name)}
+        />
+      )}
       {hasVitals && (
         <div className="wd-vitals">
           <Vital label={t("worldDetail.character.armorClass")} value={ac} tone="blue" />
@@ -379,6 +426,7 @@ function CharacterDetail({ pc }) {
           <FieldCard label={t("worldDetail.character.life")} value={life} tone={lifeTone(pc?.life_status)} />
           <FieldCard label={t("worldDetail.character.background")} value={pc?.background} wide />
           <FieldCard label={t("worldDetail.character.appearance")} value={pc?.physical_type} wide />
+          <FieldCard label={t("worldDetail.character.currentAppearance")} value={pc?.current_appearance} wide />
           <FieldCard label={t("worldDetail.character.features")} value={pc?.distinctive_features} wide />
           <FieldCard label={t("worldDetail.character.condition")} value={pc?.condition} wide tone="amber" />
           <FieldCard label={t("worldDetail.character.statusNote")} value={pc?.life_status_note} wide />

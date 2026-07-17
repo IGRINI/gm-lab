@@ -23,7 +23,8 @@ pub use backend::{
 pub use connector::{
     ConnectorAuthKind, ConnectorAuthMethod, ConnectorAuthStart, ConnectorAuthStatus,
     ConnectorCapability, ConnectorDescriptor, ConnectorError, ConnectorId, ConnectorRegistry,
-    ModelBinding, ModelConnector, ModelDescriptor,
+    GeneratedImage, ImageGenerationRequest, ImageGenerationResult, ModelBinding, ModelConnector,
+    ModelDescriptor,
 };
 pub use identity::SessionIdentity;
 pub use json_helpers::{

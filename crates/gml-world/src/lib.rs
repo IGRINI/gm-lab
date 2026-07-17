@@ -28,15 +28,15 @@ pub use canon::{
     WorldCanon, WorldLore, WorldSpec, GENERATOR_VERSION,
 };
 pub use model::{
-    FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem,
-    SceneState, SpellEntry, StateRecord, WorldEvent, WorldFact, WorldTime,
+    FactRecord, Npc, NpcWhereabouts, PlaceSceneContext, PlayerCharacter, Presence, Rumor,
+    SceneExit, SceneItem, SceneState, SpellEntry, StateRecord, WorldEvent, WorldFact, WorldTime,
 };
 pub use rng::{MersenneTwister, RngState};
 pub use state_record::{state_record_hash, RagDocument};
 pub use world::{
-    public_gender, public_role, PackageRef, RagRetriever, RetrievedFact, StateRecordQuery, World,
-    SOURCE_CURRENT_SCENE, SOURCE_DEFAULT_LORE, SOURCE_GM, SOURCE_MOVE_NPC, SOURCE_NPC_ROSTER,
-    SOURCE_PREVIOUS_SCENE, SOURCE_SEED, WHEREABOUTS_STATUS_LABELS,
+    model_gender_label, public_gender, public_role, PackageRef, RagRetriever, RetrievedFact,
+    StateRecordQuery, World, SOURCE_CURRENT_SCENE, SOURCE_DEFAULT_LORE, SOURCE_GM, SOURCE_MOVE_NPC,
+    SOURCE_NPC_ROSTER, SOURCE_PREVIOUS_SCENE, SOURCE_SEED, WHEREABOUTS_STATUS_LABELS,
 };
 
 /// `StateRecordQuery` lives in the `world` module; this alias mirrors the

@@ -1,1 +1,1 @@
-Похоже, такой персонаж уже есть в ростере. Используйте существующего через move_npc/ask_npc, либо повторите generate_npc с retry=true и укажите в request, чем предложенные кандидаты не подходят.
+This character appears to already exist in the roster. Use the existing character through move_npc/ask_npc, or call generate_npc again with retry=true and explain in request why the suggested candidates do not fit.

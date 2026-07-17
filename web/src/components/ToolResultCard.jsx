@@ -258,12 +258,21 @@ export function resultView(name, p, t) {
       };
     }
 
+    case "update_character":
     case "update_player_character": {
       const updated = Array.isArray(payload.updated) ? payload.updated : [];
+      const isNpc = payload.target === "npc";
       return {
         icon: <Icon name="shield" size={14} />,
         accent: "var(--player)",
-        title: t("results.playerSheet.title"),
+        title: isNpc ? (
+          <>
+            {t("results.character.npcTitle")}
+            {nonEmpty(payload.npc_id)
+              ? <NpcRef id={payload.npc_id} />
+              : nonEmpty(payload.label) && <Badge tone="muted">{payload.label}</Badge>}
+          </>
+        ) : t("results.character.playerTitle"),
         body: (
           <>
             <div className="tc-chips">

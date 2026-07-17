@@ -1,1 +1,1 @@
-Продолжай точечные правки или кратко ответь в чат.
+Continue with targeted edits, or reply briefly in chat in the configured response language.

@@ -200,7 +200,9 @@ fn caps_at_15_lines_with_offscreen_note() {
     let roster_lines = roster.lines().filter(|l| l.starts_with("- id=")).count();
     assert_eq!(roster_lines, 15, "roster must cap at 15 id lines: {roster}");
     assert!(
-        roster.contains("+5 offscreen") && roster.contains("read_state(roster)"),
+        roster.contains("+5 offscreen")
+            && roster.contains("read_state(roster)")
+            && roster.contains("for the full list"),
         "over-cap roster must note the offscreen count: {roster}"
     );
 }

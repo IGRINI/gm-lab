@@ -76,7 +76,7 @@ impl ArchitectConfig for WorldArchitectConfig {
                     ToolApplication {
                         args: nested,
                         changed: false,
-                        result: "Аргументы draft_world_bible не разобраны — черновик не изменён."
+                        result: "The draft_world_bible arguments could not be parsed; the draft was not changed."
                             .to_string(),
                     }
                 }
@@ -98,7 +98,7 @@ impl ArchitectConfig for WorldArchitectConfig {
             _ => ToolApplication {
                 args: Value::Object(args.clone()),
                 changed: false,
-                result: format!("Неизвестный инструмент архитектора: {name}."),
+                result: format!("Unknown world architect tool: {name}."),
             },
         }
     }
@@ -132,7 +132,7 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
     if let Some(Value::Object(set)) = args.get("set") {
         if !set.is_empty() {
             lines.push(format!(
-                "Поля обновлены: {}.",
+                "Fields updated: {}.",
                 set.keys()
                     .map(String::as_str)
                     .collect::<Vec<_>>()
@@ -144,7 +144,7 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
         for (key, value) in replace {
             stage.insert(key.clone(), value.clone());
             lines.push(format!(
-                "{key}: раздел заменён ({} записей).",
+                "{key}: section replaced ({} entries).",
                 list_len(&stage, key)
             ));
         }
@@ -168,9 +168,9 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
                 }
             }
             let skipped = items.len().saturating_sub(added);
-            let mut line = format!("{key}: добавлено {added} (теперь {})", existing.len());
+            let mut line = format!("{key}: added {added} (now {})", existing.len());
             if skipped > 0 {
-                line.push_str(&format!(", {skipped} пропущено как дубли"));
+                line.push_str(&format!(", {skipped} skipped as duplicates"));
             }
             line.push('.');
             lines.push(line);
@@ -194,7 +194,7 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
                 }
                 if removed > 0 {
                     lines.push(format!(
-                        "{key}: удалено {removed} (теперь {}).",
+                        "{key}: removed {removed} (now {}).",
                         existing.len()
                     ));
                 }
@@ -207,7 +207,7 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
             }
             if !misses.is_empty() {
                 lines.push(format!(
-                    "{key}: НЕ найдено для удаления: {} — точного совпадения нет; прочитай раздел read_world_bible и повтори с точной строкой.",
+                    "{key}: NOT found for removal: {} — no exact match; read the section with read_world_bible and retry with the exact string.",
                     misses.join(", ")
                 ));
             }
@@ -215,7 +215,7 @@ fn world_edit_facts(args: &Map<String, Value>, before: &Value, _after: &Value) -
     }
 
     if lines.is_empty() {
-        return "Правка НИЧЕГО не изменила (пустые операции). Прочитай нужный раздел read_world_bible и повтори с точными данными.".to_string();
+        return "The edit changed NOTHING (empty operations). Read the required section with read_world_bible and retry with exact data.".to_string();
     }
     lines.push(
         render_prompt(PromptId::ArchitectEditSuccess, json!({}))
@@ -243,7 +243,7 @@ fn read_world_bible_result(args: &Map<String, Value>, working_draft: &Value) -> 
         .unwrap_or_default();
     let draft = match working_draft.as_object() {
         Some(m) => m,
-        None => return "Библия пуста.".to_string(),
+        None => return "The world bible is empty.".to_string(),
     };
     let lore = draft.get("world_lore").and_then(Value::as_object);
 
@@ -273,7 +273,7 @@ fn read_world_bible_result(args: &Map<String, Value>, working_draft: &Value) -> 
                     if let Some(block) = bible_section_block(&name, v) {
                         blocks.push(block);
                     } else {
-                        blocks.push(format!("## {name}\n(пусто)"));
+                        blocks.push(format!("## {name}\n(empty)"));
                     }
                 }
                 None => unknown.push(name),
@@ -281,11 +281,11 @@ fn read_world_bible_result(args: &Map<String, Value>, working_draft: &Value) -> 
         }
     }
     if blocks.is_empty() {
-        blocks.push("(пусто)".to_string());
+        blocks.push("(empty)".to_string());
     }
     if !unknown.is_empty() {
         blocks.push(format!(
-            "Нет таких разделов: {}. Доступны поля ({}) и разделы world_lore.",
+            "No such sections: {}. Available fields: ({}), plus world_lore sections.",
             unknown.join(", "),
             DRAFT_SUMMARY_FIELDS.join(", ")
         ));
@@ -309,7 +309,7 @@ fn bible_section_block(name: &str, value: &Value) -> Option<String> {
                 return None;
             }
             Some(format!(
-                "## {name} ({} записей)\n{}",
+                "## {name} ({} entries)\n{}",
                 bullets.len(),
                 bullets.join("\n")
             ))
@@ -431,15 +431,14 @@ fn world_architect_edit_tool_schema(options: WorldArchitectOptions) -> Value {
     } else {
         "title, genre, tone, world_size, population, public_premise, hidden_premise"
     };
-    let language_note = if options.image_prompts {
-        "All canon text is Russian; world_image_prompt_en and world_map_prompt_en must be English image-generation prompts."
+    let image_language_note = if options.image_prompts {
+        " world_image_prompt_en and world_map_prompt_en must be English image-generation prompts."
     } else {
-        "All text in Russian."
+        ""
     };
-    let description = format!("Patch the EXISTING world bible — change only what differs, do NOT resend the whole draft. Prefer this over draft_world_bible once a draft exists. List-section keys: dogmas, world_laws, inhabitants, creatures, power_sources, technologies, taboos, conflicts, inspirations, regions, power_centers, religions, gods, cultures, history, economy, daily_life, story_hooks, hidden_secrets, location_rules, prohibited_elements. {language_note}");
-    let set_description = format!(
-        "Overwrite scalar fields. Keys: {scalar_keys}. Example: {{\"tone\": \"мрачный\"}}."
-    );
+    let description = format!("Patch the EXISTING world bible — change only what differs, do NOT resend the whole draft. Prefer this over draft_world_bible once a draft exists. List-section keys: dogmas, world_laws, inhabitants, creatures, power_sources, technologies, taboos, conflicts, inspirations, regions, power_centers, religions, gods, cultures, history, economy, daily_life, story_hooks, hidden_secrets, location_rules, prohibited_elements.{image_language_note}");
+    let set_description =
+        format!("Overwrite scalar fields. Keys: {scalar_keys}. Example: {{\"tone\": \"bleak\"}}.");
     json!({
         "type": "function",
         "function": {
@@ -455,9 +454,9 @@ fn world_architect_edit_tool_schema(options: WorldArchitectOptions) -> Value {
                 "additionalProperties": false,
                 "properties": {
                     "set": str_map(&set_description),
-                    "add": list_map("Append entries to list sections (existing entries kept). Example: {\"religions\": [\"культ безмолвных дорог\"]}."),
-                    "remove": list_map("Remove exact entries from list sections. Example: {\"taboos\": [\"устаревшее табу\"]}."),
-                    "replace": list_map("Replace whole list sections. Example: {\"gods\": [\"единственный молчаливый бог\"]}.")
+                    "add": list_map("Append entries to list sections (existing entries kept). Example: {\"religions\": [\"cult of the silent roads\"]}."),
+                    "remove": list_map("Remove exact entries from list sections. Example: {\"taboos\": [\"an obsolete taboo\"]}."),
+                    "replace": list_map("Replace whole list sections. Example: {\"gods\": [\"the sole silent god\"]}.")
                 }
             }
         }
@@ -473,7 +472,8 @@ fn world_architect_edit_tool_schema(options: WorldArchitectOptions) -> Value {
 /// ([`nest_draft_args`]).
 ///
 /// Each list field is a string array; the model should fill every RELEVANT
-/// section with several (≈3-6) concrete, specific entries in Russian — the
+/// section with several (≈3-6) concrete, specific entries in the configured
+/// response language — the
 /// descriptions are the contract the model reads.
 fn world_architect_tool_schema(options: WorldArchitectOptions) -> Value {
     // One field = one terse, front-loaded description. The "fill several concrete
@@ -517,7 +517,7 @@ fn world_architect_tool_schema(options: WorldArchitectOptions) -> Value {
     );
     properties.insert(
         "dogmas".to_string(),
-        lore_list("Core beliefs/axioms this world treats as truth (догматы)."),
+        lore_list("Core beliefs/axioms this world treats as truth."),
     );
     properties.insert("world_laws".to_string(), lore_list("Hard rules of reality — magic, technology, divinity, death, travel — with their limits and costs."));
     properties.insert(
@@ -584,7 +584,7 @@ fn world_architect_tool_schema(options: WorldArchitectOptions) -> Value {
         "prohibited_elements".to_string(),
         lore_list("Things that must NOT appear in this world without a special reason."),
     );
-    let language_note = if options.image_prompts {
+    if options.image_prompts {
         properties.insert(
             WORLD_IMAGE_PROMPT_FIELD.to_string(),
             json!({
@@ -599,15 +599,12 @@ fn world_architect_tool_schema(options: WorldArchitectOptions) -> Value {
                 "description": "English image-generation prompt for a readable world map. Describe map style, geography, regions, borders, settlements, routes, labels/cartography and scale. This is a map, not a scene illustration."
             }),
         );
-        " Canon fields are Russian; world_image_prompt_en and world_map_prompt_en must be English prompts."
-    } else {
-        " Write all values in Russian."
-    };
+    }
     json!({
         "type": "function",
         "function": {
             "name": "draft_world_bible",
-            "description": format!("Create or update the reusable world bible (world canon) as a FLAT draft: every field is top-level, nothing is nested. Fill every field the world can support — each list section gets several (about 3-6) concrete, specific entries, not one vague line. title/genre/tone/world_size/population/public_premise are the short player-facing summary; the list sections plus hidden_premise are the full canon. hidden_premise and hidden_secrets are GM-only and must stay out of the player-facing fields.{language_note}"),
+            "description": "Create or update the reusable world bible (world canon) as a FLAT draft: every field is top-level, nothing is nested. Fill every field the world can support — each list section gets several (about 3-6) concrete, specific entries, not one vague line. title/genre/tone/world_size/population/public_premise are the short player-facing summary; the list sections plus hidden_premise are the full canon. hidden_premise and hidden_secrets are GM-only and must stay out of the player-facing fields.",
             "parameters": {
                 "type": "object",
                 "additionalProperties": true,
@@ -883,15 +880,15 @@ mod tests {
         let applied =
             config.apply_tool("edit_world_bible", args.as_object().unwrap(), &mut working);
         assert!(applied.changed);
-        assert!(applied.result.contains("Поля обновлены: tone."));
+        assert!(applied.result.contains("Fields updated: tone."));
         // One of the two adds was a duplicate.
-        assert!(applied.result.contains("добавлено 1"), "{}", applied.result);
-        assert!(applied.result.contains("пропущено как дубли"));
+        assert!(applied.result.contains("added 1"), "{}", applied.result);
+        assert!(applied.result.contains("skipped as duplicates"));
         // One remove hit, one missed — the miss is called out with the nudge.
-        assert!(applied.result.contains("удалено 1"), "{}", applied.result);
+        assert!(applied.result.contains("removed 1"), "{}", applied.result);
         assert!(applied
             .result
-            .contains("НЕ найдено для удаления: «такого табу нет»"));
+            .contains("NOT found for removal: «такого табу нет»"));
         assert!(applied.result.contains("read_world_bible"));
 
         // A remove that matches nothing at all must NOT read as success.
@@ -901,8 +898,8 @@ mod tests {
             miss_only.as_object().unwrap(),
             &mut working,
         );
-        assert!(!applied.result.contains("удалено"));
-        assert!(applied.result.contains("НЕ найдено для удаления"));
+        assert!(!applied.result.contains("removed"));
+        assert!(applied.result.contains("NOT found for removal"));
     }
 
     #[test]
@@ -931,10 +928,10 @@ mod tests {
         let out = config
             .apply_tool("read_world_bible", &args, &mut working)
             .result;
-        assert!(out.contains("## taboos (2 записей)"));
+        assert!(out.contains("## taboos (2 entries)"));
         assert!(out.contains("- нельзя свистеть ночью"));
         assert!(out.contains("## title\nКарагай"));
-        assert!(out.contains("Нет таких разделов: nope"));
+        assert!(out.contains("No such sections: nope"));
         assert!(!out.trim_start().starts_with('{'), "not JSON: {out}");
     }
 

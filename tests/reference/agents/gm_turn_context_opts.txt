@@ -1,13 +1,13 @@
-WORLD SNAPSHOT (актуальное состояние на момент снимка; дальше следи за дельтами из результатов тулов)
+WORLD SNAPSHOT (current state at capture time; then follow deltas from tool results)
 
 TIME STATE:
 Current world time: Утро после убийства, 08:00
 Previous player turn elapsed: 0 minutes
 
 DYNAMIC NPC ROSTER (relevant/nearby now; tool ids; internal_name is GM-only unless player_label matches it; use read_state(roster) for the full list):
-- id=borin; internal_name=Борин; player_label=Борин; role=трактирщик; род=мужской род
-- id=lysa; internal_name=Лиза; player_label=служанка; role=служанка; род=женский род
-- id=mareth; internal_name=Капитан Марет; player_label=Капитан Марет; role=капитан стражи; род=женский род
+- id=borin; internal_name=Борин; player_label=Борин; role=трактирщик; gender=masculine
+- id=lysa; internal_name=Лиза; player_label=служанка; role=служанка; gender=feminine
+- id=mareth; internal_name=Капитан Марет; player_label=Капитан Марет; role=капитан стражи; gender=feminine
 
 CURRENT PUBLIC FACTS:
 - Алдрик был небогатым купцом: торговал специями, сушёными травами и редкими настойками, время от времени возил товары через Тёрнвейл. Его считали скрытным и нелюдимым; долги он записывал сам и не любил, когда приказчики трогали его книги. Прошлой ночью его нашли мёртвым рядом с лавкой.
@@ -44,7 +44,7 @@ Scene: Трактир «Серый грифон»
 Location: grey_griffon
 World time: Утро после убийства, 08:00
 Description: Утро в общем зале трактира тяжёлое и серое. Дым от очага стелется низко, на мокром полу темнеют свежие следы, а у дальнего стола караванщики спорят шёпотом, не решаясь назвать гильдию вслух. Стойка, боковая дверь на кухню, лестница к комнатам и главный вход хорошо видны игроку; за окнами в переулке мелькают копья городской стражи.
-Present named NPCs: Борин (borin, трактирщик), крупный пожилой человек, condition: устал, насторожен, внешне здоров, род: мужской род at за стойкой, служанка (lysa, служанка), молодая быстрая женщина, condition: напугана, но держится на работе, род: женский род at между столами
+Present named NPCs: Борин (borin, трактирщик), крупный пожилой человек, distinctive features: медное кольцо на пальце, хриплый голос, привычка натирать кружку, condition: устал, насторожен, внешне здоров, gender: masculine at за стойкой, служанка (lysa, служанка), молодая быстрая женщина, distinctive features: быстрые движения, сбивчивый шёпот, постоянно оглядывается на стойку, condition: напугана, но держится на работе, gender: feminine at между столами
 Known offscreen NPC whereabouts: - Капитан Марет (mareth, капитан стражи); NOT in current scene; status: likely; location: служба городской стражи; details: расследует убийство Алдрика; если точное место не установлено, её логично искать в караульной, у городских ворот или у места находки тела
 Visible objects: стойка, кружки, бочки с элем, мокрые следы с тёмной пылью, остывшая миска похлёбки Алдрика, доска объявлений с караванными расписками, зола с обрывком синей сургучной печати
 Visible exits: главная дверь -> улица Тёрнвейла [move_player transition_id=main_door; travel_minutes=1; road_risk=none: бытовой переход без дорожной ситуации], дверь на кухню -> кухня и задний двор трактира [move_player transition_id=kitchen_door; travel_minutes=1; road_risk=none: бытовой переход без дорожной ситуации], лестница к комнатам -> гостевые комнаты второго этажа [move_player transition_id=stairs; travel_minutes=2; road_risk=none: бытовой переход без дорожной ситуации], люк в погреб -> погреб под трактиром [move_player transition_id=cellar_hatch; travel_minutes=2; road_risk=none: бытовой переход без дорожной ситуации]

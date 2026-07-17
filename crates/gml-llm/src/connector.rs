@@ -208,6 +208,32 @@ impl ConnectorAuthMethod {
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorCapability {
     SpeechToText,
+    ImageGeneration,
+}
+
+/// Provider-neutral request for one batch of generated images.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageGenerationRequest {
+    pub prompt: String,
+    pub model: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub count: u32,
+}
+
+/// One generated image returned as owned bytes so provider URLs never leak
+/// into persisted application state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedImage {
+    pub bytes: Vec<u8>,
+    pub media_type: String,
+}
+
+/// Completed provider image generation result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageGenerationResult {
+    pub model: String,
+    pub images: Vec<GeneratedImage>,
 }
 
 /// Static connector metadata. It is snapshotted when registered.
@@ -462,6 +488,17 @@ pub trait ModelConnector: Send + Sync {
         })
     }
 
+    async fn generate_images(
+        &self,
+        _request: &ImageGenerationRequest,
+    ) -> Result<ImageGenerationResult, ConnectorError> {
+        let connector_id = self.descriptor().id;
+        Err(ConnectorError::UnsupportedOperation {
+            connector_id,
+            operation: "image generation".to_string(),
+        })
+    }
+
     async fn list_models(&self) -> Result<Vec<ModelDescriptor>, ConnectorError>;
 
     /// Construct a backend synchronously for lazy NPC/generator factories.
@@ -693,6 +730,26 @@ impl ConnectorRegistry {
             });
         }
         connector.transcribe(audio, content_type, language).await
+    }
+
+    /// Route image generation through a capable connector without exposing its
+    /// authentication or transport details to the application server.
+    pub async fn generate_images(
+        &self,
+        id: &ConnectorId,
+        request: &ImageGenerationRequest,
+    ) -> Result<ImageGenerationResult, ConnectorError> {
+        let (connector, descriptor) = self.require_entry(id)?;
+        if !descriptor
+            .capabilities
+            .contains(&ConnectorCapability::ImageGeneration)
+        {
+            return Err(ConnectorError::UnsupportedOperation {
+                connector_id: id.clone(),
+                operation: "image generation".to_string(),
+            });
+        }
+        connector.generate_images(request).await
     }
 
     /// Confirm that the connector exists and the model is currently selectable.
@@ -1142,6 +1199,22 @@ mod tests {
             ))
         }
 
+        async fn generate_images(
+            &self,
+            request: &ImageGenerationRequest,
+        ) -> Result<ImageGenerationResult, ConnectorError> {
+            Ok(ImageGenerationResult {
+                model: request
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "image-default".to_string()),
+                images: vec![GeneratedImage {
+                    bytes: b"image".to_vec(),
+                    media_type: "image/png".to_string(),
+                }],
+            })
+        }
+
         async fn list_models(&self) -> Result<Vec<ModelDescriptor>, ConnectorError> {
             Ok(self.models.clone())
         }
@@ -1377,6 +1450,46 @@ mod tests {
                 .await,
             Err(ConnectorError::UnsupportedOperation { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn image_generation_requires_capability_and_routes_owned_bytes() {
+        let request = ImageGenerationRequest {
+            prompt: "test".to_string(),
+            model: Some("grok-imagine-image".to_string()),
+            width: Some(1024),
+            height: Some(1024),
+            count: 1,
+        };
+        let unadvertised = ConnectorRegistry::new();
+        unadvertised
+            .register(Arc::new(TestConnector::new(
+                "without-images",
+                &[("model", true)],
+            )))
+            .unwrap();
+        assert!(matches!(
+            unadvertised
+                .generate_images(&ConnectorId::new("without-images").unwrap(), &request)
+                .await,
+            Err(ConnectorError::UnsupportedOperation { .. })
+        ));
+
+        let registry = ConnectorRegistry::new();
+        let mut connector = TestConnector::new("xai", &[("grok-4", true)]);
+        connector
+            .descriptor
+            .capabilities
+            .push(ConnectorCapability::ImageGeneration);
+        registry.register(Arc::new(connector)).unwrap();
+        let connector_id = ConnectorId::new("xai").unwrap();
+        let generated = registry
+            .generate_images(&connector_id, &request)
+            .await
+            .unwrap();
+        assert_eq!(generated.model, "grok-imagine-image");
+        assert_eq!(generated.images[0].bytes, b"image");
+        assert_eq!(generated.images[0].media_type, "image/png");
     }
 
     #[test]

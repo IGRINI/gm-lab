@@ -1,1 +1,1 @@
-Генератор подготовил персонажа, но канон отклонил коммит.
+The generator prepared the character, but canon validation rejected the commit.

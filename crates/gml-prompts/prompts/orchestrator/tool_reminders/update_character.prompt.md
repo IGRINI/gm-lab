@@ -1,0 +1,1 @@
+Use the changed character fields in future resolution. Keep the update inside the fiction: never mention cards, fields, tools, missing database values, or system state to the player. Do not reveal GM-only player notes or private NPC data.

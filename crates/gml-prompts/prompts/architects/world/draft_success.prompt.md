@@ -1,1 +1,1 @@
-Черновик мира создан/обновлён и показан пользователю. Дальше правь точечно через edit_world_bible (не пересылай весь черновик), либо кратко ответь пользователю в чат.
+The world draft was created or updated and shown to the user. Continue with targeted edits through edit_world_bible (do not resend the whole draft), or reply briefly to the user in the configured response language.

@@ -148,7 +148,8 @@
     "protagonist": "Protagonist",
     "characterFields": {
       "age": "Age",
-      "physical_type": "Appearance",
+      "physical_type": "Physical appearance",
+      "current_appearance": "Current appearance",
       "distinctive_features": "Distinctive features",
       "personality": "Personality",
       "values": "Values",

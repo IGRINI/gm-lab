@@ -27,7 +27,7 @@ use crate::helpers::{
 use crate::helpers::{model_player_options_text, model_roll_text};
 use crate::memory_crystals::maybe_consolidate_memory_semantic;
 use crate::model_text::{
-    apply_scene_move, model_ask_npc_text, model_npc_profile_text,
+    apply_scene_move, model_ask_npc_text, model_character_update_text, model_npc_profile_text,
     model_player_character_update_text, model_presence_text, model_scene_text, model_time_text,
     model_whereabouts_text, model_world_query_text, model_world_state_update_text,
     normalize_tool_args, player_options_payload,
@@ -924,7 +924,11 @@ async fn run_executable_tool(
     // tools — recorded for EVERY executed tool (this is the single choke for
     // actually-run tools, including the canonical inner tool of the
     // invoke_loaded_tool path, so the recorded name is always the real tool).
-    session.mark_tool_used(name);
+    session.mark_tool_used(if name == "update_player_character" {
+        "update_character"
+    } else {
+        name
+    });
     match name {
         "tool_search" => run_tool_search(session, args, sink),
         "load_tool_schema" => run_load_tool_schema(session, args, sink),
@@ -937,7 +941,9 @@ async fn run_executable_tool(
         "get_npc_profile" => run_get_npc_profile(session, args, sink),
         "advance_time" => run_advance_time(session, args, sink),
         "long_rest" => run_long_rest(session, args, sink),
-        "update_player_character" => run_update_player_character(session, args, sink),
+        "update_character" => run_update_character(session, args, sink, None),
+        // Compatibility for model histories saved before the public tool rename.
+        "update_player_character" => run_update_character(session, args, sink, Some("player")),
         "set_npc_whereabouts" => run_set_npc_whereabouts(session, args, sink),
         "move_npc" | "set_npc_presence" => run_move_npc(session, args, sink),
         "set_scene" => run_set_scene(session, args, sink),
@@ -946,7 +952,7 @@ async fn run_executable_tool(
         "drop_item" => run_drop_item(session, args, sink),
         "cast_spell" => run_cast_spell(session, args, sink),
         "world_debug" => run_world_debug(session, args, sink),
-        "generate_location" => run_generate_location(session, args, sink).await,
+        "generate_location" => run_generate_location(session, args, sink, true).await,
         "generate_npc" => run_generate_npc(session, args, sink).await,
         "read_state" => run_read_state(session, args, sink),
         "ask_npc" => run_ask_npc_tool(session, args, metas, sink).await,
@@ -1515,7 +1521,7 @@ fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         .map(|(level, count)| format!("{level}:{}", crate::helpers::clean_text(count)))
         .collect();
     let slots_text = if slots.is_empty() {
-        "нет".to_string()
+        "none".to_string()
     } else {
         slots.join(", ")
     };
@@ -1525,22 +1531,22 @@ fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         String::new()
     } else {
         format!(
-            ", ХП {}/{}",
+            ", HP {}/{}",
             nonempty_string(hp_cur, "?"),
             nonempty_string(hp_max, "?")
         )
     };
-    let mut restored_line = format!("восстановлено: слоты {slots_text}{hp_text}");
+    let mut restored_line = format!("restored: slots {slots_text}{hp_text}");
     if had_concentration {
-        restored_line.push_str("; концентрация спала");
+        restored_line.push_str("; concentration ended");
     }
     let elapsed = time_payload
         .get("elapsed_minutes")
         .and_then(Value::as_i64)
         .unwrap_or(LONG_REST_MINUTES);
     let model = format!(
-        "LONG REST\nВремя: {} (+{} мин)\n{}",
-        session.world.time_summary(),
+        "LONG REST\nTime: {} (+{} min)\n{}",
+        session.world.model_time_summary(),
         elapsed,
         restored_line,
     );
@@ -1661,27 +1667,67 @@ fn run_read_state(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecu
     tool_result(&json_compact(&payload), Some(&text), None, false)
 }
 
-fn run_update_player_character(
+fn run_update_character(
     session: &mut Session,
     args: &Value,
     sink: &Sink,
+    forced_target: Option<&str>,
 ) -> ToolExecutionResult {
-    let payload = session.world.update_player_character(
-        args.get("fields").unwrap_or(&Value::Null),
-        arg_str(args, "reason"),
-    );
-    sink.emit(ev(
-        event_kind::PLAYER_CHARACTER_UPDATE,
-        Some("ГМ"),
-        payload.clone(),
-        None,
-    ));
-    tool_result(
-        &json_compact(&payload),
-        Some(&model_player_character_update_text(&payload)),
-        Some(tool_reminder("update_player_character")),
-        false,
-    )
+    let target = forced_target.unwrap_or_else(|| arg_str(args, "target"));
+    let normalized_target = target.trim().to_lowercase();
+    let fields = args.get("fields").unwrap_or(&Value::Null);
+    let reason = arg_str(args, "reason");
+    let result = match normalized_target.as_str() {
+        "player" => session
+            .world
+            .update_player_character_checked(fields, reason),
+        "npc" => {
+            let npc_id = arg_str(args, "npc_id").trim();
+            if npc_id.is_empty() {
+                Err("update_character target=npc requires a non-empty `npc_id`.".to_string())
+            } else {
+                session.world.update_npc_character(npc_id, fields, reason)
+            }
+        }
+        _ => Err("update_character requires target=player or target=npc.".to_string()),
+    };
+
+    match result {
+        Ok(payload) => {
+            // Keep the established player event for existing SSE consumers;
+            // the generic event is reserved for the newly supported NPC path.
+            let kind = if normalized_target == "player" {
+                event_kind::PLAYER_CHARACTER_UPDATE
+            } else {
+                event_kind::CHARACTER_UPDATE
+            };
+            sink.emit(ev(kind, Some("ГМ"), payload.clone(), None));
+            tool_result(
+                &json_compact(&payload),
+                Some(&model_character_update_text(&payload)),
+                Some(tool_reminder("update_character")),
+                false,
+            )
+        }
+        Err(error) => {
+            sink.emit(ev(
+                event_kind::ERROR,
+                Some("ГМ"),
+                Value::String(error.clone()),
+                None,
+            ));
+            tool_error(
+                "update_character",
+                &error,
+                None,
+                "invalid_character_update",
+                &[
+                    ("target", json!(target)),
+                    ("npc_id", json!(arg_str(args, "npc_id"))),
+                ],
+            )
+        }
+    }
 }
 
 fn run_set_npc_whereabouts(
@@ -1885,6 +1931,8 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     }
 
     let mut move_transition_id = String::new();
+    let move_time_minutes = travel::infer_time_cost("scene", &title, &title);
+    let move_risk = travel::infer_risk("scene", &title, &title);
     if !from_place.is_empty() && from_place != dest_id {
         move_transition_id = ids::stable_id(
             &session.world.world_canon.world_seed,
@@ -1903,8 +1951,8 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
                 visible: Some(true),
                 passable: Some(true),
                 blocked_by: String::new(),
-                time_cost: travel::infer_time_cost("scene", &title, &title),
-                risk: travel::infer_risk("scene", &title, &title),
+                time_cost: move_time_minutes,
+                risk: move_risk.clone(),
             },
             "set_scene transition".to_string(),
         ));
@@ -1933,8 +1981,8 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
                     visible: Some(true),
                     passable: Some(true),
                     blocked_by: String::new(),
-                    time_cost: travel::infer_time_cost("back", &back_label, ""),
-                    risk: travel::infer_risk("back", &back_label, ""),
+                    time_cost: move_time_minutes,
+                    risk: move_risk.clone(),
                 },
                 "set_scene return path".to_string(),
             ));
@@ -2040,6 +2088,8 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         "set_scene authored place + move".to_string(),
     ));
 
+    let before_time = session.world.time_export();
+    let before_clock_minutes = session.world.world_canon.clock_minutes;
     let mut staged = session.world.world_canon.clone();
     let mut committed_events = Vec::new();
     for (action, action_reason) in actions {
@@ -2066,51 +2116,38 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         }
     }
 
-    let before_time = session.world.time_export();
-    let elapsed_minutes = committed_events
-        .iter()
-        .find(|event| event.kind == "move_player")
-        .and_then(|event| {
-            event.effects.iter().find_map(|effect| {
-                effect
-                    .strip_prefix("elapsed_minutes:")
-                    .and_then(|raw| raw.parse::<i64>().ok())
-            })
-        })
-        .unwrap_or(0);
     session.world.world_canon = staged;
-    session.world.time.absolute_minutes = session.world.world_canon.clock_minutes;
-    session.world.time.last_advance_minutes = elapsed_minutes;
-    session.world.time.last_advance_reason = reason.clone();
-    if elapsed_minutes > 0 {
-        session.turn_time_advances.push(json!({
-            "minutes": elapsed_minutes,
-            "reason": reason,
-        }));
-        sink.emit(ev(
-            event_kind::TIME,
-            Some("ГМ"),
-            json!({
-                "before": before_time,
-                "after": session.world.time_export(),
-                "minutes": elapsed_minutes,
-                "reason": session.world.time.last_advance_reason,
-            }),
-            None,
-        ));
-    }
+    let elapsed_minutes = sync_canon_move_time(
+        session,
+        sink,
+        before_time,
+        before_clock_minutes,
+        &move_transition_id,
+        &reason,
+    );
 
-    session.world.scene.scene_id = dest_id.clone();
-    // §И2: pin the live location to the destination BEFORE staging its items so
-    // refresh_scene_from_canon reads this as a same-place rebuild — the staged
-    // `coerced_items` are kept as this place's items (not stashed under the old
-    // location and replaced by an empty store). This overwrites whatever the
-    // destination previously held in place_items on the NEXT stash cycle.
-    session.world.scene.location_id = dest_id.clone();
-    session.world.scene.items = coerced_items;
-    session.world.scene.constraints = constraints;
-    session.world.scene.tension = tension;
-    session.world.scene.player_seen = vec![description];
+    let destination_context = gml_world::PlaceSceneContext {
+        scene_id: dest_id.clone(),
+        constraints,
+        tension,
+        player_seen: vec![description],
+    };
+    if session.world.scene.location_id == dest_id {
+        session.world.scene.items = coerced_items;
+        session.world.scene.scene_id = destination_context.scene_id;
+        session.world.scene.constraints = destination_context.constraints;
+        session.world.scene.tension = destination_context.tension;
+        session.world.scene.player_seen = destination_context.player_seen;
+    } else {
+        session
+            .world
+            .place_items
+            .insert(dest_id.clone(), coerced_items);
+        session
+            .world
+            .place_scene_contexts
+            .insert(dest_id.clone(), destination_context);
+    }
     session.world.refresh_scene_from_canon();
     for npc_id in &present {
         session.world.npc_whereabouts.insert(
@@ -2158,6 +2195,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     // §5: a scene change can advance the clock — carry the current time in the
     // result (same rendering advance_time uses) so the GM tracks time deltas.
     if let Value::Object(ref mut m) = payload {
+        m.insert("elapsed_minutes".to_string(), json!(elapsed_minutes));
         m.insert("current".to_string(), session.world.time_export());
         m.insert(
             "time_summary".to_string(),
@@ -2171,7 +2209,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         None,
     ));
     let mut model = model_scene_text(&payload);
-    model.push_str(&format!("\nВремя: {}", session.world.time_summary()));
+    model.push_str(&format!("\nTime: {}", session.world.model_time_summary()));
     tool_result(
         &json_compact(&payload),
         Some(&model),
@@ -2300,6 +2338,56 @@ fn coerce_set_scene_exits(raw: &Value) -> Vec<gml_world::SceneExit> {
 /// player's place, hidden, or blocked) is REJECTED and mutates NOTHING. On
 /// success the canon is mutated, the live scene is rebuilt from the canon, and
 /// the committed canon events are summarised back.
+fn sync_canon_move_time(
+    session: &mut Session,
+    sink: &Sink,
+    before_time: Value,
+    before_clock_minutes: i64,
+    transition_id: &str,
+    reason: &str,
+) -> i64 {
+    let elapsed_minutes = (session.world.world_canon.clock_minutes - before_clock_minutes).max(0);
+    let reason = if reason.trim().is_empty() {
+        "travel".to_string()
+    } else {
+        reason.trim().to_string()
+    };
+
+    session.world.time.absolute_minutes = session.world.world_canon.clock_minutes;
+    session.world.time.last_advance_minutes = elapsed_minutes;
+    session.world.time.last_advance_reason = reason.clone();
+    if !transition_id.is_empty() {
+        session
+            .world
+            .spread_rumors_on_transition("player", transition_id, elapsed_minutes);
+    }
+
+    if elapsed_minutes > 0 {
+        session.turn_time_advances.push(json!({
+            "minutes": elapsed_minutes,
+            "reason": reason,
+        }));
+        let after_time = session.world.time_export();
+        sink.emit(ev(
+            event_kind::TIME,
+            Some("ГМ"),
+            json!({
+                "ok": true,
+                "elapsed_minutes": elapsed_minutes,
+                "minutes": elapsed_minutes,
+                "reason": session.world.time.last_advance_reason.clone(),
+                "before": before_time,
+                "current": after_time.clone(),
+                "after": after_time,
+                "summary": session.world.time_summary(),
+            }),
+            None,
+        ));
+    }
+
+    elapsed_minutes
+}
+
 async fn run_move_player(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
     use gml_world::canon::{engine, Action, ProposedAction};
 
@@ -2326,55 +2414,19 @@ from the player's current place.";
         &reason,
     );
 
+    let before_time = session.world.time_export();
+    let before_clock_minutes = session.world.world_canon.clock_minutes;
     match engine::apply(&mut session.world.world_canon, &proposed, session.turn) {
         Ok(events) => {
             // LOCKED DECISION #2: rebuild the live scene FROM the canon.
-            let before_time = session.world.time_export();
-            let elapsed_minutes = events
-                .iter()
-                .find(|e| e.kind == "move_player")
-                .and_then(|e| {
-                    e.effects.iter().find_map(|effect| {
-                        effect
-                            .strip_prefix("elapsed_minutes:")
-                            .and_then(|raw| raw.parse::<i64>().ok())
-                    })
-                })
-                .unwrap_or_else(|| {
-                    let before = session.world.time.absolute_minutes;
-                    (session.world.world_canon.clock_minutes - before).max(0)
-                });
-            session.world.time.absolute_minutes = session.world.world_canon.clock_minutes;
-            session.world.time.last_advance_minutes = elapsed_minutes;
-            session.world.time.last_advance_reason = if reason.is_empty() {
-                "travel".to_string()
-            } else {
-                reason.clone()
-            };
-            session
-                .world
-                .spread_rumors_on_transition("player", &transition_id, elapsed_minutes);
-            let after_time = session.world.time_export();
-            if elapsed_minutes > 0 {
-                let advance_reason = session.world.time.last_advance_reason.clone();
-                session.turn_time_advances.push(json!({
-                    "minutes": elapsed_minutes,
-                    "reason": advance_reason,
-                }));
-                sink.emit(ev(
-                    event_kind::TIME,
-                    Some("ГМ"),
-                    json!({
-                        "ok": true,
-                        "elapsed_minutes": elapsed_minutes,
-                        "reason": session.world.time.last_advance_reason.clone(),
-                        "before": before_time,
-                        "current": after_time,
-                        "summary": session.world.time_summary(),
-                    }),
-                    None,
-                ));
-            }
+            let elapsed_minutes = sync_canon_move_time(
+                session,
+                sink,
+                before_time,
+                before_clock_minutes,
+                &transition_id,
+                &reason,
+            );
             session.world.refresh_scene_from_canon();
             let generated_situation =
                 auto_generate_travel_situation(session, &events, &transition_id, &reason, sink)
@@ -2424,7 +2476,7 @@ from the player's current place.";
                 None,
             ));
             let model = format!(
-                "Игрок перешёл в '{}' ({}); зафиксировано событий: {}.\nВремя: {}",
+                "Player moved to '{}' ({}); events recorded: {}.\nTime: {}",
                 if title.is_empty() {
                     place_id.as_str()
                 } else {
@@ -2432,7 +2484,7 @@ from the player's current place.";
                 },
                 place_id,
                 events.len(),
-                session.world.time_summary(),
+                session.world.model_time_summary(),
             );
             tool_result(
                 &json_compact(&payload),
@@ -2492,7 +2544,7 @@ fn run_drop_item(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
 /// SCENE_UPDATE (the scene is untouched) and NO canon EventLog write (§0). A
 /// rejection (unknown_spell / no_slots) emits an error event and returns the
 /// structured tool error carrying the known-spells / level hints so the model
-/// can repair or narrate the fizzled cast.
+/// can give a pre-resolution reality correction and ask for another choice.
 fn run_cast_spell(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
     let name = arg_str(args, "name");
     let slot_level = args.get("slot_level").and_then(Value::as_i64);
@@ -2620,7 +2672,7 @@ fn run_world_debug(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
         None,
     ));
     let model = format!(
-        "Снимок канона: мест={}, переходов={}, актёров={}, событий={}.",
+        "Canon snapshot: places={}, transitions={}, actors={}, events={}.",
         canon.places.len(),
         canon.transitions.len(),
         canon.actors.len(),
@@ -2675,11 +2727,11 @@ async fn auto_generate_travel_situation(
         .collect::<Vec<_>>()
         .join("; ");
     let request = format!(
-        "Сгенерируй содержимое дорожной ситуации для уже созданной точки {place_id}. \
-         Исходный бросок: тип={situation_type}, редкость={rarity}, шанс={chance}%, \
-         выпало={roll}, прошло={elapsed_minutes} мин., осталось={remaining_minutes} мин. \
-         Видимая завязка: {visible_seed}. Причина перехода: {reason}. \
-         Дай игроку конкретные зацепки и варианты взаимодействия, но скрытую правду держи в hidden-полях."
+        "Generate the content of a travel situation for the already-created point {place_id}. \
+         Source roll: type={situation_type}, rarity={rarity}, chance={chance}%, \
+         roll={roll}, elapsed={elapsed_minutes} min, remaining={remaining_minutes} min. \
+         Visible hook: {visible_seed}. Travel reason: {reason}. \
+         Give the player concrete hooks and ways to interact, while keeping hidden truth in hidden fields."
     );
     let generator_args = json!({
         "purpose": "travel_situation",
@@ -2693,7 +2745,7 @@ async fn auto_generate_travel_situation(
         "situation_type": situation_type,
         "rarity": rarity,
     });
-    let result = run_generate_location(session, &generator_args, sink).await;
+    let result = run_generate_location(session, &generator_args, sink, false).await;
     let parsed = serde_json::from_str::<Value>(&result.full).unwrap_or_else(|_| {
         json!({
             "ok": false,
@@ -2745,11 +2797,11 @@ async fn auto_fill_lazy_destination(
         .map(|t| t.label.clone())
         .unwrap_or_default();
     let request = format!(
-        "Игрок вошёл в '{name}' ({place_id}) — место создано каркасно и пока пустое. \
-         Наполни именно ЕГО (target_place_id уже существует): при необходимости уточни \
-         название, сохранив смысл '{name}', дай видимое описание, 3-6 конкретных \
-         интерактивных деталей и реальные выходы, согласованные с уже существующими \
-         переходами этого места. Игрок пришёл через '{via}'; причина перехода: {reason}."
+        "The player entered '{name}' ({place_id}); the place exists as an empty shell. \
+         Fill THIS exact place (`target_place_id` already exists): if needed, refine its \
+         name while preserving the meaning of '{name}', add a visible description, 3-6 \
+         concrete interactive details, and real exits consistent with the place's existing \
+         transitions. The player arrived via '{via}'; travel reason: {reason}."
     );
     let generator_args = json!({
         "purpose": purpose,
@@ -2757,7 +2809,7 @@ async fn auto_fill_lazy_destination(
         "target_place_id": place_id.clone(),
         "commit": true,
     });
-    let result = run_generate_location(session, &generator_args, sink).await;
+    let result = run_generate_location(session, &generator_args, sink, false).await;
     let parsed = serde_json::from_str::<Value>(&result.full).unwrap_or_else(|_| {
         json!({
             "ok": false,
@@ -2775,6 +2827,7 @@ async fn run_generate_location(
     session: &mut Session,
     args: &Value,
     sink: &Sink,
+    emit_scene_update: bool,
 ) -> ToolExecutionResult {
     let purpose = arg_str(args, "purpose").trim();
     let request = arg_str(args, "request").trim();
@@ -2847,6 +2900,7 @@ async fn run_generate_location(
         "elapsed_minutes": args.get("elapsed_minutes").and_then(Value::as_i64).unwrap_or(0),
         "remaining_minutes": args.get("remaining_minutes").and_then(Value::as_i64).unwrap_or(0),
         "route_time_minutes": route_time_minutes,
+        "entry_time_minutes": args.get("entry_time_minutes").and_then(Value::as_i64).unwrap_or(0),
         "situation_type": arg_str(args, "situation_type"),
         "rarity": arg_str(args, "rarity"),
         "road_risk": road_risk,
@@ -2886,7 +2940,9 @@ async fn run_generate_location(
 
     let generated_value = Value::Object(generated.clone());
     session.record_location_generator_exchange(&request_payload, &generated_value);
-    let applied = if commit {
+    let before_time = session.world.time_export();
+    let before_clock_minutes = session.world.world_canon.clock_minutes;
+    let mut applied = if commit {
         commit_generated_location(session, args, &generated_value)
     } else {
         json!({"ok": true, "status": "preview", "committed": false})
@@ -2899,6 +2955,42 @@ async fn run_generate_location(
             .filter(|key| !key.trim().is_empty())
         {
             session.note_location_anti_repeat_key(key);
+        }
+    }
+
+    let name = generated
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("location");
+    if commit
+        && applied_ok
+        && applied
+            .get("entered")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        let entry_transition_id = applied
+            .get("entry_transition_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !entry_transition_id.is_empty() {
+            let elapsed_minutes = sync_canon_move_time(
+                session,
+                sink,
+                before_time,
+                before_clock_minutes,
+                &entry_transition_id,
+                &format!("enter generated place: {name}"),
+            );
+            if let Value::Object(ref mut applied) = applied {
+                applied.insert("elapsed_minutes".to_string(), json!(elapsed_minutes));
+                applied.insert("current".to_string(), session.world.time_export());
+                applied.insert(
+                    "time_summary".to_string(),
+                    Value::String(session.world.time_summary()),
+                );
+            }
         }
     }
 
@@ -2942,22 +3034,19 @@ async fn run_generate_location(
     ));
     if commit && applied_ok {
         session.world.refresh_scene_from_canon();
-        sink.emit(ev(
-            event_kind::SCENE_UPDATE,
-            Some("location_generator"),
-            session.world.scene_export(),
-            None,
-        ));
+        if emit_scene_update {
+            sink.emit(ev(
+                event_kind::SCENE_UPDATE,
+                Some("location_generator"),
+                session.world.scene_export(),
+                None,
+            ));
+        }
     }
-    let name = payload
-        .get("generated")
-        .and_then(|v| v.get("name"))
-        .and_then(Value::as_str)
-        .unwrap_or("локация");
     let model_message = if applied_ok {
-        format!("Генератор подготовил: {name}.")
+        format!("Generator prepared: {name}.")
     } else {
-        "Генератор подготовил локацию, но канон отклонил коммит.".to_string()
+        "The generator prepared a location, but canon rejected the commit.".to_string()
     };
     tool_result(
         &json_compact(&public_payload),
@@ -3006,6 +3095,7 @@ fn public_generated_location(generated: Value, player_observed: bool) -> Value {
         "sensory_details",
         "choices",
         "consequences",
+        "entry_transition",
         "transitions",
     ] {
         if let Some(value) = map.get(key) {
@@ -3034,8 +3124,12 @@ fn public_generated_location_applied(applied: Value, player_observed: bool) -> V
             "event_seq",
             "transitions_added",
             "entry_transition_id",
+            "entry_time_minutes",
+            "elapsed_minutes",
             "entered",
             "current_place_id",
+            "current",
+            "time_summary",
         ] {
             if let Some(value) = map.get(key) {
                 public.insert(key.to_string(), value.clone());
@@ -3084,6 +3178,61 @@ fn nonempty_string(primary: String, fallback: &str) -> String {
     }
 }
 
+struct GeneratedEntryTransition {
+    label: String,
+    return_label: String,
+    kind: String,
+    time_cost_minutes: i64,
+    risk: String,
+}
+
+fn generated_entry_transition(
+    args: &Value,
+    generated: &Value,
+    purpose: &str,
+    name: &str,
+) -> GeneratedEntryTransition {
+    let empty_entry = Value::Null;
+    let entry = generated
+        .get("entry_transition")
+        .filter(|value| value.is_object())
+        .unwrap_or(&empty_entry);
+    let fallback_kind = match purpose {
+        "room" => "door",
+        "dungeon_point" => "passage",
+        _ => "path",
+    };
+    let kind = nonempty_string(generated_str(entry, "kind"), fallback_kind);
+    let label = nonempty_string(generated_str(entry, "label"), &format!("К {name}"));
+    let return_label = nonempty_string(generated_str(entry, "return_label"), "Назад");
+    let requested_time = args
+        .get("entry_time_minutes")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let generated_time = generated_i64(entry, "time_cost_minutes");
+    let raw_time = if requested_time != 0 {
+        requested_time
+    } else {
+        generated_time
+    };
+    let time_cost_minutes = if raw_time == 0 {
+        gml_world::canon::travel::infer_time_cost(&kind, &label, name)
+    } else {
+        raw_time
+    };
+    let risk = nonempty_string(
+        generated_str(entry, "risk"),
+        &gml_world::canon::travel::infer_risk(&kind, &label, name),
+    );
+    GeneratedEntryTransition {
+        label,
+        return_label,
+        kind,
+        time_cost_minutes,
+        risk,
+    }
+}
+
 fn commit_generated_location(session: &mut Session, args: &Value, generated: &Value) -> Value {
     use gml_world::canon::{
         engine, ids, travel, Action, MemoryInjectionState, MemoryTier, MemoryTruthStatus,
@@ -3108,14 +3257,23 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
     } else {
         current_place_id.clone()
     };
+    // `parent_place_id` is containment/geography. Entering is always linked
+    // from the player's actual current place, so a broader logical parent can
+    // never turn an otherwise valid arrival into a rejected teleport.
+    let entry_from_place_id = if enter_after_commit && !current_place_id.is_empty() {
+        current_place_id.clone()
+    } else {
+        parent_place_id.clone()
+    };
     let world_seed = if session.world.world_canon.world_seed.is_empty() {
         session.world.dice_seed.to_string()
     } else {
         session.world.world_canon.world_seed.clone()
     };
 
-    let name = nonempty_string(generated_str(generated, "name"), "Безымянное место");
+    let name = nonempty_string(generated_str(generated, "name"), "Unnamed place");
     let kind = nonempty_string(generated_str(generated, "kind"), "generated_place");
+    let entry = generated_entry_transition(args, generated, &purpose, &name);
     let visible_summary = generated_str(generated, "visible_summary");
     let description = nonempty_string(generated_str(generated, "description"), &visible_summary);
     let hidden_summary = generated_str(generated, "hidden_summary");
@@ -3149,6 +3307,7 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
         .world
         .world_canon
         .place(&parent_place_id)
+        .or_else(|| session.world.world_canon.place(&entry_from_place_id))
         .map(|p| p.region_id.clone())
         .unwrap_or_default();
     let mut actions: Vec<(Action, String)> = Vec::new();
@@ -3203,72 +3362,98 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
 
     let canon = &session.world.world_canon;
     let mut planned_transition_ids = BTreeSet::new();
-    let mut entry_transition_id = if !parent_place_id.is_empty()
-        && parent_place_id != place_id
-        && canon.place(&parent_place_id).is_some()
+    let mut entry_transition_id = if !entry_from_place_id.is_empty()
+        && entry_from_place_id != place_id
+        && canon.place(&entry_from_place_id).is_some()
     {
         canon
-            .exits_from(&parent_place_id)
+            .exits_from(&entry_from_place_id)
             .iter()
             .find(|transition| transition.to_place == place_id)
             .map(|transition| transition.transition_id.clone())
     } else {
         None
     };
-    if !parent_place_id.is_empty()
-        && parent_place_id != place_id
-        && canon.place(&parent_place_id).is_some()
+    let mut entry_time_minutes = entry_transition_id
+        .as_deref()
+        .and_then(|transition_id| canon.transition(transition_id))
+        .map(|transition| {
+            travel::normalized_time_cost(
+                &transition.kind,
+                &transition.label,
+                &transition.destination_hint,
+                transition.time_cost,
+            )
+        })
+        .unwrap_or(entry.time_cost_minutes);
+    let mut entry_risk = entry_transition_id
+        .as_deref()
+        .and_then(|transition_id| canon.transition(transition_id))
+        .map(|transition| {
+            travel::normalized_risk(
+                &transition.kind,
+                &transition.label,
+                &transition.destination_hint,
+                &transition.risk,
+            )
+        })
+        .unwrap_or_else(|| entry.risk.clone());
+    if !entry_from_place_id.is_empty()
+        && entry_from_place_id != place_id
+        && canon.place(&entry_from_place_id).is_some()
         && !canon
-            .exits_from(&parent_place_id)
+            .exits_from(&entry_from_place_id)
             .iter()
             .any(|t| t.to_place == place_id)
     {
-        let forward_id = ids::stable_id(&world_seed, &parent_place_id, "transition", &place_id);
+        let forward_id = ids::stable_id(&world_seed, &entry_from_place_id, "transition", &place_id);
         planned_transition_ids.insert(forward_id.clone());
         transitions_added.push(forward_id.clone());
         entry_transition_id = Some(forward_id.clone());
+        entry_time_minutes = entry.time_cost_minutes;
+        entry_risk = entry.risk.clone();
         actions.push((
             Action::CreateTransition {
                 transition_id: forward_id,
-                from_place: parent_place_id.clone(),
+                from_place: entry_from_place_id.clone(),
                 to_place: place_id.clone(),
                 destination_hint: name.clone(),
-                label: format!("К {name}"),
-                kind: "path".to_string(),
+                label: entry.label.clone(),
+                kind: entry.kind.clone(),
                 visible: Some(true),
                 passable: Some(true),
                 blocked_by: String::new(),
-                time_cost: travel::infer_time_cost("path", &name, ""),
-                risk: travel::infer_risk("path", &name, ""),
+                time_cost: entry_time_minutes,
+                risk: entry_risk.clone(),
             },
             "link generated place".to_string(),
         ));
     }
 
-    if !parent_place_id.is_empty()
-        && parent_place_id != place_id
-        && canon.place(&parent_place_id).is_some()
+    if !entry_from_place_id.is_empty()
+        && entry_from_place_id != place_id
+        && canon.place(&entry_from_place_id).is_some()
         && !canon
             .exits_from(&place_id)
             .iter()
-            .any(|t| t.to_place == parent_place_id)
+            .any(|t| t.to_place == entry_from_place_id)
     {
-        let back_id = ids::stable_id(&world_seed, &place_id, "transition", &parent_place_id);
+        let back_id = ids::stable_id(&world_seed, &place_id, "transition", &entry_from_place_id);
         planned_transition_ids.insert(back_id.clone());
         transitions_added.push(back_id.clone());
         actions.push((
             Action::CreateTransition {
                 transition_id: back_id,
                 from_place: place_id.clone(),
-                to_place: parent_place_id.clone(),
+                to_place: entry_from_place_id.clone(),
                 destination_hint: String::new(),
-                label: "Назад".to_string(),
-                kind: "back".to_string(),
+                label: entry.return_label.clone(),
+                kind: entry.kind.clone(),
                 visible: Some(true),
                 passable: Some(true),
                 blocked_by: String::new(),
-                time_cost: travel::infer_time_cost("back", "Назад", ""),
-                risk: travel::infer_risk("back", "Назад", ""),
+                time_cost: entry_time_minutes,
+                risk: entry_risk.clone(),
             },
             "return from generated place".to_string(),
         ));
@@ -3331,27 +3516,15 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
         }
     }
 
-    if enter_after_commit && place_id != current_place_id {
-        if parent_place_id != current_place_id {
-            return json!({
-                "ok": false,
-                "status": "rejected",
-                "committed": false,
-                "code": "cannot_enter_from_non_current_parent",
-                "reason": "enter_after_commit requires the generated place to be linked from the player's current place",
-                "place_id": place_id,
-            });
-        }
-        if entry_transition_id.is_none() {
-            return json!({
-                "ok": false,
-                "status": "rejected",
-                "committed": false,
-                "code": "missing_entry_transition",
-                "reason": "enter_after_commit requires a passable transition from the current place to the generated place",
-                "place_id": place_id,
-            });
-        }
+    if enter_after_commit && place_id != current_place_id && entry_transition_id.is_none() {
+        return json!({
+            "ok": false,
+            "status": "rejected",
+            "committed": false,
+            "code": "missing_entry_transition",
+            "reason": "enter_after_commit requires a passable transition from the current place to the generated place",
+            "place_id": place_id,
+        });
     }
 
     let mut effects = vec![
@@ -3466,7 +3639,7 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
             tier: MemoryTier::Raw,
             owner_scope: "gm_private".to_string(),
             visibility_scopes: Vec::new(),
-            summary: format!("Скрытое по локации {name}: {}", hidden_details[0]),
+            summary: format!("Hidden location detail for {name}: {}", hidden_details[0]),
             details: hidden_details.join("\n"),
             source_event_ids: vec![event_id.clone()],
             time_start: session.world.world_canon.clock_minutes,
@@ -3492,6 +3665,7 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
         "event_seq": event_seq,
         "transitions_added": transitions_added,
         "entry_transition_id": entry_transition_id.unwrap_or_default(),
+        "entry_time_minutes": entry_time_minutes,
         "entered": enter_after_commit && session.world.world_canon.player_place_id == place_id,
         "current_place_id": session.world.world_canon.player_place_id.clone(),
         "memory_ids": memory_ids,
@@ -3745,7 +3919,7 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
     let name = applied
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or("персонаж");
+        .unwrap_or("character");
     let model_message = if applied_ok {
         render_prompt(
             PromptId::NpcGeneratorCreatedMessage,
@@ -3820,7 +3994,7 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
         session.world.world_canon.world_seed.clone()
     };
 
-    let name = nonempty_string(generated_str(generated, "name"), "Безымянный персонаж");
+    let name = nonempty_string(generated_str(generated, "name"), "Unnamed character");
     let role = nonempty_string(generated_str(generated, "role"), &role_req);
     let public_label = nonempty_string(generated_str(generated, "public_label"), &name);
     let pronouns = generated_str(generated, "pronouns");
@@ -3963,6 +4137,7 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
         age: generated_str(generated, "age"),
         physical_type: generated_str(generated, "physical_type"),
         distinctive_features: generated_str(generated, "distinctive_features"),
+        current_appearance: generated_str(generated, "current_appearance"),
         life_status: "alive".to_string(),
         life_status_note: String::new(),
         condition: String::new(),
@@ -3997,9 +4172,9 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
         let _ = session.world.set_npc_whereabouts(
             &npc_id,
             "",
-            "неподалёку",
+            "nearby",
             "known",
-            "вне текущей сцены; появится, когда игрок с ним столкнётся",
+            "outside the current scene; will appear when the player encounters them",
             "character_generator",
         );
     }
@@ -4010,10 +4185,10 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
     // player NEVER sees it. secret/knowledge never enter the tool result / SSE.
     let mut hidden_parts: Vec<String> = Vec::new();
     if !secret.is_empty() {
-        hidden_parts.push(format!("Тайна: {secret}"));
+        hidden_parts.push(format!("Secret: {secret}"));
     }
     if !knowledge.is_empty() {
-        hidden_parts.push(format!("Знает: {knowledge}"));
+        hidden_parts.push(format!("Knows: {knowledge}"));
     }
     if !memory_note.is_empty() {
         hidden_parts.push(memory_note.clone());
@@ -4023,7 +4198,7 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
             tier: MemoryTier::Raw,
             owner_scope: format!("actor:{npc_id}"),
             visibility_scopes: Vec::new(),
-            summary: format!("GM-заметка по персонажу {name}: {}", hidden_parts[0]),
+            summary: format!("GM note for character {name}: {}", hidden_parts[0]),
             details: hidden_parts.join("\n"),
             source_event_ids: if event_id.is_empty() {
                 Vec::new()

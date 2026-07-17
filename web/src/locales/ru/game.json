@@ -163,6 +163,7 @@
     "fields": {
       "role": "роль",
       "type": "тип",
+      "appearance": "текущий вид",
       "features": "приметы",
       "condition": "состояние",
       "status": "статус",
@@ -326,6 +327,7 @@
       "title": "Сцена: {{title}}",
       "present": "Сейчас в сцене: {{names}}",
       "prefix": "Сцена:",
+      "openLocation": "Открыть карточку локации «{{title}}»",
       "inScene": "теперь в сцене",
       "outsideScene": "теперь вне сцены"
     },

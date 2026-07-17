@@ -3,6 +3,7 @@ import { useRef, useState, useEffect, useCallback, forwardRef, useMemo } from "r
 import { Virtuoso } from "react-virtuoso";
 import Message from "./Message.jsx";
 import Scene from "./Scene.jsx";
+import WorldDetailModal from "./WorldDetailModal.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { ChatScrollContext } from "../chatScrollContext.js";
 import { EntityRegistryContext } from "../entityContext.js";
@@ -46,7 +47,13 @@ export default function Chat({
   const detachScroll = useRef(null);
   const [showDown, setShowDown] = useState(false);
   const [newCount, setNewCount] = useState(0);
+  const [locationDetail, setLocationDetail] = useState(null);
   const lastLen = useRef(0);
+  const sceneIdentity = scene && typeof scene === "object"
+    ? scene.location_id || scene.scene_id || scene.title || ""
+    : String(scene || "");
+
+  useEffect(() => setLocationDetail(null), [sceneIdentity]);
 
   const scrollToBottom = useCallback((behavior = "auto") => {
     // Respect prefers-reduced-motion: never animate the jump-to-bottom for those users.
@@ -148,6 +155,8 @@ export default function Chat({
                 onEditFrom={onEditFrom}
                 onBranchFrom={onBranchFrom}
                 historyBusy={historyBusy}
+                scene={scene}
+                onOpenScene={setLocationDetail}
               />
             </div>
           )}
@@ -179,6 +188,15 @@ export default function Chat({
             {newCount > 0 && <span className="badge">{newCount > 99 ? "99+" : newCount}</span>}
           </button>
         </Tooltip>
+        {locationDetail && (
+          <WorldDetailModal
+            kind="scene"
+            scene={locationDetail}
+            npcs={npcs}
+            statusLabels={statusLabels}
+            onClose={() => setLocationDetail(null)}
+          />
+        )}
       </div>
       </StatusLabelsContext.Provider>
       </NpcRosterContext.Provider>

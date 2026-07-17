@@ -274,12 +274,39 @@ export function useSlotRows(initialSlots, initialMax, onCommit) {
 // одинаково рендерятся и в студии, и в дебаг-модалке). ---
 function EditorBlock({ hint, children }) {
   return (
-    <div className="world-bible">
+    <div className="world-bible sheet-editor-block">
       <div className="world-bible-fields">
-        {hint ? <p className="world-bible-hint">{hint}</p> : null}
+        {hint ? <p className="world-bible-hint sheet-editor-sticky-head">{hint}</p> : null}
         {children}
       </div>
     </div>
+  );
+}
+
+// Канонические коды грамматического рода движка (gml-world
+// world.rs::model_gender_label / gender_label_ru): M / F / N / PL / OTHER.
+export const PRONOUN_CODES = ["M", "F", "N", "PL", "OTHER"];
+
+// Род — строгий выпадающий список кодов вместо свободного текста (движок и TTS
+// понимают только коды; свободный текст каждый редактор писал по-своему).
+// Легаси-значение («она/её», «он») не теряется: пока его не заменили кодом, оно
+// висит в списке отдельным пунктом как есть.
+export function PronounsSelect({ value, onChange, disabled = false }) {
+  const { t } = useTranslation("studio");
+  const raw = scalarText(value).trim();
+  const canon = raw.toUpperCase();
+  const isCode = PRONOUN_CODES.includes(canon);
+  const current = raw === "" ? "" : isCode ? canon : raw;
+  return (
+    <select value={current} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
+      <option value="">{t("sheet.pronouns.unset")}</option>
+      {PRONOUN_CODES.map((code) => (
+        <option key={code} value={code}>
+          {t(`sheet.pronouns.${code}`)}
+        </option>
+      ))}
+      {raw !== "" && !isCode && <option value={raw}>{raw}</option>}
+    </select>
   );
 }
 

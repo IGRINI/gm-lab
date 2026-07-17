@@ -116,6 +116,20 @@ pub fn public_gender(value: &str) -> String {
         .unwrap_or(raw)
 }
 
+/// English grammatical-gender label for model-facing context. Custom notes are
+/// preserved verbatim; the localized UI projection above remains unchanged.
+pub fn model_gender_label(value: &str) -> String {
+    let raw = value.trim();
+    match raw.to_lowercase().as_str() {
+        "m" => "masculine".to_string(),
+        "f" => "feminine".to_string(),
+        "n" => "neuter".to_string(),
+        "pl" => "plural".to_string(),
+        "other" => "other".to_string(),
+        _ => raw.to_string(),
+    }
+}
+
 /// `_public_source(source)`.
 fn public_source(source: &str) -> String {
     let raw = source.trim().to_string();
@@ -132,6 +146,7 @@ fn npc_profile_preset(name: &str) -> Option<&'static [&'static str]> {
             "role",
             "physical_type",
             "distinctive_features",
+            "current_appearance",
             "condition",
             "life_status",
         ]),
@@ -163,6 +178,7 @@ fn npc_profile_preset(name: &str) -> Option<&'static [&'static str]> {
             "age",
             "physical_type",
             "distinctive_features",
+            "current_appearance",
         ]),
         _ => None,
     }
@@ -179,12 +195,12 @@ fn npc_profile_fields() -> Vec<&'static str> {
     set.into_iter().collect()
 }
 
-/// `PLAYER_CHARACTER_FIELDS` — 30 fields: the original 26 plus the Фаза С spell
+/// `PLAYER_CHARACTER_FIELDS` — all patchable player-card fields.
 /// quartet (`spells`/`spell_slots`/`spell_slots_max`/`concentration`,
 /// `docs/ITEMS_AND_SPELLS_TZ.md` §С1) appended at the end. This drives the
 /// full-rewrite loop in `apply_player_character_fields`, so a field absent here
 /// is silently un-editable via `update_player_character`.
-const PLAYER_CHARACTER_FIELDS: [&str; 30] = [
+const PLAYER_CHARACTER_FIELDS: [&str; 31] = [
     "name",
     "pronouns",
     "class_role",
@@ -193,6 +209,7 @@ const PLAYER_CHARACTER_FIELDS: [&str; 30] = [
     "age",
     "physical_type",
     "distinctive_features",
+    "current_appearance",
     "life_status",
     "life_status_note",
     "condition",
@@ -215,6 +232,73 @@ const PLAYER_CHARACTER_FIELDS: [&str; 30] = [
     "spell_slots",
     "spell_slots_max",
     "concentration",
+];
+
+/// NPC fields the live GM may patch through `update_character`. Private
+/// knowledge/secrets and bookkeeping stay outside this surface.
+const GM_NPC_CHARACTER_FIELDS: &[&str] = &[
+    "name",
+    "role",
+    "pronouns",
+    "public_label",
+    "age",
+    "physical_type",
+    "current_appearance",
+    "life_status",
+    "life_status_note",
+    "condition",
+    "persona",
+    "personality",
+    "values",
+    "habits",
+    "pressure_response",
+    "boundaries",
+    "voice",
+    "abilities",
+    "skills",
+    "saving_throws",
+    "passive_perception",
+    "ac",
+    "hp",
+    "speed",
+    "senses",
+    "languages",
+];
+
+/// Full debug/authoring NPC edit surface. The GM-facing tool deliberately uses
+/// the narrower list above.
+const DEBUG_NPC_CHARACTER_FIELDS: &[&str] = &[
+    "name",
+    "color",
+    "role",
+    "pronouns",
+    "public_label",
+    "age",
+    "physical_type",
+    "distinctive_features",
+    "current_appearance",
+    "life_status",
+    "life_status_note",
+    "condition",
+    "persona",
+    "personality",
+    "values",
+    "habits",
+    "pressure_response",
+    "boundaries",
+    "voice",
+    "goals",
+    "knowledge",
+    "secret",
+    "abilities",
+    "skills",
+    "saving_throws",
+    "passive_perception",
+    "ac",
+    "hp",
+    "speed",
+    "senses",
+    "languages",
 ];
 
 // =========================================================================
@@ -314,6 +398,11 @@ pub struct World {
     /// entities in this phase (§0): this is a legacy-scene-side store, distinct
     /// from the canon place graph.
     pub place_items: BTreeMap<String, Vec<SceneItem>>,
+
+    /// Per-place storage for live scene fields that are intentionally outside
+    /// the canon graph. Without this store, constraints and tension from the
+    /// place being left leaked into every subsequently entered place.
+    pub place_scene_contexts: BTreeMap<String, PlaceSceneContext>,
 }
 
 /// A reference to a saved content package (a world or a story) by its stable id
@@ -393,6 +482,7 @@ impl World {
             world_ref_authored_version: None,
             char_ref: None,
             place_items: BTreeMap::new(),
+            place_scene_contexts: BTreeMap::new(),
         }
     }
 
@@ -503,6 +593,7 @@ impl World {
                 age: String::new(),
                 physical_type: String::new(),
                 distinctive_features: String::new(),
+                current_appearance: String::new(),
                 life_status: status,
                 life_status_note: String::new(),
                 condition: String::new(),
@@ -1126,6 +1217,7 @@ impl World {
                 age: get_str(raw, "age"),
                 physical_type: get_str(raw, "physical_type"),
                 distinctive_features: get_str(raw, "distinctive_features"),
+                current_appearance: get_str(raw, "current_appearance"),
                 life_status: nonempty_or(get_str(raw, "life_status"), "alive"),
                 life_status_note: get_str(raw, "life_status_note"),
                 condition: get_str(raw, "condition"),
@@ -1191,6 +1283,7 @@ impl World {
                 age: String::new(),
                 physical_type: String::new(),
                 distinctive_features: String::new(),
+                current_appearance: String::new(),
                 life_status: "alive".to_string(),
                 life_status_note: String::new(),
                 condition: String::new(),
@@ -2107,7 +2200,7 @@ impl World {
     }
 
     /// Shared internal-roster line:
-    /// `- id=…; internal_name=…; player_label=…; role=…[; род=…]`.
+    /// `- id=…; internal_name=…; player_label=…; role=…[; gender=…]`.
     fn roster_line(&self, npc: &Npc) -> String {
         let mut line = format!(
             "- id={}; internal_name={}; player_label={}; role={}",
@@ -2117,7 +2210,7 @@ impl World {
             npc.role
         );
         if !npc.pronouns.is_empty() {
-            line.push_str(&format!("; род={}", public_gender(&npc.pronouns)));
+            line.push_str(&format!("; gender={}", model_gender_label(&npc.pronouns)));
         }
         line
     }
@@ -2210,7 +2303,7 @@ impl World {
         if total > cap {
             let offscreen = total - cap;
             lines.push(format!(
-                "… (+{offscreen} offscreen — read_state(roster) для полного списка)"
+                "… (+{offscreen} offscreen — read_state(roster) for the full list)"
             ));
         }
         lines.join("\n")
@@ -2475,16 +2568,16 @@ impl World {
             .collect::<Vec<_>>()
             .join(", ");
         let scene_text = format!(
-            "Текущая сцена: {}. {} В сцене: {}. Выходы: {}.",
+            "Current scene: {}. {} Present named NPCs: {}. Exits: {}.",
             self.scene.title,
             self.scene.description,
             if present_labels.is_empty() {
-                "нет именованных NPC".to_string()
+                "none".to_string()
             } else {
                 present_labels.join(", ")
             },
             if exits_text.is_empty() {
-                "нет известных выходов".to_string()
+                "none known".to_string()
             } else {
                 exits_text
             }
@@ -2517,14 +2610,14 @@ impl World {
             .collect::<Vec<_>>()
         {
             let mut text = format!(
-                "В текущей сцене виден предмет: {}; место: {}.",
+                "Visible item in the current scene: {}; location: {}.",
                 item.name, item.location
             );
             if !item.details.is_empty() {
-                text.push_str(&format!(" Детали: {}.", item.details));
+                text.push_str(&format!(" Details: {}.", item.details));
             }
             if !item.owner.is_empty() {
-                text.push_str(&format!(" Владелец: {}.", item.owner));
+                text.push_str(&format!(" Owner: {}.", item.owner));
             }
             let mut metadata = Map::new();
             metadata.insert("scene_id".to_string(), json!(self.scene.scene_id));
@@ -2549,13 +2642,23 @@ impl World {
             let known_name = self.npc_known_name(npc_id, actor_id);
             let mut appearance = String::new();
             if !npc.physical_type.is_empty() {
-                appearance.push_str(&format!(" Тип/внешнее впечатление: {}.", npc.physical_type));
+                appearance.push_str(&format!(" Type/visible impression: {}.", npc.physical_type));
             }
             if !npc.distinctive_features.is_empty() {
-                appearance.push_str(&format!(" Приметы: {}.", npc.distinctive_features));
+                appearance.push_str(&format!(
+                    " Distinctive features: {}.",
+                    npc.distinctive_features
+                ));
+            }
+            if !npc.current_appearance.is_empty() {
+                appearance.push_str(&format!(" Current appearance: {}.", npc.current_appearance));
             }
             let gender_part = if !npc.pronouns.is_empty() {
-                format!(" Род: {} ({}).", public_gender(&npc.pronouns), npc.pronouns)
+                format!(
+                    " Gender: {} ({}).",
+                    model_gender_label(&npc.pronouns),
+                    npc.pronouns
+                )
             } else {
                 String::new()
             };
@@ -2578,6 +2681,7 @@ impl World {
                     npc.role.clone(),
                     npc.pronouns.clone(),
                     npc.physical_type.clone(),
+                    npc.current_appearance.clone(),
                 ],
                 metadata,
             ));
@@ -2586,19 +2690,19 @@ impl World {
             if let Some(w) = where_row {
                 if w.status != "unknown" {
                     let present_text = if self.scene.present_npcs.contains(npc_id) {
-                        "присутствует в текущей сцене"
+                        "present in the current scene"
                     } else {
-                        "не в текущей сцене"
+                        "not in the current scene"
                     };
                     let where_label = if !w.location_name.is_empty() {
                         w.location_name.clone()
                     } else if !w.location_id.is_empty() {
                         w.location_id.clone()
                     } else {
-                        "неизвестно".to_string()
+                        "unknown".to_string()
                     };
                     let details_part = if !w.details.is_empty() {
-                        format!(" Детали: {}.", w.details)
+                        format!(" Details: {}.", w.details)
                     } else {
                         String::new()
                     };
@@ -2616,7 +2720,7 @@ impl World {
                         format!("npc_whereabouts:{npc_id}"),
                         "npc_whereabouts".to_string(),
                         format!(
-                            "{label} сейчас {present_text}. Статус местонахождения: {}. Где искать: {where_label}.{details_part}",
+                            "{label} is currently {present_text}. Whereabouts status: {}. Where to look: {where_label}.{details_part}",
                             w.status
                         ),
                         status.to_string(),
@@ -2673,11 +2777,20 @@ impl World {
             if !npc.physical_type.is_empty() {
                 detail.push_str(&format!(", {}", npc.physical_type));
             }
+            if !npc.distinctive_features.is_empty() {
+                detail.push_str(&format!(
+                    ", distinctive features: {}",
+                    npc.distinctive_features
+                ));
+            }
+            if !npc.current_appearance.is_empty() {
+                detail.push_str(&format!(", current appearance: {}", npc.current_appearance));
+            }
             if !npc.condition.is_empty() {
                 detail.push_str(&format!(", condition: {}", npc.condition));
             }
             if !npc.pronouns.is_empty() {
-                detail.push_str(&format!(", род: {}", public_gender(&npc.pronouns)));
+                detail.push_str(&format!(", gender: {}", model_gender_label(&npc.pronouns)));
             }
             if let Some(p) = p {
                 if p.visible {
@@ -2742,7 +2855,7 @@ impl World {
         let mut parts = vec![
             format!("Scene: {}", self.scene.title),
             format!("Location: {}", self.scene.location_id),
-            format!("World time: {}", self.time_summary()),
+            format!("World time: {}", self.model_time_summary()),
             format!("Description: {}", self.scene.description),
             format!(
                 "Present named NPCs: {}",
@@ -3071,7 +3184,10 @@ impl World {
             };
             let mut label = format!("{} ({}", other.name, other.role);
             if !other.pronouns.is_empty() {
-                label.push_str(&format!("; род: {}", public_gender(&other.pronouns)));
+                label.push_str(&format!(
+                    "; gender: {}",
+                    model_gender_label(&other.pronouns)
+                ));
             }
             label.push_str(&format!(") at {}", other_presence.location));
             others.push(label);
@@ -3100,7 +3216,11 @@ impl World {
                 "Your name/gender marker: {}{}",
                 npc.name,
                 if !npc.pronouns.is_empty() {
-                    format!(" ({} = {})", npc.pronouns, public_gender(&npc.pronouns))
+                    format!(
+                        " ({} = {})",
+                        npc.pronouns,
+                        model_gender_label(&npc.pronouns)
+                    )
                 } else {
                     String::new()
                 }
@@ -4175,17 +4295,38 @@ impl World {
         let anchor_id = self.world_canon.player_place_id.clone();
         let old_id = self.scene.location_id.clone();
         if !old_id.is_empty() && old_id != anchor_id {
-            // Genuine place change: park the leaving place's items and restore
-            // the entered place's items (default empty). `mem::take` avoids a
-            // clone; the entered items are looked up (not removed) so a later
-            // return can restore them again.
+            // Genuine place change: park all scene-local state under the place
+            // being left, then restore the entered place's state. The canon
+            // rebuild below owns structural fields such as title and exits.
             let leaving = std::mem::take(&mut self.scene.items);
-            self.place_items.insert(old_id, leaving);
+            self.place_items.insert(old_id.clone(), leaving);
+            self.place_scene_contexts.insert(
+                old_id,
+                PlaceSceneContext {
+                    scene_id: self.scene.scene_id.clone(),
+                    constraints: std::mem::take(&mut self.scene.constraints),
+                    tension: std::mem::take(&mut self.scene.tension),
+                    player_seen: std::mem::take(&mut self.scene.player_seen),
+                },
+            );
             self.scene.items = self
                 .place_items
                 .get(&anchor_id)
                 .cloned()
                 .unwrap_or_default();
+            let entered = self
+                .place_scene_contexts
+                .get(&anchor_id)
+                .cloned()
+                .unwrap_or_default();
+            self.scene.scene_id = if entered.scene_id.is_empty() {
+                anchor_id.clone()
+            } else {
+                entered.scene_id
+            };
+            self.scene.constraints = entered.constraints;
+            self.scene.tension = entered.tension;
+            self.scene.player_seen = entered.player_seen;
         }
         self.scene = self.build_current_view();
         self.constraints = self.scene.constraints.clone();
@@ -4373,10 +4514,31 @@ impl World {
         )
     }
 
+    /// Time summary for model-facing context. Authored calendar/date values stay
+    /// verbatim; only the empty-date fallback is an English instruction-layer label.
+    pub fn model_time_summary(&self) -> String {
+        let payload = self.time_export();
+        let calendar = payload["calendar_name"].as_str().unwrap_or("");
+        let date = if self.time.current_date_label.is_empty() {
+            format!("Day {}", payload["day_number"])
+        } else {
+            self.time.current_date_label.clone()
+        };
+        let prefix = if calendar.is_empty() {
+            String::new()
+        } else {
+            format!("{calendar}, ")
+        };
+        format!(
+            "{prefix}{date}, {}",
+            payload["time_of_day"].as_str().unwrap_or("")
+        )
+    }
+
     pub fn time_context(&self) -> String {
         let payload = self.time_export();
         let mut lines = vec![
-            format!("Current world time: {}", self.time_summary()),
+            format!("Current world time: {}", self.model_time_summary()),
             format!(
                 "Previous player turn elapsed: {} minutes",
                 payload["last_advance_minutes"]
@@ -4457,6 +4619,66 @@ impl World {
         out
     }
 
+    fn apply_npc_character_fields(
+        npc: &mut Npc,
+        fields: &Map<String, Value>,
+        editable: &[&str],
+    ) -> BTreeSet<String> {
+        let dict_fields = ["abilities", "skills", "saving_throws", "hp"];
+        let joined_fields = ["speed", "senses", "languages"];
+        let mut changed = BTreeSet::new();
+
+        for key in editable {
+            if !fields.contains_key(*key) {
+                continue;
+            }
+            let raw = &fields[*key];
+            let new_value = if dict_fields.contains(key) {
+                Value::Object(Self::normalize_stat_dict(raw))
+            } else if *key == "passive_perception" {
+                as_int_or_none(raw).map_or(Value::Null, Value::from)
+            } else if *key == "ac" {
+                raw.clone()
+            } else if joined_fields.contains(key) {
+                Value::String(as_joined_str(raw))
+            } else {
+                Value::String(as_str(raw))
+            };
+            if npc_field_value(npc, key) == new_value {
+                continue;
+            }
+            set_npc_field(npc, key, new_value);
+            changed.insert((*key).to_string());
+        }
+        changed
+    }
+
+    /// Append unique traits without requiring the model to read and rewrite the
+    /// whole `distinctive_features` string. Existing cards commonly separate
+    /// traits with commas, while model-authored additions use semicolons.
+    fn append_distinctive_features(current: &mut String, additions: &Value) -> bool {
+        let before = current.clone();
+        for raw in as_list(additions) {
+            let addition = as_str(&raw).trim().to_string();
+            if addition.is_empty() {
+                continue;
+            }
+            let addition_key = addition.to_lowercase();
+            let already_present = current
+                .split([';', ',', '\n', '\r'])
+                .map(str::trim)
+                .any(|existing| existing.to_lowercase() == addition_key);
+            if already_present {
+                continue;
+            }
+            if !current.trim().is_empty() {
+                current.push_str("; ");
+            }
+            current.push_str(&addition);
+        }
+        *current != before
+    }
+
     fn apply_player_character_fields(
         pc: &mut PlayerCharacter,
         fields: &Map<String, Value>,
@@ -4469,6 +4691,7 @@ impl World {
             "age",
             "physical_type",
             "distinctive_features",
+            "current_appearance",
             "life_status",
             "life_status_note",
             "condition",
@@ -4623,6 +4846,46 @@ impl World {
         *list != before
     }
 
+    /// Validate the GM-facing player patch before applying it. Internal engine
+    /// paths may keep using `update_player_character` directly.
+    pub fn update_player_character_checked(
+        &mut self,
+        fields: &Value,
+        reason: &str,
+    ) -> Result<Value, String> {
+        let map = match fields {
+            Value::Object(map) => map,
+            _ => return Err("update_character requires an object in `fields`.".to_string()),
+        };
+        let allowed: BTreeSet<&str> = PLAYER_CHARACTER_FIELDS.iter().copied().collect();
+        let unsupported: Vec<String> = map
+            .keys()
+            .filter(|key| {
+                !allowed.contains(key.as_str())
+                    && ![
+                        "inventory_add",
+                        "inventory_remove",
+                        "equipment_add",
+                        "equipment_remove",
+                        "distinctive_features_add",
+                    ]
+                    .contains(&key.as_str())
+            })
+            .cloned()
+            .collect();
+        if !unsupported.is_empty() {
+            return Err(format!(
+                "Fields are not editable for the player through update_character: {}.",
+                unsupported.join(", ")
+            ));
+        }
+        let mut payload = self.update_player_character(fields, reason);
+        if let Value::Object(map) = &mut payload {
+            map.insert("target".to_string(), Value::String("player".to_string()));
+        }
+        Ok(payload)
+    }
+
     pub fn update_player_character(&mut self, fields: &Value, reason: &str) -> Value {
         let map = match fields {
             Value::Object(m) => m.clone(),
@@ -4650,6 +4913,14 @@ impl World {
             };
             if Self::apply_list_delta(list, &adds, &removes) {
                 changed.insert(field.to_string());
+            }
+        }
+        if let Some(additions) = map.get("distinctive_features_add") {
+            if Self::append_distinctive_features(
+                &mut self.player_character.distinctive_features,
+                additions,
+            ) {
+                changed.insert("distinctive_features".to_string());
             }
         }
         if !changed.is_empty() {
@@ -4991,6 +5262,10 @@ impl World {
             "distinctive_features".to_string(),
             json!(pc.distinctive_features),
         );
+        m.insert(
+            "current_appearance".to_string(),
+            json!(pc.current_appearance),
+        );
         m.insert("life_status".to_string(), json!(pc.life_status));
         m.insert("life_status_note".to_string(), json!(pc.life_status_note));
         m.insert("condition".to_string(), json!(pc.condition));
@@ -5065,6 +5340,7 @@ impl World {
             ("Age", json!(pc.age)),
             ("Type/size/appearance", json!(pc.physical_type)),
             ("Distinctive features", json!(pc.distinctive_features)),
+            ("Current appearance", json!(pc.current_appearance)),
             ("Life status", json!(pc.life_status)),
             ("Life status note", json!(pc.life_status_note)),
             ("Condition", json!(pc.condition)),
@@ -5101,9 +5377,9 @@ impl World {
                 lines.push(format!("{label}: {}", values.join("; ")));
             }
         }
-        // Фаза С §С1 spells block: one line per known spell (name, level or
-        // «заговор», concentration/ritual marks, effect prose), then a compact
-        // slots line «Слоты: 1-й: 3/4, 2-й: 1/2» computed from spell_slots vs
+        // Phase C §C1 spells block: one line per known spell (name, level or
+        // `cantrip`, concentration/ritual marks, effect prose), then a compact
+        // slots line `Slots: level 1: 3/4, level 2: 1/2` computed from spell_slots vs
         // spell_slots_max, then the active concentration line. All engine-facing
         // context text so the GM sees exactly what the card holds.
         let spells: Vec<String> = pc
@@ -5112,16 +5388,16 @@ impl World {
             .filter(|sp| !sp.name.trim().is_empty())
             .map(|sp| {
                 let level = if sp.level == 0 {
-                    "заговор".to_string()
+                    "cantrip".to_string()
                 } else {
-                    format!("ур. {}", sp.level)
+                    format!("level {}", sp.level)
                 };
                 let mut marks = Vec::new();
                 if sp.concentration {
-                    marks.push("конц.");
+                    marks.push("conc.");
                 }
                 if sp.ritual {
-                    marks.push("ритуал");
+                    marks.push("ritual");
                 }
                 let mut parts = vec![format!("{} ({level}", sp.name.trim())];
                 if !marks.is_empty() {
@@ -5263,102 +5539,76 @@ impl World {
             Some(n) => n,
             None => return false,
         };
-        let text_fields: [&str; 26] = [
-            "name",
-            "color",
-            "role",
-            "pronouns",
-            "public_label",
-            "age",
-            "physical_type",
-            "distinctive_features",
-            "life_status",
-            "life_status_note",
-            "condition",
-            "persona",
-            "personality",
-            "values",
-            "habits",
-            "pressure_response",
-            "boundaries",
-            "voice",
-            "goals",
-            "knowledge",
-            "secret",
-            "speed",
-            "senses",
-            "languages",
-            "_pad1",
-            "_pad2",
-        ];
-        // Build the actual editable list precisely (text + dict + scalar).
-        let text_fields_real: [&str; 24] = [
-            "name",
-            "color",
-            "role",
-            "pronouns",
-            "public_label",
-            "age",
-            "physical_type",
-            "distinctive_features",
-            "life_status",
-            "life_status_note",
-            "condition",
-            "persona",
-            "personality",
-            "values",
-            "habits",
-            "pressure_response",
-            "boundaries",
-            "voice",
-            "goals",
-            "knowledge",
-            "secret",
-            "speed",
-            "senses",
-            "languages",
-        ];
-        let _ = text_fields; // (kept to mirror Python tuple; unused)
-        let dict_fields = ["abilities", "skills", "saving_throws", "hp"];
-        let scalar_fields = ["passive_perception", "ac"];
-        let joined = ["speed", "senses", "languages"];
-
-        let mut editable: Vec<&str> = Vec::new();
-        editable.extend(text_fields_real.iter().copied());
-        editable.extend(dict_fields.iter().copied());
-        editable.extend(scalar_fields.iter().copied());
-
-        let mut content_changed = false;
-        for key in editable {
-            if !map.contains_key(key) {
-                continue;
-            }
-            let raw = &map[key];
-            let new_value: Value = if dict_fields.contains(&key) {
-                Value::Object(as_dict(raw))
-            } else if key == "passive_perception" {
-                match as_int_or_none(raw) {
-                    Some(i) => json!(i),
-                    None => Value::Null,
-                }
-            } else if key == "ac" {
-                raw.clone()
-            } else if joined.contains(&key) {
-                Value::String(as_joined_str(raw))
-            } else {
-                Value::String(as_str(raw))
-            };
-            let is_content = key != "color";
-            let current = npc_field_value(npc, key);
-            if is_content && new_value != current {
-                content_changed = true;
-            }
-            set_npc_field(npc, key, new_value);
-        }
-        if content_changed {
+        let changed = Self::apply_npc_character_fields(npc, &map, DEBUG_NPC_CHARACTER_FIELDS);
+        if changed.iter().any(|field| field != "color") {
             npc.card_revision += 1;
         }
         true
+    }
+
+    /// Apply a live-GM partial patch to one existing NPC card. This deliberately
+    /// excludes private `knowledge`/`secret`/`goals` and debug-only bookkeeping.
+    pub fn update_npc_character(
+        &mut self,
+        npc_id: &str,
+        fields: &Value,
+        reason: &str,
+    ) -> Result<Value, String> {
+        let resolved_id = npc_id.trim().to_string();
+        if resolved_id.is_empty() || !self.npcs.contains_key(&resolved_id) {
+            return Err(format!(
+                "no such NPC id: {}. Use an exact npc_id from the current roster.",
+                npc_id.trim()
+            ));
+        }
+        let map = match fields {
+            Value::Object(map) => map.clone(),
+            _ => return Err("update_character requires an object in `fields`.".to_string()),
+        };
+        let allowed: BTreeSet<&str> = GM_NPC_CHARACTER_FIELDS.iter().copied().collect();
+        let unsupported: Vec<String> = map
+            .keys()
+            .filter(|key| {
+                !allowed.contains(key.as_str()) && key.as_str() != "distinctive_features_add"
+            })
+            .cloned()
+            .collect();
+        if !unsupported.is_empty() {
+            return Err(format!(
+                "Fields are not editable for an NPC through update_character: {}.",
+                unsupported.join(", ")
+            ));
+        }
+
+        let npc = self
+            .npcs
+            .get_mut(&resolved_id)
+            .expect("resolved NPC must exist");
+        let mut changed = Self::apply_npc_character_fields(npc, &map, GM_NPC_CHARACTER_FIELDS);
+        if let Some(additions) = map.get("distinctive_features_add") {
+            if Self::append_distinctive_features(&mut npc.distinctive_features, additions) {
+                changed.insert("distinctive_features".to_string());
+            }
+        }
+        if !changed.is_empty() {
+            npc.card_revision += 1;
+        }
+        let revision = npc.card_revision;
+        let updated: Vec<String> = changed.into_iter().collect();
+        let label = if npc.public_label.trim().is_empty() {
+            npc.name.clone()
+        } else {
+            npc.public_label.clone()
+        };
+        Ok(json!({
+            "ok": true,
+            "target": "npc",
+            "npc_id": resolved_id,
+            "label": label,
+            "updated": updated,
+            "reason": reason.trim(),
+            "card_revision": revision,
+        }))
     }
 
     pub fn add_fact(&mut self, text: &str, kind: &str) -> Option<FactRecord> {
@@ -6210,6 +6460,9 @@ fn public_npc_description(npc: &Npc) -> String {
     if !npc.distinctive_features.is_empty() {
         visible_bits.push(npc.distinctive_features.clone());
     }
+    if !npc.current_appearance.is_empty() {
+        visible_bits.push(npc.current_appearance.clone());
+    }
     if !npc.condition.is_empty() {
         visible_bits.push(npc.condition.clone());
     }
@@ -6710,7 +6963,7 @@ fn slot_int(v: Option<&Value>) -> i64 {
     }
 }
 
-/// Render the compact «1-й: 3/4, 2-й: 1/2» slots line for the GM context. The
+/// Render the compact `level 1: 3/4, level 2: 1/2` slots line for GM context. The
 /// key set is the UNION of `spell_slots` and `spell_slots_max` keys that parse
 /// as a positive integer level, sorted ascending; each entry shows the remaining
 /// count over the authored max (missing max → «?»). Empty when no levels exist.
@@ -6734,7 +6987,7 @@ fn spell_slots_line(slots: &Map<String, Value>, max: &Map<String, Value>) -> Str
                 Some(v) if !v.is_null() => slot_int(Some(v)).to_string(),
                 _ => "?".to_string(),
             };
-            format!("{lvl}-й: {cur}/{cap}")
+            format!("level {lvl}: {cur}/{cap}")
         })
         .collect();
     parts.join(", ")
@@ -6752,6 +7005,7 @@ fn pc_field_value(pc: &PlayerCharacter, key: &str) -> Value {
         "age" => json!(pc.age),
         "physical_type" => json!(pc.physical_type),
         "distinctive_features" => json!(pc.distinctive_features),
+        "current_appearance" => json!(pc.current_appearance),
         "life_status" => json!(pc.life_status),
         "life_status_note" => json!(pc.life_status_note),
         "condition" => json!(pc.condition),
@@ -6790,6 +7044,7 @@ fn set_pc_field(pc: &mut PlayerCharacter, key: &str, value: Value) {
         "age" => pc.age = value_as_string(&value),
         "physical_type" => pc.physical_type = value_as_string(&value),
         "distinctive_features" => pc.distinctive_features = value_as_string(&value),
+        "current_appearance" => pc.current_appearance = value_as_string(&value),
         "life_status" => pc.life_status = value_as_string(&value),
         "life_status_note" => pc.life_status_note = value_as_string(&value),
         "condition" => pc.condition = value_as_string(&value),
@@ -6835,6 +7090,7 @@ fn npc_field_value(npc: &Npc, key: &str) -> Value {
         "age" => json!(npc.age),
         "physical_type" => json!(npc.physical_type),
         "distinctive_features" => json!(npc.distinctive_features),
+        "current_appearance" => json!(npc.current_appearance),
         "life_status" => json!(npc.life_status),
         "life_status_note" => json!(npc.life_status_note),
         "condition" => json!(npc.condition),
@@ -6866,6 +7122,7 @@ fn set_npc_field(npc: &mut Npc, key: &str, value: Value) {
         "age" => npc.age = value_as_string(&value),
         "physical_type" => npc.physical_type = value_as_string(&value),
         "distinctive_features" => npc.distinctive_features = value_as_string(&value),
+        "current_appearance" => npc.current_appearance = value_as_string(&value),
         "life_status" => npc.life_status = value_as_string(&value),
         "life_status_note" => npc.life_status_note = value_as_string(&value),
         "condition" => npc.condition = value_as_string(&value),

@@ -25,6 +25,7 @@ const ACCENT = {
   edit_world_bible: "var(--md-em)",
   query_world_state: "var(--md-link)",
   update_world_state: "var(--entity-note)",
+  update_character: "var(--player)",
   update_player_character: "var(--player)",
   advance_time: "var(--md-em)",
   get_npc_profile: "var(--brand-text)",
@@ -532,13 +533,21 @@ function toolView(name, args, statusLabels, t) {
       };
     }
 
+    case "update_character":
     case "update_player_character": {
+      const target = name === "update_player_character" ? "player" : (args.target || "player");
+      const isNpc = target === "npc";
       const fields = (args.fields && typeof args.fields === "object") ? args.fields : {};
       const keys = Object.keys(fields);
       return {
         icon: <Icon name="shield" size={14} />,
-        accent: ACCENT.update_player_character,
-        title: t("tools.updatePlayer.title"),
+        accent: ACCENT.update_character,
+        title: isNpc ? (
+          <>
+            {t("tools.updateCharacter.npcTitle")}
+            {nonEmpty(args.npc_id) && <NpcRef id={args.npc_id} />}
+          </>
+        ) : t("tools.updateCharacter.playerTitle"),
         body: (
           <>
             {keys.length ? (
@@ -798,6 +807,9 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId, 
     }
     if (name === "advance_time") return <PlayerTimeCard payload={result} />;
     if (name === "update_player_character") return <PlayerSheetCard payload={result} />;
+    if (name === "update_character" && (result?.target || args?.target || "player") === "player") {
+      return <PlayerSheetCard payload={result} />;
+    }
     return null;
   }
 

@@ -122,17 +122,11 @@ fn seed_needs_npc_repair(seed: &Value) -> bool {
     !present.is_subset(&named)
 }
 
-/// `_has_cyrillic(text)`.
-fn has_cyrillic(s: &str) -> bool {
-    s.chars()
-        .any(|c| ('А'..='я').contains(&c) || c == 'Ё' || c == 'ё')
-}
-
-/// `_seed_player_facing_text(seed)`.
-fn seed_player_facing_text(seed: &Value) -> String {
+/// Player-facing text fragments used by the seed quality check.
+fn seed_player_facing_parts(seed: &Value) -> Vec<String> {
     let o = match obj(seed) {
         Some(o) => o,
-        None => return String::new(),
+        None => return Vec::new(),
     };
     let scene_owned = o.get("scene").filter(|v| v.is_object()).cloned();
     let scene = scene_owned.as_ref().and_then(|v| v.as_object());
@@ -176,86 +170,122 @@ fn seed_player_facing_text(seed: &Value) -> String {
             }
         }
     }
-    parts
-        .into_iter()
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    parts.into_iter().filter(|p| !p.is_empty()).collect()
 }
 
-/// `_seed_needs_text_repair(seed, brief)`.
-fn seed_needs_text_repair(seed: &Value, brief: &str) -> bool {
-    has_cyrillic(brief) && !has_cyrillic(&seed_player_facing_text(seed))
-}
-
-fn cyr_to_lat(ch: char) -> Option<&'static str> {
-    Some(match ch {
-        'а' => "a",
-        'б' => "b",
-        'в' => "v",
-        'г' => "g",
-        'д' => "d",
-        'е' => "e",
-        'ё' => "e",
-        'ж' => "zh",
-        'з' => "z",
-        'и' => "i",
-        'й' => "y",
-        'к' => "k",
-        'л' => "l",
-        'м' => "m",
-        'н' => "n",
-        'о' => "o",
-        'п' => "p",
-        'р' => "r",
-        'с' => "s",
-        'т' => "t",
-        'у' => "u",
-        'ф' => "f",
-        'х' => "h",
-        'ц' => "ts",
-        'ч' => "ch",
-        'ш' => "sh",
-        'щ' => "sch",
-        'ъ' => "",
-        'ы' => "y",
-        'ь' => "",
-        'э' => "e",
-        'ю' => "yu",
-        'я' => "ya",
-        _ => return None,
-    })
-}
-
-/// `_brief_name_slug(name)`.
-fn brief_name_slug(name: &str) -> String {
-    let lowered = name.to_lowercase();
-    let mut raw = String::new();
-    for ch in lowered.chars() {
-        match cyr_to_lat(ch) {
-            Some(s) => raw.push_str(s),
-            None => raw.push(ch),
+fn meta_text_key(value: &str) -> String {
+    let mut out = String::new();
+    let mut pending_space = false;
+    for ch in value.chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() {
+            if pending_space && !out.is_empty() {
+                out.push(' ');
+            }
+            out.push(ch);
+            pending_space = false;
+        } else {
+            pending_space = true;
         }
     }
-    let re = Regex::new(r"[^a-z0-9_]+").unwrap();
-    re.replace_all(&raw, "_").trim_matches('_').to_string()
+    out
 }
 
-/// `_apply_brief_display_names(seed, brief)` — mutates the seed in place.
+/// Detect empty output and prompt/schema placeholders without inferring a
+/// language from the user's brief. The fixed phrases below are structural
+/// examples from the seed schema, not locale-specific output variants.
+fn is_meta_placeholder(value: &str) -> bool {
+    let key = meta_text_key(value);
+    if key.is_empty() {
+        return true;
+    }
+    matches!(
+        key.as_str(),
+        "tbd"
+            | "todo"
+            | "placeholder"
+            | "placeholder text"
+            | "fill me"
+            | "replace me"
+            | "who the player is where they are what happened and what is expected of them"
+            | "short player facing introduction"
+            | "scene title"
+            | "scene description"
+    )
+}
+
+/// Repair text only when player-facing content is absent or dominated by
+/// structural placeholders. Any real writing system is accepted.
+fn seed_needs_text_repair(seed: &Value) -> bool {
+    let parts = seed_player_facing_parts(seed);
+    if parts.is_empty() {
+        return true;
+    }
+    let visible_chars = parts
+        .iter()
+        .flat_map(|part| part.chars())
+        .filter(|ch| ch.is_alphanumeric())
+        .count();
+    if visible_chars < 3 {
+        return true;
+    }
+    let placeholders = parts
+        .iter()
+        .filter(|part| is_meta_placeholder(part))
+        .count();
+    placeholders > 0 && placeholders * 2 >= parts.len()
+}
+
+fn display_name_key(name: &str) -> String {
+    let mut key = String::new();
+    let mut separator = false;
+    for ch in name.chars().flat_map(char::to_lowercase) {
+        if ch.is_alphanumeric() {
+            if separator && !key.is_empty() {
+                key.push('_');
+            }
+            key.push(ch);
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    key
+}
+
+/// Preserve brief-provided display names independently from output-language
+/// validation. Matching is case-insensitive within the same writing system and
+/// never guesses a transliteration.
 fn apply_brief_display_names(mut seed: Value, brief: &str) -> Value {
     if !seed.is_object() {
         return seed;
     }
-    let name_re = Regex::new(r"\b[А-ЯЁ][а-яё]{1,24}\b").unwrap();
-    let mut by_slug: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
-    for m in name_re.find_iter(brief) {
-        // Python dict: later duplicates overwrite earlier; insert overwrites.
-        by_slug.insert(brief_name_slug(m.as_str()), m.as_str().to_string());
+    let name_re = Regex::new(r"\b\p{Lu}[\p{L}\p{M}'’\-]{0,48}\b").unwrap();
+    let spans: Vec<(usize, usize)> = name_re
+        .find_iter(brief)
+        .map(|matched| (matched.start(), matched.end()))
+        .collect();
+    let mut by_key: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+    for start in 0..spans.len() {
+        for end in start..usize::min(start + 4, spans.len()) {
+            if end > start {
+                let gap = &brief[spans[end - 1].1..spans[end].0];
+                if !gap.chars().all(|ch| {
+                    ch.is_whitespace() || matches!(ch, '-' | '‑' | '–' | '—' | '\'' | '’')
+                }) {
+                    break;
+                }
+            }
+            let candidate = &brief[spans[start].0..spans[end].1];
+            by_key.insert(display_name_key(candidate), candidate.to_string());
+        }
     }
 
-    let apply = |raw: &mut Value, npc_id: &str, by_slug: &indexmap::IndexMap<String, String>| {
-        let slug = brief_name_slug(npc_id);
-        if let Some(wanted) = by_slug.get(&slug) {
+    let apply = |raw: &mut Value, npc_id: &str, by_key: &indexmap::IndexMap<String, String>| {
+        let current_name = raw.get("name").and_then(Value::as_str).unwrap_or("");
+        let wanted = by_key
+            .get(&display_name_key(current_name))
+            .or_else(|| by_key.get(&display_name_key(npc_id)));
+        if let Some(wanted) = wanted {
             if let Some(m) = raw.as_object_mut() {
                 m.insert("name".to_string(), Value::String(wanted.clone()));
             }
@@ -268,14 +298,14 @@ fn apply_brief_display_names(mut seed: Value, brief: &str) -> Value {
             for raw in npcs.iter_mut() {
                 if raw.is_object() {
                     let npc_id = text(raw.get("id").unwrap_or(&Value::Null));
-                    apply(raw, &npc_id, &by_slug);
+                    apply(raw, &npc_id, &by_key);
                 }
             }
         }
         Some(Value::Object(npcs)) => {
             for (npc_id, raw) in npcs.iter_mut() {
                 let id = npc_id.clone();
-                apply(raw, &id, &by_slug);
+                apply(raw, &id, &by_key);
             }
         }
         _ => {}
@@ -283,7 +313,7 @@ fn apply_brief_display_names(mut seed: Value, brief: &str) -> Value {
     if let Some(Value::Object(details)) = o.get_mut("npc_details") {
         for (npc_id, raw) in details.iter_mut() {
             let id = npc_id.clone();
-            apply(raw, &id, &by_slug);
+            apply(raw, &id, &by_key);
         }
     }
     seed
@@ -310,7 +340,7 @@ pub async fn build_world_seed(client: &dyn Backend, brief: &str) -> Result<Value
         .chat_json(&messages, Some(false), Role::Gm.as_str())
         .await?;
     let seed = apply_brief_display_names(Value::Object(raw), brief);
-    if !seed_needs_npc_repair(&seed) && !seed_needs_text_repair(&seed, brief) {
+    if !seed_needs_npc_repair(&seed) && !seed_needs_text_repair(&seed) {
         return Ok(seed);
     }
     let repair_system = render_world_seed_system(true);
@@ -345,7 +375,10 @@ pub async fn extract_scene_delta(
         .map(|npc| {
             let mut line = format!("- {}: {}, {}", npc.npc_id, npc.name, npc.role);
             if !npc.pronouns.is_empty() {
-                line.push_str(&format!(", род: {}", crate::public_gender(&npc.pronouns)));
+                line.push_str(&format!(
+                    ", gender: {}",
+                    crate::public_gender(&npc.pronouns)
+                ));
             }
             if world.scene.present_npcs.contains(&npc.npc_id) {
                 line.push_str("; present");
@@ -375,6 +408,69 @@ pub async fn extract_scene_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_repair_is_language_agnostic_and_rejects_empty_or_meta_output() {
+        for seed in [
+            json!({"story_brief": "Rain closes the harbor while the bell keeps ringing."}),
+            json!({"story_brief": "La lluvia cierra el puerto mientras sigue sonando la campana."}),
+            json!({"story_brief": "雨に閉ざされた港で、鐘だけが鳴り続けている。"}),
+        ] {
+            assert!(!seed_needs_text_repair(&seed), "valid seed: {seed}");
+        }
+
+        assert!(seed_needs_text_repair(&json!({})));
+        assert!(seed_needs_text_repair(&json!({"story_brief": "..."})));
+        assert!(seed_needs_text_repair(&json!({
+            "story_brief": "Who the player is, where they are, what happened, and what is expected of them.",
+            "public_intro": "Short player-facing introduction.",
+            "scene": {
+                "title": "Scene title",
+                "description": "Scene description",
+                "items": [{"name": "Item"}],
+                "exits": [{"name": "Exit"}]
+            }
+        })));
+
+        let real_scene_with_generic_exit = json!({
+            "story_brief": "The flood has trapped everyone in the old station.",
+            "scene": {
+                "title": "The Last Platform",
+                "description": "Cold water rises over the rails.",
+                "exits": [{"name": "Exit"}]
+            }
+        });
+        assert!(!seed_needs_text_repair(&real_scene_with_generic_exit));
+    }
+
+    #[test]
+    fn brief_display_names_match_unicode_names_without_cross_script_guessing() {
+        let seed = json!({
+            "proper_nouns": ["Лиза", "Ada Lovelace", "Élodie", "李娜"],
+            "npcs": [
+                {"id": "liza", "name": "лиза"},
+                {"id": "ada_lovelace", "name": "ada_lovelace"},
+                {"id": "elodie", "name": "élodie"},
+                {"id": "li_na", "name": "李娜"}
+            ]
+        });
+        let restored =
+            apply_brief_display_names(seed, "Лиза ждёт Ada Lovelace и Élodie; 李娜已经在门口。");
+        assert_eq!(restored["npcs"][0]["name"], "Лиза");
+        assert_eq!(restored["npcs"][1]["name"], "Ada Lovelace");
+        assert_eq!(restored["npcs"][2]["name"], "Élodie");
+        assert_eq!(restored["npcs"][3]["name"], "李娜");
+    }
+
+    #[test]
+    fn brief_display_name_repair_does_not_guess_ambiguous_proper_nouns() {
+        let seed = json!({
+            "proper_nouns": ["Alice"],
+            "npcs": [{"id": "guard", "name": "sentry"}]
+        });
+        let restored = apply_brief_display_names(seed, "Alice questions the guard.");
+        assert_eq!(restored["npcs"][0]["name"], "sentry");
+    }
 
     #[test]
     fn world_seed_output_example_is_valid_and_complete() {

@@ -1107,7 +1107,7 @@ impl Session {
             .map(|s| s.trim())
             .unwrap_or("");
         if !summary.is_empty() {
-            parts.push(format!("Сжатая память:\n{summary}"));
+            parts.push(format!("Compressed memory:\n{summary}"));
         }
         let history = self.npc_messages.get(npc_id).cloned().unwrap_or_default();
         let tail = if history.len() > max_messages {
@@ -1126,17 +1126,17 @@ impl Session {
                         "PREVIOUS NPC SITUATION (historical; do not treat as current):",
                         1,
                     );
-                    rendered.push(format!("Прошлая ситуация для NPC:\n{historical}"));
+                    rendered.push(format!("Previous situation for NPC:\n{historical}"));
                 } else if role == "assistant" {
-                    rendered.push(format!("Ответ {name}:\n{}", content.trim()));
+                    rendered.push(format!("Response from {name}:\n{}", content.trim()));
                 } else {
                     rendered.push(format!("{role}:\n{}", content.trim()));
                 }
             }
-            parts.push(format!("Последние сообщения:\n{}", rendered.join("\n\n")));
+            parts.push(format!("Recent messages:\n{}", rendered.join("\n\n")));
         }
         if parts.is_empty() {
-            "История NPC пока пустая.".to_string()
+            "NPC history is empty.".to_string()
         } else {
             parts.join("\n\n")
         }
@@ -1648,9 +1648,9 @@ impl Session {
             } else {
                 d.response.clone()
             };
-            let mut block = format!("Мой видимый ход: {visible_turn}");
+            let mut block = format!("My visible turn: {visible_turn}");
             for c in &d.claims {
-                block.push_str(&format!("\n  (опираюсь на: {c})"));
+                block.push_str(&format!("\n  (relied on: {c})"));
             }
             let entry = self.commitments.entry(npc_id.clone()).or_default();
             entry.push(block);

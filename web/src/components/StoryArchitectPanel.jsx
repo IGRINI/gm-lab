@@ -19,6 +19,7 @@ import {
   accumulateUsage,
   debugFromDone,
 } from "./architectShared.jsx";
+import { PronounsSelect } from "./sheetEditors.jsx";
 
 // The story architect panel (docs/CHARACTERS_AND_STORY_TZ.md §С1.3). It is the
 // story-level sibling of WorldArchitectPanel and shares its chat/SSE machinery
@@ -754,10 +755,9 @@ export default function StoryArchitectPanel({
                 <div className="world-field-grid">
                   <label className="world-field">
                     <span>{t("story.protagonist.pronouns.label")}</span>
-                    <input
-                      value={rawText(pc.pronouns)}
-                      onChange={(event) => updatePc("pronouns", event.target.value)}
-                      placeholder={t("story.protagonist.pronouns.placeholder")}
+                    <PronounsSelect
+                      value={pc.pronouns}
+                      onChange={(value) => updatePc("pronouns", value)}
                       disabled={locked}
                     />
                   </label>

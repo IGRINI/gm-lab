@@ -148,7 +148,8 @@
     "protagonist": "Протагонист",
     "characterFields": {
       "age": "Возраст",
-      "physical_type": "Внешность",
+      "physical_type": "Физическая внешность",
+      "current_appearance": "Текущий внешний вид",
       "distinctive_features": "Приметы",
       "personality": "Характер",
       "values": "Ценности",

@@ -232,6 +232,16 @@ impl MockClient {
                     "knows_more",
                     Value::Array(vec![Value::String("местные возчики".to_string())]),
                 ),
+                (
+                    "entry_transition",
+                    serde_json::json!({
+                        "label": "К дорожной остановке",
+                        "return_label": "Вернуться назад",
+                        "kind": "path",
+                        "time_cost_minutes": 7,
+                        "risk": "low"
+                    }),
+                ),
                 ("transitions", Value::Array(Vec::new())),
                 (
                     "anti_repeat_key",
@@ -251,7 +261,8 @@ impl MockClient {
                 "public_label": "бармен за стойкой",
                 "age": "за пятьдесят",
                 "physical_type": "грузный, с проседью и мозолистыми руками",
-                "distinctive_features": "рыжий шрам на предплечье, полотенце через плечо",
+                "distinctive_features": "рыжий шрам на предплечье",
+                "current_appearance": "В мятой льняной рубахе и тёмном фартуке, седые волосы зачёсаны назад; через плечо переброшено полотенце.",
                 "persona": "Немногословный хозяин таверны, что подмечает каждого гостя и держит язык за зубами.",
                 "personality": "спокойный, наблюдательный, недоверчивый к чужакам",
                 "values": "порядок в зале и безопасность своих завсегдатаев",
@@ -564,6 +575,13 @@ fn character_architect_chat_output() -> ChatOutput {
             (
                 "physical_type",
                 Value::String("жилистая, с обветренным лицом".to_string()),
+            ),
+            (
+                "current_appearance",
+                Value::String(
+                    "В серо-зелёном дорожном плаще поверх кожаной куртки, волосы собраны в короткий хвост; сапоги в дорожной пыли."
+                        .to_string(),
+                ),
             ),
             (
                 "abilities",

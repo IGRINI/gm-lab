@@ -1038,7 +1038,7 @@ fn seed_has_pc(seed: &Value) -> bool {
 /// architect may fold into `player_character` stay private until deliberately
 /// added here. Stat blocks / inventories are also out — the row presents the
 /// hero, it does not replace the in-game sheet.
-const PC_PUBLIC_FIELDS: [&str; 11] = [
+const PC_PUBLIC_FIELDS: [&str; 12] = [
     "name",
     "pronouns",
     "class_role",
@@ -1047,6 +1047,7 @@ const PC_PUBLIC_FIELDS: [&str; 11] = [
     "age",
     "physical_type",
     "distinctive_features",
+    "current_appearance",
     "personality",
     "values",
     "condition",
@@ -1368,6 +1369,7 @@ mod tests {
                         "class_role": "сыщица",
                         "level": 2,
                         "background": "вольная сыщица",
+                        "current_appearance": "в промокшем дорожном плаще",
                         "gm_notes": "секрет мастера",
                         "abilities": {"STR": 9},
                         "inventory": ["кинжал"],
@@ -1407,6 +1409,10 @@ mod tests {
         assert_eq!(pc.get("name"), Some(&json!("Дарра")));
         assert_eq!(pc.get("class_role"), Some(&json!("сыщица")));
         assert_eq!(pc.get("level"), Some(&json!(2)));
+        assert_eq!(
+            pc.get("current_appearance"),
+            Some(&json!("в промокшем дорожном плаще"))
+        );
         // GM-only and mechanical fields never pass; blank strings are dropped.
         for hidden in ["gm_notes", "abilities", "inventory", "condition"] {
             assert!(pc.get(hidden).is_none(), "{hidden} must not leak");

@@ -12,6 +12,7 @@ gml-orchestrator = { path = "../gml-orchestrator" }
 gml-rag = { path = "../gml-rag" }
 gml-llm = { path = "../gml-llm" }
 
+serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
 tokio = { workspace = true }

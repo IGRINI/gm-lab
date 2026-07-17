@@ -13,11 +13,11 @@
           },
           "situation": {
             "type": "string",
-            "description": "Russian neutral third-person NPC-perception brief of what is happening RIGHT NOW: only what this NPC can see, hear, already know, or plausibly infer from visible pressure. Include the player's action and exact addressed words; quote player phrases unchanged when precision matters. Preserve declared delivery exactly: whisper, quiet voice, clenched-teeth mutter, silent gesture, or public speech. Do not upgrade a whisper/threat to shouting. If secrecy is risky because the room is crowded, describe that as risk of body language/proximity being noticed, not as other people hearing the content. State the intended listener/audience. If the player speaks quietly to this NPC, say that the content is meant for this NPC only unless someone explicitly overheard. Include immediate leverage and danger that the NPC can perceive: weapons, distance, escape routes, witnesses, whether guards are nearby, whether the NPC is cornered, and any intimidation/check result already rolled by the GM. Roll/check outcomes sent in the situation are authoritative for how strongly the visible attempt lands on this NPC: follow the grade, margin, and stakes as pressure, credibility, confidence, hesitation, or apparent danger. A roll/check result is not secret truth about hidden facts. Do not include GM-only certainty, player-sheet validation, hidden facts, or conclusions about whether the player is bluffing/lying, lacks proof, lacks a spell/item/weapon, or whether a threatened effect is truly impossible unless this NPC can directly observe that fact or already knows it. For unsupported declared effects after a player-facing correction, describe only the visible gesture/threat and how convincing or dangerous it appears. Do not write 'you'. Do not describe the NPC's feelings, motives, choices, or hidden thoughts. Keep proper nouns exactly as they are written in the current world."
+            "description": "Neutral third-person NPC-perception brief of what is happening RIGHT NOW: only what this NPC can see, hear, already know, or plausibly infer from visible pressure. Include the player's action and exact addressed words; quote player phrases unchanged when precision matters. Preserve declared delivery exactly: whisper, quiet voice, clenched-teeth mutter, silent gesture, or public speech. Do not upgrade a whisper/threat to shouting. If secrecy is risky because the room is crowded, describe that as risk of body language/proximity being noticed, not as other people hearing the content. State the intended listener/audience. If the player speaks quietly to this NPC, say that the content is meant for this NPC only unless someone explicitly overheard. Include immediate leverage and danger that the NPC can perceive: weapons, distance, escape routes, witnesses, whether guards are nearby, whether the NPC is cornered, and any intimidation/check result already rolled by the GM. Roll/check outcomes sent in the situation are authoritative for how strongly the visible attempt lands on this NPC: follow the grade, margin, and stakes as pressure, credibility, confidence, hesitation, or apparent danger. A roll/check result is not secret truth about hidden facts. Do not include GM-only certainty, player-sheet validation, hidden facts, or conclusions about whether the player is bluffing/lying, lacks proof, lacks a spell/item/weapon, or whether a threatened effect is truly impossible unless this NPC can directly observe that fact or already knows it. For unsupported declared effects after a player-facing correction, describe only the visible gesture/threat and how convincing or dangerous it appears. Do not write 'you'. Do not describe the NPC's feelings, motives, choices, or hidden thoughts. Keep proper nouns exactly as they are written in the current world."
           },
           "correction": {
             "type": "string",
-            "description": "Fill in ONLY when sending an NPC response back for a redo: what is wrong and what to fix, in Russian. Omit this field on the first ask_npc call for a fresh player action."
+            "description": "Fill in ONLY when sending an NPC response back for a redo: what is wrong and what to fix. Omit this field on the first ask_npc call for a fresh player action."
           }
         },
         "required": [
@@ -66,7 +66,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Why the scene roster changed, in Russian."
+            "description": "Why the scene roster changed."
           }
         },
         "required": [
@@ -96,7 +96,7 @@
           },
           "location_name": {
             "type": "string",
-            "description": "Russian player/world-facing place name, if known."
+            "description": "Player/world-facing place name, if known."
           },
           "status": {
             "type": "string",
@@ -110,11 +110,11 @@
           },
           "details": {
             "type": "string",
-            "description": "Short Russian note: why this is the right place or what is known."
+            "description": "Short note: why this is the right place or what is known."
           },
           "source": {
             "type": "string",
-            "description": "What established this, in Russian: witness, public lore, scene result, etc."
+            "description": "What established this: witness, public lore, scene result, etc."
           }
         },
         "required": [
@@ -158,6 +158,7 @@
                 "age",
                 "boundaries",
                 "condition",
+                "current_appearance",
                 "distinctive_features",
                 "habits",
                 "hp",
@@ -194,17 +195,17 @@
     "type": "function",
     "function": {
       "name": "set_scene",
-      "description": "Compatibility/debug fallback for applying a fully-authored current scene patch. DO NOT use this as the normal way to invent a new room, side chamber, street, building, point of interest, dungeon point, or road situation. For living-world play, prefer move_player whenever a listed exit already leads where the player is going, and call generate_location FIRST when the player discovers, opens, enters, or needs a not-yet-authored place/situation. Use set_scene only after generate_location is unavailable or rejected, or when an external tool/user debug patch already supplies the complete visible scene. The destination is upserted as a canonical Place (stable id from location_id or the title), a transition from the player's current place is ensured, and the player's canonical place is set to it; the live scene is then rebuilt FROM the canon, so it is authoritative — not a wholesale scene replacement. DO NOT CALL for movement inside the same place, plans to go somewhere, failed travel, vague searching without arrival, or when a visible exit already leads there (use move_player). Include only visible/public state. The title must name the exact current area, e.g. 'У входа в караульную' if they are still outside. Do not invent hidden facts or conclusions. List in present_npcs only the npc_ids (from the current roster in CURRENT TURN CONTEXT) of NPCs actually in the new place; unknown ids are ignored and reported back so you can correct them. The result is compact structured text with the new canonical place id, title, items, exits, and dropped NPC ids.",
+      "description": "Compatibility/debug fallback for applying a fully-authored current scene patch. DO NOT use this as the normal way to invent a new room, side chamber, street, building, point of interest, dungeon point, or road situation. For living-world play, prefer move_player whenever a listed exit already leads where the player is going, and call generate_location FIRST when the player discovers, opens, enters, or needs a not-yet-authored place/situation. Use set_scene only after generate_location is unavailable or rejected, or when an external tool/user debug patch already supplies the complete visible scene. The destination is upserted as a canonical Place (stable id from location_id or the title), a transition from the player's current place is ensured, and the player's canonical place is set to it; the live scene is then rebuilt FROM the canon, so it is authoritative — not a wholesale scene replacement. DO NOT CALL for movement inside the same place, plans to go somewhere, failed travel, vague searching without arrival, or when a visible exit already leads there (use move_player). Include only visible/public state. The title must name the exact current area, e.g. 'Outside the guardhouse entrance' if they are still outside. Do not invent hidden facts or conclusions. List in present_npcs only the npc_ids (from the current roster in CURRENT TURN CONTEXT) of NPCs actually in the new place; unknown ids are ignored and reported back so you can correct them. The result is compact structured text with the new canonical place id, title, items, exits, and dropped NPC ids.",
       "parameters": {
         "type": "object",
         "properties": {
           "title": {
             "type": "string",
-            "description": "Russian player-facing title of the new current scene."
+            "description": "Player-facing title of the new current scene."
           },
           "description": {
             "type": "string",
-            "description": "Russian visible description of the new current scene."
+            "description": "Visible description of the new current scene."
           },
           "location_id": {
             "type": "string",
@@ -288,7 +289,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Why the current scene changed, in Russian."
+            "description": "Why the current scene changed."
           }
         },
         "required": [
@@ -314,7 +315,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Very short Russian reason."
+            "description": "Very short reason."
           }
         },
         "required": [
@@ -329,13 +330,13 @@
     "type": "function",
     "function": {
       "name": "ask_player",
-      "description": "Show quick-reply buttons above the player's input when CURRENT TURN CONTEXT says PLAYER OPTION SUGGESTIONS are enabled. This is the last tool before final narration: after all other required tools are resolved, call it exactly once, then use its tool result to write the closing player-facing narration and stop. Do not finish with narration only, do not call ask_player after final narration, and do not continue with more tools after ask_player unless its arguments were invalid. The engine will not synthesize fallback buttons if you skip this call. Provide at least 4 current, concrete actions or dialogue lines that fit the situation without replacing free text input. Each option has a short Russian label displayed on the button and a fuller Russian message that will be sent as the player's next message if clicked. Do not use this tool for hidden facts, spoilers, GM-only reasoning, NPC stats, or commands to the player. The result is compact structured text confirming that the buttons were shown; after receiving it, write the final narration for this turn.",
+      "description": "Show quick-reply buttons above the player's input when CURRENT TURN CONTEXT says PLAYER OPTION SUGGESTIONS are enabled. This is the last tool before final narration: after all other required tools are resolved, call it exactly once, then use its tool result to write the closing player-facing narration and stop. Do not finish with narration only, do not call ask_player after final narration, and do not continue with more tools after ask_player unless its arguments were invalid. The engine will not synthesize fallback buttons if you skip this call. Provide at least 4 current, concrete actions or dialogue lines that fit the situation without replacing free text input. Each option has a short label displayed on the button and a fuller message that will be sent as the player's next message if clicked. Do not use this tool for hidden facts, spoilers, GM-only reasoning, NPC stats, or commands to the player. The result is compact structured text confirming that the buttons were shown; after receiving it, write the final narration for this turn.",
       "parameters": {
         "type": "object",
         "properties": {
           "question": {
             "type": "string",
-            "description": "Short Russian prompt above the buttons, e.g. 'Что ты делаешь дальше?'."
+            "description": "Short prompt above the buttons, e.g. 'What do you do next?'."
           },
           "options": {
             "type": "array",
@@ -346,11 +347,11 @@
               "properties": {
                 "label": {
                   "type": "string",
-                  "description": "Short Russian button label, ideally 1-4 words."
+                  "description": "Short button label, ideally 1-4 words."
                 },
                 "message": {
                   "type": "string",
-                  "description": "Full Russian player message to send when clicked."
+                  "description": "Full player message to send when clicked."
                 }
               },
               "required": [
@@ -373,12 +374,24 @@
   {
     "type": "function",
     "function": {
-      "name": "update_player_character",
+      "name": "update_character",
       "strict": false,
-      "description": "Update the player character sheet after the fiction establishes a real change to the player's character: name/class/background details, life status, condition, HP, AC, abilities, skills, saves, passive Perception, senses, languages, inventory, equipment, features, or GM-only notes. Use this for the player character only, not for NPC memories, relationships, world facts, scene state, or time. Use it when the resolved fiction changes the sheet, or when a player-declared character detail is compatible with the current card and grants no unsupported item, authority, feature, expertise, or advantage. Do not record a contradictory or power-granting self-declaration as truth. Batch all player-sheet field changes for the turn in one call, but send only fields that changed; never echo the whole current card back to the tool. Omit optional fields when they did not change; do not send empty placeholders. The result is compact structured text with changed field names and card revision only.",
+      "description": "Partially update the player card or one existing NPC card after the fiction establishes a real change or the GM establishes a previously unspecified, non-contradictory visible detail. Send only fields that changed; never echo a whole card. For target=npc, npc_id is required and the tool may update visible identity, current appearance, social portrayal, condition, or mechanics, but not private knowledge, secrets, or goals. Use current_appearance as the single complete description of clothing, hair, dirt, blood, disguise, and other changeable visible details right now. Use distinctive_features_add to append a newly revealed permanent trait without replacing earlier traits. Do not invent a contradictory trait, grant an unsupported capability, or rewrite an NPC merely to force a desired response. This tool updates character state only, not memories, relationships, world facts, scene state, or time.",
       "parameters": {
         "type": "object",
         "properties": {
+          "target": {
+            "type": "string",
+            "enum": [
+              "player",
+              "npc"
+            ],
+            "description": "Which character card to patch."
+          },
+          "npc_id": {
+            "type": "string",
+            "description": "Existing NPC id from the roster. Required only when target=npc; omit for player."
+          },
           "fields": {
             "type": "object",
             "properties": {
@@ -390,6 +403,14 @@
               },
               "class_role": {
                 "type": "string"
+              },
+              "role": {
+                "type": "string",
+                "description": "NPC role; valid only for target=npc."
+              },
+              "public_label": {
+                "type": "string",
+                "description": "NPC player-facing label; valid only for target=npc."
               },
               "level": {
                 "type": "integer"
@@ -404,7 +425,19 @@
                 "type": "string"
               },
               "distinctive_features": {
-                "type": "string"
+                "type": "string",
+                "description": "Full permanent-traits replacement for target=player only. For an NPC, use distinctive_features_add so established traits cannot be erased."
+              },
+              "distinctive_features_add": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Newly revealed permanent traits to append without replacing existing traits."
+              },
+              "current_appearance": {
+                "type": "string",
+                "description": "Complete visible appearance right now: clothing, hair, dirt, blood, disguise, and other changeable details."
               },
               "life_status": {
                 "type": "string"
@@ -415,11 +448,31 @@
               "condition": {
                 "type": "string"
               },
+              "persona": {
+                "type": "string",
+                "description": "NPC portrayal summary; valid only for target=npc."
+              },
               "personality": {
                 "type": "string"
               },
               "values": {
                 "type": "string"
+              },
+              "habits": {
+                "type": "string",
+                "description": "NPC habits/tells; valid only for target=npc."
+              },
+              "pressure_response": {
+                "type": "string",
+                "description": "NPC behavior under pressure; valid only for target=npc."
+              },
+              "boundaries": {
+                "type": "string",
+                "description": "NPC boundaries; valid only for target=npc."
+              },
+              "voice": {
+                "type": "string",
+                "description": "NPC manner of speech; valid only for target=npc."
               },
               "gm_notes": {
                 "type": "string",
@@ -461,7 +514,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Full current inventory only when inventory changed. Each entry is a string; an optional description may follow the item name after ' — ' (e.g. 'кинжал — 1d4, скрыт в сапоге'). The name before ' — ' is the head used for all matching. For picking up an item already in the scene use take_item (it carries the same object with its details); for dropping one into the scene use drop_item."
+                "description": "Full current inventory only when inventory changed. Each entry is a string; an optional description may follow the item name after ' — ' (e.g. 'dagger — 1d4, hidden in a boot'). The name before ' — ' is the head used for all matching. For picking up an item already in the scene use take_item (it carries the same object with its details); for dropping one into the scene use drop_item."
               },
               "equipment": {
                 "type": "array",
@@ -487,7 +540,7 @@
                     },
                     "level": {
                       "type": "integer",
-                      "description": "Spell level; 0 for a cantrip (заговор)."
+                      "description": "Spell level; 0 for a cantrip."
                     },
                     "concentration": {
                       "type": "boolean",
@@ -548,18 +601,333 @@
               }
             },
             "additionalProperties": false,
-            "description": "Only changed player-character fields. Omit unchanged or empty fields; never resend the full card."
+            "description": "Only changed fields for the selected character. Omit unchanged fields; never resend the full card."
           },
           "reason": {
             "type": "string",
-            "description": "Very short Russian reason for the sheet update."
+            "description": "Very short reason grounded in the fiction."
           }
         },
         "required": [
+          "target",
           "fields",
           "reason"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "target": {
+                "type": "string",
+                "enum": [
+                  "player"
+                ]
+              },
+              "fields": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "pronouns": {
+                    "type": "string"
+                  },
+                  "class_role": {
+                    "type": "string"
+                  },
+                  "level": {
+                    "type": "integer"
+                  },
+                  "background": {
+                    "type": "string"
+                  },
+                  "age": {
+                    "type": "string"
+                  },
+                  "physical_type": {
+                    "type": "string"
+                  },
+                  "distinctive_features": {
+                    "type": "string",
+                    "description": "Full permanent-traits replacement for target=player only. For an NPC, use distinctive_features_add so established traits cannot be erased."
+                  },
+                  "distinctive_features_add": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Newly revealed permanent traits to append without replacing existing traits."
+                  },
+                  "current_appearance": {
+                    "type": "string",
+                    "description": "Complete visible appearance right now: clothing, hair, dirt, blood, disguise, and other changeable details."
+                  },
+                  "life_status": {
+                    "type": "string"
+                  },
+                  "life_status_note": {
+                    "type": "string"
+                  },
+                  "condition": {
+                    "type": "string"
+                  },
+                  "personality": {
+                    "type": "string"
+                  },
+                  "values": {
+                    "type": "string"
+                  },
+                  "gm_notes": {
+                    "type": "string",
+                    "description": "GM-only notes about the player character; never narrate directly."
+                  },
+                  "abilities": {
+                    "type": "object",
+                    "description": "D&D ability scores, e.g. STR/DEX/CON/INT/WIS/CHA as scores, not roll modifiers."
+                  },
+                  "skills": {
+                    "type": "object",
+                    "description": "Exact skill-name final modifiers only, e.g. Perception: 5. Do not add unlisted skills here unless the sheet truly changes."
+                  },
+                  "saving_throws": {
+                    "type": "object",
+                    "description": "Exact saving throw final modifiers, e.g. DEX: 5."
+                  },
+                  "passive_perception": {
+                    "type": "integer"
+                  },
+                  "ac": {
+                    "type": "integer"
+                  },
+                  "hp": {
+                    "type": "object",
+                    "description": "Current hit point state, usually {current, max, temp?}."
+                  },
+                  "speed": {
+                    "type": "string"
+                  },
+                  "senses": {
+                    "type": "string"
+                  },
+                  "languages": {
+                    "type": "string"
+                  },
+                  "inventory": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Full current inventory only when inventory changed. Each entry is a string; an optional description may follow the item name after ' — ' (e.g. 'dagger — 1d4, hidden in a boot'). The name before ' — ' is the head used for all matching. For picking up an item already in the scene use take_item (it carries the same object with its details); for dropping one into the scene use drop_item."
+                  },
+                  "equipment": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Full current equipment only when equipment changed. Same ' — ' name/description convention as inventory; matching is by the head before ' — '."
+                  },
+                  "features": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Full current features only when features changed."
+                  },
+                  "spells": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "level": {
+                          "type": "integer",
+                          "description": "Spell level; 0 for a cantrip."
+                        },
+                        "concentration": {
+                          "type": "boolean",
+                          "description": "True if the spell requires concentration."
+                        },
+                        "ritual": {
+                          "type": "boolean",
+                          "description": "True if the spell can be cast as a ritual (display only in v1)."
+                        },
+                        "effect": {
+                          "type": "string",
+                          "description": "Prose effect. Put school, casting time, range, duration, and upcast text HERE — the engine reads only name/level/concentration/ritual."
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "description": "Full known-spell list only when it changed; each entry is an object with name/level/concentration/ritual/effect. To CAST a known spell (spend a slot, set concentration) call cast_spell instead; use this only to learn, forget, or edit spells."
+                  },
+                  "spell_slots": {
+                    "type": "object",
+                    "description": "FLAT map «level → remaining slots», e.g. {\"1\": 3, \"2\": 1}. Send the full map when it changes (e.g. a long rest restores slots); the engine decrements it on cast_spell. An unlisted level means no slots at that level. Do NOT nest {current, max}."
+                  },
+                  "spell_slots_max": {
+                    "type": "object",
+                    "description": "FLAT map «level → max slots» the character has when fully rested. Author from the 5e slot table for the class/level (e.g. a level-1 full caster has {\"1\": 2}; level-3 has {\"1\": 4, \"2\": 2})."
+                  },
+                  "concentration": {
+                    "type": "string",
+                    "description": "Name of the spell the character is currently concentrating on; send \"\" to drop concentration without a new cast. Normally set by cast_spell."
+                  },
+                  "inventory_add": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Inventory entries to append. Use INSTEAD of the full inventory array for small pickups. If you also send the full inventory it is applied first and these deltas run on top; do not mix them in the same call. Duplicates already present are skipped."
+                  },
+                  "inventory_remove": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Inventory entries to drop, matched trimmed and exact; every occurrence is removed. Applied before inventory_add; do not send with a full inventory array."
+                  },
+                  "equipment_add": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Equipment entries to append. Use INSTEAD of the full equipment array for small changes. If you also send the full equipment array it is applied first and these deltas run on top; do not mix them in the same call. Duplicates already present are skipped."
+                  },
+                  "equipment_remove": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Equipment entries to drop, matched trimmed and exact; every occurrence is removed. Applied before equipment_add; do not send with a full equipment array."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "properties": {
+              "target": {
+                "type": "string",
+                "enum": [
+                  "npc"
+                ]
+              },
+              "npc_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fields": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "pronouns": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string",
+                    "description": "NPC role; valid only for target=npc."
+                  },
+                  "public_label": {
+                    "type": "string",
+                    "description": "NPC player-facing label; valid only for target=npc."
+                  },
+                  "age": {
+                    "type": "string"
+                  },
+                  "physical_type": {
+                    "type": "string"
+                  },
+                  "distinctive_features_add": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Newly revealed permanent traits to append without replacing existing traits."
+                  },
+                  "current_appearance": {
+                    "type": "string",
+                    "description": "Complete visible appearance right now: clothing, hair, dirt, blood, disguise, and other changeable details."
+                  },
+                  "life_status": {
+                    "type": "string"
+                  },
+                  "life_status_note": {
+                    "type": "string"
+                  },
+                  "condition": {
+                    "type": "string"
+                  },
+                  "persona": {
+                    "type": "string",
+                    "description": "NPC portrayal summary; valid only for target=npc."
+                  },
+                  "personality": {
+                    "type": "string"
+                  },
+                  "values": {
+                    "type": "string"
+                  },
+                  "habits": {
+                    "type": "string",
+                    "description": "NPC habits/tells; valid only for target=npc."
+                  },
+                  "pressure_response": {
+                    "type": "string",
+                    "description": "NPC behavior under pressure; valid only for target=npc."
+                  },
+                  "boundaries": {
+                    "type": "string",
+                    "description": "NPC boundaries; valid only for target=npc."
+                  },
+                  "voice": {
+                    "type": "string",
+                    "description": "NPC manner of speech; valid only for target=npc."
+                  },
+                  "abilities": {
+                    "type": "object",
+                    "description": "D&D ability scores, e.g. STR/DEX/CON/INT/WIS/CHA as scores, not roll modifiers."
+                  },
+                  "skills": {
+                    "type": "object",
+                    "description": "Exact skill-name final modifiers only, e.g. Perception: 5. Do not add unlisted skills here unless the sheet truly changes."
+                  },
+                  "saving_throws": {
+                    "type": "object",
+                    "description": "Exact saving throw final modifiers, e.g. DEX: 5."
+                  },
+                  "passive_perception": {
+                    "type": "integer"
+                  },
+                  "ac": {
+                    "type": "integer"
+                  },
+                  "hp": {
+                    "type": "object",
+                    "description": "Current hit point state, usually {current, max, temp?}."
+                  },
+                  "speed": {
+                    "type": "string"
+                  },
+                  "senses": {
+                    "type": "string"
+                  },
+                  "languages": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "npc_id"
+            ]
+          }
+        ]
       }
     }
   },
@@ -623,7 +991,7 @@
           },
           "modifier_note": {
             "type": "string",
-            "description": "Player-facing SHORT RUSSIAN phrase naming only the SOURCE of the modifier or advantage/disadvantage, WITHOUT the number (the UI prints the number itself). Only include when notation itself contains a real +N/-N, kh1, or kl1 from a known source, e.g. 'навык Внимательности', 'помощь союзника', 'выгодная позиция', 'преимущество от засады', 'помеха из-за темноты'. For plain unmodified rolls like 1d20, omit this field entirely. Do not use for leverage, stakes, difficulty, or placeholder text."
+            "description": "Player-facing SHORT phrase in the configured response language naming only the SOURCE of the modifier or advantage/disadvantage, WITHOUT the number (the UI prints the number itself). Only include when notation itself contains a real +N/-N, kh1, or kl1 from a known source, e.g. 'Perception skill', 'an ally's help', 'favorable position', 'advantage from an ambush', 'disadvantage from darkness'. For plain unmodified rolls like 1d20, omit this field entirely. Do not use for leverage, stakes, difficulty, or placeholder text."
           },
           "stakes": {
             "type": "object",
@@ -668,7 +1036,7 @@
         "properties": {
           "query": {
             "type": "string",
-            "description": "What you want to know, in Russian. Keep proper nouns exactly as written."
+            "description": "What you want to know. Keep proper nouns exactly as written."
           }
         },
         "required": [
@@ -688,7 +1056,7 @@
         "properties": {
           "query": {
             "type": "string",
-            "description": "Search query in Russian or English, or select:tool_name for exact catalog lookup."
+            "description": "Search query using English keywords, or select:tool_name for exact catalog lookup."
           },
           "max_results": {
             "type": "integer",

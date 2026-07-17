@@ -66,6 +66,11 @@ pub struct Npc {
     pub physical_type: String,
     #[serde(default)]
     pub distinctive_features: String,
+    /// Complete visible presentation right now: clothing, hair, dirt, blood,
+    /// disguise, and other changeable details. Permanent traits stay in
+    /// `physical_type` / `distinctive_features`.
+    #[serde(default)]
+    pub current_appearance: String,
     #[serde(default = "alive")]
     pub life_status: String,
     #[serde(default)]
@@ -145,6 +150,10 @@ pub struct PlayerCharacter {
     pub physical_type: String,
     #[serde(default)]
     pub distinctive_features: String,
+    /// Complete visible presentation right now. This is intentionally one
+    /// mutable field instead of separate outfit / hair / visible-state fields.
+    #[serde(default)]
+    pub current_appearance: String,
     pub life_status: String,
     #[serde(default)]
     pub life_status_note: String,
@@ -224,6 +233,7 @@ impl Default for PlayerCharacter {
             age: "Взрослый персонаж; точный возраст не задан.".to_string(),
             physical_type: "обычный гуманоид среднего размера".to_string(),
             distinctive_features: String::new(),
+            current_appearance: String::new(),
             life_status: "alive".to_string(),
             life_status_note: String::new(),
             condition: String::new(),
@@ -443,6 +453,20 @@ pub struct SceneState {
     pub items: Vec<SceneItem>,
     #[serde(default)]
     pub exits: Vec<SceneExit>,
+    #[serde(default)]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub tension: String,
+    #[serde(default)]
+    pub player_seen: Vec<String>,
+}
+
+/// Scene-local fields that are not part of the canonical place graph but must
+/// follow their place when the player leaves and later returns.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceSceneContext {
+    #[serde(default)]
+    pub scene_id: String,
     #[serde(default)]
     pub constraints: Vec<String>,
     #[serde(default)]

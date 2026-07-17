@@ -9,12 +9,6 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function fileNameFromUrl(src, fallback = "image") {
-  const clean = String(src || "").split(/[?#]/, 1)[0].replace(/\\/g, "/");
-  const name = clean.split("/").filter(Boolean).pop();
-  return name || fallback;
-}
-
 export function ImageViewer({ src, title, alt, onClose }) {
   const { t } = useTranslation("game");
   const overlayRef = useRef(null);
@@ -133,7 +127,7 @@ export function ImageViewer({ src, title, alt, onClose }) {
     <div ref={overlayRef} className="image-viewer-overlay" role="dialog" aria-modal="true">
       <div className="image-viewer-toolbar">
         <div className="image-viewer-title">
-          <strong title={src}>{title || alt || fileNameFromUrl(src, t("image.defaultAlt"))}</strong>
+          <strong>{title || alt || t("image.defaultAlt")}</strong>
           <span>{zoomLabel}</span>
         </div>
       </div>
@@ -186,21 +180,70 @@ export function ImageViewer({ src, title, alt, onClose }) {
   );
 }
 
-export default function ImageThumbnail({ src, alt = "", caption = "", className = "" }) {
-  const { t } = useTranslation("game");
+function useImageViewerPortal(src, title, alt) {
   const [open, setOpen] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState(false);
-  const title = caption || alt || fileNameFromUrl(src, t("image.defaultAlt"));
+
+  useEffect(() => {
+    setOpen(false);
+  }, [src]);
+
   const viewer =
     open && typeof document !== "undefined"
       ? createPortal(<ImageViewer src={src} title={title} alt={alt} onClose={() => setOpen(false)} />, document.body)
       : null;
 
+  return { openViewer: () => setOpen(true), viewer };
+}
+
+export function ZoomableImage({
+  src,
+  title = "",
+  alt = "",
+  className = "",
+  imageClassName = "",
+  loading,
+  decoding = "async",
+}) {
+  const { t } = useTranslation("game");
+  const label = title || alt || t("image.defaultAlt");
+  const { openViewer, viewer } = useImageViewerPortal(src, label, alt);
+
+  if (!src) return null;
+
+  return (
+    <>
+      <button
+        type="button"
+        className={["zoomable-image", className].filter(Boolean).join(" ")}
+        onClick={openViewer}
+        aria-label={label}
+        title={title || undefined}
+      >
+        <img
+          className={imageClassName || undefined}
+          src={src}
+          alt={alt || label}
+          loading={loading}
+          decoding={decoding}
+          draggable={false}
+        />
+      </button>
+      {viewer}
+    </>
+  );
+}
+
+export default function ImageThumbnail({ src, alt = "", caption = "", className = "" }) {
+  const { t } = useTranslation("game");
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+  const title = caption || alt;
+  const label = title || t("image.defaultAlt");
+  const { openViewer, viewer } = useImageViewerPortal(src, label, alt);
+
   useEffect(() => {
     setLoaded(false);
     setError(false);
-    setOpen(false);
   }, [src]);
 
   if (!src) return null;
@@ -211,10 +254,11 @@ export default function ImageThumbnail({ src, alt = "", caption = "", className 
         type="button"
         className={["image-thumb", loaded ? "loaded" : "", error ? "error" : "", className].filter(Boolean).join(" ")}
         onClick={() => {
-          if (!error) setOpen(true);
+          if (!error) openViewer();
         }}
         disabled={error}
-        title={title}
+        title={title || undefined}
+        aria-label={label}
       >
         {!loaded && (
           <span className={`image-thumb-placeholder${error ? " error" : ""}`}>
@@ -223,13 +267,13 @@ export default function ImageThumbnail({ src, alt = "", caption = "", className 
         )}
         <img
           src={src}
-          alt={alt || title}
+          alt={alt || label}
           loading="lazy"
           draggable={false}
           onLoad={() => setLoaded(true)}
           onError={() => setError(true)}
         />
-        <span className="image-thumb-caption">{title}</span>
+        {title && <span className="image-thumb-caption">{title}</span>}
       </button>
       {viewer}
     </>

@@ -19,6 +19,7 @@ import {
   AbilitiesEditor,
   MapRowsEditor,
   NamedListEditor,
+  PronounsSelect,
   SpellsEditor,
   SlotsEditor,
 } from "./sheetEditors.jsx";
@@ -412,7 +413,8 @@ function NpcEditor({ npc, statusLabels, onSave }) {
   const [d, setD] = useState(() => ({
     name: npc.name || "", color: npc.color || "", role: npc.role || "", pronouns: npc.pronouns || "",
     public_label: npc.public_label || "", age: npc.age || "",
-    physical_type: npc.physical_type || "", distinctive_features: npc.distinctive_features || "",
+    physical_type: npc.physical_type || "", current_appearance: npc.current_appearance || "",
+    distinctive_features: npc.distinctive_features || "",
     life_status: npc.life_status || "alive", life_status_note: npc.life_status_note || "",
     condition: npc.condition || "",
     persona: npc.persona || "", personality: npc.personality || "", values: npc.values || "",
@@ -449,7 +451,8 @@ function NpcEditor({ npc, statusLabels, onSave }) {
       fields = {
         name: d.name, color: d.color, role: d.role, pronouns: d.pronouns,
         public_label: d.public_label, age: d.age,
-        physical_type: d.physical_type, distinctive_features: d.distinctive_features,
+        physical_type: d.physical_type, current_appearance: d.current_appearance,
+        distinctive_features: d.distinctive_features,
         life_status: d.life_status, life_status_note: d.life_status_note,
         condition: d.condition, persona: d.persona, personality: d.personality,
         values: d.values, habits: d.habits, pressure_response: d.pressure_response,
@@ -490,7 +493,7 @@ function NpcEditor({ npc, statusLabels, onSave }) {
           </span>
         </EditField>
         <EditField label={t("debug.fields.role")}><input value={d.role} onChange={(e) => set({ role: e.target.value })} /></EditField>
-        <EditField label={t("debug.fields.pronouns")}><input value={d.pronouns} placeholder="M, F, N, PL, OTHER" onChange={(e) => set({ pronouns: e.target.value })} /></EditField>
+        <EditField label={t("debug.fields.pronouns")}><PronounsSelect value={d.pronouns} onChange={(value) => set({ pronouns: value })} /></EditField>
         <EditField label={t("debug.fields.publicLabel")}><input value={d.public_label} placeholder={t("debug.fields.publicLabelPlaceholder")} onChange={(e) => set({ public_label: e.target.value })} /></EditField>
         <EditField label={t("debug.fields.knownName")}><input value={npc.known_name || ""} readOnly /></EditField>
         <EditField label={t("debug.fields.age")}><input value={d.age} onChange={(e) => set({ age: e.target.value })} /></EditField>
@@ -501,6 +504,7 @@ function NpcEditor({ npc, statusLabels, onSave }) {
         <EditField label={t("debug.fields.currentCondition")}><input value={d.condition} onChange={(e) => set({ condition: e.target.value })} /></EditField>
       </div>
 
+      <EditField label={t("debug.fields.currentAppearance")}><textarea rows={2} value={d.current_appearance} onChange={(e) => set({ current_appearance: e.target.value })} /></EditField>
       <EditField label={t("debug.fields.description")}><textarea rows={2} value={d.persona} onChange={(e) => set({ persona: e.target.value })} /></EditField>
       <EditField label={t("debug.fields.personality")}><textarea rows={2} value={d.personality} onChange={(e) => set({ personality: e.target.value })} /></EditField>
       <EditField label={t("debug.fields.values")}><textarea rows={2} value={d.values} onChange={(e) => set({ values: e.target.value })} /></EditField>
@@ -519,9 +523,11 @@ function NpcEditor({ npc, statusLabels, onSave }) {
         <EditField label={t("debug.fields.hpCurrent")}><input type="number" value={numText(hp.current)} onChange={(e) => updateHp("current", e.target.value)} /></EditField>
         <EditField label={t("debug.fields.hpMax")}><input type="number" value={numText(hp.max)} onChange={(e) => updateHp("max", e.target.value)} /></EditField>
         <EditField label={t("debug.fields.speed")}><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
-        <EditField label={t("debug.fields.senses")}><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
+        <EditField label={t("debug.fields.languages")}><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
       </div>
-      <EditField label={t("debug.fields.languages")}><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
+      {/* Чувства часто длиннее строки («острое зрение, острый слух, идеальный
+          нюх…») — полноширинная textarea вместо клетки в сетке. */}
+      <EditField label={t("debug.fields.senses")}><textarea rows={2} value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
       <MapRowsEditor
         label={t("debug.fields.skills")}
         rows={skillRows.rows}
@@ -594,6 +600,7 @@ function PlayerEditor({ player, onSave }) {
     background: player.background || "",
     age: player.age || "",
     physical_type: player.physical_type || "",
+    current_appearance: player.current_appearance || "",
     distinctive_features: player.distinctive_features || "",
     life_status: player.life_status || "alive",
     life_status_note: player.life_status_note || "",
@@ -636,6 +643,7 @@ function PlayerEditor({ player, onSave }) {
         background: d.background,
         age: d.age,
         physical_type: d.physical_type,
+        current_appearance: d.current_appearance,
         distinctive_features: d.distinctive_features,
         life_status: d.life_status,
         life_status_note: d.life_status_note,
@@ -671,7 +679,7 @@ function PlayerEditor({ player, onSave }) {
     <div className="dbg-form">
       <div className="dbg-edit-grid">
         <EditField label={t("debug.fields.name")}><input value={d.name} onChange={(e) => set({ name: e.target.value })} /></EditField>
-        <EditField label={t("debug.fields.pronouns")}><input value={d.pronouns} placeholder="M, F, N, PL, OTHER" onChange={(e) => set({ pronouns: e.target.value })} /></EditField>
+        <EditField label={t("debug.fields.pronouns")}><PronounsSelect value={d.pronouns} onChange={(value) => set({ pronouns: value })} /></EditField>
         <EditField label={t("debug.fields.classRole")}><input value={d.class_role} onChange={(e) => set({ class_role: e.target.value })} /></EditField>
         <EditField label={t("debug.fields.level")}><input type="number" value={d.level} onChange={(e) => set({ level: e.target.value })} /></EditField>
         <EditField label={t("debug.fields.background")}><input value={d.background} onChange={(e) => set({ background: e.target.value })} /></EditField>
@@ -682,6 +690,7 @@ function PlayerEditor({ player, onSave }) {
         <EditField label={t("debug.fields.statusNote")}><input value={d.life_status_note} onChange={(e) => set({ life_status_note: e.target.value })} /></EditField>
         <EditField label={t("debug.fields.condition")}><input value={d.condition} onChange={(e) => set({ condition: e.target.value })} /></EditField>
       </div>
+      <EditField label={t("debug.fields.currentAppearance")}><textarea rows={2} value={d.current_appearance} onChange={(e) => set({ current_appearance: e.target.value })} /></EditField>
       <EditField label={t("debug.fields.personality")}><textarea rows={2} value={d.personality} onChange={(e) => set({ personality: e.target.value })} /></EditField>
       <EditField label={t("debug.fields.values")}><textarea rows={2} value={d.values} onChange={(e) => set({ values: e.target.value })} /></EditField>
       <EditField label={t("debug.fields.gmNotes")}><textarea rows={2} className="dbg-secret" value={d.gm_notes} onChange={(e) => set({ gm_notes: e.target.value })} /></EditField>
@@ -693,9 +702,11 @@ function PlayerEditor({ player, onSave }) {
         <EditField label={t("debug.fields.hpCurrent")}><input type="number" value={numText(hp.current)} onChange={(e) => updateHp("current", e.target.value)} /></EditField>
         <EditField label={t("debug.fields.hpMax")}><input type="number" value={numText(hp.max)} onChange={(e) => updateHp("max", e.target.value)} /></EditField>
         <EditField label={t("debug.fields.speed")}><input value={d.speed} onChange={(e) => set({ speed: e.target.value })} /></EditField>
-        <EditField label={t("debug.fields.senses")}><input value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
+        <EditField label={t("debug.fields.languages")}><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
       </div>
-      <EditField label={t("debug.fields.languages")}><input value={d.languages} onChange={(e) => set({ languages: e.target.value })} /></EditField>
+      {/* Чувства часто длиннее строки («острое зрение, острый слух, идеальный
+          нюх…») — полноширинная textarea вместо клетки в сетке. */}
+      <EditField label={t("debug.fields.senses")}><textarea rows={2} value={d.senses} onChange={(e) => set({ senses: e.target.value })} /></EditField>
       <MapRowsEditor
         label={t("debug.fields.skills")}
         rows={skillRows.rows}
@@ -956,6 +967,7 @@ function NpcCard({ npc, statusLabels = {}, onEdit }) {
         <div><span>{t("debug.fields.pronouns")}</span><b>{npc.pronouns || "—"}</b></div>
         <div><span>{t("debug.fields.age")}</span><b>{npc.age || "—"}</b></div>
         <div><span>{t("debug.fields.physicalType")}</span><b>{npc.physical_type || "—"}</b></div>
+        <div><span>{t("debug.fields.currentAppearance")}</span><b>{npc.current_appearance || "—"}</b></div>
         <div><span>{t("debug.fields.features")}</span><b>{npc.distinctive_features || "—"}</b></div>
         <div><span>{t("debug.fields.life")}</span><b>{npc.life_status || "—"}</b></div>
         <div><span>{t("debug.fields.lifeStatus")}</span><b>{npc.life_status_note || "—"}</b></div>
@@ -1033,6 +1045,7 @@ function PlayerCard({ player, onEdit }) {
         <div><span>{t("debug.fields.background")}</span><b>{player.background || "—"}</b></div>
         <div><span>{t("debug.fields.age")}</span><b>{player.age || "—"}</b></div>
         <div><span>{t("debug.fields.physicalType")}</span><b>{player.physical_type || "—"}</b></div>
+        <div><span>{t("debug.fields.currentAppearance")}</span><b>{player.current_appearance || "—"}</b></div>
         <div><span>{t("debug.fields.features")}</span><b>{player.distinctive_features || "—"}</b></div>
         <div><span>{t("debug.fields.life")}</span><b>{player.life_status || "—"}</b></div>
         <div><span>{t("debug.fields.status")}</span><b>{player.life_status_note || "—"}</b></div>

@@ -126,6 +126,7 @@
       "ask_player": "Предлагает игроку быстрые варианты действий.",
       "query_world_state": "Ищет записи в памяти мира в нужной области видимости.",
       "update_world_state": "Записывает факты, слухи, память NPC, отношения и цели.",
+      "update_character": "Точечно обновляет персонажа игрока или NPC.",
       "update_player_character": "Обновляет лист персонажа игрока.",
       "advance_time": "Сдвигает скрытые часы мира.",
       "get_npc_profile": "Запрашивает отдельные поля карточки NPC.",
@@ -160,6 +161,7 @@
     "askPlayer": { "title": "Варианты для игрока", "questionHelp": "Вопрос-подсказка над кнопками быстрых ответов.", "option": "вариант {{number}}" },
     "updateWorldState": { "title": "Запись в память мира", "empty": "нет записей" },
     "queryWorldState": { "title": "Поиск в памяти мира", "scopeHelp": "Область видимости, в которой ищет ГМ.", "queryHelp": "Поисковый запрос ГМ к памяти мира." },
+    "updateCharacter": { "playerTitle": "Лист персонажа игрока", "npcTitle": "Карточка персонажа — " },
     "updatePlayer": { "title": "Лист персонажа игрока" },
     "advanceTime": { "title": "Сдвиг времени", "minutesHelp": "Сколько внутриигровых минут прошло за этот ход." },
     "getNpcProfile": { "title": "Карточка персонажа — ", "presetHelp": "Группа полей карточки, которую запросил ГМ." },
@@ -190,6 +192,7 @@
     "npcProfile": { "title": "Карточка — " },
     "worldTime": { "title": "Время мира" },
     "playerSheet": { "title": "Лист персонажа — обновлён" },
+    "character": { "playerTitle": "Лист персонажа — обновлён", "npcTitle": "Карточка персонажа — обновлена — " },
     "toolSearch": { "title": "Инструменты ГМ" },
     "sources": {
       "label": "Источники", "kind": "тип: {{value}}", "status": "статус: {{value}}",
@@ -202,6 +205,7 @@
       "update_world_state": "Итог записи в память мира.",
       "get_npc_profile": "Поля карточки NPC, которые вернул запрос.",
       "advance_time": "Новое состояние часов мира после сдвига.",
+      "update_character": "Какие поля игрока или NPC изменились.",
       "update_player_character": "Какие поля листа персонажа изменились.",
       "tool_search": "Какие скрытые инструменты загрузил ГМ."
     }
@@ -253,7 +257,7 @@
     "fields": {
       "name": "Имя", "playerSees": "Игрок видит", "color": "Цвет", "role": "Роль", "pronouns": "Род",
       "publicLabel": "Публичный ярлык", "publicLabelPlaceholder": "трактирщик", "knownName": "Известное имя", "age": "Возраст",
-      "physicalTypeNpc": "Тип/размер/вид", "physicalType": "Тип/вид", "features": "Приметы", "lifeStatus": "Статус жизни",
+      "physicalTypeNpc": "Тип/размер/вид", "physicalType": "Тип/вид", "currentAppearance": "Текущий внешний вид", "features": "Приметы", "lifeStatus": "Статус жизни",
       "statusNote": "Заметка статуса", "currentCondition": "Текущее состояние", "description": "Описание", "personality": "Характер",
       "values": "Ценности", "habits": "Привычки", "pressureResponse": "Реакция на давление", "underPressure": "Под давлением",
       "boundaries": "Границы", "voice": "Голос", "goals": "Мотивы", "knowledge": "Что знает",

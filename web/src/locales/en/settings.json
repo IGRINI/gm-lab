@@ -18,6 +18,12 @@
     "response": "Response language",
     "responseHint": "The model will answer in this language. This setting is independent from the interface language."
   },
+  "appearance": {
+    "section": "Appearance",
+    "description": "Visual preferences apply immediately and are saved for this browser.",
+    "sceneBackground": "Current scene background",
+    "sceneBackgroundHint": "Blurs the generated image for the current scene and uses it as the game background."
+  },
   "developer": {
     "section": "Developer mode",
     "description": "When disabled, players get a clean view without token counters, tool calls, GM and character thoughts, world-memory operations, or the story debug panel. Enable it to see the internal workflow.",
@@ -91,6 +97,13 @@
     "tts": "Read dialogue aloud (TTS)",
     "ttsAutoplay": "Autoplay speech in sequence",
     "images": "Image generation",
+    "imageProvider": "Image model",
+    "imageProviderHint": "The local model is loaded only while selected. Grok uses the saved SuperGrok sign-in.",
+    "imageProviders": {
+      "local": "Local Flux",
+      "grok": "Grok Imagine",
+      "grok_quality": "Grok Imagine — quality"
+    },
     "toolHopLimit": "Tool-hop limit",
     "toolHopSubtitle": "How many internal tools the GM can call during one turn.",
     "unlimited": "unlimited",

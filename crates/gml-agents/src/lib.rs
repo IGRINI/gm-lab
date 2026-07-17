@@ -58,7 +58,7 @@ pub use coerce::{as_list, claims, norm_npc, norm_npc_with_reasoning, text};
 pub use gm::{
     gm_messages_have_snapshot, gm_options_notice_message, gm_request_messages, gm_snapshot_message,
     gm_system, gm_user_message, gm_world_setup, gm_world_snapshot, is_snapshot_message,
-    OPTIONS_NOTICE_PREFIX, PLAYER_ACTION_HEADER, SNAPSHOT_HEADER,
+    OPTIONS_NOTICE_PREFIX, PLAYER_ACTION_HEADER, SNAPSHOT_HEADER, SNAPSHOT_PREFIX,
 };
 pub use location::{generate_location, location_generator_messages};
 pub use npc::{
@@ -83,19 +83,10 @@ pub use world_architect::{
     WorldArchitectOutput,
 };
 
-/// `world._public_gender(value)` — RU grammatical-gender label, faithful port
-/// of `world.py::_public_gender` (which gml-world keeps private). Used by the
-/// GM roster and scene-delta roster lines.
+/// Model-facing grammatical-gender label used by the GM roster and scene-delta
+/// roster lines. Custom values remain untouched.
 pub fn public_gender(value: &str) -> String {
-    let raw = value.trim();
-    match raw.to_lowercase().as_str() {
-        "m" => "мужской род".to_string(),
-        "f" => "женский род".to_string(),
-        "n" => "средний род".to_string(),
-        "pl" => "множественное число".to_string(),
-        "other" => "другое".to_string(),
-        _ => raw.to_string(),
-    }
+    gml_world::model_gender_label(value)
 }
 
 // --- LLM-call wrappers (gm_turn / gm_turn_stream / npc_turn / prelude) ------

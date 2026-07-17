@@ -361,54 +361,24 @@ fn strict_schema(schema: &Value) -> Value {
     }
     output.insert("type".to_string(), Value::String("object".to_string()));
     output.insert("additionalProperties".to_string(), Value::Bool(false));
-    let original_required = source
+    let required = source
         .get("required")
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|name| Value::String(name.to_string()))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let mut converted = Map::new();
-    let mut required = Vec::new();
     for (name, property) in properties.into_iter().flatten() {
-        let child = strict_schema(property);
-        converted.insert(
-            name.clone(),
-            if original_required.contains(&name.as_str()) {
-                child
-            } else {
-                nullable(child)
-            },
-        );
-        required.push(Value::String(name.clone()));
+        converted.insert(name.clone(), strict_schema(property));
     }
     output.insert("properties".to_string(), Value::Object(converted));
     output.insert("required".to_string(), Value::Array(required));
     Value::Object(output)
-}
-
-fn nullable(mut schema: Value) -> Value {
-    let Some(object) = schema.as_object_mut() else {
-        return json!({"anyOf": [schema, {"type": "null"}]});
-    };
-    match object.get("type").cloned() {
-        Some(Value::String(kind)) if kind != "null" => {
-            object.insert("type".to_string(), json!([kind, "null"]));
-        }
-        Some(Value::Array(mut kinds)) => {
-            if !kinds.iter().any(|kind| kind == "null") {
-                kinds.push(Value::String("null".to_string()));
-            }
-            object.insert("type".to_string(), Value::Array(kinds));
-        }
-        Some(_) => {}
-        None => return json!({"anyOf": [Value::Object(object.clone()), {"type": "null"}]}),
-    }
-    if let Some(Value::Array(mut values)) = object.get("enum").cloned() {
-        if !values.iter().any(Value::is_null) {
-            values.push(Value::Null);
-            object.insert("enum".to_string(), Value::Array(values));
-        }
-    }
-    schema
 }
 
 pub(crate) fn extract_output_text(response: &Value) -> String {
@@ -720,20 +690,28 @@ mod tests {
     }
 
     #[test]
-    fn strict_tool_schema_requires_nullable_optional_properties() {
+    fn strict_tool_schema_preserves_optional_properties() {
         let tool = convert_tool(&json!({"type":"function","function":{
             "name":"lookup","parameters":{"type":"object","properties":{
-                "required":{"type":"string"},"optional":{"type":"integer"}
+                "required":{"type":"string"},"optional":{"type":"integer"},
+                "nested":{"type":"object","properties":{
+                    "needed":{"type":"string"},"maybe":{"type":"boolean"}
+                },"required":["needed"]}
             },"required":["required"]}
         }}));
         assert_eq!(tool["parameters"]["additionalProperties"], false);
-        assert_eq!(
-            tool["parameters"]["required"],
-            json!(["required", "optional"])
-        );
+        assert_eq!(tool["parameters"]["required"], json!(["required"]));
         assert_eq!(
             tool["parameters"]["properties"]["optional"]["type"],
-            json!(["integer", "null"])
+            json!("integer")
+        );
+        assert_eq!(
+            tool["parameters"]["properties"]["nested"]["required"],
+            json!(["needed"])
+        );
+        assert_eq!(
+            tool["parameters"]["properties"]["nested"]["additionalProperties"],
+            false
         );
     }
 

@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gml_audio::{Sidecar, SidecarConfig};
-use gml_config::{Config, RuntimeSettings};
+use gml_config::{Config, RuntimeSettings, IMAGE_PROVIDER_LOCAL};
 use gml_llm::{ConnectorId, ConnectorRegistry, ModelBinding};
 use gml_mock::MockConnector;
 use gml_openai_compatible::OpenAICompatConnector;
@@ -357,7 +357,7 @@ async fn build_app() -> Result<App, String> {
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         turn_registry: Arc::new(TurnRegistry::default()),
-            architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
+        architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
         index_html: Arc::new(resolve_index_html(&dirs)),
     };
 
@@ -367,6 +367,9 @@ async fn build_app() -> Result<App, String> {
     // SidecarConfig::from_env. Started best-effort at boot, killed on exit.
     let mut sidecar_cfg = SidecarConfig::from_env();
     let b01 = |on: bool| if on { "1" } else { "0" }.to_string();
+    let local_image_enabled = state.config.image_enabled
+        && state.settings.image_enabled(None)
+        && state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL;
     sidecar_cfg.envs.push((
         "EMBEDDER_MODEL".to_string(),
         state.config.rag_embeddings_model.clone(),
@@ -395,9 +398,12 @@ async fn build_app() -> Result<App, String> {
         "TTS_ENABLED".to_string(),
         b01(state.settings.tts_enabled(None)),
     ));
+    sidecar_cfg
+        .envs
+        .push(("IMAGE_ENABLED".to_string(), b01(local_image_enabled)));
     sidecar_cfg.envs.push((
-        "IMAGE_ENABLED".to_string(),
-        b01(state.config.image_enabled && state.settings.image_enabled(None)),
+        "IMAGE_OUTPUT_DIR".to_string(),
+        state.config.image_output_dir.clone(),
     ));
     sidecar_cfg.envs.push((
         "IMAGE_TIMEOUT_SECONDS".to_string(),
@@ -419,7 +425,7 @@ async fn build_app() -> Result<App, String> {
         "IMAGE_MAX_STEPS".to_string(),
         state.config.image_max_steps.to_string(),
     ));
-    if state.config.image_enabled && state.settings.image_enabled(None) {
+    if local_image_enabled {
         let image_timeout = if state.config.image_timeout_seconds.is_finite()
             && state.config.image_timeout_seconds > 0.0
         {
@@ -466,7 +472,7 @@ async fn build_connectors(
             .join("xai")
             .join("auth.json"),
     );
-    apply_supergrok_env(&mut xai_config);
+    xai_config.apply_env();
     let xai = gml_supergrok::SuperGrokConnector::new(Arc::new(xai_config))
         .map_err(|error| format!("initialize SuperGrok connector: {error}"))?;
     registry
@@ -489,29 +495,6 @@ async fn build_connectors(
         .create_backend(&binding)
         .map_err(|error| error.to_string())?;
     Ok((registry, binding))
-}
-
-fn apply_supergrok_env(config: &mut gml_supergrok::SuperGrokConfig) {
-    if let Some(path) =
-        std::env::var_os("GM_SUPERGROK_CREDENTIAL_PATH").filter(|value| !value.is_empty())
-    {
-        config.credential_path = PathBuf::from(path);
-    }
-    let apply = |target: &mut String, key: &str| {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                *target = value.to_string();
-            }
-        }
-    };
-    apply(&mut config.inference_base_url, "GM_SUPERGROK_BASE_URL");
-    apply(&mut config.model, "GM_SUPERGROK_MODEL");
-    apply(&mut config.compact_model, "GM_SUPERGROK_COMPACT_MODEL");
-    apply(
-        &mut config.prompt_cache_key,
-        "GM_SUPERGROK_PROMPT_CACHE_KEY",
-    );
 }
 
 /// Resolve the built SPA `index.html`. Search, in order: exe-relative
@@ -558,7 +541,9 @@ async fn run_server() {
         let sidecar = app.sidecar.clone();
         let rag = app.state.config.rag_enabled;
         let tts = app.state.settings.tts_enabled(None);
-        let image = app.state.config.image_enabled && app.state.settings.image_enabled(None);
+        let image = app.state.config.image_enabled
+            && app.state.settings.image_enabled(None)
+            && app.state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL;
         tokio::spawn(async move {
             if !(rag || tts || image) {
                 tracing::info!("RAG + TTS + image all disabled; inference sidecar not started");
@@ -714,7 +699,9 @@ fn run_desktop() {
             .ensure_started(
                 state.config.rag_enabled
                     || state.settings.tts_enabled(None)
-                    || (state.config.image_enabled && state.settings.image_enabled(None)),
+                    || (state.config.image_enabled
+                        && state.settings.image_enabled(None)
+                        && state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL),
             )
             .await;
     });

@@ -530,9 +530,10 @@ async fn wait_for_committed_turn(
             .store
             .load_chat("shared", chat_id)
             .expect("load runtime while waiting for commit");
-        let committed = runtime.transcript.iter().any(|row| {
-            row.get("request_id").and_then(Value::as_str) == Some(request_id)
-        });
+        let committed = runtime
+            .transcript
+            .iter()
+            .any(|row| row.get("request_id").and_then(Value::as_str) == Some(request_id));
         if committed {
             return runtime;
         }
@@ -577,7 +578,10 @@ async fn read_player_frame(body: &mut Body) {
         .expect("turn body frame failed");
     let text = std::str::from_utf8(frame.data_ref().expect("SSE data frame"))
         .expect("SSE frame must be UTF-8");
-    assert!(text.contains("\"kind\":\"player\""), "unexpected frame: {text}");
+    assert!(
+        text.contains("\"kind\":\"player\""),
+        "unexpected frame: {text}"
+    );
 }
 
 fn seed_completed_turn_checkpoint(state: &AppState, text: &str) -> String {
@@ -674,6 +678,11 @@ fn mock_state_with_infer_url(tmp: &tempfile::TempDir, infer_base_url: &str) -> A
     let mut cfg = Config::from_env();
     cfg.backend = "mock".to_string();
     cfg.infer_base_url = infer_base_url.trim_end_matches('/').to_string();
+    cfg.image_output_dir = tmp
+        .path()
+        .join("generated_images")
+        .to_string_lossy()
+        .into_owned();
     let cfg = Arc::new(cfg);
 
     let settings_path = tmp.path().join("settings.json");
@@ -707,7 +716,7 @@ fn mock_state_with_infer_url(tmp: &tempfile::TempDir, infer_base_url: &str) -> A
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         turn_registry: Arc::new(TurnRegistry::default()),
-            architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
+        architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
         index_html: Arc::new(None),
     }
 }
@@ -721,6 +730,11 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
 
     let mut cfg = Config::from_env();
     cfg.backend = "mock".to_string();
+    cfg.image_output_dir = tmp
+        .path()
+        .join("generated_images")
+        .to_string_lossy()
+        .into_owned();
     let cfg = Arc::new(cfg);
 
     let settings_path = tmp.path().join("settings.json");
@@ -755,7 +769,7 @@ fn mock_state(tmp: &tempfile::TempDir) -> AppState {
         sidecar: None,
         locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         turn_registry: Arc::new(TurnRegistry::default()),
-            architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
+        architect_registry: Arc::new(gml_server::ArchitectRegistry::default()),
         index_html: Arc::new(None),
     }
 }
@@ -1933,7 +1947,9 @@ async fn reattach_replays_buffered_events_and_streams_to_done() {
     let replay_events = sse_payloads(std::str::from_utf8(&replay_bytes).unwrap());
     // The control may still be alive (full replay) or already gone (single
     // durable-receipt frame); either way the terminal receipt must agree.
-    let replay_done = replay_events.last().expect("replay stream must end with done");
+    let replay_done = replay_events
+        .last()
+        .expect("replay stream must end with done");
     assert_eq!(replay_done["kind"], "done");
     assert_eq!(replay_done["ok"], true);
     assert_eq!(replay_done["turn"], 1);
@@ -1953,10 +1969,8 @@ async fn reattach_replays_buffered_events_and_streams_to_done() {
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-    let missing_body: Value = serde_json::from_slice(
-        &missing.into_body().collect().await.unwrap().to_bytes(),
-    )
-    .unwrap();
+    let missing_body: Value =
+        serde_json::from_slice(&missing.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(missing_body["code"], "turn_not_running");
 }
 
@@ -1991,10 +2005,9 @@ async fn duplicate_turn_post_attaches_to_live_feed() {
     let conflicting =
         start_turn_response(&state, &chat_id, "Совсем другой текст.", request_id).await;
     assert_eq!(conflicting.status(), StatusCode::CONFLICT);
-    let conflict_body: Value = serde_json::from_slice(
-        &conflicting.into_body().collect().await.unwrap().to_bytes(),
-    )
-    .unwrap();
+    let conflict_body: Value =
+        serde_json::from_slice(&conflicting.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
     assert_eq!(conflict_body["code"], "turn_in_progress");
 
     gate.release.notify_one();
@@ -3019,7 +3032,10 @@ async fn architect_turn_survives_disconnect_and_reattaches() {
     // No live turn for the fresh world: discovery is idle, attach is a 404.
     let (status, body) = get(
         &state,
-        &format!("/architect/active?kind=world&id={}", urlencoding::encode(&world_id)),
+        &format!(
+            "/architect/active?kind=world&id={}",
+            urlencoding::encode(&world_id)
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -3079,7 +3095,10 @@ async fn architect_turn_survives_disconnect_and_reattaches() {
     // A reopened panel discovers the live turn and re-attaches.
     let (status, body) = get(
         &state,
-        &format!("/architect/active?kind=world&id={}", urlencoding::encode(&world_id)),
+        &format!(
+            "/architect/active?kind=world&id={}",
+            urlencoding::encode(&world_id)
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -3129,7 +3148,10 @@ async fn architect_turn_survives_disconnect_and_reattaches() {
     // both the user message and the assistant reply.
     let (status, body) = get(
         &state,
-        &format!("/architect/active?kind=world&id={}", urlencoding::encode(&world_id)),
+        &format!(
+            "/architect/active?kind=world&id={}",
+            urlencoding::encode(&world_id)
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -4362,6 +4384,99 @@ async fn world_asset_route_rejects_bad_filename_and_404s_missing() {
     let (status, _c, _b) =
         get_with_content_type(&state, "/world-assets/abc123/world_image.png").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn character_portrait_is_served_and_copied_into_new_chat_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = mock_state(&tmp);
+    let character_id = {
+        let mut store = state
+            .character_store
+            .lock()
+            .expect("character store lock poisoned");
+        let created = store
+            .create_character(
+                "Кассандра",
+                json!({"player_character": {
+                    "name": "Кассандра",
+                    "portrait_url": "assets/portrait_fixture.png"
+                }}),
+                None,
+                None,
+            )
+            .expect("create character");
+        let id = created["id"].as_str().unwrap().to_string();
+        store
+            .write_asset(&id, "portrait_fixture.png", STUB_PNG)
+            .expect("write portrait");
+        id
+    };
+
+    let (status, body) = get(&state, "/characters").await;
+    assert_eq!(status, StatusCode::OK);
+    let characters: Value = serde_json::from_slice(&body).unwrap();
+    let portrait_url = format!("/character-assets/{character_id}/portrait_fixture.png");
+    assert_eq!(
+        characters["characters"][0]["payload"]["player_character"]["portrait_url"],
+        json!(portrait_url)
+    );
+    let (status, content_type, bytes) = get_with_content_type(&state, &portrait_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("image/png"));
+    assert_eq!(bytes, STUB_PNG);
+
+    let (status, body) = post(
+        &state,
+        "/chats",
+        json!({
+            "story_id": "procedural",
+            "character_id": character_id,
+            "activate": true,
+            "world_lore": architect_lore_json()
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "launch: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let launched: Value = serde_json::from_slice(&body).unwrap();
+    let chat_id = launched["active_chat_id"].as_str().unwrap();
+    let copied_url = launched["state"]["player_character"]["portrait_url"]
+        .as_str()
+        .expect("portrait in game state");
+    assert!(copied_url.starts_with("/image-files/"), "{copied_url}");
+    let (status, content_type, copied) = get_with_content_type(&state, copied_url).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("image/png"));
+    assert_eq!(copied, STUB_PNG);
+
+    let (status, body) = post(
+        &state,
+        &format!("/chats/{chat_id}/save-character"),
+        json!({"character_id": character_id}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "save character: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let stored = state
+        .character_store
+        .lock()
+        .expect("character store lock poisoned")
+        .get_character(&character_id)
+        .expect("saved character");
+    assert_eq!(
+        stored["payload"]["player_character"]["portrait_url"],
+        json!("assets/portrait_fixture.png"),
+        "saving the live character must preserve its portable portrait"
+    );
 }
 
 // =========================================================================

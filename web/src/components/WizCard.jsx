@@ -146,6 +146,7 @@ export function storyTip(story, t, { kicker = t("entities.storyLower") } = {}) {
 const PC_TIP_FIELDS = [
   "age",
   "physical_type",
+  "current_appearance",
   "distinctive_features",
   "personality",
   "values",

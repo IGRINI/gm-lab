@@ -41,7 +41,6 @@ export default function ImageLabPanel({ locked, sidecarStatus, onGenerateImage }
     try {
       const data = await onGenerateImage({
         prompt: promptText,
-        model: "nvfp4",
         width: 1024,
         height: 1024,
       });

@@ -338,6 +338,36 @@ fn gm_tools_byte_identical_compact() {
 }
 
 #[test]
+fn model_facing_tool_schemas_are_english_only() {
+    fn is_cyrillic(ch: char) -> bool {
+        matches!(
+            ch as u32,
+            0x0400..=0x052f | 0x2de0..=0x2dff | 0xa640..=0xa69f | 0x1c80..=0x1c8f
+        )
+    }
+
+    let tool_sets = [
+        Value::Array(agents::gm_tool_catalog().into_values().collect()),
+        Value::Array(agents::build_npc_tools()),
+        Value::Array(agents::character_architect_tools()),
+        Value::Array(agents::story_architect_tools()),
+        Value::Array(agents::world_architect_tools()),
+    ];
+
+    for tools in tool_sets {
+        let schema = serde_json::to_string(&tools).expect("serialize tool schemas");
+        assert!(
+            !schema.chars().any(is_cyrillic),
+            "model-facing tool schema contains Cyrillic text"
+        );
+        assert!(
+            !schema.to_ascii_lowercase().contains("russian"),
+            "model-facing tool schema hardcodes Russian instead of the configured response language"
+        );
+    }
+}
+
+#[test]
 fn gm_tools_have_no_dynamic_enums_or_roster() {
     let tools = agents::build_gm_tools();
     let json = serde_json::to_string(&Value::Array(tools.clone())).unwrap();
@@ -582,14 +612,14 @@ fn search_select_and_keyword() {
     );
 
     // keyword search hits the move_npc hint.
-    let res2 = agents::search_gm_tools("персонаж входит в сцену", 5, None, false);
+    let res2 = agents::search_gm_tools("npc enters scene", 5, None, false);
     assert!(!res2["matches"].as_array().unwrap().is_empty());
     // empty query -> empty matches + canned message.
     let res3 = agents::search_gm_tools("   ", 5, None, false);
     assert_eq!(res3["matches"].as_array().unwrap().len(), 0);
     assert_eq!(
         res3["message"].as_str().unwrap(),
-        "Запрос пустой. Используй keywords или select:tool_name."
+        "The query is empty. Use keywords or select:tool_name."
     );
 
     let legacy = agents::search_gm_tools(
@@ -757,7 +787,7 @@ fn norm_npc_coercion() {
         "extra": "dropped",
     }));
     assert_eq!(out["reasoning"], "думаю");
-    assert_eq!(out["response"], "123 и говорит: «Привет»");
+    assert_eq!(out["response"], "123\nПривет");
     assert_eq!(
         out["beats"],
         json!([

@@ -305,6 +305,21 @@ fn ask_player_rejects_fewer_than_four_options() {
     );
 }
 
+#[test]
+fn ask_player_rejects_empty_question_instead_of_inventing_a_language() {
+    let mut s = session(Arc::new(MockClient::new()));
+    let (_events, result) = tokio_block_on(run_tool_collect(
+        &mut s,
+        "ask_player",
+        &json!({"question": "  ", "options": four_options()}),
+    ));
+
+    assert!(!result.terminal);
+    assert!(result
+        .model
+        .contains("ask_player requires a non-empty question"));
+}
+
 // =========================================================================
 // run_turn: ask_player is engine-handled (no gm_tool_call/tool_result events)
 // =========================================================================

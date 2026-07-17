@@ -595,6 +595,7 @@ fn character_item(
             "age",
             "physical_type",
             "distinctive_features",
+            "current_appearance",
             "life_status",
             "life_status_note",
             "condition",
@@ -1031,5 +1032,29 @@ mod tests {
             .unwrap();
             assert!(parsed.updated_after.is_some(), "period {period}");
         }
+    }
+
+    #[test]
+    fn character_search_includes_current_appearance() {
+        let request = ParsedSearch::parse(SearchParams {
+            q: "промокший дорожный плащ".to_string(),
+            types: Some("character".to_string()),
+            field: Some("character".to_string()),
+            ..SearchParams::default()
+        })
+        .unwrap();
+        let character = json!({
+            "id": "darra",
+            "title": "Дарра",
+            "payload": {
+                "player_character": {
+                    "current_appearance": "промокший дорожный плащ"
+                }
+            }
+        });
+
+        let item = character_item(&character, &HashMap::new(), &HashMap::new(), &request)
+            .expect("current appearance must be searchable");
+        assert!(item.matched_fields.iter().any(|field| field == "character"));
     }
 }

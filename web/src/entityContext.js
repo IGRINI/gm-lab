@@ -14,16 +14,22 @@ export function canonicalKind(kind) {
   return value;
 }
 
-export function normalizeEntities(raw) {
+export function normalizeEntities(raw, npcs = []) {
   const byKey = {};
   const list = Array.isArray(raw?.entities) ? raw.entities : Array.isArray(raw) ? raw : [];
+  const roster = Array.isArray(npcs) ? npcs : [];
   for (const entity of list) {
     if (!entity || typeof entity !== "object") continue;
     const kind = canonicalKind(entity.kind || entity.type);
     const id = String(entity.id || "").trim();
     const key = entity.key || entityKey(kind, id);
     if (!key) continue;
-    byKey[key.toLowerCase()] = { ...entity, kind, id, key };
+    const lookup = id.toLowerCase();
+    const npc = kind === "npc"
+      ? roster.find((candidate) => [candidate?.id, candidate?.name, candidate?.label]
+          .some((value) => String(value || "").trim().toLowerCase() === lookup))
+      : null;
+    byKey[key.toLowerCase()] = { ...(npc || {}), ...entity, kind, id, key };
   }
   return { byKey };
 }

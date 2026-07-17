@@ -114,3 +114,93 @@ test("staged history mutation shows only the prefix before the selected turn", (
   );
   assert.equal(store.truncateFromPlayerTurn(99), false);
 });
+
+test("generic character update attaches to its tool call", () => {
+  const store = createTimeline();
+  const payload = {
+    target: "npc",
+    npc_id: "liza",
+    label: "Лиза",
+    updated: ["current_appearance"],
+  };
+
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      data: {
+        name: "update_character",
+        arguments: { target: "npc", npc_id: "liza", fields: { current_appearance: "Фартук в муке" } },
+      },
+    },
+    { kind: "character_update", data: payload },
+  ]);
+
+  const messages = store.getSnapshot();
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].name, "update_character");
+  assert.deepEqual(messages[0].result, payload);
+});
+
+test("legacy player character update remains compatible", () => {
+  const store = createTimeline();
+  const payload = { updated: ["condition"] };
+
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      data: {
+        name: "update_player_character",
+        arguments: { fields: { condition: "Усталость" } },
+      },
+    },
+    { kind: "player_character_update", data: payload },
+  ]);
+
+  const messages = store.getSnapshot();
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].name, "update_player_character");
+  assert.deepEqual(messages[0].result, payload);
+});
+
+test("new character event can finish a restored legacy tool call", () => {
+  const store = createTimeline();
+  const payload = { target: "player", updated: ["current_appearance"] };
+
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      data: {
+        name: "update_player_character",
+        arguments: { fields: { current_appearance: "Дорожный плащ" } },
+      },
+    },
+    { kind: "character_update", data: payload },
+  ]);
+
+  const messages = store.getSnapshot();
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].name, "update_player_character");
+  assert.deepEqual(messages[0].result, payload);
+});
+
+test("scene updates preserve the location snapshot and image for the timeline card", () => {
+  const store = createTimeline();
+  const scene = {
+    scene_id: "scene-1",
+    location_id: "place-1",
+    title: "Сырая келья",
+    description: "Тесная влажная келья.",
+    image_url: "/image-files/run/location.png",
+    present_npcs: ["liza"],
+    items: [{ item_id: "chain", name: "Цепь" }],
+    exits: [{ exit_id: "deeper", name: "Дальний проём" }],
+  };
+
+  store.dispatch({ kind: "scene_update", data: scene });
+
+  const [message] = store.getSnapshot();
+  assert.equal(message.type, "scene_update");
+  assert.equal(message.location_id, "place-1");
+  assert.equal(message.image_url, "/image-files/run/location.png");
+  assert.deepEqual(message.scene, scene);
+});

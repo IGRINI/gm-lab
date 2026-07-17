@@ -2,6 +2,7 @@ import Icon from "./Icon.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDevSettings, setDeveloperMode, setFlag, FLAG_META } from "../devSettings.js";
+import { useInterfaceSettings, setSceneBackground } from "../interfaceSettings.js";
 import {
   availableLanguages,
   DEFAULT_LANGUAGE,
@@ -423,6 +424,7 @@ function SettingsModal({
   const { i18n, t } = useTranslation(["common", "connectors", "settings"]);
   const [draft, setDraft] = useState(settings);
   const dev = useDevSettings();
+  const interfaceSettings = useInterfaceSettings();
   const [tab, setTab] = useState("model");
   const interfaceLanguage = resolveUiLanguage(i18n.resolvedLanguage || i18n.language);
   const rawResponseLanguage = String(draft.response_language || DEFAULT_LANGUAGE);
@@ -525,6 +527,16 @@ function SettingsModal({
                 ))}
               </select>
             </label>
+          </section>
+          <section className="settings-section">
+            <h3>{t("settings:appearance.section")}</h3>
+            <p>{t("settings:appearance.description")}</p>
+            <ToggleField
+              label={t("settings:appearance.sceneBackground")}
+              hint={t("settings:appearance.sceneBackgroundHint")}
+              checked={interfaceSettings.sceneBackground}
+              onChange={setSceneBackground}
+            />
           </section>
           <section className="settings-section">
             <h3>{t("settings:developer.section")}</h3>
@@ -700,6 +712,21 @@ function SettingsModal({
             checked={draft.image_enabled !== false}
             onChange={(e) => set({ image_enabled: e.target.checked })}
           />
+        </label>
+
+        <label className="field" title={t("settings:general.imageProviderHint")}>
+          <span>{t("settings:general.imageProvider")}</span>
+          <select
+            value={draft.image_provider || "local"}
+            onChange={(e) => set({ image_provider: e.target.value })}
+            disabled={draft.image_enabled === false}
+          >
+            {(settingsOptions.image_providers || ["local", "grok", "grok_quality"]).map((value) => (
+              <option key={value} value={value}>
+                {t(`settings:general.imageProviders.${value}`)}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label className="field">

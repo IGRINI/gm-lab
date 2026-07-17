@@ -229,8 +229,7 @@
         "placeholder": "For example: harbor inspector"
       },
       "pronouns": {
-        "label": "Pronouns",
-        "placeholder": "she/her"
+        "label": "Gender"
       },
       "background": {
         "label": "Background (one line)",
@@ -333,8 +332,7 @@
         "placeholder": "For example: ranger"
       },
       "pronouns": {
-        "label": "Pronouns",
-        "placeholder": "she/her"
+        "label": "Gender"
       },
       "level": {
         "label": "Level"
@@ -344,8 +342,12 @@
         "placeholder": "For example: 27"
       },
       "appearance": {
-        "label": "Appearance",
-        "placeholder": "Build, features, and overall appearance."
+        "label": "Physical appearance",
+        "placeholder": "Build, species, and stable physical traits."
+      },
+      "currentAppearance": {
+        "label": "Current appearance",
+        "placeholder": "The complete visible look right now: clothes, hair, dirt, blood, disguise, and similar details."
       },
       "features": {
         "label": "Distinctive features",
@@ -415,6 +417,14 @@
   },
   "sheet": {
     "untitled": "Untitled",
+    "pronouns": {
+      "unset": "—",
+      "M": "masculine (he)",
+      "F": "feminine (she)",
+      "N": "neuter (it)",
+      "PL": "plural (they)",
+      "OTHER": "other"
+    },
     "abilities": {
       "title": "Abilities",
       "short": {
@@ -582,14 +592,15 @@
       "passivePerception": "Passive perception",
       "speed": "Speed",
       "about": "About the character",
-      "pronouns": "Pronouns",
+      "pronouns": "Gender",
       "classRole": "Class / role",
       "level": "Level",
       "levelShort": "level {{level}}",
       "age": "Age",
       "life": "Life",
       "background": "Background",
-      "appearance": "Appearance",
+      "appearance": "Physical appearance",
+      "currentAppearance": "Current appearance",
       "features": "Distinctive features",
       "condition": "Condition",
       "statusNote": "Status note",

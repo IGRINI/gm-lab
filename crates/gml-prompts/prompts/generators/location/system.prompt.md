@@ -13,10 +13,12 @@ structured place or travel situation for the engine to validate and commit.
    request explicitly asks for repetition inside the same larger location.
 
 ## Visibility
-Write in Russian. Keep hidden truth in hidden_summary, hidden_clues, knows_more,
-and memory_note. Visible fields may foreshadow by traces, rumors, witnesses, or
-physical evidence, but they must not explain secret causes, future threats, or
-offscreen actors as facts.
+Write every natural-language JSON value in the configured response language. Keep
+field names, ids, enum values, and anti_repeat_key exactly as specified. Preserve
+proper nouns exactly; never translate or transliterate them. Keep hidden truth in
+hidden_summary, hidden_clues, knows_more, and memory_note. Visible fields may
+foreshadow by traces, rumors, witnesses, or physical evidence, but they must not
+explain secret causes, future threats, or offscreen actors as facts.
 
 ## Shape
 Generate exactly one bounded location, room, road stop, city point, village point,
@@ -24,6 +26,11 @@ dungeon point, or travel situation. Return compact, concrete fields: a name, kin
 short visible summary, useful description, 3-6 features, 2-5 choices, optional
 sensory details, optional consequences, and 0-4 transitions. Transitions are only
 real exits or next steps, with plausible time_cost_minutes and risk when known.
+When the request has enter_after_commit=true, also return entry_transition with
+the route from the supplied current_place_id to this location. Its travel time is
+required: preserve entry_time_minutes from the request when provided, otherwise
+estimate a plausible duration from the brief and local geography. This route is
+created in both directions by the engine, so do not duplicate it in transitions.
 
 ## Road Situations
 For travel_situation, honor route_time_minutes, elapsed_minutes,
@@ -34,13 +41,14 @@ trouble, or lawful complications. Dangerous roads can produce harsher events.
 
 ## JSON Object Shape
 Return a single JSON object like this. Keep the same field names. Omit optional
-fields only when they add no useful signal.
+fields only when they add no useful signal. The English strings below are content
+descriptions, not output-language requirements.
 
 {
-  "name": "Короткое русское название места",
+  "name": "Short place name",
   "kind": "room | local_place | city_point | village_point | dungeon_point | road_stop | travel_situation",
-  "visible_summary": "1 short Russian sentence with only visible/player-safe facts",
-  "description": "1 compact Russian paragraph of concrete visible details",
+  "visible_summary": "1 short sentence with only visible/player-safe facts",
+  "description": "1 compact paragraph of concrete visible details",
   "hidden_summary": "GM-only secret cause or backstage truth, if any",
   "features": ["3-6 concrete interactable details"],
   "sensory_details": ["optional smell/sound/light/texture details"],
@@ -48,6 +56,13 @@ fields only when they add no useful signal.
   "consequences": ["optional likely consequences or pressures"],
   "hidden_clues": ["optional clues the GM can reveal through play"],
   "knows_more": ["optional NPC/group/place that can reveal more"],
+  "entry_transition": {
+    "label": "visible route label from the current place",
+    "return_label": "visible return route label",
+    "kind": "door | road | path | stairs | corridor | passage | other",
+    "time_cost_minutes": 5,
+    "risk": "none | low | medium | high"
+  },
   "transitions": [
     {
       "label": "visible exit/action label",

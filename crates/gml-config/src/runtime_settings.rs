@@ -34,6 +34,18 @@ pub const REASONING_SUMMARIES: [&str; 4] = ["auto", "concise", "detailed", "none
 pub const TEXT_VERBOSITIES: [&str; 4] = ["default", "low", "medium", "high"];
 /// `TOOL_CHOICES = ("auto","required","none")`.
 pub const TOOL_CHOICES: [&str; 3] = ["auto", "required", "none"];
+/// Local Flux image generation hosted by the inference sidecar.
+pub const IMAGE_PROVIDER_LOCAL: &str = "local";
+/// Standard Grok Imagine image generation through the SuperGrok connector.
+pub const IMAGE_PROVIDER_GROK: &str = "grok";
+/// Quality Grok Imagine image generation through the SuperGrok connector.
+pub const IMAGE_PROVIDER_GROK_QUALITY: &str = "grok_quality";
+/// Image providers exposed by runtime settings and the settings UI.
+pub const IMAGE_PROVIDERS: [&str; 3] = [
+    IMAGE_PROVIDER_LOCAL,
+    IMAGE_PROVIDER_GROK,
+    IMAGE_PROVIDER_GROK_QUALITY,
+];
 /// `MAX_TOOL_HOPS_CAP = 100`.
 pub const MAX_TOOL_HOPS_CAP: i64 = 100;
 
@@ -144,6 +156,15 @@ impl RuntimeSettings {
                 TOOL_CHOICES
                     .iter()
                     .map(|s| Value::from(*s))
+                    .collect::<Vec<_>>(),
+            ),
+        );
+        m.insert(
+            "image_providers".into(),
+            Value::from(
+                IMAGE_PROVIDERS
+                    .iter()
+                    .map(|provider| Value::from(*provider))
                     .collect::<Vec<_>>(),
             ),
         );
@@ -364,6 +385,20 @@ impl RuntimeSettings {
         self.bool_setting(settings, "image_enabled", true)
     }
 
+    /// Selected image-generation provider. Invalid persisted values safely
+    /// fall back to the local sidecar.
+    pub fn image_provider(&self, settings: Option<&SettingsMap>) -> String {
+        let owned;
+        let values = match settings {
+            Some(values) => values,
+            None => {
+                owned = self.get();
+                &owned
+            }
+        };
+        normalize_image_provider(&string_of(values.get("image_provider"))).to_string()
+    }
+
     /// BCP-47 tag used for newly generated user-visible model text.
     pub fn response_language(&self, settings: Option<&SettingsMap>) -> String {
         let owned;
@@ -531,6 +566,13 @@ impl RuntimeSettings {
                 normalize_language_tag(&string_of(data.get("response_language")))
             {
                 out.insert("response_language".into(), Value::from(language));
+            }
+        }
+
+        if data.contains_key("image_provider") {
+            let provider = string_of(data.get("image_provider")).trim().to_lowercase();
+            if IMAGE_PROVIDERS.contains(&provider.as_str()) {
+                out.insert("image_provider".into(), Value::from(provider));
             }
         }
 
@@ -880,6 +922,13 @@ fn compute_defaults(cfg: &Config) -> (SettingsMap, String) {
         Value::from(config::env_bool("GM_TTS_AUTOPLAY", false)),
     );
     defaults.insert("image_enabled".into(), Value::from(cfg.image_enabled));
+    defaults.insert(
+        "image_provider".into(),
+        Value::from(normalize_image_provider(&env_lower_or(
+            "GM_IMAGE_PROVIDER",
+            IMAGE_PROVIDER_LOCAL,
+        ))),
+    );
     defaults.insert("max_tool_hops".into(), Value::from(0i64));
     // max_output_tokens = int(config.MAX_TOKENS or 0)
     defaults.insert(
@@ -897,6 +946,14 @@ fn env_lower_or(name: &str, default: &str) -> String {
         default.to_string()
     } else {
         v
+    }
+}
+
+fn normalize_image_provider(value: &str) -> &'static str {
+    match value.trim().to_lowercase().as_str() {
+        IMAGE_PROVIDER_GROK => IMAGE_PROVIDER_GROK,
+        IMAGE_PROVIDER_GROK_QUALITY => IMAGE_PROVIDER_GROK_QUALITY,
+        _ => IMAGE_PROVIDER_LOCAL,
     }
 }
 
@@ -963,6 +1020,7 @@ mod tests {
         std::env::remove_var("GM_RESPONSE_LANGUAGE");
         std::env::remove_var("GM_MAX_TOKENS");
         std::env::remove_var("GM_IMAGE_ENABLED");
+        std::env::remove_var("GM_IMAGE_PROVIDER");
         let cfg = Config::from_env();
         (RuntimeSettings::new(&cfg, path), dir)
     }
@@ -1007,6 +1065,10 @@ mod tests {
         assert_eq!(d.get("tts_enabled"), Some(&Value::from(false)));
         assert_eq!(d.get("tts_autoplay"), Some(&Value::from(false)));
         assert_eq!(d.get("image_enabled"), Some(&Value::from(true)));
+        assert_eq!(
+            d.get("image_provider"),
+            Some(&Value::from(IMAGE_PROVIDER_LOCAL))
+        );
         assert_eq!(d.get("max_tool_hops"), Some(&Value::from(0i64)));
         assert_eq!(d.get("max_output_tokens"), Some(&Value::from(0i64)));
     }
@@ -1063,6 +1125,30 @@ mod tests {
         assert_eq!(out.get("tool_choice"), Some(&Value::from("auto")));
         assert_eq!(out.get("text_verbosity"), Some(&Value::from("default")));
         assert_eq!(out.get("gm_reasoning_summary"), Some(&Value::from("auto")));
+    }
+
+    #[test]
+    fn image_provider_is_allowlisted_and_persisted() {
+        let (rs, _d) = temp_settings();
+        let mut update = Map::new();
+        update.insert(
+            "image_provider".into(),
+            Value::from(IMAGE_PROVIDER_GROK_QUALITY),
+        );
+        let saved = rs.update(Some(&update));
+        assert_eq!(
+            saved.get("image_provider"),
+            Some(&Value::from(IMAGE_PROVIDER_GROK_QUALITY))
+        );
+        assert_eq!(rs.image_provider(None), IMAGE_PROVIDER_GROK_QUALITY);
+
+        let mut invalid = Map::new();
+        invalid.insert("image_provider".into(), Value::from("unknown"));
+        let unchanged = rs.update(Some(&invalid));
+        assert_eq!(
+            unchanged.get("image_provider"),
+            Some(&Value::from(IMAGE_PROVIDER_GROK_QUALITY))
+        );
     }
 
     #[test]

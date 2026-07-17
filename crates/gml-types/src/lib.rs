@@ -132,7 +132,7 @@ mod tests {
     fn event_kind_all_contains_done_and_emitted() {
         // 28 distinct ev() kinds (incl. living-world `world_debug` and the
         // NPC-only tool call/result events) + server-pushed terminal `done`.
-        assert_eq!(event_kind::ALL.len(), 29);
+        assert_eq!(event_kind::ALL.len(), 30);
         assert!(event_kind::ALL.contains(&event_kind::DONE));
         assert!(event_kind::ALL.contains(&event_kind::NPC_SPEECH));
         assert!(event_kind::ALL.contains(&event_kind::NPC_TOOL_CALL));

@@ -44,6 +44,7 @@ fn debug_state_records(session: &mut Session) -> Vec<Value> {
 /// `state(dialog)` — the shared chat state the SPA renders on first load and
 /// after each mutation.
 pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettings) -> Value {
+    let visual_assets = runtime.visual_assets.clone();
     let model = resolve_model(&runtime.session, cfg);
     let settings_map = settings.get();
     let stream_gm_content = settings.stream_gm_content_enabled(Some(&settings_map));
@@ -59,8 +60,26 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
     let story_brief = w.story_brief.clone();
     let public = w.public.clone();
     let time = w.time_export();
-    let player_character = w.player_character_export(true);
-    let scene = w.scene_export();
+    let mut player_character = w.player_character_export(true);
+    if let Some(asset) = visual_assets.characters.get(crate::PLAYER_VISUAL_ID) {
+        if let (Some(player), Some(url)) = (
+            player_character.as_object_mut(),
+            crate::safe_dialog_visual_url(&asset.url),
+        ) {
+            player.insert("portrait_url".to_string(), Value::String(url));
+        }
+    }
+    let mut scene = w.scene_export();
+    if let Some(key) = crate::scene_visual_key(&w.scene) {
+        if let Some(asset) = visual_assets.locations.get(&key) {
+            if let (Some(scene), Some(url)) = (
+                scene.as_object_mut(),
+                crate::safe_dialog_visual_url(&asset.url),
+            ) {
+                scene.insert("image_url".to_string(), Value::String(url));
+            }
+        }
+    }
     let entities = w.entity_refs();
 
     // Public NPC projection (`public_npc(npc)`), in roster order.
@@ -70,7 +89,7 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
         let label = w.npc_player_label(npc_id, "player");
         let known_name = w.npc_known_name(npc_id, "player");
         let npc = &w.npcs[npc_id];
-        npcs.push(json!({
+        let mut row = json!({
             "id": npc.npc_id,
             "name": label,
             "label": label,
@@ -81,9 +100,18 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
             "color": npc.color,
             "physical_type": npc.physical_type,
             "distinctive_features": npc.distinctive_features,
+            "current_appearance": npc.current_appearance,
             "condition": npc.condition,
             "life_status": npc.life_status,
-        }));
+        });
+        if let Some(asset) = visual_assets.characters.get(npc_id) {
+            if let Some(url) = crate::safe_dialog_visual_url(&asset.url) {
+                row.as_object_mut()
+                    .expect("NPC public projection is an object")
+                    .insert("portrait_url".to_string(), Value::String(url));
+            }
+        }
+        npcs.push(row);
     }
 
     let mut data = Map::new();
@@ -632,6 +660,7 @@ pub fn debug_data(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeS
             "age": npc.age,
             "physical_type": npc.physical_type,
             "distinctive_features": npc.distinctive_features,
+            "current_appearance": npc.current_appearance,
             "life_status": npc.life_status,
             "life_status_note": npc.life_status_note,
             "condition": npc.condition,

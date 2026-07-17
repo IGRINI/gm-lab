@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::{Client, Response, StatusCode};
 use serde_json::{json, Map, Value};
@@ -385,63 +385,13 @@ impl SuperGrokClient {
             return Ok((result, started.elapsed().as_secs_f64() * 1_000.0));
         }
 
-        let mut accumulator = StreamAccumulator::default();
-        let mut stream = response.bytes_stream();
-        let mut buffer = Vec::<u8>::new();
-        let mut data_lines = Vec::<String>::new();
-        let mut saw_event = false;
-        let mut ended = false;
-
-        'body: while let Some(chunk) = stream.next().await {
-            buffer.extend_from_slice(&chunk.map_err(BackendError::new)?);
-            while let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
-                let raw = buffer.drain(..=position).collect::<Vec<_>>();
-                let line = trim_sse_line(&raw);
-                if handle_sse_line(
-                    line,
-                    &mut data_lines,
-                    &mut accumulator,
-                    sink,
-                    content_only,
-                    &mut saw_event,
-                )? {
-                    ended = true;
-                    break 'body;
-                }
-            }
-        }
-        if !ended && !buffer.is_empty() {
-            let line = trim_sse_line(&buffer);
-            ended = handle_sse_line(
-                line,
-                &mut data_lines,
-                &mut accumulator,
-                sink,
-                content_only,
-                &mut saw_event,
-            )?;
-        }
-        if !ended && !data_lines.is_empty() {
-            ended = flush_sse_event(
-                &mut data_lines,
-                &mut accumulator,
-                sink,
-                content_only,
-                &mut saw_event,
-            )?;
-        }
-        let _ = ended;
-        if !saw_event {
-            return Err(BackendError::new(
-                "SuperGrok returned an empty Responses stream",
-            ));
-        }
-        if !ended {
-            return Err(BackendError::new(
-                "SuperGrok Responses stream ended before completion",
-            ));
-        }
-        let mut result = accumulator.finish();
+        let mut result = collect_sse_body(
+            response.bytes_stream(),
+            self.config.effective_responses_idle_timeout(),
+            sink,
+            content_only,
+        )
+        .await?;
         result.reset_reasoning_before = reset_reasoning_before;
         Ok((result, started.elapsed().as_secs_f64() * 1_000.0))
     }
@@ -643,6 +593,92 @@ fn object_from_text(text: &str) -> Map<String, Value> {
         .as_object()
         .cloned()
         .unwrap_or_default()
+}
+
+async fn collect_sse_body<S, B, E>(
+    stream: S,
+    idle_timeout: Duration,
+    sink: &mut (dyn DeltaSink + Send),
+    content_only: bool,
+) -> Result<StreamResult, BackendError>
+where
+    S: Stream<Item = Result<B, E>>,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    futures_util::pin_mut!(stream);
+    let mut accumulator = StreamAccumulator::default();
+    let mut buffer = Vec::<u8>::new();
+    let mut data_lines = Vec::<String>::new();
+    let mut saw_event = false;
+    let mut ended = false;
+    let mut deadline = tokio::time::Instant::now() + idle_timeout;
+
+    'body: loop {
+        let next = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .map_err(|_| {
+                BackendError::new(format!(
+                    "SuperGrok Responses stream was idle for {:.1} seconds without a complete SSE event",
+                    idle_timeout.as_secs_f64()
+                ))
+            })?;
+        let Some(chunk) = next else {
+            break;
+        };
+        let chunk = chunk.map_err(|error| BackendError::new(error.to_string()))?;
+        buffer.extend_from_slice(chunk.as_ref());
+        while let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
+            let raw = buffer.drain(..=position).collect::<Vec<_>>();
+            let line = trim_sse_line(&raw);
+            let completed_event = line.is_empty() && !data_lines.is_empty();
+            if handle_sse_line(
+                line,
+                &mut data_lines,
+                &mut accumulator,
+                sink,
+                content_only,
+                &mut saw_event,
+            )? {
+                ended = true;
+                break 'body;
+            }
+            if completed_event {
+                deadline = tokio::time::Instant::now() + idle_timeout;
+            }
+        }
+    }
+    if !ended && !buffer.is_empty() {
+        let line = trim_sse_line(&buffer);
+        ended = handle_sse_line(
+            line,
+            &mut data_lines,
+            &mut accumulator,
+            sink,
+            content_only,
+            &mut saw_event,
+        )?;
+    }
+    if !ended && !data_lines.is_empty() {
+        ended = flush_sse_event(
+            &mut data_lines,
+            &mut accumulator,
+            sink,
+            content_only,
+            &mut saw_event,
+        )?;
+    }
+    if !saw_event {
+        return Err(BackendError::new(
+            "SuperGrok returned an empty Responses stream",
+        ));
+    }
+    if !ended {
+        return Err(BackendError::new(
+            "SuperGrok Responses stream ended before completion",
+        ));
+    }
+    Ok(accumulator.finish())
 }
 
 fn trim_sse_line(raw: &[u8]) -> &str {
@@ -913,6 +949,24 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    struct Sink(Vec<(String, String)>);
+
+    impl DeltaSink for Sink {
+        fn emit(&mut self, channel: &str, delta: &str) {
+            self.0.push((channel.to_string(), delta.to_string()));
+        }
+    }
+
+    fn delayed_chunks(
+        chunks: Vec<(Duration, Vec<u8>)>,
+    ) -> impl Stream<Item = Result<Vec<u8>, std::io::Error>> {
+        futures_util::stream::unfold(chunks.into_iter(), |mut chunks| async move {
+            let (delay, chunk) = chunks.next()?;
+            tokio::time::sleep(delay).await;
+            Some((Ok(chunk), chunks))
+        })
+    }
+
     #[test]
     fn payload_uses_model_cache_key_and_xai_storage_policy() {
         let dir = tempfile::tempdir().unwrap();
@@ -948,12 +1002,6 @@ mod tests {
 
     #[test]
     fn sse_frame_parser_handles_multiline_data_and_done() {
-        struct Sink(Vec<(String, String)>);
-        impl DeltaSink for Sink {
-            fn emit(&mut self, channel: &str, delta: &str) {
-                self.0.push((channel.to_string(), delta.to_string()));
-            }
-        }
         let mut lines = Vec::new();
         let mut accumulator = StreamAccumulator::default();
         let mut sink = Sink(Vec::new());
@@ -993,6 +1041,68 @@ mod tests {
         assert!(
             flush_sse_event(&mut lines, &mut accumulator, &mut sink, false, &mut saw,).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn sse_idle_timeout_resets_after_each_complete_event() {
+        let chunks = vec![
+            (
+                Duration::ZERO,
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n\n".to_vec(),
+            ),
+            (
+                Duration::from_millis(300),
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"b\"}\n\n".to_vec(),
+            ),
+            (
+                Duration::from_millis(300),
+                b"data: {\"type\":\"response.completed\",\"response\":{}}\n\n".to_vec(),
+            ),
+        ];
+        let mut sink = Sink(Vec::new());
+        let result = collect_sse_body(
+            delayed_chunks(chunks),
+            Duration::from_millis(500),
+            &mut sink,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.content, "ab");
+    }
+
+    #[tokio::test]
+    async fn partial_network_chunks_do_not_reset_sse_idle_timeout() {
+        let chunks = vec![
+            (
+                Duration::ZERO,
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"a\"}\n\n".to_vec(),
+            ),
+            (
+                Duration::from_millis(50),
+                b"data: {\"type\":\"response.output_text.delta\",".to_vec(),
+            ),
+            (
+                Duration::from_millis(300),
+                b"\"delta\":\"b\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n"
+                    .to_vec(),
+            ),
+        ];
+        let mut sink = Sink(Vec::new());
+        let error = match collect_sse_body(
+            delayed_chunks(chunks),
+            Duration::from_millis(200),
+            &mut sink,
+            false,
+        )
+        .await
+        {
+            Ok(_) => panic!("partial chunks must not extend the SSE idle deadline"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("without a complete SSE event"));
     }
 
     #[test]

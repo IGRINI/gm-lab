@@ -126,6 +126,7 @@
       "ask_player": "Offers the player quick action options.",
       "query_world_state": "Searches world memory within the requested visibility scope.",
       "update_world_state": "Stores facts, rumors, NPC memories, relationships, and goals.",
+      "update_character": "Updates selected fields of the player or an NPC.",
       "update_player_character": "Updates the player character sheet.",
       "advance_time": "Advances the hidden world clock.",
       "get_npc_profile": "Requests selected fields from an NPC profile.",
@@ -160,6 +161,7 @@
     "askPlayer": { "title": "Player options", "questionHelp": "The prompt shown above quick-response buttons.", "option": "option {{number}}" },
     "updateWorldState": { "title": "Write to world memory", "empty": "no records" },
     "queryWorldState": { "title": "Search world memory", "scopeHelp": "The visibility scope searched by the GM.", "queryHelp": "The GM's world-memory search query." },
+    "updateCharacter": { "playerTitle": "Player character sheet", "npcTitle": "Character profile — " },
     "updatePlayer": { "title": "Player character sheet" },
     "advanceTime": { "title": "Advance time", "minutesHelp": "How many in-world minutes passed this turn." },
     "getNpcProfile": { "title": "Character profile — ", "presetHelp": "The profile field group requested by the GM." },
@@ -190,6 +192,7 @@
     "npcProfile": { "title": "Profile — " },
     "worldTime": { "title": "World time" },
     "playerSheet": { "title": "Character sheet — updated" },
+    "character": { "playerTitle": "Character sheet — updated", "npcTitle": "Character profile — updated — " },
     "toolSearch": { "title": "GM tools" },
     "sources": {
       "label": "Sources", "kind": "type: {{value}}", "status": "status: {{value}}",
@@ -202,6 +205,7 @@
       "update_world_state": "The result of writing to world memory.",
       "get_npc_profile": "NPC profile fields returned by the request.",
       "advance_time": "The new world-clock state after advancing time.",
+      "update_character": "Which player or NPC fields changed.",
       "update_player_character": "Which character-sheet fields changed.",
       "tool_search": "Which hidden tools the GM loaded."
     }
@@ -251,9 +255,9 @@
       "exitsHelp": "Array of objects: id, name, destination, visible, blocked_by."
     },
     "fields": {
-      "name": "Name", "playerSees": "Player sees", "color": "Color", "role": "Role", "pronouns": "Pronouns",
+      "name": "Name", "playerSees": "Player sees", "color": "Color", "role": "Role", "pronouns": "Gender",
       "publicLabel": "Public label", "publicLabelPlaceholder": "innkeeper", "knownName": "Known name", "age": "Age",
-      "physicalTypeNpc": "Type/size/species", "physicalType": "Type/species", "features": "Distinctive features", "lifeStatus": "Life status",
+      "physicalTypeNpc": "Type/size/species", "physicalType": "Type/species", "currentAppearance": "Current appearance", "features": "Distinctive features", "lifeStatus": "Life status",
       "statusNote": "Status note", "currentCondition": "Current condition", "description": "Description", "personality": "Personality",
       "values": "Values", "habits": "Habits", "pressureResponse": "Response under pressure", "underPressure": "Under pressure",
       "boundaries": "Boundaries", "voice": "Voice", "goals": "Motives", "knowledge": "Knowledge",

@@ -40,6 +40,7 @@ import ImageLabPanel from "./components/ImageLabPanel.jsx";
 import GlobalSearchPalette from "./components/GlobalSearchPalette.jsx";
 import { normalizeEntities } from "./entityContext.js";
 import { useDevSettings, computeVisibility, VisibilityContext, isMessageVisible } from "./devSettings.js";
+import { useInterfaceSettings } from "./interfaceSettings.js";
 import {
   connectorAuthState,
   connectorAuthUrl,
@@ -263,6 +264,7 @@ export default function App() {
   const store = useMemo(createTimeline, []);
   const messages = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const dev = useDevSettings();
+  const interfaceSettings = useInterfaceSettings();
   const visibility = useMemo(() => computeVisibility(dev), [dev]);
   const visibleMessages = useMemo(
     () => messages.filter((m) => isMessageVisible(m, visibility)),
@@ -429,7 +431,7 @@ export default function App() {
       // world badge against the loaded worlds list.
       worldRef: s.world_ref || null,
       npcs: s.npcs || [],
-      entities: normalizeEntities(s.entities),
+      entities: normalizeEntities(s.entities, s.npcs),
       statusLabels: s.status_labels || {},
     });
     if (s.settings) setSettings((prev) => ({ ...prev, ...s.settings }));
@@ -2335,9 +2337,18 @@ export default function App() {
     )
   );
 
+  const sceneBackgroundUrl = interfaceSettings.sceneBackground && mainView === "chat"
+    ? textValue(srv.scene?.image_url)
+    : "";
+
   return (
     <VisibilityContext.Provider value={visibility}>
     <div className="app">
+      {sceneBackgroundUrl && (
+        <div className="scene-background" aria-hidden="true">
+          <img src={sceneBackgroundUrl} alt="" decoding="async" />
+        </div>
+      )}
       <Header
         onToggleChats={toggleChats}
         chatsOpen={chatsOpen}

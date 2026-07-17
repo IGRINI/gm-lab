@@ -267,15 +267,15 @@ fn context_renders_spells_slots_and_concentration() {
     // active concentration).
     w.cast_spell("огненная хватка", None, "").expect("cast");
     let ctx = w.player_character_context();
-    // Spell lines: name, level/заговор, marks, effect prose.
-    assert!(ctx.contains("Луч холода (заговор)"), "cantrip label: {ctx}");
+    // Spell lines: name, level/cantrip, marks, effect prose.
+    assert!(ctx.contains("Луч холода (cantrip)"), "cantrip label: {ctx}");
     assert!(
-        ctx.contains("Огненная хватка (ур. 1, конц.)"),
+        ctx.contains("Огненная хватка (level 1, conc.)"),
         "concentration mark: {ctx}"
     );
     // Slots line reflects the post-cast remaining/max: level 1 is now 2/4.
     assert!(
-        ctx.contains("Slots: 1-й: 2/4, 2-й: 1/2"),
+        ctx.contains("Slots: level 1: 2/4, level 2: 1/2"),
         "slots line: {ctx}"
     );
     // Active concentration line.

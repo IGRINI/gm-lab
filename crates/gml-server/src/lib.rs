@@ -18,7 +18,7 @@ pub mod share;
 pub mod sys_tokens;
 pub mod tls;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -29,16 +29,21 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use bytes::Bytes;
+use futures::future::join_all;
 use serde_json::{json, Map, Value};
 use tokio::sync::Mutex;
 
 use gml_audio::{cache_lookup, cache_store, compress_audio, tts_format, tts_synth, Sidecar};
-use gml_config::{Config, RuntimeSettings};
-use gml_llm::{Backend, ConnectorAuthStatus, ConnectorId, ModelBinding};
+use gml_config::{
+    Config, RuntimeSettings, SettingsMap, IMAGE_PROVIDER_GROK_QUALITY, IMAGE_PROVIDER_LOCAL,
+};
+use gml_llm::{
+    Backend, ConnectorAuthStatus, ConnectorId, GeneratedImage, ImageGenerationRequest, ModelBinding,
+};
 use gml_orchestrator::{resume_turn_into, run_turn_into, CompactionThresholds, Session};
 use gml_persistence::{
-    CharacterStore, DialogRuntime, DialogStore, HistoryTurnKind, HistoryTurnReceiptKind,
-    TurnCheckpoint, WorldStore,
+    CharacterStore, DialogRuntime, DialogStore, DialogVisualAsset, DialogVisualAssets,
+    HistoryTurnKind, HistoryTurnReceiptKind, TurnCheckpoint, WorldStore, CHARACTER_ASSETS_DIR,
 };
 use gml_stories::{StoryStore, StoryStoreError, StoryWorldRef};
 use gml_world::{PackageRef, World, WorldLore, WorldSpec};
@@ -48,6 +53,9 @@ use gml_world::{PackageRef, World, WorldLore, WorldSpec};
 /// catalog. Optional `seed`/`genre`/`tone`/`scale` body fields tune the
 /// [`gml_world::WorldSpec`]; everything else is derived from the canon.
 pub const PROCEDURAL_STORY_ID: &str = "procedural";
+
+/// Stable key for the player portrait inside dialog-scoped visual assets.
+pub(crate) const PLAYER_VISUAL_ID: &str = "player";
 
 /// `CHAT_SCOPE_ID` — the single shared chat scope (`GM_CHAT_SCOPE_ID`, default
 /// `"shared"`). All chats live under this guest id.
@@ -653,6 +661,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/images/generate", post(post_generate_image))
         .route("/image-files/{run_id}/{filename}", get(get_generated_image))
         .route("/images/{run_id}/{filename}", get(get_generated_image))
+        .route(
+            "/character-assets/{character_id}/{filename}",
+            get(get_character_asset),
+        )
         // Static world-package assets — served straight from disk, independent
         // of the image-generation flag and the sidecar lifecycle.
         .route("/world-assets/{world_id}/{filename}", get(get_world_asset))
@@ -1651,13 +1663,14 @@ async fn post_update_story(
 /// story_ref?, payload}` — the optional refs are the base packages the hero
 /// was authored for), newest first. Returns `{ok, characters:[...]}`.
 async fn get_characters(State(state): State<AppState>) -> Response {
-    let characters = {
+    let mut characters = {
         let store = state
             .character_store
             .lock()
             .expect("character store lock poisoned");
         store.list_characters()
     };
+    rewrite_character_asset_urls(&mut characters);
     ok_json(&json!({"ok": true, "characters": characters}))
 }
 
@@ -1725,7 +1738,10 @@ async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Re
         store.create_character(&title, payload, base.world_ref, base.story_ref)
     };
     match result {
-        Ok(character) => ok_json(&json!({"ok": true, "character": character})),
+        Ok(mut character) => {
+            rewrite_character_asset_url(&mut character);
+            ok_json(&json!({"ok": true, "character": character}))
+        }
         Err(e) => json_response(
             StatusCode::BAD_REQUEST,
             &json!({"ok": false, "error": e.to_string()}),
@@ -1757,7 +1773,10 @@ async fn post_update_character(
         store.update_metadata(&id, patch)
     };
     match result {
-        Ok(character) => ok_json(&json!({"ok": true, "character": character})),
+        Ok(mut character) => {
+            rewrite_character_asset_url(&mut character);
+            ok_json(&json!({"ok": true, "character": character}))
+        }
         Err(gml_persistence::StoreError::CharacterNotFound(_)) => json_response(
             StatusCode::BAD_REQUEST,
             &json!({"ok": false, "error": format!("character not found: {id}")}),
@@ -1901,7 +1920,7 @@ async fn post_save_character(
     )
     .await;
     let LiveCharacterSnapshot {
-        player_character: pc,
+        player_character: mut pc,
         world_ref,
         story_ref,
     } = match read {
@@ -1925,6 +1944,25 @@ async fn post_save_character(
             )
         }
     };
+    // A live World does not own presentation assets, so its canonical player
+    // payload intentionally has no `portrait_url`. Preserve the package-local
+    // reference when saving back over an existing character; otherwise a normal
+    // in-game snapshot would silently detach the architect-generated portrait.
+    if !target_id.is_empty() {
+        let stored_portrait = {
+            let store = state
+                .character_store
+                .lock()
+                .expect("character store lock poisoned");
+            store.get_character(&target_id).ok().and_then(|character| {
+                let portrait = character_portrait_ref(&character);
+                (!portrait.is_empty()).then(|| portrait.to_string())
+            })
+        };
+        if let (Some(player), Some(portrait)) = (pc.as_object_mut(), stored_portrait) {
+            player.insert("portrait_url".to_string(), Value::String(portrait));
+        }
+    }
     // Align the pins with every other creation path (CharacterBaseRef contract:
     // "version at character creation"): re-pin LIVE package versions, keeping
     // the session's launch-time version only when the package is gone. And a
@@ -3543,9 +3581,8 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                     )
                     .await
                     {
-                        Ok((_id, saved_char, saved_chars)) => {
+                        Ok((_id, saved_char, _saved_chars)) => {
                             character = saved_char;
-                            characters = saved_chars;
                         }
                         Err(_resp) => {
                             let _ = tx.send(json!({
@@ -3559,6 +3596,19 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                         }
                     }
                 }
+                // A completed character draft owns one portable portrait. The
+                // generated bytes are copied into the `.gmchar` package before
+                // the response is sent, so the architect, library export and a
+                // newly launched game all reference the same image.
+                character = ensure_character_portrait(&app, &persisted_id, character).await;
+                characters = {
+                    let store = app
+                        .character_store
+                        .lock()
+                        .expect("character store lock poisoned");
+                    store.list_characters()
+                };
+                rewrite_character_asset_urls(&mut characters);
                 // Chat: visible segments for the panel; model history stores the
                 // user TEXT only (never the draft — the token fix).
                 let mut visible_after = visible_with_user;
@@ -3940,7 +3990,7 @@ async fn post_character_draft(
     let data = parse_body(&body);
     // The sheet to store IS the player_character. A missing/non-object value is a
     // 400 (never a silent no-op — a manual save with no sheet is a client bug).
-    let pc = match data.get("player_character") {
+    let mut pc = match data.get("player_character") {
         Some(Value::Object(m)) => Value::Object(m.clone()),
         _ => {
             return json_response(
@@ -3949,6 +3999,12 @@ async fn post_character_draft(
             )
         }
     };
+    if let Err(error) = normalize_character_portrait_ref(&id, &mut pc) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": error}),
+        );
+    }
 
     let store = state.character_store.clone();
     let result =
@@ -3959,7 +4015,10 @@ async fn post_character_draft(
         .await;
 
     match result {
-        Ok(Ok(character)) => ok_json(&json!({"ok": true, "character": character})),
+        Ok(Ok(mut character)) => {
+            rewrite_character_asset_url(&mut character);
+            ok_json(&json!({"ok": true, "character": character}))
+        }
         Ok(Err(gml_persistence::StoreError::CharacterNotFound(id))) => json_response(
             StatusCode::NOT_FOUND,
             &json!({"ok": false, "error": format!("character not found: {id}")}),
@@ -3995,9 +4054,17 @@ async fn persist_character_payload(
     let store = state.character_store.clone();
     // The sheet object to store (the draft IS the player_character). Only a real
     // object is folded — a null/absent draft is a no-op on an existing package.
-    let pc_draft = draft
+    let mut pc_draft = draft
         .and_then(Value::as_object)
         .map(|m| Value::Object(m.clone()));
+    if let (Some(id), Some(player)) = (character_id.as_deref(), pc_draft.as_mut()) {
+        if let Err(error) = normalize_character_portrait_ref(id, player) {
+            return Err(json_response(
+                StatusCode::BAD_REQUEST,
+                &json!({"ok": false, "error": error}),
+            ));
+        }
+    }
     let create_title = character_title_from_draft(draft.unwrap_or(&Value::Null), message);
 
     let result = tokio::task::spawn_blocking(
@@ -4464,37 +4531,66 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
     let reranker_enabled = state.config.rag_enabled && state.config.rag_rerank_enabled;
     let tts_enabled = state.settings.tts_enabled(None);
     let image_enabled = image_generation_enabled(state);
-    let enabled = rag_enabled || tts_enabled || image_enabled;
+    let image_provider = state.settings.image_provider(None);
+    let local_image_enabled = image_enabled && image_provider == IMAGE_PROVIDER_LOCAL;
+    let (remote_image_ready, remote_image_error) =
+        remote_image_status(state, image_enabled, &image_provider).await;
+    let sidecar_enabled = rag_enabled || tts_enabled || local_image_enabled;
+    let enabled = sidecar_enabled || image_enabled;
 
     let Some(sidecar) = &state.sidecar else {
+        let ready = image_enabled && remote_image_ready && !sidecar_enabled;
         return json!({
             "ok": true,
             "enabled": enabled,
-            "state": if enabled { "unavailable" } else { "disabled" },
-            "ready": false,
+            "state": if ready { "ready" } else if enabled { "unavailable" } else { "disabled" },
+            "ready": ready,
             "pid": Value::Null,
             "base_url": state.config.infer_base_url.clone(),
-            "components": sidecar_components(None, state, tts_enabled, image_enabled),
-            "error": if enabled { "sidecar manager is not attached" } else { "" },
+            "components": sidecar_components(
+                None,
+                state,
+                tts_enabled,
+                image_enabled,
+                &image_provider,
+                remote_image_ready,
+                &remote_image_error,
+            ),
+            "error": if ready || !enabled {
+                String::new()
+            } else if !remote_image_error.is_empty() {
+                remote_image_error.clone()
+            } else {
+                "sidecar manager is not attached".to_string()
+            },
         });
     };
 
     let snapshot = sidecar.snapshot();
-    let health = sidecar.health_payload().await.ok();
-    let health_ready = sidecar_health_ready(
-        health.as_ref(),
-        rag_enabled,
-        reranker_enabled,
-        tts_enabled,
-        image_enabled,
-    );
-    let state_label = if health_ready {
+    let health = if sidecar_enabled {
+        sidecar.health_payload().await.ok()
+    } else {
+        None
+    };
+    let sidecar_ready = !sidecar_enabled
+        || sidecar_health_ready(
+            health.as_ref(),
+            rag_enabled,
+            reranker_enabled,
+            tts_enabled,
+            local_image_enabled,
+        );
+    let image_ready = !image_enabled || local_image_enabled || remote_image_ready;
+    let ready = enabled && sidecar_ready && image_ready;
+    let state_label = if ready {
         "ready".to_string()
     } else {
         snapshot.state.as_str().to_string()
     };
-    let error = if health_ready {
+    let error = if ready {
         String::new()
+    } else if !remote_image_error.is_empty() {
+        remote_image_error.clone()
     } else {
         snapshot.error.clone().unwrap_or_default()
     };
@@ -4505,18 +4601,63 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
         "state": if enabled { state_label } else { "disabled".to_string() },
         "manager_state": snapshot.state.as_str(),
         "manager_ready": snapshot.ready,
-        "ready": enabled && health_ready,
+        "ready": ready,
         "pid": snapshot.pid,
         "base_url": snapshot.base_url,
         "elapsed_ms": snapshot.started_elapsed.map(|d| d.as_millis()),
         "ready_timeout_ms": snapshot.ready_timeout.as_millis(),
-        "components": sidecar_components(health.as_ref(), state, tts_enabled, image_enabled),
+        "components": sidecar_components(
+            health.as_ref(),
+            state,
+            tts_enabled,
+            image_enabled,
+            &image_provider,
+            remote_image_ready,
+            &remote_image_error,
+        ),
         "error": error,
     })
 }
 
 fn image_generation_enabled(state: &AppState) -> bool {
     state.config.image_enabled && state.settings.image_enabled(None)
+}
+
+fn local_image_generation_enabled(state: &AppState, settings: Option<&SettingsMap>) -> bool {
+    state.config.image_enabled
+        && state.settings.image_enabled(settings)
+        && state.settings.image_provider(settings) == IMAGE_PROVIDER_LOCAL
+}
+
+async fn remote_image_status(
+    state: &AppState,
+    image_enabled: bool,
+    provider: &str,
+) -> (bool, String) {
+    if !image_enabled || provider == IMAGE_PROVIDER_LOCAL {
+        return (false, String::new());
+    }
+    let Some(registry) = state.store.connector_registry() else {
+        return (false, "connector registry is unavailable".to_string());
+    };
+    let connector_id = ConnectorId::new("xai").expect("xai connector id is valid");
+    match registry.auth_status(&connector_id).await {
+        Ok(ConnectorAuthStatus::SignedIn { .. } | ConnectorAuthStatus::NotRequired) => {
+            (true, String::new())
+        }
+        Ok(ConnectorAuthStatus::Pending { message }) => (
+            false,
+            message.unwrap_or_else(|| "SuperGrok authentication is pending".to_string()),
+        ),
+        Ok(ConnectorAuthStatus::Expired { message }) => (
+            false,
+            message.unwrap_or_else(|| "SuperGrok authentication expired".to_string()),
+        ),
+        Ok(ConnectorAuthStatus::SignedOut) => {
+            (false, "SuperGrok authentication is required".to_string())
+        }
+        Err(error) => (false, error.to_string()),
+    }
 }
 
 fn bool_env(on: bool) -> String {
@@ -4612,7 +4753,46 @@ fn sidecar_components(
     state: &AppState,
     tts_enabled: bool,
     image_enabled: bool,
+    image_provider: &str,
+    remote_image_ready: bool,
+    remote_image_error: &str,
 ) -> Value {
+    let image = if image_provider == IMAGE_PROVIDER_LOCAL {
+        json!({
+            "enabled": image_enabled,
+            "provider": IMAGE_PROVIDER_LOCAL,
+            "up": health.map(|body| component_up(body, "image")).unwrap_or(false),
+            "warm": component_field(health, "image", "warm").cloned().unwrap_or(Value::Bool(false)),
+            "runtime_ready": component_field(health, "image", "runtime_ready").cloned().unwrap_or(Value::Bool(false)),
+            "runtime_root": component_field(health, "image", "runtime_root").cloned().unwrap_or(Value::Null),
+            "output_dir": component_field(health, "image", "output_dir")
+                .cloned()
+                .unwrap_or_else(|| Value::String(state.config.image_output_dir.clone())),
+            "comfy_url": component_field(health, "image", "comfy_url").cloned().unwrap_or(Value::Null),
+            "comfy_up": component_field(health, "image", "comfy_up").cloned().unwrap_or(Value::Bool(false)),
+            "models": component_field(health, "image", "models").cloned().unwrap_or(Value::Array(vec![])),
+            "error": component_field(health, "image", "error").cloned().unwrap_or(Value::String(String::new())),
+        })
+    } else {
+        let model = if image_provider == IMAGE_PROVIDER_GROK_QUALITY {
+            "grok-imagine-image-quality"
+        } else {
+            "grok-imagine-image"
+        };
+        json!({
+            "enabled": image_enabled,
+            "provider": image_provider,
+            "up": image_enabled && remote_image_ready,
+            "warm": image_enabled && remote_image_ready,
+            "runtime_ready": image_enabled && remote_image_ready,
+            "runtime_root": Value::Null,
+            "output_dir": state.config.image_output_dir.clone(),
+            "comfy_url": Value::Null,
+            "comfy_up": false,
+            "models": [model],
+            "error": remote_image_error,
+        })
+    };
     json!({
         "embedder": {
             "enabled": state.config.rag_enabled,
@@ -4641,18 +4821,7 @@ fn sidecar_components(
             "model": component_field(health, "tts", "model").cloned().unwrap_or(Value::Null),
             "voices": component_field(health, "tts", "voices").cloned().unwrap_or(Value::Array(vec![])),
         },
-        "image": {
-            "enabled": image_enabled,
-            "up": health.map(|body| component_up(body, "image")).unwrap_or(false),
-            "warm": component_field(health, "image", "warm").cloned().unwrap_or(Value::Bool(false)),
-            "runtime_ready": component_field(health, "image", "runtime_ready").cloned().unwrap_or(Value::Bool(false)),
-            "runtime_root": component_field(health, "image", "runtime_root").cloned().unwrap_or(Value::Null),
-            "output_dir": component_field(health, "image", "output_dir").cloned().unwrap_or(Value::Null),
-            "comfy_url": component_field(health, "image", "comfy_url").cloned().unwrap_or(Value::Null),
-            "comfy_up": component_field(health, "image", "comfy_up").cloned().unwrap_or(Value::Bool(false)),
-            "models": component_field(health, "image", "models").cloned().unwrap_or(Value::Array(vec![])),
-            "error": component_field(health, "image", "error").cloned().unwrap_or(Value::String(String::new())),
-        },
+        "image": image,
     })
 }
 
@@ -5306,12 +5475,13 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     // carry the `{payload, version, base refs}` into the single overlay tail
     // below (the base refs power the warn-but-allow mismatch notices and the
     // story_pc_override exemption for a hero built FOR the launched story).
-    type SelectedCharacter = (
-        Value,
-        u64,
-        Option<gml_persistence::CharacterBaseRef>,
-        Option<gml_persistence::CharacterBaseRef>,
-    );
+    struct SelectedCharacter {
+        player_character: Value,
+        version: u64,
+        world_ref: Option<gml_persistence::CharacterBaseRef>,
+        story_ref: Option<gml_persistence::CharacterBaseRef>,
+        portrait: Option<GeneratedImage>,
+    }
     let selected_character: Option<SelectedCharacter> = if character_id.is_empty() {
         None
     } else {
@@ -5323,16 +5493,24 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             store.get_character(&character_id).map(|c| {
                 let (base_world_ref, base_story_ref) =
                     store.base_refs(&character_id).unwrap_or((None, None));
-                (
-                    c,
-                    store.version(&character_id).unwrap_or(0),
-                    base_world_ref,
-                    base_story_ref,
-                )
+                let version = store.version(&character_id).unwrap_or(0);
+                let portrait = c
+                    .get("payload")
+                    .and_then(|payload| payload.get("player_character"))
+                    .and_then(character_package_portrait_filename)
+                    .and_then(|filename| {
+                        let media_type = validate_asset_filename(filename)?;
+                        let bytes = store.read_asset(&character_id, filename).ok().flatten()?;
+                        (!bytes.is_empty()).then_some(GeneratedImage {
+                            bytes,
+                            media_type: media_type.to_string(),
+                        })
+                    });
+                (c, version, base_world_ref, base_story_ref, portrait)
             })
         };
         match resolved {
-            Ok((character, version, base_world_ref, base_story_ref)) => {
+            Ok((character, version, base_world_ref, base_story_ref, portrait)) => {
                 // Extract the opaque `payload.player_character` object; the store
                 // guarantees it is an object on create/import, but be defensive.
                 let pc = character
@@ -5340,9 +5518,13 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                     .and_then(|p| p.get("player_character"))
                     .cloned();
                 match pc {
-                    Some(pc @ Value::Object(_)) => {
-                        Some((pc, version, base_world_ref, base_story_ref))
-                    }
+                    Some(pc @ Value::Object(_)) => Some(SelectedCharacter {
+                        player_character: pc,
+                        version,
+                        world_ref: base_world_ref,
+                        story_ref: base_story_ref,
+                        portrait,
+                    }),
                     _ => {
                         return json_response(
                             StatusCode::BAD_REQUEST,
@@ -5549,21 +5731,49 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
     //
     // The launched STORY id for the story-mismatch/override checks: only a real
     // named-story launch counts — a procedural campaign is not "another story".
+    let selected_dialog_portrait = if let Some(portrait) = selected_character
+        .as_ref()
+        .and_then(|character| character.portrait.clone())
+    {
+        match persist_generated_images(&state, vec![portrait]).await {
+            Ok((_run_id, images)) => images
+                .first()
+                .and_then(|image| image.get("url"))
+                .and_then(Value::as_str)
+                .and_then(safe_dialog_visual_url)
+                .map(|url| DialogVisualAsset {
+                    url,
+                    provider: "character_package".to_string(),
+                    model: String::new(),
+                }),
+            Err(error) => {
+                tracing::warn!(
+                    character_id,
+                    error,
+                    "copying character portrait into dialog history failed"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let launch_story_id_for_warnings = if is_procedural {
         String::new()
     } else {
         story_id.clone()
     };
-    if let Some((pc_payload, char_version, base_world_ref, base_story_ref)) = &selected_character {
-        world.seed_player_character(Some(pc_payload));
+    if let Some(selected) = &selected_character {
+        world.seed_player_character(Some(&selected.player_character));
         world.char_ref = Some(PackageRef {
             id: character_id.clone(),
-            version: *char_version,
+            version: selected.version,
         });
         // A hero authored FOR the launched story (story_ref matches) IS its
         // intended protagonist replacement — the blessed picker/wizard flow —
         // so overriding the story's own PC is expected, not warning-worthy.
-        let built_for_this_story = base_story_ref
+        let built_for_this_story = selected
+            .story_ref
             .as_ref()
             .is_some_and(|r| r.id == launch_story_id_for_warnings);
         if story_carries_pc && !built_for_this_story {
@@ -5578,7 +5788,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         // Warn-but-allow: the hero was authored FOR a different world than the
         // one launching. Only fires when BOTH sides are known — a standalone
         // hero or a brief/self-contained launch stays quiet.
-        let world_mismatch = match (base_world_ref, &world.world_ref) {
+        let world_mismatch = match (&selected.world_ref, &world.world_ref) {
             (Some(base), Some(launch_world)) if base.id != launch_world.id => {
                 launch_warnings.push(json!({
                     "code": "character_world_mismatch",
@@ -5597,7 +5807,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         // Suppressed when the world already warned — one mismatch notice is
         // enough to make the point.
         if !world_mismatch && !launch_story_id_for_warnings.is_empty() {
-            if let Some(base) = base_story_ref {
+            if let Some(base) = &selected.story_ref {
                 if base.id != launch_story_id_for_warnings {
                     launch_warnings.push(json!({
                         "code": "character_story_mismatch",
@@ -5640,6 +5850,14 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             activate,
             Some(binding),
         )?;
+        if let Some(portrait) = selected_dialog_portrait {
+            let mut runtime = store.load_chat(&scope, &chat_id)?;
+            runtime
+                .visual_assets
+                .characters
+                .insert(PLAYER_VISUAL_ID.to_string(), portrait);
+            store.save_owned(runtime)?;
+        }
         let active = store.active_chat_id(&scope)?.unwrap_or_default();
         let is_active = chat_id == active;
         let mut response = Map::new();
@@ -6019,17 +6237,16 @@ async fn post_settings(State(state): State<AppState>, body: Bytes) -> Response {
         None => Some(data.clone()),
     };
     let tts_was_enabled = state.settings.tts_enabled(None);
-    let image_was_enabled = image_generation_enabled(&state);
+    let local_image_was_enabled = local_image_generation_enabled(&state, None);
     let settings_map = state.settings.update(update.as_ref());
     let tts_now_enabled = state.settings.tts_enabled(Some(&settings_map));
-    let image_now_enabled =
-        state.config.image_enabled && state.settings.image_enabled(Some(&settings_map));
-    if tts_was_enabled != tts_now_enabled || image_was_enabled != image_now_enabled {
+    let local_image_now_enabled = local_image_generation_enabled(&state, Some(&settings_map));
+    if tts_was_enabled != tts_now_enabled || local_image_was_enabled != local_image_now_enabled {
         restart_sidecar_in_background(
             &state,
             tts_now_enabled,
-            image_now_enabled,
-            !image_was_enabled && image_now_enabled,
+            local_image_now_enabled,
+            !local_image_was_enabled && local_image_now_enabled,
         );
     }
     let cfg = state.config.clone();
@@ -6607,6 +6824,315 @@ fn legacy_resume_checkpoint(rt: &DialogRuntime, text: &str) -> Option<LegacyResu
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DialogVisualKind {
+    Character,
+    Location,
+}
+
+#[derive(Clone, Debug)]
+struct DialogVisualCandidate {
+    kind: DialogVisualKind,
+    key: String,
+    prompt: String,
+    width: u32,
+    height: u32,
+}
+
+pub(crate) fn scene_visual_key(scene: &gml_world::SceneState) -> Option<String> {
+    [
+        scene.location_id.as_str(),
+        scene.scene_id.as_str(),
+        scene.title.as_str(),
+    ]
+    .into_iter()
+    .map(str::trim)
+    .find(|value| !value.is_empty())
+    .map(str::to_string)
+}
+
+pub(crate) fn safe_dialog_visual_url(url: &str) -> Option<String> {
+    sidecar_image_path(url).or_else(|| character_asset_url(url))
+}
+
+fn decorate_scene_data_with_visual(data: &mut Value, visual_assets: &DialogVisualAssets) {
+    let Some(scene) = data.as_object_mut() else {
+        return;
+    };
+    let visual_key = ["location_id", "scene_id", "title"]
+        .into_iter()
+        .filter_map(|field| scene.get(field).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string);
+    let Some(url) = visual_key
+        .as_deref()
+        .and_then(|key| visual_assets.locations.get(key))
+        .and_then(|asset| safe_dialog_visual_url(&asset.url))
+    else {
+        return;
+    };
+    scene.insert("image_url".to_string(), Value::String(url));
+}
+
+fn decorate_scene_event_with_visual(
+    event: &mut gml_types::Event,
+    visual_assets: &DialogVisualAssets,
+) {
+    if event.kind == gml_types::event_kind::SCENE_UPDATE {
+        decorate_scene_data_with_visual(&mut event.data, visual_assets);
+    }
+}
+
+fn decorate_turn_scene_visuals(runtime: &mut DialogRuntime, turn_no: i64) {
+    let visual_assets = &runtime.visual_assets;
+    for row in &mut runtime.transcript {
+        if row.get("turn").and_then(Value::as_i64) != Some(turn_no) {
+            continue;
+        }
+        let Some(event) = row.get_mut("event").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if event.get("kind").and_then(Value::as_str) != Some(gml_types::event_kind::SCENE_UPDATE) {
+            continue;
+        }
+        if let Some(data) = event.get_mut("data") {
+            decorate_scene_data_with_visual(data, visual_assets);
+        }
+    }
+}
+
+fn bounded_visual_prompt(prompt: String) -> String {
+    const MAX_PROMPT_CHARS: usize = 1_000;
+    const TAIL_CHARS: usize = 260;
+    const SEPARATOR: &str = " ... ";
+    let chars: Vec<char> = prompt.chars().collect();
+    if chars.len() <= MAX_PROMPT_CHARS {
+        prompt
+    } else {
+        let head_chars = MAX_PROMPT_CHARS - TAIL_CHARS - SEPARATOR.chars().count();
+        let mut bounded = String::with_capacity(MAX_PROMPT_CHARS);
+        bounded.extend(chars[..head_chars].iter().copied());
+        bounded.push_str(SEPARATOR);
+        bounded.extend(chars[chars.len() - TAIL_CHARS..].iter().copied());
+        bounded
+    }
+}
+
+fn character_visual_prompt(
+    name: &str,
+    role: &str,
+    age: &str,
+    physical_type: &str,
+    distinctive_features: &str,
+    current_appearance: &str,
+    condition: &str,
+    context: &str,
+) -> String {
+    bounded_visual_prompt(format!(
+        "Visual novel character portrait, vertical 2:3 composition, one fictional character, \
+         three-quarter or waist-up view, expressive face, detailed polished digital illustration, \
+         coherent costume and lighting, simple unobtrusive background. Preserve the described identity. \
+         Name: {name}. Role: {role}. Age: {age}. Physical appearance: {physical_type}. \
+         Distinctive features: {distinctive_features}. Current appearance: {current_appearance}. \
+         Condition: {condition}. Context: {context}. No text, captions, interface, frame, collage, \
+         extra characters, or watermark. Non-sexual presentation."
+    ))
+}
+
+fn location_visual_prompt(world: &World) -> String {
+    let scene = &world.scene;
+    bounded_visual_prompt(format!(
+        "Visual novel location background, cinematic horizontal 16:9 composition, detailed polished \
+         digital illustration, strong atmosphere, coherent architecture and lighting, environmental \
+         storytelling. Location: {}. Description: {}. Tension or mood: {}. Story: {}. \
+         No text, captions, interface, frame, collage, close-up character portrait, or watermark.",
+        scene.title, scene.description, scene.tension, world.story_title
+    ))
+}
+
+fn current_turn_npc_ids(runtime: &DialogRuntime, turn_no: i64) -> BTreeSet<String> {
+    runtime
+        .transcript
+        .iter()
+        .filter(|row| row.get("turn").and_then(Value::as_i64) == Some(turn_no))
+        .filter_map(|row| row.get("event"))
+        .filter(|event| event.get("kind").and_then(Value::as_str) == Some("npc_speech"))
+        .filter_map(|event| event.get("data"))
+        .filter_map(|data| data.get("npc_id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn missing_dialog_visuals(runtime: &DialogRuntime, turn_no: i64) -> Vec<DialogVisualCandidate> {
+    let world = &runtime.session.world;
+    let mut candidates = Vec::new();
+
+    if let Some(key) = scene_visual_key(&world.scene) {
+        if !runtime.visual_assets.locations.contains_key(&key) {
+            candidates.push(DialogVisualCandidate {
+                kind: DialogVisualKind::Location,
+                key,
+                prompt: location_visual_prompt(world),
+                width: 1024,
+                height: 576,
+            });
+        }
+    }
+
+    let player = &world.player_character;
+    if !player.name.trim().is_empty()
+        && !runtime
+            .visual_assets
+            .characters
+            .contains_key(PLAYER_VISUAL_ID)
+    {
+        candidates.push(DialogVisualCandidate {
+            kind: DialogVisualKind::Character,
+            key: PLAYER_VISUAL_ID.to_string(),
+            prompt: character_visual_prompt(
+                &player.name,
+                &player.class_role,
+                &player.age,
+                &player.physical_type,
+                &player.distinctive_features,
+                &player.current_appearance,
+                &player.condition,
+                &world.story_title,
+            ),
+            width: 768,
+            height: 1152,
+        });
+    }
+
+    let mut npc_ids = world.scene.present_npcs.clone();
+    npc_ids.extend(current_turn_npc_ids(runtime, turn_no));
+    for npc_id in npc_ids {
+        if runtime.visual_assets.characters.contains_key(&npc_id) {
+            continue;
+        }
+        let Some(npc) = world.npcs.get(&npc_id) else {
+            continue;
+        };
+        candidates.push(DialogVisualCandidate {
+            kind: DialogVisualKind::Character,
+            key: npc_id,
+            prompt: character_visual_prompt(
+                &npc.name,
+                &npc.role,
+                &npc.age,
+                &npc.physical_type,
+                &npc.distinctive_features,
+                &npc.current_appearance,
+                &npc.condition,
+                &world.story_title,
+            ),
+            width: 768,
+            height: 1152,
+        });
+    }
+    candidates
+}
+
+fn dialog_visual_asset(value: &Value) -> Result<DialogVisualAsset, String> {
+    let image = value
+        .get("images")
+        .and_then(Value::as_array)
+        .and_then(|images| images.first())
+        .ok_or_else(|| "image generation returned no saved image".to_string())?;
+    let url = image
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| "image generation returned no saved image URL".to_string())?;
+    let url = safe_dialog_visual_url(url)
+        .ok_or_else(|| "image generation returned an unsafe saved image URL".to_string())?;
+    Ok(DialogVisualAsset {
+        url,
+        provider: value
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        model: value
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    })
+}
+
+async fn generate_missing_dialog_visuals(
+    state: &AppState,
+    runtime: &mut DialogRuntime,
+    turn_no: i64,
+) {
+    if !image_generation_enabled(state) {
+        return;
+    }
+    let provider = state.settings.image_provider(None);
+    if provider == IMAGE_PROVIDER_LOCAL && state.sidecar.is_none() {
+        return;
+    }
+    let candidates = missing_dialog_visuals(runtime, turn_no);
+    if candidates.is_empty() {
+        return;
+    }
+
+    let results = join_all(candidates.into_iter().map(|candidate| async move {
+        let request = json!({
+            "prompt": candidate.prompt,
+            "width": candidate.width,
+            "height": candidate.height,
+            "batch": 1,
+        });
+        let generated = generate_image_value(
+            state,
+            request
+                .as_object()
+                .expect("dialog visual request is an object"),
+        )
+        .await;
+        (candidate, generated)
+    }))
+    .await;
+
+    for (candidate, result) in results {
+        let asset = match result.and_then(|value| {
+            dialog_visual_asset(&value).map_err(|message| ImageServiceError {
+                status: StatusCode::BAD_GATEWAY,
+                message,
+            })
+        }) {
+            Ok(asset) => asset,
+            Err(error) => {
+                tracing::warn!(
+                    visual_kind = ?candidate.kind,
+                    visual_key = candidate.key,
+                    status = %error.status,
+                    error = %error.message,
+                    "dialog visual generation failed"
+                );
+                continue;
+            }
+        };
+        match candidate.kind {
+            DialogVisualKind::Character => {
+                runtime
+                    .visual_assets
+                    .characters
+                    .insert(candidate.key, asset);
+            }
+            DialogVisualKind::Location => {
+                runtime.visual_assets.locations.insert(candidate.key, asset);
+            }
+        }
+    }
+}
+
 async fn execute_turn(
     state: AppState,
     request: TurnExecutionRequest,
@@ -6796,7 +7322,7 @@ async fn execute_turn(
     let turn_abort = AbortTaskOnDrop::new(&turn_handle);
 
     let mut unexpected_player_event = false;
-    while let Some(event) = ev_rx.recv().await {
+    while let Some(mut event) = ev_rx.recv().await {
         if legacy_resume && event.kind == "player" {
             // A resumed turn must never duplicate the already persisted echo.
             // Drain the task but suppress this invalid event and discard all
@@ -6804,6 +7330,7 @@ async fn execute_turn(
             unexpected_player_event = true;
             continue;
         }
+        decorate_scene_event_with_visual(&mut event, &rt.visual_assets);
         let transcript_row = if event.kind == "player" {
             // One durable receipt per logical turn is enough for idempotency;
             // do not repeat the UUID on every token delta in the transcript.
@@ -6847,6 +7374,16 @@ async fn execute_turn(
         return TurnDone::failed(request_id, outcome.retryable());
     }
     rt.session = session;
+
+    // Generate only missing assets for the current location, the player and
+    // characters who are present or spoke this turn. Failures are deliberately
+    // non-fatal: the completed story turn remains saveable and a later turn can
+    // retry an asset that is still absent.
+    generate_missing_dialog_visuals(&state, &mut rt, turn_no).await;
+    decorate_turn_scene_visuals(&mut rt, turn_no);
+    if control.cancellation_requested() {
+        return TurnDone::cancelled(request_id);
+    }
 
     let store = state.store.clone();
     let save_control = control.clone();
@@ -6947,7 +7484,10 @@ async fn post_turn(State(state): State<AppState>, body: Bytes) -> Response {
         legacy_resume,
         history: history.clone(),
     };
-    let control = match state.turn_registry.register(control_key, fingerprint.clone()) {
+    let control = match state
+        .turn_registry
+        .register(control_key, fingerprint.clone())
+    {
         TurnRegistration::New(control) => {
             // The server owns the turn: the model stream is consumed by a
             // detached task and every result is committed through the usual
@@ -7120,20 +7660,17 @@ async fn get_turn_stream(
     let lookup_chat_id = chat_id.clone();
     let lookup_request_id = request_id.clone();
     let committed = tokio::task::spawn_blocking(move || {
-        let (destination_chat_id, runtime) = match store.history_turn_receipt(
-            &lookup_scope,
-            &lookup_chat_id,
-            &lookup_request_id,
-        )? {
-            Some(receipt) => {
-                let runtime = store.load_chat(&lookup_scope, &receipt.destination_chat_id)?;
-                (receipt.destination_chat_id, runtime)
-            }
-            None => (
-                lookup_chat_id.clone(),
-                store.load_chat(&lookup_scope, &lookup_chat_id)?,
-            ),
-        };
+        let (destination_chat_id, runtime) =
+            match store.history_turn_receipt(&lookup_scope, &lookup_chat_id, &lookup_request_id)? {
+                Some(receipt) => {
+                    let runtime = store.load_chat(&lookup_scope, &receipt.destination_chat_id)?;
+                    (receipt.destination_chat_id, runtime)
+                }
+                None => (
+                    lookup_chat_id.clone(),
+                    store.load_chat(&lookup_scope, &lookup_chat_id)?,
+                ),
+            };
         Ok::<_, gml_persistence::StoreError>(
             committed_turn_for_request(&runtime.transcript, &lookup_request_id).map(|turn| {
                 (
@@ -7414,42 +7951,283 @@ fn placeholder_session(
 // transcribe / tts / codex
 // =========================================================================
 
+#[derive(Debug)]
+struct ImageServiceError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ImageServiceError {
+    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
 async fn post_generate_image(State(state): State<AppState>, body: Bytes) -> Response {
-    if !image_generation_enabled(&state) {
-        return json_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"ok": false, "error": "image generation disabled"}),
-        );
+    let data = parse_body(&body);
+    match generate_image_value(&state, &data).await {
+        Ok(value) => ok_json(&value),
+        Err(error) => json_response(error.status, &json!({"ok": false, "error": error.message})),
     }
+}
+
+async fn generate_image_value(
+    state: &AppState,
+    data: &Map<String, Value>,
+) -> Result<Value, ImageServiceError> {
+    if !image_generation_enabled(state) {
+        return Err(ImageServiceError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "image generation disabled",
+        ));
+    }
+    let provider = state.settings.image_provider(None);
+    if provider == IMAGE_PROVIDER_LOCAL {
+        generate_local_image_value(state, data).await
+    } else {
+        generate_remote_image_value(state, data, &provider).await
+    }
+}
+
+async fn generate_local_image_value(
+    state: &AppState,
+    data: &Map<String, Value>,
+) -> Result<Value, ImageServiceError> {
     let Some(sidecar) = &state.sidecar else {
-        return json_response(
+        return Err(ImageServiceError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"ok": false, "error": "sidecar manager is not attached"}),
-        );
+            "sidecar manager is not attached",
+        ));
     };
-    if let Err(e) = sidecar.ensure_started(true).await {
-        return json_response(
+    sidecar.ensure_started(true).await.map_err(|error| {
+        ImageServiceError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"ok": false, "error": format!("image sidecar unavailable: {e}")}),
-        );
-    }
+            format!("image sidecar unavailable: {error}"),
+        )
+    })?;
 
     let url = format!("{}/images/generate", state.config.infer_base_url);
     let timeout = std::time::Duration::from_secs_f64(state.config.image_timeout_seconds + 10.0);
-    match state
+    let response = state
         .http
         .post(url)
         .timeout(timeout)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
+        .json(data)
         .send()
         .await
-    {
-        Ok(resp) => proxy_sidecar_response(resp, "application/json; charset=utf-8").await,
-        Err(e) => json_response(
+        .map_err(|error| {
+            ImageServiceError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("image sidecar request failed: {error}"),
+            )
+        })?;
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let body = response.text().await.map_err(|error| {
+        ImageServiceError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("image sidecar response read failed: {error}"),
+        )
+    })?;
+    let mut value: Value = serde_json::from_str(&body).map_err(|error| {
+        ImageServiceError::new(
+            StatusCode::BAD_GATEWAY,
+            format!("invalid image sidecar response: {error}"),
+        )
+    })?;
+    if !status.is_success() {
+        return Err(ImageServiceError::new(
+            status,
+            image_provider_message(&value, &body),
+        ));
+    }
+    let object = value.as_object_mut().ok_or_else(|| {
+        ImageServiceError::new(StatusCode::BAD_GATEWAY, "invalid image sidecar response")
+    })?;
+    object.insert(
+        "provider".to_string(),
+        Value::String(IMAGE_PROVIDER_LOCAL.to_string()),
+    );
+    Ok(value)
+}
+
+async fn generate_remote_image_value(
+    state: &AppState,
+    data: &Map<String, Value>,
+    provider: &str,
+) -> Result<Value, ImageServiceError> {
+    let prompt = data
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if prompt.is_empty() {
+        return Err(ImageServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "empty prompt",
+        ));
+    }
+    let width = remote_image_dimension(data, "width", 1024, state.config.image_max_width)
+        .map_err(|error| ImageServiceError::new(StatusCode::BAD_REQUEST, error))?;
+    let height = remote_image_dimension(data, "height", 1024, state.config.image_max_height)
+        .map_err(|error| ImageServiceError::new(StatusCode::BAD_REQUEST, error))?;
+    let batch_value = data
+        .get("batch")
+        .or_else(|| data.get("batch_size"))
+        .or_else(|| data.get("n"));
+    let batch = positive_bounded_u32(
+        batch_value,
+        1,
+        state.config.image_max_batch.max(1) as u32,
+        "batch",
+    )
+    .map_err(|error| ImageServiceError::new(StatusCode::BAD_REQUEST, error))?;
+    let model = if provider == IMAGE_PROVIDER_GROK_QUALITY {
+        "grok-imagine-image-quality"
+    } else {
+        "grok-imagine-image"
+    };
+    let Some(registry) = state.store.connector_registry() else {
+        return Err(ImageServiceError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"ok": false, "error": format!("image sidecar request failed: {e}")}),
-        ),
+            "connector registry is unavailable",
+        ));
+    };
+    let connector_id = ConnectorId::new("xai").expect("xai connector id is valid");
+    let started = std::time::Instant::now();
+    let generated = registry
+        .generate_images(
+            &connector_id,
+            &ImageGenerationRequest {
+                prompt: prompt.to_string(),
+                model: Some(model.to_string()),
+                width: Some(width),
+                height: Some(height),
+                count: batch,
+            },
+        )
+        .await
+        .map_err(|error| {
+            let status = error
+                .http_status()
+                .and_then(|status| StatusCode::from_u16(status).ok())
+                .unwrap_or(StatusCode::BAD_GATEWAY);
+            ImageServiceError::new(status, error.to_string())
+        })?;
+    let elapsed = started.elapsed().as_secs_f64();
+    let (run_id, images) = persist_generated_images(state, generated.images)
+        .await
+        .map_err(|error| ImageServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, error))?;
+    Ok(json!({
+        "ok": true,
+        "provider": provider,
+        "run_id": run_id,
+        "seed": Value::Null,
+        "model": generated.model,
+        "width": width,
+        "height": height,
+        "batch": images.len(),
+        "elapsed_seconds": elapsed,
+        "images": images,
+    }))
+}
+
+fn image_provider_message(value: &Value, raw: &str) -> String {
+    value
+        .get("error")
+        .and_then(|error| {
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
+        })
+        .or_else(|| value.get("message").and_then(Value::as_str))
+        .unwrap_or(raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn remote_image_dimension(
+    data: &Map<String, Value>,
+    key: &str,
+    default: u32,
+    configured_max: i64,
+) -> Result<u32, String> {
+    positive_bounded_u32(data.get(key), default, configured_max.max(64) as u32, key)
+}
+
+fn positive_bounded_u32(
+    value: Option<&Value>,
+    default: u32,
+    max: u32,
+    label: &str,
+) -> Result<u32, String> {
+    let value = match value {
+        None | Some(Value::Null) => return Ok(default.min(max)),
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| format!("{label} must be a positive integer"))?,
+    };
+    if value == 0 || value > max {
+        return Err(format!("{label} must be between 1 and {max}"));
+    }
+    Ok(value)
+}
+
+async fn persist_generated_images(
+    state: &AppState,
+    generated: Vec<gml_llm::GeneratedImage>,
+) -> Result<(String, Vec<Value>), String> {
+    if generated.is_empty() {
+        return Err("image provider returned no images".to_string());
+    }
+    let root = std::path::PathBuf::from(&state.config.image_output_dir);
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|error| format!("create image output directory failed: {error}"))?;
+    let run_id = uuid::Uuid::new_v4().simple().to_string();
+    let run_dir = root.join(&run_id);
+    tokio::fs::create_dir(&run_dir)
+        .await
+        .map_err(|error| format!("create image run directory failed: {error}"))?;
+
+    let mut images = Vec::with_capacity(generated.len());
+    for (index, image) in generated.into_iter().enumerate() {
+        let extension = image_extension_for_media_type(&image.media_type)
+            .ok_or_else(|| format!("unsupported generated image type: {}", image.media_type));
+        let extension = match extension {
+            Ok(extension) => extension,
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&run_dir).await;
+                return Err(error);
+            }
+        };
+        let filename = format!("image_{index}.{extension}");
+        let byte_len = image.bytes.len();
+        if let Err(error) = tokio::fs::write(run_dir.join(&filename), image.bytes).await {
+            let _ = tokio::fs::remove_dir_all(&run_dir).await;
+            return Err(format!("write generated image failed: {error}"));
+        }
+        images.push(json!({
+            "filename": filename,
+            "url": format!("/image-files/{run_id}/{filename}"),
+            "bytes": byte_len,
+        }));
+    }
+    Ok((run_id, images))
+}
+
+fn image_extension_for_media_type(media_type: &str) -> Option<&'static str> {
+    match media_type.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        _ => None,
     }
 }
 
@@ -7457,11 +8235,25 @@ async fn get_generated_image(
     State(state): State<AppState>,
     AxPath((run_id, filename)): AxPath<(String, String)>,
 ) -> Response {
-    if !image_generation_enabled(&state) {
+    let Some(path) = generated_image_file_path(&state, &run_id, &filename) else {
         return json_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"ok": false, "error": "image generation disabled"}),
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid image path"}),
         );
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => return image_bytes_response(bytes, image_content_type(&filename)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": format!("image read failed: {error}")}),
+            )
+        }
+    }
+
+    if !local_image_generation_enabled(&state, None) {
+        return not_found();
     }
     let Some(sidecar) = &state.sidecar else {
         return json_response(
@@ -7489,12 +8281,46 @@ async fn get_generated_image(
         .send()
         .await
     {
-        Ok(resp) => proxy_sidecar_response(resp, "image/png").await,
+        Ok(resp) => proxy_sidecar_response(resp, image_content_type(&filename)).await,
         Err(e) => json_response(
             StatusCode::SERVICE_UNAVAILABLE,
             &json!({"ok": false, "error": format!("image fetch failed: {e}")}),
         ),
     }
+}
+
+fn generated_image_file_path(
+    state: &AppState,
+    run_id: &str,
+    filename: &str,
+) -> Option<std::path::PathBuf> {
+    if !is_safe_sidecar_segment(run_id) || !is_safe_sidecar_segment(filename) {
+        return None;
+    }
+    Some(
+        std::path::PathBuf::from(&state.config.image_output_dir)
+            .join(run_id)
+            .join(filename),
+    )
+}
+
+fn image_content_type(filename: &str) -> &'static str {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/png"
+    }
+}
+
+fn image_bytes_response(bytes: Vec<u8>, content_type: &'static str) -> Response {
+    let mut response = Response::new(Body::from(bytes));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
 }
 
 async fn proxy_sidecar_response(resp: reqwest::Response, default_content_type: &str) -> Response {
@@ -7527,14 +8353,11 @@ async fn proxy_sidecar_response(resp: reqwest::Response, default_content_type: &
 // world image ingestion (copy generated images INTO the world package)
 // =========================================================================
 
-/// The two image fields inside `world_lore`, each paired with the stable,
-/// role-based filename it is stored under in the package's `assets/` dir.
-/// The stored manifest keeps these fields as the package-relative path
-/// `assets/<role>.png`; responses are rewritten to the servable
-/// `/world-assets/<world_id>/<role>.png` route.
+/// The two image fields inside `world_lore`, each paired with the stable file
+/// stem used in the package's `assets/` dir. The source image format is kept.
 const WORLD_IMAGE_FIELDS: &[(&str, &str)] = &[
-    ("world_image_url", "world_image.png"),
-    ("world_map_url", "world_map.png"),
+    ("world_image_url", "world_image"),
+    ("world_map_url", "world_map"),
 ];
 
 /// Allowed asset file extensions for the static `/world-assets` route, mapped
@@ -7551,6 +8374,23 @@ const ASSET_CONTENT_TYPES: &[(&str, &str)] = &[
 /// value must NOT be re-fetched — ingestion is idempotent.
 fn is_package_asset_ref(value: &str) -> bool {
     value.starts_with("assets/") || value.starts_with("/world-assets/")
+}
+
+fn package_asset_filename(value: &str) -> Option<&str> {
+    if let Some(filename) = value.strip_prefix("assets/") {
+        return (!filename.is_empty() && !filename.contains('/')).then_some(filename);
+    }
+    let rest = value.strip_prefix("/world-assets/")?;
+    let mut parts = rest.split('/');
+    let world_id = parts.next()?;
+    let filename = parts.next()?;
+    if parts.next().is_some()
+        || !is_safe_sidecar_segment(world_id)
+        || validate_asset_filename(filename).is_none()
+    {
+        return None;
+    }
+    Some(filename)
 }
 
 /// Validate ONE sidecar path segment (a run id or a file name): non-empty,
@@ -7603,6 +8443,48 @@ fn sidecar_image_path(value: &str) -> Option<String> {
     Some(format!("{prefix}{run}/{file}"))
 }
 
+/// Validate and normalize a same-origin character-package asset URL.
+fn character_asset_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.contains("://") || value.starts_with("//") || value.contains(['?', '#']) {
+        return None;
+    }
+    let rest = value.strip_prefix("/character-assets/")?;
+    let mut parts = rest.split('/');
+    let character_id = parts.next()?;
+    let filename = parts.next()?;
+    if parts.next().is_some()
+        || !validate_world_id_segment(character_id)
+        || validate_asset_filename(filename).is_none()
+    {
+        return None;
+    }
+    Some(format!("/character-assets/{character_id}/{filename}"))
+}
+
+fn character_asset_segments(value: &str) -> Option<(&str, &str)> {
+    character_asset_url(value)?;
+    let rest = value.trim().strip_prefix("/character-assets/")?;
+    let mut parts = rest.split('/');
+    Some((parts.next()?, parts.next()?))
+}
+
+fn generated_image_segments(path: &str) -> Option<(&str, &str)> {
+    let rest = path
+        .strip_prefix("/image-files/")
+        .or_else(|| path.strip_prefix("/images/"))?;
+    let mut parts = rest.split('/');
+    let run_id = parts.next()?;
+    let filename = parts.next()?;
+    if parts.next().is_some()
+        || !is_safe_sidecar_segment(run_id)
+        || !is_safe_sidecar_segment(filename)
+    {
+        return None;
+    }
+    Some((run_id, filename))
+}
+
 /// Fetch one image from the sidecar by its `/image-files/...`-shaped path and
 /// return the raw bytes. Errors (transport, non-200, empty body) propagate so
 /// the caller can FAIL the save — never write a placeholder.
@@ -7613,7 +8495,18 @@ fn sidecar_image_path(value: &str) -> Option<String> {
 /// and does not silently spin up a model process. If the sidecar is unreachable
 /// the GET simply fails and the save fails — which is the intended no-fallback
 /// behavior, never a placeholder.
-async fn fetch_sidecar_image_bytes(state: &AppState, path: &str) -> Result<Vec<u8>, String> {
+async fn fetch_generated_image_bytes(state: &AppState, path: &str) -> Result<Vec<u8>, String> {
+    if let Some((run_id, filename)) = generated_image_segments(path) {
+        let local_path = std::path::PathBuf::from(&state.config.image_output_dir)
+            .join(run_id)
+            .join(filename);
+        match tokio::fs::read(&local_path).await {
+            Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
+            Ok(_) => return Err(format!("image file for {path} is empty")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("image file read failed for {path}: {error}")),
+        }
+    }
     let url = format!("{}{}", state.config.infer_base_url, path);
     let resp = state
         .http
@@ -7636,9 +8529,282 @@ async fn fetch_sidecar_image_bytes(state: &AppState, path: &str) -> Result<Vec<u
     Ok(bytes.to_vec())
 }
 
-/// Copy any sidecar-hosted world images referenced in `payload.world_lore`
-/// INTO the world package, rewriting each field to its package-relative
-/// `assets/<role>.png` path. Idempotent: empty fields are left empty (a valid
+fn image_extension_from_bytes(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+fn character_portrait_ref(character: &Value) -> &str {
+    character
+        .get("payload")
+        .and_then(|payload| payload.get("player_character"))
+        .and_then(|player| player.get("portrait_url"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+}
+
+fn character_package_portrait_filename(player_character: &Value) -> Option<&str> {
+    let value = player_character
+        .get("portrait_url")
+        .and_then(Value::as_str)?
+        .trim();
+    let filename = value.strip_prefix("assets/")?;
+    (!filename.is_empty() && !filename.contains('/') && validate_asset_filename(filename).is_some())
+        .then_some(filename)
+}
+
+fn normalize_character_portrait_ref(
+    character_id: &str,
+    player_character: &mut Value,
+) -> Result<(), String> {
+    let Some(player) = player_character.as_object_mut() else {
+        return Err("player_character must be an object".to_string());
+    };
+    let current = player
+        .get("portrait_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if current.is_empty() {
+        return Ok(());
+    }
+    let filename = if let Some(filename) = current.strip_prefix("assets/") {
+        if filename.is_empty()
+            || filename.contains('/')
+            || validate_asset_filename(filename).is_none()
+        {
+            return Err(format!("invalid character portrait asset: {current}"));
+        }
+        filename.to_string()
+    } else if let Some((asset_character_id, filename)) = character_asset_segments(current) {
+        if asset_character_id != character_id {
+            return Err("character portrait belongs to another package".to_string());
+        }
+        filename.to_string()
+    } else {
+        return Err(format!(
+            "unrecognized character portrait reference: {current}"
+        ));
+    };
+    player.insert(
+        "portrait_url".to_string(),
+        Value::String(format!("{CHARACTER_ASSETS_DIR}/{filename}")),
+    );
+    Ok(())
+}
+
+fn rewrite_character_asset_url(character: &mut Value) {
+    let character_id = character
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    if !validate_world_id_segment(&character_id) {
+        return;
+    }
+    let Some(player) = character
+        .get_mut("payload")
+        .and_then(Value::as_object_mut)
+        .and_then(|payload| payload.get_mut("player_character"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let Some(current) = player
+        .get("portrait_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    else {
+        return;
+    };
+    let Some(filename) = current.strip_prefix("assets/") else {
+        return;
+    };
+    if filename.is_empty() || filename.contains('/') || validate_asset_filename(filename).is_none()
+    {
+        return;
+    }
+    player.insert(
+        "portrait_url".to_string(),
+        Value::String(format!("/character-assets/{character_id}/{filename}")),
+    );
+}
+
+fn rewrite_character_asset_urls(characters: &mut [Value]) {
+    for character in characters {
+        rewrite_character_asset_url(character);
+    }
+}
+
+fn character_prompt_field<'a>(player: &'a Value, key: &str) -> &'a str {
+    player
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+}
+
+async fn ensure_character_portrait(
+    state: &AppState,
+    character_id: &str,
+    mut character: Value,
+) -> Value {
+    if !character_portrait_ref(&character).is_empty() || !image_generation_enabled(state) {
+        rewrite_character_asset_url(&mut character);
+        return character;
+    }
+    let provider = state.settings.image_provider(None);
+    if provider == IMAGE_PROVIDER_LOCAL && state.sidecar.is_none() {
+        return character;
+    }
+    let Some(player) = character
+        .get("payload")
+        .and_then(|payload| payload.get("player_character"))
+    else {
+        return character;
+    };
+    if character_prompt_field(player, "name").is_empty() {
+        return character;
+    }
+    let context = [
+        character_prompt_field(player, "background"),
+        character_prompt_field(player, "personality"),
+        character_prompt_field(player, "values"),
+    ]
+    .into_iter()
+    .filter(|value| !value.is_empty())
+    .collect::<Vec<_>>()
+    .join(". ");
+    let request = json!({
+        "prompt": character_visual_prompt(
+            character_prompt_field(player, "name"),
+            character_prompt_field(player, "class_role"),
+            character_prompt_field(player, "age"),
+            character_prompt_field(player, "physical_type"),
+            character_prompt_field(player, "distinctive_features"),
+            character_prompt_field(player, "current_appearance"),
+            character_prompt_field(player, "condition"),
+            &context,
+        ),
+        "width": 768,
+        "height": 1152,
+        "batch": 1,
+    });
+    let generated = match generate_image_value(
+        state,
+        request
+            .as_object()
+            .expect("character portrait request is an object"),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(
+                character_id,
+                status = %error.status,
+                error = %error.message,
+                "character architect portrait generation failed"
+            );
+            return character;
+        }
+    };
+    let generated_asset = match dialog_visual_asset(&generated) {
+        Ok(asset) => asset,
+        Err(error) => {
+            tracing::warn!(
+                character_id,
+                error,
+                "character architect portrait response invalid"
+            );
+            return character;
+        }
+    };
+    let bytes = match fetch_generated_image_bytes(state, &generated_asset.url).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(
+                character_id,
+                error,
+                "character architect portrait read failed"
+            );
+            return character;
+        }
+    };
+    let Some(extension) = image_extension_from_bytes(&bytes) else {
+        tracing::warn!(
+            character_id,
+            "character architect portrait format unsupported"
+        );
+        return character;
+    };
+    let filename = format!("portrait_{}.{}", uuid::Uuid::new_v4().simple(), extension);
+    let store = state.character_store.clone();
+    let id = character_id.to_string();
+    let filename_for_write = filename.clone();
+    let write = tokio::task::spawn_blocking(move || {
+        let store = store.lock().expect("character store lock poisoned");
+        store.write_asset(&id, &filename_for_write, &bytes)
+    })
+    .await;
+    if let Err(error) = write
+        .map_err(|error| error.to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()))
+    {
+        tracing::warn!(
+            character_id,
+            error,
+            "character architect portrait save failed"
+        );
+        return character;
+    }
+
+    let mut player = character
+        .get("payload")
+        .and_then(|payload| payload.get("player_character"))
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    if let Some(player) = player.as_object_mut() {
+        player.insert(
+            "portrait_url".to_string(),
+            Value::String(format!("{CHARACTER_ASSETS_DIR}/{filename}")),
+        );
+    }
+    let store = state.character_store.clone();
+    let id = character_id.to_string();
+    match tokio::task::spawn_blocking(move || {
+        let mut store = store.lock().expect("character store lock poisoned");
+        snapshot_and_retitle(&mut store, &id, player)
+    })
+    .await
+    {
+        Ok(Ok(mut saved)) => {
+            rewrite_character_asset_url(&mut saved);
+            saved
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(character_id, error = %error, "character portrait manifest save failed");
+            character
+        }
+        Err(error) => {
+            tracing::warn!(character_id, error = %error, "character portrait manifest task failed");
+            character
+        }
+    }
+}
+
+/// Copy generated world images referenced in `payload.world_lore` INTO the
+/// world package, rewriting each field to its package-relative asset path.
+/// Idempotent: empty fields are left empty (a valid
 /// state — the user simply did not generate an image) and fields that already
 /// point at a package asset are kept as-is.
 ///
@@ -7650,7 +8816,7 @@ async fn ingest_world_images(
     world_id: &str,
     payload: &mut Value,
 ) -> Result<(), String> {
-    for (field, asset_file) in WORLD_IMAGE_FIELDS {
+    for (field, asset_stem) in WORLD_IMAGE_FIELDS {
         let current = payload
             .get("world_lore")
             .and_then(|lore| lore.get(*field))
@@ -7668,14 +8834,21 @@ async fn ingest_world_images(
             // Normalize the STORED field back to the package-relative path so the
             // on-disk manifest stays portable even if a servable route was sent
             // back to us on a re-save.
+            let filename = package_asset_filename(&current).ok_or_else(|| {
+                format!("world image field {field} has an invalid package asset: {current}")
+            })?;
+            let expected_prefix = format!("{asset_stem}.");
+            if !filename.starts_with(&expected_prefix)
+                || validate_asset_filename(filename).is_none()
+            {
+                return Err(format!(
+                    "world image field {field} has an unexpected package asset: {current}"
+                ));
+            }
             if let Some(lore) = payload.get_mut("world_lore").and_then(Value::as_object_mut) {
                 lore.insert(
                     (*field).to_string(),
-                    Value::String(format!(
-                        "{}/{}",
-                        gml_persistence::ASSETS_DIR_NAME,
-                        asset_file
-                    )),
+                    Value::String(format!("{}/{}", gml_persistence::ASSETS_DIR_NAME, filename)),
                 );
             }
             continue;
@@ -7687,10 +8860,13 @@ async fn ingest_world_images(
                 "world image field {field} has an unrecognized reference: {current}"
             ));
         };
-        let bytes = fetch_sidecar_image_bytes(state, &path).await?;
+        let bytes = fetch_generated_image_bytes(state, &path).await?;
+        let extension = image_extension_from_bytes(&bytes)
+            .ok_or_else(|| format!("world image field {field} is not a supported image format"))?;
+        let asset_file = format!("{asset_stem}.{extension}");
         let store = state.world_store.clone();
         let world_id_owned = world_id.to_string();
-        let asset_file_owned = asset_file.to_string();
+        let asset_file_owned = asset_file.clone();
         tokio::task::spawn_blocking(move || {
             store.write_asset(&world_id_owned, &asset_file_owned, &bytes)
         })
@@ -7792,6 +8968,67 @@ fn validate_world_id_segment(segment: &str) -> bool {
         && segment
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Serve a portrait stored inside a portable character package.
+async fn get_character_asset(
+    State(state): State<AppState>,
+    AxPath((character_id, filename)): AxPath<(String, String)>,
+) -> Response {
+    if !validate_world_id_segment(&character_id) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid character id"}),
+        );
+    }
+    let Some(content_type) = validate_asset_filename(&filename) else {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            &json!({"ok": false, "error": "invalid asset filename"}),
+        );
+    };
+
+    let store = state.character_store.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        let store = store.lock().expect("character store lock poisoned");
+        let path = store.asset_path(&character_id, &filename);
+        let assets_dir = store.assets_dir(&character_id);
+        match (
+            std::fs::canonicalize(&path),
+            std::fs::canonicalize(&assets_dir),
+        ) {
+            (Ok(canonical_file), Ok(canonical_dir))
+                if canonical_file.starts_with(&canonical_dir) =>
+            {
+                std::fs::read(canonical_file).map(Some)
+            }
+            _ => Ok(None),
+        }
+    })
+    .await;
+
+    match read {
+        Ok(Ok(Some(bytes))) => {
+            let mut response = image_bytes_response(bytes, content_type);
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=3600"),
+            );
+            response
+        }
+        Ok(Ok(None)) => json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"ok": false, "error": "character asset not found"}),
+        ),
+        Ok(Err(error)) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("read character asset failed: {error}")}),
+        ),
+        Err(error) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &json!({"ok": false, "error": format!("join error: {error}")}),
+        ),
+    }
 }
 
 /// `GET /world-assets/{world_id}/{filename}` — serve an image stored inside a
@@ -9489,8 +10726,128 @@ mod chat_concurrency_tests {
 }
 
 #[cfg(test)]
+mod dialog_visual_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::{
+        character_visual_prompt, decorate_scene_event_with_visual, dialog_visual_asset,
+        normalize_character_portrait_ref, rewrite_character_asset_url, safe_dialog_visual_url,
+        scene_visual_key, PLAYER_VISUAL_ID,
+    };
+    use gml_persistence::{DialogVisualAsset, DialogVisualAssets};
+    use gml_types::{event_kind, Event};
+    use gml_world::SceneState;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn character_prompt_requests_vertical_visual_novel_portrait_and_is_bounded() {
+        let prompt = character_visual_prompt(
+            "Ада",
+            "следователь",
+            "30",
+            &"очень подробное описание ".repeat(100),
+            "шрам",
+            "дорожный плащ",
+            "устала",
+            "Туманный город",
+        );
+        assert!(prompt.contains("vertical 2:3"));
+        assert!(prompt.contains("Visual novel character portrait"));
+        assert!(prompt.contains("No text, captions"));
+        assert!(prompt.contains("Non-sexual presentation"));
+        assert!(prompt.chars().count() <= 1_000);
+        assert_eq!(PLAYER_VISUAL_ID, "player");
+    }
+
+    #[test]
+    fn saved_generation_response_becomes_dialog_asset() {
+        let asset = dialog_visual_asset(&json!({
+            "provider": "grok",
+            "model": "grok-imagine-image",
+            "images": [{"url": "/image-files/run/image_0.jpg"}],
+        }))
+        .expect("asset");
+        assert_eq!(asset.url, "/image-files/run/image_0.jpg");
+        assert_eq!(asset.provider, "grok");
+        assert_eq!(asset.model, "grok-imagine-image");
+    }
+
+    #[test]
+    fn character_package_portrait_rewrites_for_ui_and_normalizes_for_storage() {
+        let mut character = json!({
+            "id": "hero_1",
+            "payload": {"player_character": {
+                "name": "Ада",
+                "portrait_url": "assets/portrait_test.png"
+            }}
+        });
+        rewrite_character_asset_url(&mut character);
+        let served = character["payload"]["player_character"]["portrait_url"]
+            .as_str()
+            .unwrap();
+        assert_eq!(served, "/character-assets/hero_1/portrait_test.png");
+        assert_eq!(safe_dialog_visual_url(served).as_deref(), Some(served));
+
+        let player = character["payload"]["player_character"]
+            .as_object()
+            .unwrap();
+        let mut player = Value::Object(player.clone());
+        normalize_character_portrait_ref("hero_1", &mut player).expect("normalize portrait");
+        assert_eq!(player["portrait_url"], "assets/portrait_test.png");
+    }
+
+    #[test]
+    fn scene_visual_key_prefers_stable_location_id() {
+        let scene = SceneState {
+            scene_id: "scene-1".to_string(),
+            location_id: "place-1".to_string(),
+            title: "Площадь".to_string(),
+            description: String::new(),
+            present_npcs: BTreeSet::new(),
+            presence: BTreeMap::new(),
+            items: Vec::new(),
+            exits: Vec::new(),
+            constraints: Vec::new(),
+            tension: String::new(),
+            player_seen: Vec::new(),
+        };
+        assert_eq!(scene_visual_key(&scene).as_deref(), Some("place-1"));
+    }
+
+    #[test]
+    fn scene_update_event_receives_its_persisted_location_visual() {
+        let mut assets = DialogVisualAssets::default();
+        assets.locations.insert(
+            "place-1".to_string(),
+            DialogVisualAsset {
+                url: "/image-files/run/location.png".to_string(),
+                provider: "local".to_string(),
+                model: "test".to_string(),
+            },
+        );
+        let mut event = Event::new(
+            event_kind::SCENE_UPDATE,
+            Some("ГМ".to_string()),
+            json!({
+                "scene_id": "scene-1",
+                "location_id": "place-1",
+                "title": "Сырая келья",
+            }),
+            None,
+        );
+
+        decorate_scene_event_with_visual(&mut event, &assets);
+
+        assert_eq!(
+            event.data["image_url"],
+            json!("/image-files/run/location.png")
+        );
+    }
+}
+
+#[cfg(test)]
 mod sidecar_image_path_tests {
-    use super::sidecar_image_path;
+    use super::{image_extension_for_media_type, image_extension_from_bytes, sidecar_image_path};
 
     #[test]
     fn accepts_exactly_two_safe_segments() {
@@ -9530,6 +10887,19 @@ mod sidecar_image_path_tests {
         assert_eq!(sidecar_image_path("/image-files/run-1/a.png#frag"), None);
         // Unknown prefix.
         assert_eq!(sidecar_image_path("/missing/run-1/a.png"), None);
+    }
+
+    #[test]
+    fn generated_image_formats_preserve_jpeg_and_webp() {
+        assert_eq!(image_extension_for_media_type("image/png"), Some("png"));
+        assert_eq!(image_extension_for_media_type("image/jpeg"), Some("jpg"));
+        assert_eq!(image_extension_for_media_type("image/webp"), Some("webp"));
+        assert_eq!(image_extension_for_media_type("image/gif"), None);
+        assert_eq!(image_extension_from_bytes(b"\xff\xd8\xffrest"), Some("jpg"));
+        assert_eq!(
+            image_extension_from_bytes(b"RIFFxxxxWEBPrest"),
+            Some("webp")
+        );
     }
 }
 

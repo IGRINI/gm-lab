@@ -21,11 +21,12 @@
 //!
 //! The draft is the `.gmchar` payload's `player_character` object — a FLAT sheet
 //! (`gml-world/src/model.rs::PlayerCharacter`): name/pronouns/class_role/level/
-//! background/age/physical_type + ability & skill maps + hp/ac + inventory/
-//! equipment/features string lists + spells (SpellEntry objects) + flat
-//! spell-slot maps. The merge is a shallow top-level merge with a special-case
-//! deep merge for the nested stat objects (abilities, skills, saving_throws, hp,
-//! spell_slots, spell_slots_max) so a partial re-draft refines instead of nuking.
+//! background/age/physical_type/current_appearance + ability & skill maps +
+//! hp/ac + inventory/equipment/features string lists + spells (SpellEntry
+//! objects) + flat spell-slot maps. The merge is a shallow top-level merge with
+//! a special-case deep merge for the nested stat objects (abilities, skills,
+//! saving_throws, hp, spell_slots, spell_slots_max) so a partial re-draft
+//! refines instead of nuking.
 
 use std::sync::LazyLock;
 
@@ -75,8 +76,9 @@ pub fn character_architect_system(based: bool) -> &'static str {
 // tool description rather than looked up here — the ops route by key, not by a
 // static membership set):
 //   scalars: name, pronouns, class_role, level, background, age, physical_type,
-//     distinctive_features, personality, values, gm_notes, ac, speed, senses,
-//     languages, passive_perception, concentration, life_status
+//     distinctive_features, current_appearance, personality, values, gm_notes,
+//     ac, speed, senses, languages, passive_perception, concentration,
+//     life_status
 //   objects: abilities, skills, saving_throws, hp, spell_slots, spell_slots_max
 //   lists: inventory, equipment, features, spells
 
@@ -310,50 +312,60 @@ fn draft_player_character_schema() -> Value {
         "additionalProperties": true,
         "description": "One known spell. The engine reads only name/level/concentration/ritual; school/range/etc. live as prose in effect.",
         "properties": {
-            "name": {"type": "string", "description": "Spell name (Russian)."},
+            "name": {"type": "string", "description": "Spell name."},
             "level": {"type": "integer", "description": "Spell level (0 = cantrip)."},
             "concentration": {"type": "boolean", "description": "true if the spell requires concentration."},
             "ritual": {"type": "boolean", "description": "true if the spell can be cast as a ritual."},
-            "effect": {"type": "string", "description": "What the spell does — prose the GM narrates (Russian)."}
+            "effect": {"type": "string", "description": "What the spell does — prose the GM narrates."}
         },
         "required": ["name", "level"]
     });
 
     let mut properties = Map::new();
-    properties.insert("name".into(), json!({"type": "string", "description": "Character name (a real name, not a placeholder; Russian)."}));
-    properties.insert("pronouns".into(), json!({"type": "string", "description": "Pronouns / grammatical gender (e.g. М, Ж, OTHER)."}));
-    properties.insert("class_role".into(), json!({"type": "string", "description": "Class/role/archetype (e.g. воин-наёмник, странствующий жрец)."}));
+    properties.insert("name".into(), json!({"type": "string", "description": "Character name (a real name, not a placeholder)."}));
+    // Grammatical gender is a closed engine vocabulary (gml-world
+    // model_gender_label): free-form pronoun text would leak into every editor
+    // and TTS voice pick, so the schema pins the codes.
+    properties.insert("pronouns".into(), json!({"type": "string", "enum": ["M", "F", "N", "PL", "OTHER"], "description": "Grammatical gender code: M (he), F (she), N (it), PL (they), OTHER (anything else). Codes only — never free-form pronoun text."}));
+    properties.insert("class_role".into(), json!({"type": "string", "description": "Class/role/archetype (e.g. mercenary warrior, wandering priest)."}));
     properties.insert(
         "level".into(),
         json!({"type": "integer", "description": "Character level (1+)."}),
     );
     properties.insert(
         "background".into(),
-        json!({"type": "string", "description": "One-to-two-line background (Russian)."}),
+        json!({"type": "string", "description": "One-to-two-line background."}),
     );
     properties.insert(
         "age".into(),
-        json!({"type": "string", "description": "Age description (Russian)."}),
+        json!({"type": "string", "description": "Age description."}),
     );
     properties.insert(
         "physical_type".into(),
-        json!({"type": "string", "description": "Build/appearance (Russian)."}),
+        json!({"type": "string", "description": "Build/appearance."}),
     );
     properties.insert(
         "distinctive_features".into(),
-        json!({"type": "string", "description": "Memorable visual/behavioral markers (Russian)."}),
+        json!({"type": "string", "description": "Memorable visual/behavioral markers."}),
+    );
+    properties.insert(
+        "current_appearance".into(),
+        json!({
+            "type": "string",
+            "description": "One complete mutable snapshot of the hero's current visible appearance: body presentation, hairstyle, ordinary clothing, grooming, dirt, blood, disguise, and other visible temporary details. This is not an inventory: exclude every discrete possession or usable item. Put worn, wielded, or readied gear in equipment and other carried or stowed items in inventory; never duplicate either list here. Replace the whole snapshot when the look changes; keep permanent traits in physical_type/distinctive_features."
+        }),
     );
     properties.insert(
         "personality".into(),
-        json!({"type": "string", "description": "Personality traits (Russian)."}),
+        json!({"type": "string", "description": "Personality traits."}),
     );
     properties.insert(
         "values".into(),
-        json!({"type": "string", "description": "What the hero values / their drives (Russian)."}),
+        json!({"type": "string", "description": "What the hero values / their drives."}),
     );
     properties.insert(
         "gm_notes".into(),
-        json!({"type": "string", "description": "GM-only notes about the hero (Russian)."}),
+        json!({"type": "string", "description": "GM-only notes about the hero."}),
     );
     properties.insert("abilities".into(), num_map("Ability scores as a map: STR, DEX, CON, INT, WIS, CHA → integer (typically 8–18 at level 1)."));
     properties.insert(
@@ -388,22 +400,33 @@ fn draft_player_character_schema() -> Value {
         "speed".into(),
         json!({"type": "string", "description": "Movement speed (e.g. '30 ft')."}),
     );
-    properties.insert("senses".into(), json!({"type": "string", "description": "Special senses (Russian; e.g. 'тёмное зрение 18 м')."}));
     properties.insert(
-        "languages".into(),
-        json!({"type": "string", "description": "Known languages (Russian)."}),
+        "senses".into(),
+        json!({"type": "string", "description": "Special senses (e.g. 'darkvision 60 ft')."}),
     );
     properties.insert(
+        "languages".into(),
+        json!({"type": "string", "description": "Known languages."}),
+    );
+    // §И1 entry convention: every list string is «Name — details» (space +
+    // em dash + space). The engine matches entries by the name HEAD, and the
+    // editors render the two parts as separate fields — details packed into the
+    // name (or a ':' separator) break both.
+    properties.insert(
         "inventory".into(),
-        str_arr("Carried items (Russian strings)."),
+        str_arr(
+            "Discrete possessions carried or stowed but not worn, wielded, or readied as gear. Each entry is ONE string 'Name — details' (space + em dash + space): a SHORT item name first, contents/properties after the dash, e.g. 'evidence kit — tweezers, vials, gloves'. Never pack details into the name; never use ':' as the separator; a bare name with no details is fine. Store every item here exactly once and never repeat it in current_appearance.",
+        ),
     );
     properties.insert(
         "equipment".into(),
-        str_arr("Worn/wielded equipment (Russian strings)."),
+        str_arr(
+            "Weapons, armor, shields, tools, and other gear currently worn, wielded, or readied. Same 'Name — details' em-dash entry format as inventory. Store every such item here exactly once and never repeat it in current_appearance.",
+        ),
     );
     properties.insert(
         "features".into(),
-        str_arr("Class/race features and traits (Russian strings)."),
+        str_arr("Class/race features and traits. Same 'Name — details' em-dash format: a SHORT feature name, then what it does after the dash, e.g. 'Keen senses — advantage on Perception checks that rely on smell or hearing'."),
     );
     properties.insert("spells".into(), json!({"type": "array", "items": spell_schema, "description": "Known spells (objects). Leave empty for a non-caster."}));
     properties.insert("spell_slots".into(), num_map("Remaining spell slots as a FLAT map: spell level (as a string key) → count, e.g. {\"1\": 3, \"2\": 1}."));
@@ -421,7 +444,7 @@ fn draft_player_character_schema() -> Value {
         "type": "function",
         "function": {
             "name": "draft_player_character",
-            "description": "Create or update the character sheet. Author a complete, launchable hero: a real name, class_role, background, the six ability scores, a few skills, sensible HP/AC and a starting inventory. Write all text in Russian. Use edit_player_character for small later changes, not a full re-draft.",
+            "description": "Create or update the character sheet. Author a complete, launchable hero: a real name, class_role, background, the six ability scores, a few skills, sensible HP/AC, and starting possessions split between inventory and equipment. Never hide an item in current_appearance. Use edit_player_character for small later changes, not a full re-draft.",
             // Nested stat maps (abilities/hp/spell_slots) need free-form keys; the
             // strict Responses conversion would force them empty, so the draft
             // tool is non-strict (same reason edit_* is) and declares
@@ -446,7 +469,7 @@ fn edit_player_character_schema() -> Value {
         "type": "function",
         "function": {
             "name": "edit_player_character",
-            "description": "Patch the EXISTING character sheet — change only what differs, do NOT resend the whole sheet. Prefer this over draft_player_character once a sheet exists. set overwrites scalars (name, class_role, level, background, ac, speed…) and whole objects (abilities, skills, saving_throws, hp, spell_slots, spell_slots_max). add/remove/replace target list sections: inventory, equipment, features, spells. All text in Russian.",
+            "description": "Patch the EXISTING character sheet — change only what differs, do NOT resend the whole sheet. Prefer this over draft_player_character once a sheet exists. set overwrites scalars (name, class_role, level, background, current_appearance, ac, speed…) and whole objects (abilities, skills, saving_throws, hp, spell_slots, spell_slots_max). current_appearance is always replaced as one complete current visible snapshot and never contains inventory/equipment items. add/remove/replace target list sections: inventory, equipment, features, spells.",
             // Free-form section maps (properties-less objects) die under the
             // strict Responses conversion — it forces additionalProperties:false
             // + properties:{}, so the model could only ever send {}. Same reason
@@ -459,22 +482,22 @@ fn edit_player_character_schema() -> Value {
                     "set": {
                         "type": "object",
                         "additionalProperties": true,
-                        "description": "Overwrite scalars (name/class_role/level/background/age/ac/speed/…) and whole objects (abilities/skills/saving_throws/hp/spell_slots/spell_slots_max). Example: {\"ac\": 15} or {\"abilities\": {\"STR\": 16, \"DEX\": 14}}."
+                        "description": "Overwrite scalars (name/class_role/level/background/age/current_appearance/ac/speed/…) and whole objects (abilities/skills/saving_throws/hp/spell_slots/spell_slots_max). When current_appearance changes, send the complete replacement snapshot without inventory/equipment items, not a fragment. Example: {\"ac\": 15} or {\"abilities\": {\"STR\": 16, \"DEX\": 14}}."
                     },
                     "add": {
                         "type": "object",
                         "additionalProperties": {"type": "array"},
-                        "description": "Append entries to a list section (existing kept). Keys: inventory, equipment, features, spells. inventory/equipment/features take strings; spells take objects (name+level required). Example: {\"inventory\": [\"верёвка\"], \"spells\": [{\"name\": \"Огненный снаряд\", \"level\": 1}]}."
+                        "description": "Append entries to a list section (existing kept). Keys: inventory, equipment, features, spells. inventory/equipment/features take 'Name — details' strings (short name, em dash, details — e.g. 'rope — 50 ft, hemp'); spells take objects (name+level required). Example: {\"inventory\": [\"rope — 50 ft, hemp\"], \"spells\": [{\"name\": \"Fire Bolt\", \"level\": 1}]}."
                     },
                     "remove": {
                         "type": "object",
                         "additionalProperties": {"type": "array"},
-                        "description": "Remove entries from a list section. For spells pass the spell name as a string; for inventory/equipment/features pass the exact strings. Example: {\"inventory\": [\"верёвка\"], \"spells\": [\"Огненный снаряд\"]}."
+                        "description": "Remove entries from a list section. For spells pass the spell name as a string; for inventory/equipment/features pass the FULL exact string as read_player_character returned it (including the ' — details' part, if any). Example: {\"inventory\": [\"rope — 50 ft, hemp\"], \"spells\": [\"Fire Bolt\"]}."
                     },
                     "replace": {
                         "type": "object",
                         "additionalProperties": {"type": "array"},
-                        "description": "Replace a whole list section. Example: {\"inventory\": [\"меч\", \"щит\"]}."
+                        "description": "Replace a whole list section. Example: {\"inventory\": [\"sword\", \"shield\"]}."
                     }
                 }
             }
@@ -675,7 +698,7 @@ impl ArchitectConfig for CharacterArchitectConfig {
             _ => ToolApplication {
                 args: Value::Object(args.clone()),
                 changed: false,
-                result: format!("Неизвестный инструмент архитектора персонажа: {name}."),
+                result: format!("Unknown character architect tool: {name}."),
             },
         }
     }
@@ -727,7 +750,7 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
     if let Some(Value::Object(set)) = args.get("set") {
         if !set.is_empty() {
             lines.push(format!(
-                "Поля обновлены: {}.",
+                "Fields updated: {}.",
                 set.keys()
                     .map(String::as_str)
                     .collect::<Vec<_>>()
@@ -739,7 +762,7 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
         for (key, value) in replace {
             let n = value.as_array().map(Vec::len).unwrap_or(0);
             stage.insert(key.clone(), value.clone());
-            lines.push(format!("{key}: раздел заменён ({n} записей)."));
+            lines.push(format!("{key}: section replaced ({n} entries)."));
         }
     }
     if let Some(Value::Object(add)) = args.get("add") {
@@ -761,9 +784,9 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
             let now = existing.len();
             stage.insert(key.clone(), current);
             let skipped = items.len().saturating_sub(added);
-            let mut line = format!("{key}: добавлено {added} (теперь {now})");
+            let mut line = format!("{key}: added {added} (now {now})");
             if skipped > 0 {
-                line.push_str(&format!(", {skipped} пропущено как дубли"));
+                line.push_str(&format!(", {skipped} skipped as duplicates"));
             }
             line.push('.');
             lines.push(line);
@@ -793,11 +816,11 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
             let now = existing.len();
             stage.insert(key.clone(), current);
             if removed > 0 {
-                lines.push(format!("{key}: удалено {removed} (теперь {now})."));
+                lines.push(format!("{key}: removed {removed} (now {now})."));
             }
             if !misses.is_empty() {
                 lines.push(format!(
-                    "{key}: НЕ найдено для удаления: {} — совпадения нет (имя/точная строка); прочитай раздел read_player_character и повтори.",
+                    "{key}: NOT found for removal: {} — no match by name or exact string; read the section with read_player_character and retry.",
                     misses.join(", ")
                 ));
             }
@@ -805,7 +828,7 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
     }
 
     if lines.is_empty() {
-        return "Правка НИЧЕГО не изменила (пустые операции). Прочитай нужный раздел read_player_character и повтори с точными данными.".to_string();
+        return "The edit changed NOTHING (empty operations). Read the required section with read_player_character and retry with exact data.".to_string();
     }
     lines.push(
         render_prompt(PromptId::ArchitectEditSuccess, json!({}))
@@ -817,9 +840,10 @@ fn pc_edit_facts(args: &Map<String, Value>, before: &Value) -> String {
 /// The scalar sheet fields rendered (in this order) for a whole-sheet read.
 /// Order mirrors the `PlayerCharacter` struct so a whole-sheet read reads like
 /// the model. Every scalar the sheet can carry is here — `gm_notes`,
-/// `life_status`, `life_status_note` and `condition` included — so a whole-sheet
-/// read never silently drops a populated, valid, readable-by-name section.
-const PC_SCALAR_FIELDS: [&str; 17] = [
+/// `current_appearance`, `life_status`, `life_status_note` and `condition`
+/// included — so a whole-sheet read never silently drops a populated, valid,
+/// readable-by-name section.
+const PC_SCALAR_FIELDS: [&str; 18] = [
     "name",
     "pronouns",
     "class_role",
@@ -828,6 +852,7 @@ const PC_SCALAR_FIELDS: [&str; 17] = [
     "age",
     "physical_type",
     "distinctive_features",
+    "current_appearance",
     "life_status",
     "life_status_note",
     "condition",
@@ -856,7 +881,7 @@ fn read_player_character_result(args: &Map<String, Value>, working_draft: &Value
         .unwrap_or_default();
     let sheet = match working_draft.as_object() {
         Some(m) => m,
-        None => return "Лист персонажа пуст.".to_string(),
+        None => return "The character sheet is empty.".to_string(),
     };
 
     let mut blocks: Vec<String> = Vec::new();
@@ -891,19 +916,19 @@ fn read_player_character_result(args: &Map<String, Value>, working_draft: &Value
             match sheet.get(&name) {
                 Some(v) => match pc_section_block(&name, v) {
                     Some(block) => blocks.push(block),
-                    None => blocks.push(format!("## {name}\n(пусто)")),
+                    None => blocks.push(format!("## {name}\n(empty)")),
                 },
                 None => unknown.push(name),
             }
         }
     }
     if blocks.is_empty() {
-        blocks.push("(пусто)".to_string());
+        blocks.push("(empty)".to_string());
     }
     if !unknown.is_empty() {
         blocks.push(format!(
-            "Нет таких разделов: {}. Доступны: name, pronouns, class_role, level, background, \
-             age, physical_type, distinctive_features, personality, values, gm_notes, abilities, \
+            "No such sections: {}. Available: name, pronouns, class_role, level, background, \
+             age, physical_type, distinctive_features, current_appearance, personality, values, gm_notes, abilities, \
              skills, saving_throws, ac, hp, passive_perception, speed, senses, languages, \
              inventory, equipment, features, spells, spell_slots, spell_slots_max, concentration, \
              life_status, life_status_note, condition.",
@@ -929,7 +954,7 @@ fn pc_section_block(name: &str, value: &Value) -> Option<String> {
                 .map(|v| format!("- {}", pc_entry_text(v)))
                 .collect();
             Some(format!(
-                "## {name} ({} записей)\n{}",
+                "## {name} ({} entries)\n{}",
                 bullets.len(),
                 bullets.join("\n")
             ))
@@ -958,8 +983,8 @@ fn pc_section_block(name: &str, value: &Value) -> Option<String> {
     }
 }
 
-/// One line of a sheet list entry, model-readable: spells as «имя (ур. N) —
-/// эффект», plain strings as-is.
+/// One line of a sheet list entry, model-readable: spells as "name (level N) —
+/// effect", plain strings as-is.
 fn pc_entry_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -968,15 +993,15 @@ fn pc_entry_text(value: &Value) -> String {
             if !name.is_empty() {
                 let mut head = name.to_string();
                 if let Some(level) = o.get("level").and_then(Value::as_i64) {
-                    head.push_str(&format!(" (ур. {level})"));
+                    head.push_str(&format!(" (level {level})"));
                 }
                 let effect = o.get("effect").and_then(Value::as_str).unwrap_or("");
                 let mut tags: Vec<&str> = Vec::new();
                 if o.get("concentration").and_then(Value::as_bool) == Some(true) {
-                    tags.push("концентрация");
+                    tags.push("concentration");
                 }
                 if o.get("ritual").and_then(Value::as_bool) == Some(true) {
-                    tags.push("ритуал");
+                    tags.push("ritual");
                 }
                 let tail = if effect.trim().is_empty() {
                     String::new()
@@ -1041,6 +1066,28 @@ mod tests {
         assert_eq!(props["hp"]["type"], "object");
         assert_eq!(props["inventory"]["type"], "array");
         assert_eq!(props["spells"]["type"], "array");
+        assert_eq!(props["current_appearance"]["type"], "string");
+        assert!(props["current_appearance"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("complete mutable snapshot"));
+        let appearance = props["current_appearance"]["description"]
+            .as_str()
+            .expect("current_appearance description");
+        assert!(appearance.contains("not an inventory"));
+        assert!(appearance.contains("exclude every discrete possession"));
+        assert!(!appearance.contains("clothing, worn equipment"));
+
+        let inventory = props["inventory"]["description"]
+            .as_str()
+            .expect("inventory description");
+        let equipment = props["equipment"]["description"]
+            .as_str()
+            .expect("equipment description");
+        assert!(inventory.contains("carried or stowed"));
+        assert!(inventory.contains("never repeat it in current_appearance"));
+        assert!(equipment.contains("worn, wielded, or readied"));
+        assert!(equipment.contains("never repeat it in current_appearance"));
         // No story/world fields leak in.
         for forbidden in ["scene", "npcs", "story_brief", "world_lore"] {
             assert!(
@@ -1168,17 +1215,17 @@ mod tests {
             &mut working,
         );
         assert!(applied.changed);
-        assert!(applied.result.contains("Поля обновлены: ac."));
+        assert!(applied.result.contains("Fields updated: ac."));
         assert!(
-            applied.result.contains("spells: добавлено 1"),
+            applied.result.contains("spells: added 1"),
             "{}",
             applied.result
         );
-        assert!(applied.result.contains("пропущено как дубли"));
-        assert!(applied.result.contains("inventory: удалено 1 (теперь 1)."));
+        assert!(applied.result.contains("skipped as duplicates"));
+        assert!(applied.result.contains("inventory: removed 1 (now 1)."));
         assert!(applied
             .result
-            .contains("НЕ найдено для удаления: «нет_такого»"));
+            .contains("NOT found for removal: «нет_такого»"));
         assert!(applied.result.contains("read_player_character"));
     }
 
@@ -1219,22 +1266,24 @@ mod tests {
         assert!(out.contains("## name\nАриан"));
         assert!(out.contains("STR: 16"));
         assert!(out.contains("- меч"));
-        assert!(out.contains("Огненный снаряд (ур. 1) — бьёт огнём"));
-        assert!(out.contains("Нет таких разделов: nope"));
+        assert!(out.contains("Огненный снаряд (level 1) — бьёт огнём"));
+        assert!(out.contains("No such sections: nope"));
         assert!(!out.trim_start().starts_with('{'), "not JSON: {out}");
     }
 
     #[test]
-    fn whole_sheet_read_includes_gm_notes_and_life_status() {
+    fn whole_sheet_read_includes_current_appearance_gm_notes_and_life_status() {
         // A whole-sheet read (no sections) must render every populated, valid
-        // section — including gm_notes / life_status / life_status_note /
-        // condition, which the model can author and read by name. Dropping them
-        // here would let the architect contradict notes it cannot see.
+        // section — including current_appearance / gm_notes / life_status /
+        // life_status_note / condition, which the model can author and read by
+        // name. Dropping them here would let the architect contradict details it
+        // cannot see.
         let config = CharacterArchitectConfig {
             context_blocks: Vec::new(),
         };
         let mut working = json!({
             "name": "Ариан",
+            "current_appearance": "В дорожном плаще, волосы собраны в хвост, левый рукав в грязи.",
             "gm_notes": "Тайно служит культу.",
             "life_status": "alive",
             "life_status_note": "Ранен в бок.",
@@ -1245,6 +1294,7 @@ mod tests {
             .apply_tool("read_player_character", &args, &mut working)
             .result;
         assert!(out.contains("## name\nАриан"));
+        assert!(out.contains("## current_appearance\nВ дорожном плаще, волосы собраны в хвост, левый рукав в грязи."), "{out}");
         assert!(out.contains("## gm_notes\nТайно служит культу."), "{out}");
         assert!(out.contains("## life_status\nalive"), "{out}");
         assert!(out.contains("## life_status_note\nРанен в бок."), "{out}");

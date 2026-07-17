@@ -9,6 +9,7 @@
 //! Disk layout (per character):
 //! ```text
 //! <root>/characters/<id>/character.json
+//! <root>/characters/<id>/assets/<generated portrait>
 //! ```
 //!
 //! `character.json` envelope:
@@ -93,6 +94,8 @@ pub const CHARACTER_FORMAT: &str = "gmlab.character/1";
 const CHARACTER_FILE: &str = "character.json";
 /// Sub-directory under the packages root that holds character packages.
 const CHARACTERS_DIR: &str = "characters";
+/// Per-character directory for portable binary assets such as the portrait.
+pub const CHARACTER_ASSETS_DIR: &str = "assets";
 
 /// Filesystem-backed character package store.
 ///
@@ -155,6 +158,50 @@ impl CharacterStore {
 
     fn character_file(&self, id: &str) -> PathBuf {
         self.character_dir(id).join(CHARACTER_FILE)
+    }
+
+    /// The portable asset directory of one character package.
+    pub fn assets_dir(&self, id: &str) -> PathBuf {
+        self.character_dir(id).join(CHARACTER_ASSETS_DIR)
+    }
+
+    /// Absolute path of one already-validated asset filename.
+    pub fn asset_path(&self, id: &str, filename: &str) -> PathBuf {
+        self.assets_dir(id).join(filename)
+    }
+
+    /// Read a package asset. A missing file is represented as `Ok(None)`.
+    pub fn read_asset(&self, id: &str, filename: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let path = self.asset_path(id, filename);
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Other(format!(
+                "read character asset {id}/{filename}: {error}"
+            ))),
+        }
+    }
+
+    /// Atomically write a portable asset into the character package.
+    pub fn write_asset(&self, id: &str, filename: &str, bytes: &[u8]) -> Result<(), StoreError> {
+        if !self.character_exists(id) {
+            return Err(StoreError::CharacterNotFound(id.to_string()));
+        }
+        let dir = self.assets_dir(id);
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| StoreError::Other(format!("create character assets {id}: {error}")))?;
+        let target = dir.join(filename);
+        let temporary = dir.join(format!(".{filename}.{}.tmp", token_urlsafe(6)));
+        std::fs::write(&temporary, bytes).map_err(|error| {
+            StoreError::Other(format!("write character asset {id}/{filename}: {error}"))
+        })?;
+        if let Err(error) = std::fs::rename(&temporary, &target) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(StoreError::Other(format!(
+                "replace character asset {id}/{filename}: {error}"
+            )));
+        }
+        Ok(())
     }
 
     /// Whether a character package exists on disk (its `character.json` is
@@ -878,6 +925,35 @@ mod tests {
             store.snapshot_character("nope", json!({"name": "z"})),
             Err(StoreError::CharacterNotFound(_))
         ));
+    }
+
+    #[test]
+    fn character_assets_are_portable_and_round_trip() {
+        let (dir, mut store) = temp_store();
+        let created = store
+            .create_character("Герой", pc_payload("Ариан", 0), None, None)
+            .expect("create");
+        let id = created["id"].as_str().unwrap();
+        let bytes = b"portrait-bytes";
+        store
+            .write_asset(id, "portrait_test.png", bytes)
+            .expect("write asset");
+        assert_eq!(
+            store
+                .read_asset(id, "portrait_test.png")
+                .expect("read asset")
+                .as_deref(),
+            Some(bytes.as_slice())
+        );
+
+        let reopened = CharacterStore::new(dir.path()).expect("reopen");
+        assert_eq!(
+            reopened
+                .read_asset(id, "portrait_test.png")
+                .expect("read reopened asset")
+                .as_deref(),
+            Some(bytes.as_slice())
+        );
     }
 
     #[test]

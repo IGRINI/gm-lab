@@ -14,8 +14,8 @@ use gml_llm::Backend;
 use gml_mock::MockClient;
 use gml_orchestrator::{ClientFactory, NpcClientState, Session};
 use gml_persistence::{
-    DialogRuntime, DialogStore, HistoryTurnKind, HistoryTurnReceiptKind, PreparedHistoryTurn,
-    StoreError, TurnCheckpoint, WorldStore, MAX_REWIND_TURNS, SCHEMA_VERSION,
+    DialogRuntime, DialogStore, DialogVisualAsset, HistoryTurnKind, HistoryTurnReceiptKind,
+    PreparedHistoryTurn, StoreError, TurnCheckpoint, WorldStore, MAX_REWIND_TURNS, SCHEMA_VERSION,
 };
 use gml_world::World;
 
@@ -67,8 +67,30 @@ fn runtime_from_payload_value(payload: &Value) -> DialogRuntime {
         preview: String::new(),
         created_at: String::new(),
         updated_at: String::new(),
+        visual_assets: Default::default(),
         rewindable_turns: Vec::new(),
     }
+}
+
+#[test]
+fn visual_assets_roundtrip_with_dialog_history() {
+    let (store, _dir) = temp_store();
+    let chat_id = store
+        .create_chat("g", None, None, 0, None, None, true)
+        .expect("create chat");
+    let mut runtime = store.load_chat("g", &chat_id).expect("load chat");
+    runtime.visual_assets.characters.insert(
+        "npc-1".to_string(),
+        DialogVisualAsset {
+            url: "/image-files/run/portrait.jpg".to_string(),
+            provider: "grok".to_string(),
+            model: "grok-imagine-image".to_string(),
+        },
+    );
+    store.save(&mut runtime).expect("save visuals");
+
+    let loaded = store.load_chat("g", &chat_id).expect("reload chat");
+    assert_eq!(loaded.visual_assets, runtime.visual_assets);
 }
 
 /// Regenerate the canon-bearing persistence golden from a seeded Rust session.

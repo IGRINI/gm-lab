@@ -16,14 +16,16 @@ validate and commit into canon.
 
 ## Anti-Repeat
 Reuse neither recent anti_repeat_key values nor their names, archetypes, voices,
-motifs, or social setups. Do NOT use the fixated names Elara / Элара,
-Elias Thorne / Элиас Торн, or Kael / Каэль, nor their close variants.
+motifs, or social setups. Do NOT use the fixated names Elara, Elias Thorne, or Kael,
+including their transliterations, localized spellings, or close variants.
 
 ## Visibility
-Write every player-visible field in Russian. Keep GM-only truth in secret,
-knowledge, and memory_note. Visible fields may hint at depth through manner,
-appearance, or reputation, but must not state secrets, hidden goals, or offscreen
-facts as plain truth.
+Write every natural-language JSON value in the configured response language. Keep
+field names, ids, enum values, ability abbreviations, and anti_repeat_key exactly as
+specified. Preserve proper nouns exactly; never translate or transliterate them.
+Keep GM-only truth in secret, knowledge, and memory_note. Visible fields may hint at
+depth through manner, appearance, or reputation, but must not state secrets, hidden
+goals, or offscreen facts as plain truth.
 
 ## Shape
 Generate exactly one significant NPC: a name, pronouns, short role, a public_label
@@ -35,39 +37,41 @@ every number to the player sheet and power tier; otherwise omit mechanics entire
 
 ## JSON Object Shape
 Return a single JSON object like this. Keep the same field names. Omit optional
-fields only when they add no useful signal.
+fields only when they add no useful signal. The English strings below are content
+descriptions, not output-language requirements.
 
 {
-  "name": "Имя и прозвище персонажа (RU, канон-имена не переводить)",
-  "pronouns": "М | Ж",
-  "role": "короткая роль или профессия (RU)",
-  "public_label": "как игрок видит персонажа до знакомства (RU)",
-  "age": "возраст или возрастная категория (RU)",
-  "physical_type": "телосложение, вид, размер (RU)",
-  "distinctive_features": "1-2 приметы, по которым его узнают (RU)",
-  "persona": "1-2 предложения: суть и манера (RU)",
-  "personality": "черты характера (RU)",
-  "values": "во что верит, что защищает (RU)",
-  "habits": "заметные привычки (RU)",
-  "pressure_response": "как ведёт себя под давлением (RU)",
-  "boundaries": "чего не сделает даже под нажимом (RU)",
-  "voice": "подсказка стиля речи для озвучки (RU)",
-  "goals": ["1-3 цели персонажа (RU)"],
-  "agenda": "чем занят прямо сейчас в сцене (RU)",
+  "name": "Character name and epithet; preserve canon names exactly",
+  "pronouns": "M | F | N | PL | OTHER",
+  "role": "Short role or profession",
+  "public_label": "How the player sees the character before acquaintance",
+  "age": "Age or age category",
+  "physical_type": "Build, species, and size",
+  "distinctive_features": "1-2 identifying features",
+  "current_appearance": "Complete current appearance: clothing, hairstyle, and visible condition right now",
+  "persona": "1-2 sentences capturing the character's essence and manner",
+  "personality": "Personality traits",
+  "values": "What the character believes in and protects",
+  "habits": "Noticeable habits",
+  "pressure_response": "How the character behaves under pressure",
+  "boundaries": "What the character will not do even under pressure",
+  "voice": "Speech-style hint for performance",
+  "goals": ["1-3 character goals"],
+  "agenda": "What the character is doing in the scene right now",
   "attitude_to_player": 0,
-  "knowledge": "что персонаж знает по теме сцены/сюжета (RU, GM-only)",
-  "secret": "GM-only тайна — никогда в видимых полях (RU)",
+  "knowledge": "What the character knows about the scene or plot; GM-only",
+  "secret": "GM-only secret; never place it in visible fields",
   "mechanics": {
     "abilities": {"STR": 9, "DEX": 14, "CON": 11, "INT": 12, "WIS": 15, "CHA": 10},
-    "skills": {"Скрытность": 4, "Проницательность": 3},
+    "skills": {"Stealth": 4, "Insight": 3},
     "ac": 12,
     "hp": {"current": 16, "max": 16},
-    "speed": "30 футов",
-    "senses": "обычное зрение",
-    "languages": "Общий"
+    "speed": "30 feet",
+    "senses": "normal vision",
+    "languages": "Common"
   },
   "anti_repeat_key": "short-lowercase-motif-key",
-  "memory_note": "компактная GM-заметка, если персонаж важен позже (RU)"
+  "memory_note": "Compact GM note if the character matters later"
 }
 
 Return JSON only.

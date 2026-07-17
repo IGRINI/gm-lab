@@ -2,6 +2,8 @@ import { useState } from "react";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import WorldDetailModal from "./WorldDetailModal.jsx";
 import Icon from "./Icon.jsx";
+import { ZoomableImage } from "./ImagePreview.jsx";
+import NpcTooltip from "./NpcTooltip.jsx";
 import { useTranslation } from "react-i18next";
 
 // The right-side scene panel (UI_REDESIGN_TZ §Игра). It replaces the old inline
@@ -114,6 +116,14 @@ export default function ScenePanel({
         </button>
         <section className="scene-group">
           <div className="scene-group-kicker">{t("scenePanel.scene")}</div>
+          {txt(scene?.image_url) && (
+            <ZoomableImage
+              className="scene-location-art"
+              src={scene.image_url}
+              alt={sceneTitle || t("scenePanel.locationTitle")}
+              title={sceneTitle || t("scenePanel.locationTitle")}
+            />
+          )}
           <div className="scene-row">
             <span>{t("scenePanel.location")}</span>
             {sceneClickable ? (
@@ -153,8 +163,20 @@ export default function ScenePanel({
             <div className="scene-npcs">
               {present.map((n) => (
                 <div className="scene-npc" key={n.id || npcName(n, t("scene.characterFallback"))}>
-                  <span className="dot" style={{ "--c": npcColor(n) }} />
-                  <b style={{ color: npcColor(n) }}>{npcName(n, t("scene.characterFallback"))}</b>
+                  {txt(n?.portrait_url) ? (
+                    <ZoomableImage
+                      className="scene-npc-portrait"
+                      src={n.portrait_url}
+                      alt={npcName(n, t("scene.characterFallback"))}
+                      title={npcName(n, t("scene.characterFallback"))}
+                      loading="lazy"
+                    />
+                  ) : (
+                    <span className="dot" style={{ "--c": npcColor(n) }} />
+                  )}
+                  <NpcTooltip npc={n} label={npcName(n, t("scene.characterFallback"))}>
+                    <b style={{ color: npcColor(n) }}>{npcName(n, t("scene.characterFallback"))}</b>
+                  </NpcTooltip>
                 </div>
               ))}
             </div>
@@ -166,6 +188,14 @@ export default function ScenePanel({
         {(pcName || canSaveCharacter) && (
           <section className="scene-group">
             <div className="scene-group-kicker">{t("scenePanel.hero")}</div>
+            {txt(playerCharacter?.portrait_url) && (
+              <ZoomableImage
+                className="scene-hero-portrait"
+                src={playerCharacter.portrait_url}
+                alt={pcName || t("scene.characterFallback")}
+                title={pcName || t("scene.characterFallback")}
+              />
+            )}
             {pcName && (
               <div className="scene-row">
                 <span>{t("scenePanel.name")}</span>

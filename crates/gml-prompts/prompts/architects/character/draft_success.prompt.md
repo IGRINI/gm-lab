@@ -1,1 +1,1 @@
-Черновик персонажа создан/обновлён и показан пользователю. Дальше правь точечно через edit_player_character (не пересылай весь лист), либо кратко ответь пользователю в чат.
+The character draft was created or updated and shown to the user. Continue with targeted edits through edit_player_character (do not resend the whole sheet), or reply briefly to the user in the configured response language.

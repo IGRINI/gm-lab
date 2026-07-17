@@ -888,8 +888,7 @@ async fn get_turn_stream(
     if committed {
         let frame = format!(
             "data: {}\n\n",
-            serde_json::to_string(&turn_done(&request_id, true, false, true))
-                .unwrap_or_default()
+            serde_json::to_string(&turn_done(&request_id, true, false, true)).unwrap_or_default()
         );
         return turn_sse_response(Body::from(frame));
     }

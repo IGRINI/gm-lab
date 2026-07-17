@@ -24,5 +24,6 @@ pub use config::{
 pub use gml_types::Role;
 pub use runtime_settings::{
     default_settings_path, supported_reasoning_efforts, RoleSettings, RuntimeSettings, SettingsMap,
+    IMAGE_PROVIDERS, IMAGE_PROVIDER_GROK, IMAGE_PROVIDER_GROK_QUALITY, IMAGE_PROVIDER_LOCAL,
     MAX_TOOL_HOPS_CAP, REASONING_EFFORTS, REASONING_SUMMARIES, TEXT_VERBOSITIES, TOOL_CHOICES,
 };

@@ -158,7 +158,7 @@ fn visible_response_from_parts(action: &str, speech: &str) -> String {
     match (action.is_empty(), speech.is_empty()) {
         (true, true) => String::new(),
         (false, true) => action.to_string(),
-        (true, false) => format!("говорит: «{speech}»"),
-        (false, false) => format!("{action} и говорит: «{speech}»"),
+        (true, false) => speech.to_string(),
+        (false, false) => format!("{action}\n{speech}"),
     }
 }

@@ -71,7 +71,8 @@ const polyR = (sides) => (sides === 6 ? 27 : 25);
 const NUM_FS = { 4: 19, 8: 16, 10: 15, 12: 14, 20: 12 };
 
 const rotStr = ([rx, ry, rz]) => `rotateX(${rx}deg) rotateY(${ry}deg) rotateZ(${rz}deg)`;
-const DROPPED_T = " translateZ(-16px) rotateX(14deg) scale(.9)";
+const dieTransform = (rotation, dropped) =>
+  dropped ? `translateZ(-16px) rotateX(14deg) scale(.9) ${rotation}` : rotation;
 
 // Roll timing: ONE continuous spin that decelerates smoothly onto the face over ~3s.
 // A single ease-out means velocity only ever decreases — no "almost stop then jerk".
@@ -175,18 +176,25 @@ function Die({ sides, value, dropped, index, crit, rollKey, animate }) {
   const seenKey = seenKeyOf(rollKey, index);
   const snap = isSnap(rollKey, index, animate);
   const target = solid ? solid.facing(value) : [0, 0, 0];
-  const droppedT = dropped ? DROPPED_T : "";
-  const landTransform = rotStr(target) + droppedT;
+  const landTransform = dieTransform(rotStr(target), dropped);
   const landed = useTumble(spinRef, {
     snap,
     seenKey,
     landTransform,
     index,
     keyframes: (el, k) => {
-      if (!solid) return ["rotateZ(0deg)" + droppedT, `rotateZ(${k}deg)` + droppedT]; // token: flat in-plane spin
+      if (!solid) {
+        return [
+          dieTransform("rotateZ(0deg)", dropped),
+          dieTransform(`rotateZ(${k}deg)`, dropped),
+        ];
+      }
       const [rx, ry, rz] = target;
-      const from = (el.style.transform || rotStr([0, 0, 0])) ;
-      const to = `rotateX(${rx + k}deg) rotateY(${ry - k}deg) rotateZ(${rz}deg)` + droppedT;
+      const from = el.style.transform || dieTransform(rotStr([0, 0, 0]), dropped);
+      const to = dieTransform(
+        `rotateX(${rx + k}deg) rotateY(${ry - k}deg) rotateZ(${rz}deg)`,
+        dropped
+      );
       return [from, to];
     },
     deps: [sides, value, dropped, index, seenKey, animate],

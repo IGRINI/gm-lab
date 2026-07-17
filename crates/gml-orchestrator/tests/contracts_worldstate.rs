@@ -309,6 +309,7 @@ fn note_memory_records_player_known_npc_name_without_legacy_state_record() {
             age: String::new(),
             physical_type: String::new(),
             distinctive_features: String::new(),
+            current_appearance: String::new(),
             life_status: "alive".to_string(),
             life_status_note: String::new(),
             condition: String::new(),

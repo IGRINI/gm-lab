@@ -151,7 +151,7 @@
       "npc_id": "borin",
       "messages": 1,
       "has_summary": false,
-      "text": "Последние сообщения:\nПрошлая ситуация для NPC:\nCURRENT NPC CARD:\nCURRENT NPC CARD (revision 0)\nName: Борин\nRole: трактирщик\nGender: M\nPublic label: трактирщик\nAge: Фактически 53 года; выглядит на 50-55.\nPhysical type: крупный пожилой человек\nDistinctive features: медное кольцо на пальце, хриплый голос, привычка натирать кружку\nLife status: alive\nCondition: устал, насторожен, внешне здоров\nDescription: Крупный трактирщик «Серого грифона», за пятьдесят; осторожный, хитрый и себе на уме. Он запоминает, кто чем платит, кто с кем садится и кто слишком часто смотрит на дверь. На людях грубоват, но умеет выглядеть гостеприимным; когда его прижимают фактами, начинает вытирать одну и ту же кружку до сухого скрипа.\nPersonality: осторожный, хитрый, грубоватый, привык считать риски\nValues: трактир, выживание, Лиза, репутация перед гильдией и стражей\nHabits/tells: считает монеты, натирает одну кружку, уводит разговор на еду или долги\nUnder pressure: сначала отшучивается, потом торгуется и выдаёт частичную правду\nBoundaries: почти не сдаст Лизу или тайник гильдии без сильной защиты или угрозы\nManner of speech: Коротко, хрипловато, с прибаутками. Часто называет гостей «дружище», отшучивается про плохую память и переводит разговор на еду, погоду или долги.\nGoals: Держать трактир на плаву, не дать людям слишком глубоко копать тему гильдии, защитить Лизу от допросов и пережить день так, чтобы ни стража, ни гильдия не решили, что он стал лишним.\nWhat you know: Местные слухи, кто заходил в трактир, кто выходил, сколько стоит эль. Официально про убийство знаешь только слух: Алдрика нашли мёртвым. Ты можешь описать, что Алдрик вчера пил мало, спорил с караванщиком о цене шафрана, ждал кого-то до закрытия и ушёл через главный зал, не закончив ужин.\nMechanics: {\"abilities\":{\"STR\":13,\"DEX\":10,\"CON\":12,\"INT\":11,\"WIS\":13,\"CHA\":12},\"skills\":{\"Insight\":3,\"Perception\":3,\"Deception\":3},\"saving_throws\":{\"WIS\":3},\"passive_perception\":13,\"ac\":10,\"hp\":{\"current\":11,\"max\":11},\"speed\":\"30 ft\",\"senses\":\"обычное зрение; хорошо замечает порядок в зале\",\"languages\":\"Общий\"}\nPrivate secret: Ты осведомитель Гильдии воров и точно знаешь, что гильдия убила Алдрика, прикрывая контрабанду. Ты передал посреднику, что Алдрик ищет защиты у стражи, и видел серебряную пряжку на плаще человека, который ушёл к лавке. Под стойкой у тебя спрятан знак для тайной встречи. Если это всплывёт, гильдия убьёт тебя, а Марет закроет трактир как логово пособников.\nThis card overrides older memory if there is a conflict."
+      "text": "Recent messages:\nPrevious situation for NPC:\nCURRENT NPC CARD:\nCURRENT NPC CARD (revision 0)\nName: Борин\nRole: трактирщик\nGender: M\nPublic label: трактирщик\nAge: Фактически 53 года; выглядит на 50-55.\nPhysical type: крупный пожилой человек\nDistinctive features: медное кольцо на пальце, хриплый голос, привычка натирать кружку\nCurrent appearance: (not specified)\nLife status: alive\nCondition: устал, насторожен, внешне здоров\nDescription: Крупный трактирщик «Серого грифона», за пятьдесят; осторожный, хитрый и себе на уме. Он запоминает, кто чем платит, кто с кем садится и кто слишком часто смотрит на дверь. На людях грубоват, но умеет выглядеть гостеприимным; когда его прижимают фактами, начинает вытирать одну и ту же кружку до сухого скрипа.\nPersonality: осторожный, хитрый, грубоватый, привык считать риски\nValues: трактир, выживание, Лиза, репутация перед гильдией и стражей\nHabits/tells: считает монеты, натирает одну кружку, уводит разговор на еду или долги\nUnder pressure: сначала отшучивается, потом торгуется и выдаёт частичную правду\nBoundaries: почти не сдаст Лизу или тайник гильдии без сильной защиты или угрозы\nManner of speech: Коротко, хрипловато, с прибаутками. Часто называет гостей «дружище», отшучивается про плохую память и переводит разговор на еду, погоду или долги.\nGoals: Держать трактир на плаву, не дать людям слишком глубоко копать тему гильдии, защитить Лизу от допросов и пережить день так, чтобы ни стража, ни гильдия не решили, что он стал лишним.\nWhat you know: Местные слухи, кто заходил в трактир, кто выходил, сколько стоит эль. Официально про убийство знаешь только слух: Алдрика нашли мёртвым. Ты можешь описать, что Алдрик вчера пил мало, спорил с караванщиком о цене шафрана, ждал кого-то до закрытия и ушёл через главный зал, не закончив ужин.\nMechanics: {\"abilities\":{\"STR\":13,\"DEX\":10,\"CON\":12,\"INT\":11,\"WIS\":13,\"CHA\":12},\"skills\":{\"Insight\":3,\"Perception\":3,\"Deception\":3},\"saving_throws\":{\"WIS\":3},\"passive_perception\":13,\"ac\":10,\"hp\":{\"current\":11,\"max\":11},\"speed\":\"30 ft\",\"senses\":\"обычное зрение; хорошо замечает порядок в зале\",\"languages\":\"Общий\"}\nPrivate secret: Ты осведомитель Гильдии воров и точно знаешь, что гильдия убила Алдрика, прикрывая контрабанду. Ты передал посреднику, что Алдрик ищет защиты у стражи, и видел серебряную пряжку на плаще человека, который ушёл к лавке. Под стойкой у тебя спрятан знак для тайной встречи. Если это всплывёт, гильдия убьёт тебя, а Марет закроет трактир как логово пособников.\nThis card overrides older memory if there is a conflict."
     },
     "sid": null
   },
@@ -165,7 +165,7 @@
     "kind": "npc_speech",
     "agent": "Борин",
     "data": {
-      "response": "пытается незаметно выскользнуть через заднюю дверь трактира и говорит: «Я... э-э, мне на кухню надо, отойду на минутку.»",
+      "response": "пытается незаметно выскользнуть через заднюю дверь трактира\nЯ... э-э, мне на кухню надо, отойду на минутку.",
       "beats": [
         {
           "kind": "action",
@@ -205,7 +205,7 @@
   {
     "kind": "tool_result",
     "agent": "ask_npc",
-    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"response_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира и говорит: «Я... э-э, мне на кухню надо, отойду на минутку.»\",\"beats\":[{\"kind\":\"action\",\"text\":\"пытается незаметно выскользнуть через заднюю дверь трактира\"},{\"kind\":\"speech\",\"text\":\"Я... э-э, мне на кухню надо, отойду на минутку.\"}],\"speech_ru\":\"Я... э-э, мне на кухню надо, отойду на минутку.\",\"action_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
+    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"response_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира\\nЯ... э-э, мне на кухню надо, отойду на минутку.\",\"beats\":[{\"kind\":\"action\",\"text\":\"пытается незаметно выскользнуть через заднюю дверь трактира\"},{\"kind\":\"speech\",\"text\":\"Я... э-э, мне на кухню надо, отойду на минутку.\"}],\"speech_ru\":\"Я... э-э, мне на кухню надо, отойду на минутку.\",\"action_ru\":\"пытается незаметно выскользнуть через заднюю дверь трактира\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
     "sid": null
   },
   {
@@ -355,7 +355,7 @@
       "npc_id": "borin",
       "messages": 1,
       "has_summary": false,
-      "text": "Последние сообщения:\nПрошлая ситуация для NPC:\nCURRENT NPC CARD:\nCURRENT NPC CARD (revision 0)\nName: Борин\nRole: трактирщик\nGender: M\nPublic label: трактирщик\nAge: Фактически 53 года; выглядит на 50-55.\nPhysical type: крупный пожилой человек\nDistinctive features: медное кольцо на пальце, хриплый голос, привычка натирать кружку\nLife status: alive\nCondition: устал, насторожен, внешне здоров\nDescription: Крупный трактирщик «Серого грифона», за пятьдесят; осторожный, хитрый и себе на уме. Он запоминает, кто чем платит, кто с кем садится и кто слишком часто смотрит на дверь. На людях грубоват, но умеет выглядеть гостеприимным; когда его прижимают фактами, начинает вытирать одну и ту же кружку до сухого скрипа.\nPersonality: осторожный, хитрый, грубоватый, привык считать риски\nValues: трактир, выживание, Лиза, репутация перед гильдией и стражей\nHabits/tells: считает монеты, натирает одну кружку, уводит разговор на еду или долги\nUnder pressure: сначала отшучивается, потом торгуется и выдаёт частичную правду\nBoundaries: почти не сдаст Лизу или тайник гильдии без сильной защиты или угрозы\nManner of speech: Коротко, хрипловато, с прибаутками. Часто называет гостей «дружище», отшучивается про плохую память и переводит разговор на еду, погоду или долги.\nGoals: Держать трактир на плаву, не дать людям слишком глубоко копать тему гильдии, защитить Лизу от допросов и пережить день так, чтобы ни стража, ни гильдия не решили, что он стал лишним.\nWhat you know: Местные слухи, кто заходил в трактир, кто выходил, сколько стоит эль. Официально про убийство знаешь только слух: Алдрика нашли мёртвым. Ты можешь описать, что Алдрик вчера пил мало, спорил с караванщиком о цене шафрана, ждал кого-то до закрытия и ушёл через главный зал, не закончив ужин.\nMechanics: {\"abilities\":{\"STR\":13,\"DEX\":10,\"CON\":12,\"INT\":11,\"WIS\":13,\"CHA\":12},\"skills\":{\"Insight\":3,\"Perception\":3,\"Deception\":3},\"saving_throws\":{\"WIS\":3},\"passive_perception\":13,\"ac\":10,\"hp\":{\"current\":11,\"max\":11},\"speed\":\"30 ft\",\"senses\":\"обычное зрение; хорошо замечает порядок в зале\",\"languages\":\"Общий\"}\nPrivate secret: Ты осведомитель Гильдии воров и точно знаешь, что гильдия убила Алдрика, прикрывая контрабанду. Ты передал посреднику, что Алдрик ищет защиты у стражи, и видел серебряную пряжку на плаще человека, который ушёл к лавке. Под стойкой у тебя спрятан знак для тайной встречи. Если это всплывёт, гильдия убьёт тебя, а Марет закроет трактир как логово пособников.\nThis card overrides older memory if there is a conflict."
+      "text": "Recent messages:\nPrevious situation for NPC:\nCURRENT NPC CARD:\nCURRENT NPC CARD (revision 0)\nName: Борин\nRole: трактирщик\nGender: M\nPublic label: трактирщик\nAge: Фактически 53 года; выглядит на 50-55.\nPhysical type: крупный пожилой человек\nDistinctive features: медное кольцо на пальце, хриплый голос, привычка натирать кружку\nCurrent appearance: (not specified)\nLife status: alive\nCondition: устал, насторожен, внешне здоров\nDescription: Крупный трактирщик «Серого грифона», за пятьдесят; осторожный, хитрый и себе на уме. Он запоминает, кто чем платит, кто с кем садится и кто слишком часто смотрит на дверь. На людях грубоват, но умеет выглядеть гостеприимным; когда его прижимают фактами, начинает вытирать одну и ту же кружку до сухого скрипа.\nPersonality: осторожный, хитрый, грубоватый, привык считать риски\nValues: трактир, выживание, Лиза, репутация перед гильдией и стражей\nHabits/tells: считает монеты, натирает одну кружку, уводит разговор на еду или долги\nUnder pressure: сначала отшучивается, потом торгуется и выдаёт частичную правду\nBoundaries: почти не сдаст Лизу или тайник гильдии без сильной защиты или угрозы\nManner of speech: Коротко, хрипловато, с прибаутками. Часто называет гостей «дружище», отшучивается про плохую память и переводит разговор на еду, погоду или долги.\nGoals: Держать трактир на плаву, не дать людям слишком глубоко копать тему гильдии, защитить Лизу от допросов и пережить день так, чтобы ни стража, ни гильдия не решили, что он стал лишним.\nWhat you know: Местные слухи, кто заходил в трактир, кто выходил, сколько стоит эль. Официально про убийство знаешь только слух: Алдрика нашли мёртвым. Ты можешь описать, что Алдрик вчера пил мало, спорил с караванщиком о цене шафрана, ждал кого-то до закрытия и ушёл через главный зал, не закончив ужин.\nMechanics: {\"abilities\":{\"STR\":13,\"DEX\":10,\"CON\":12,\"INT\":11,\"WIS\":13,\"CHA\":12},\"skills\":{\"Insight\":3,\"Perception\":3,\"Deception\":3},\"saving_throws\":{\"WIS\":3},\"passive_perception\":13,\"ac\":10,\"hp\":{\"current\":11,\"max\":11},\"speed\":\"30 ft\",\"senses\":\"обычное зрение; хорошо замечает порядок в зале\",\"languages\":\"Общий\"}\nPrivate secret: Ты осведомитель Гильдии воров и точно знаешь, что гильдия убила Алдрика, прикрывая контрабанду. Ты передал посреднику, что Алдрик ищет защиты у стражи, и видел серебряную пряжку на плаще человека, который ушёл к лавке. Под стойкой у тебя спрятан знак для тайной встречи. Если это всплывёт, гильдия убьёт тебя, а Марет закроет трактир как логово пособников.\nThis card overrides older memory if there is a conflict."
     },
     "sid": null
   },
@@ -369,7 +369,7 @@
     "kind": "npc_speech",
     "agent": "Борин",
     "data": {
-      "response": "медленно бредёт к бочкам, не сводя глаз с гостя и говорит: «Сейчас, дружище, эль принесу, обожди-ка.»",
+      "response": "медленно бредёт к бочкам, не сводя глаз с гостя\nСейчас, дружище, эль принесу, обожди-ка.",
       "beats": [
         {
           "kind": "action",
@@ -407,7 +407,7 @@
   {
     "kind": "tool_result",
     "agent": "ask_npc",
-    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"response_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя и говорит: «Сейчас, дружище, эль принесу, обожди-ка.»\",\"beats\":[{\"kind\":\"action\",\"text\":\"медленно бредёт к бочкам, не сводя глаз с гостя\"},{\"kind\":\"speech\",\"text\":\"Сейчас, дружище, эль принесу, обожди-ка.\"}],\"speech_ru\":\"Сейчас, дружище, эль принесу, обожди-ка.\",\"action_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
+    "data": "{\"npc_id\":\"borin\",\"npc_name\":\"Борин\",\"npc_label\":\"Борин\",\"response_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя\\nСейчас, дружище, эль принесу, обожди-ка.\",\"beats\":[{\"kind\":\"action\",\"text\":\"медленно бредёт к бочкам, не сводя глаз с гостя\"},{\"kind\":\"speech\",\"text\":\"Сейчас, дружище, эль принесу, обожди-ка.\"}],\"speech_ru\":\"Сейчас, дружище, эль принесу, обожди-ка.\",\"action_ru\":\"медленно бредёт к бочкам, не сводя глаз с гостя\",\"gm_instruction\":\"This exact NPC speech/action has already been emitted to the player by the engine. If more NPCs should react, call ask_npc for them now. In final narration, do not rewrite, retell, embellish, or paraphrase this NPC speech/action. Do not mention this NPC's name, body, speech, action, expression, posture, gesture, or emotion again. Final narration should be only 0-2 short sentences about surrounding scene consequences. If there is no new non-NPC consequence, produce empty final narration. Do not add another named NPC's reaction; call ask_npc for that NPC if you need it.\"}",
     "sid": null
   },
   {
@@ -711,35 +711,35 @@
       "cached": 0,
       "tokens": 6160,
       "peak_context": 760,
-      "secs": 0.01,
-      "sys_estimate": 14256,
+      "secs": 0.02,
+      "sys_estimate": 16404,
       "context": {
-        "current": 20376,
+        "current": 22627,
         "world": 2485,
         "next_compact": {
           "scope": "npc",
           "label": "Борин",
-          "used": 2792,
+          "used": 831,
           "limit": 64000,
-          "remaining": 61208
+          "remaining": 63169
         },
         "gm": {
-          "active": 20376,
-          "history": 3635,
+          "active": 22627,
+          "history": 3738,
           "summary": 0,
           "limit": 100000,
-          "remaining": 96365
+          "remaining": 96262
         },
         "npc": {
           "id": "borin",
           "name": "Борин",
           "color": "#e6c08a",
           "has_session": true,
-          "active": 5593,
-          "history": 2792,
+          "active": 3632,
+          "history": 831,
           "summary": 0,
           "limit": 64000,
-          "remaining": 61208
+          "remaining": 63169
         },
         "npcs": [
           {
@@ -747,11 +747,11 @@
             "name": "Борин",
             "color": "#e6c08a",
             "has_session": true,
-            "active": 5593,
-            "history": 2792,
+            "active": 3632,
+            "history": 831,
             "summary": 0,
             "limit": 64000,
-            "remaining": 61208
+            "remaining": 63169
           },
           {
             "id": "mareth",
@@ -784,7 +784,7 @@
         "out": 840,
         "cached": 0,
         "tokens": 6160,
-        "secs": 0.01,
+        "secs": 0.02,
         "peak_context": 760,
         "gm_calls": 4,
         "gm_tokens": 3520,

@@ -19,8 +19,8 @@ use serde_json::{json, Map, Value};
 
 use gml_llm::{Backend, ConnectorId, ModelBinding};
 use gml_world::{
-    FactRecord, Npc, NpcWhereabouts, PlayerCharacter, Presence, Rumor, SceneExit, SceneItem,
-    SceneState, SpellEntry, StateRecord, World, WorldEvent, WorldTime,
+    FactRecord, Npc, NpcWhereabouts, PlaceSceneContext, PlayerCharacter, Presence, Rumor,
+    SceneExit, SceneItem, SceneState, SpellEntry, StateRecord, World, WorldEvent, WorldTime,
 };
 use gml_world::{MersenneTwister, RngState};
 
@@ -42,6 +42,13 @@ fn json_dict(v: Option<&Value>) -> Map<String, Value> {
     match v {
         Some(Value::Object(m)) => m.clone(),
         _ => Map::new(),
+    }
+}
+
+fn migrate_tool_name(name: &str) -> String {
+    match name.trim() {
+        "update_player_character" => "update_character".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -494,13 +501,23 @@ impl Session {
         // Compaction-prune staleness signals (legacy payloads => empty maps).
         let mut tool_last_used: BTreeMap<String, i64> = BTreeMap::new();
         for (k, v) in json_dict(data.get("tool_last_used")) {
-            tool_last_used.insert(k, v.as_i64().unwrap_or(0));
+            let name = migrate_tool_name(&k);
+            let turn = v.as_i64().unwrap_or(0);
+            tool_last_used
+                .entry(name)
+                .and_modify(|existing| *existing = (*existing).max(turn))
+                .or_insert(turn);
         }
         session.tool_last_used = tool_last_used;
 
         let mut tool_loaded_turn: BTreeMap<String, i64> = BTreeMap::new();
         for (k, v) in json_dict(data.get("tool_loaded_turn")) {
-            tool_loaded_turn.insert(k, v.as_i64().unwrap_or(0));
+            let name = migrate_tool_name(&k);
+            let turn = v.as_i64().unwrap_or(0);
+            tool_loaded_turn
+                .entry(name)
+                .and_modify(|existing| *existing = (*existing).max(turn))
+                .or_insert(turn);
         }
         session.tool_loaded_turn = tool_loaded_turn;
 
@@ -512,8 +529,8 @@ impl Session {
                 .iter()
                 .filter_map(Value::as_str)
                 .map(str::trim)
-                .filter(|name| !name.is_empty() && catalog_names.contains(*name))
-                .map(str::to_string)
+                .map(migrate_tool_name)
+                .filter(|name| !name.is_empty() && catalog_names.contains(name.as_str()))
                 .collect(),
             Some(_) => BTreeSet::new(),
             None => {
@@ -807,6 +824,22 @@ fn world_to_payload(world: &World) -> Value {
         m.insert("place_items".into(), Value::Object(store));
     }
 
+    if !world.place_scene_contexts.is_empty() {
+        let mut store = Map::new();
+        for (place_id, context) in &world.place_scene_contexts {
+            store.insert(
+                place_id.clone(),
+                json!({
+                    "scene_id": context.scene_id,
+                    "constraints": context.constraints,
+                    "tension": context.tension,
+                    "player_seen": context.player_seen,
+                }),
+            );
+        }
+        m.insert("place_scene_contexts".into(), Value::Object(store));
+    }
+
     Value::Object(m)
 }
 
@@ -971,6 +1004,24 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
         }
         world.place_items = place_items;
     }
+    if let Some(Value::Object(store)) = data.get("place_scene_contexts") {
+        let mut contexts = BTreeMap::new();
+        for (place_id, context) in store {
+            let Some(context) = context.as_object() else {
+                continue;
+            };
+            contexts.insert(
+                place_id.clone(),
+                PlaceSceneContext {
+                    scene_id: s(context, "scene_id"),
+                    constraints: str_list(context.get("constraints")),
+                    tension: s(context, "tension"),
+                    player_seen: str_list(context.get("player_seen")),
+                },
+            );
+        }
+        world.place_scene_contexts = contexts;
+    }
     if !world.world_canon.is_empty() {
         world.migrate_legacy_state_records_to_memory();
     }
@@ -1082,6 +1133,7 @@ fn npc_to_payload(npc: &Npc) -> Value {
         "age": npc.age,
         "physical_type": npc.physical_type,
         "distinctive_features": npc.distinctive_features,
+        "current_appearance": npc.current_appearance,
         "life_status": npc.life_status,
         "life_status_note": npc.life_status_note,
         "condition": npc.condition,
@@ -1132,6 +1184,7 @@ fn npc_from_payload(npc_id: &str, v: &Value) -> Npc {
         age: s(&m, "age"),
         physical_type: s(&m, "physical_type"),
         distinctive_features: s(&m, "distinctive_features"),
+        current_appearance: s(&m, "current_appearance"),
         life_status: {
             let ls = s(&m, "life_status");
             if ls.is_empty() {
@@ -1171,6 +1224,7 @@ fn player_character_to_payload(pc: &PlayerCharacter) -> Value {
         "age": pc.age,
         "physical_type": pc.physical_type,
         "distinctive_features": pc.distinctive_features,
+        "current_appearance": pc.current_appearance,
         "life_status": pc.life_status,
         "life_status_note": pc.life_status_note,
         "condition": pc.condition,
@@ -1189,7 +1243,7 @@ fn player_character_to_payload(pc: &PlayerCharacter) -> Value {
         "inventory": pc.inventory,
         "equipment": pc.equipment,
         "features": pc.features,
-        // Фаза С §С1: unconditional emit per the 26→30-field discipline (old
+        // Фаза С §С1: unconditional emit for additive card fields (old
         // real saves gain empty keys on next save-back — this is the established
         // additive re-save behaviour, gated by the re-blessed roundtrip golden).
         "spells": pc.spells,
@@ -1214,6 +1268,7 @@ fn player_character_from_payload(v: Option<&Value>) -> PlayerCharacter {
         age: s(&m, "age"),
         physical_type: s(&m, "physical_type"),
         distinctive_features: s(&m, "distinctive_features"),
+        current_appearance: s(&m, "current_appearance"),
         life_status: nonempty(s(&m, "life_status"), "alive"),
         life_status_note: s(&m, "life_status_note"),
         condition: s(&m, "condition"),
@@ -1753,6 +1808,39 @@ mod package_ref_tests {
         assert!(restored.place_items.is_empty());
     }
 
+    #[test]
+    fn place_scene_contexts_round_trip_when_non_empty() {
+        let mut world = worldgen_world();
+        let context = PlaceSceneContext {
+            scene_id: "market_scene".to_string(),
+            constraints: vec!["Рынок закрывается на закате".to_string()],
+            tension: "Стража ищет вора".to_string(),
+            player_seen: vec!["Игрок заметил красный навес".to_string()],
+        };
+        world
+            .place_scene_contexts
+            .insert("market".to_string(), context.clone());
+
+        let payload = world_to_payload(&world);
+        assert_eq!(
+            payload["place_scene_contexts"]["market"]["scene_id"],
+            json!("market_scene")
+        );
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert_eq!(restored.place_scene_contexts.get("market"), Some(&context));
+    }
+
+    #[test]
+    fn absent_place_scene_contexts_emits_no_key() {
+        let world = worldgen_world();
+        let payload = world_to_payload(&world);
+        let obj = payload.as_object().expect("payload object");
+        assert!(!obj.contains_key("place_scene_contexts"));
+
+        let restored = world_from_payload(Some(&payload)).expect("restore world");
+        assert!(restored.place_scene_contexts.is_empty());
+    }
+
     // --- Фаза С §С1: player_character spell fields round-trip ----------------
 
     /// A caster PC's spells / flat slots / concentration round-trip through the
@@ -1789,7 +1877,7 @@ mod package_ref_tests {
         };
 
         let payload = player_character_to_payload(&pc);
-        // Emitted unconditionally (30-field discipline).
+        // Emitted unconditionally (31-field discipline).
         assert_eq!(payload["spells"][1]["name"], json!("Огненная хватка"));
         assert_eq!(payload["spells"][1]["concentration"], json!(true));
         assert_eq!(payload["spell_slots"]["1"], json!(3));

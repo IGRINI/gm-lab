@@ -1,6 +1,8 @@
 //! Data-model + projection invariants (secret/hidden-canon isolation, scope
 //! gating, card_revision discipline, whereabouts precedence, seed coercion).
 
+use std::collections::BTreeSet;
+
 use gml_world::state_record::RagDocument;
 use gml_world::{
     MemoryInjectionState, MemoryTier, MemoryTruthStatus, MemoryUnit, NpcWhereabouts, StateRecord,
@@ -100,6 +102,75 @@ fn retrieval_excludes_truth_and_secrets() {
     assert!(docs.iter().any(|d| d.doc_id == "memory:pub_gate_note"));
     assert!(!docs.iter().any(|d| d.doc_id == "state:sr_pub"));
     assert!(!docs.iter().any(|d| d.doc_id.starts_with("state:")));
+}
+
+#[test]
+fn model_context_labels_are_english_and_world_values_stay_verbatim() {
+    let mut w = pinned_world();
+    let borin = w.npcs.get_mut("borin").expect("seeded NPC");
+    borin.distinctive_features = "шрам на подбородке".to_string();
+    borin.current_appearance = "в синем фартуке".to_string();
+
+    let roster = w.dynamic_roster_context(&BTreeSet::new());
+    assert!(roster.contains("gender=masculine"), "{roster}");
+    assert!(!roster.contains("род="), "{roster}");
+
+    let scene = w.scene_context();
+    assert!(
+        scene.contains("distinctive features: шрам на подбородке"),
+        "{scene}"
+    );
+    assert!(
+        scene.contains("current appearance: в синем фартуке"),
+        "{scene}"
+    );
+    assert!(scene.contains("gender: masculine"), "{scene}");
+    assert!(scene.contains("Scene: Таверна"), "{scene}");
+
+    let npc_slice = w.npc_scene_slice("borin");
+    assert!(npc_slice.contains("gender: feminine"), "{npc_slice}");
+    assert!(npc_slice.contains("M = masculine"), "{npc_slice}");
+
+    let docs = w.retrieval_documents("player");
+    let scene_doc = docs
+        .iter()
+        .find(|doc| doc.kind == "scene_state")
+        .expect("scene retrieval document");
+    assert!(scene_doc.text.starts_with("Current scene: Таверна."));
+    let item_doc = docs
+        .iter()
+        .find(|doc| doc.kind == "scene_item")
+        .expect("item retrieval document");
+    assert!(item_doc
+        .text
+        .starts_with("Visible item in the current scene: Кружка; location: на столе."));
+    let npc_doc = docs
+        .iter()
+        .find(|doc| doc.doc_id == "npc_public:borin")
+        .expect("NPC retrieval document");
+    assert!(npc_doc.text.contains("Gender: masculine (M)."));
+    assert!(npc_doc
+        .text
+        .contains("Distinctive features: шрам на подбородке."));
+    let whereabouts_doc = docs
+        .iter()
+        .find(|doc| doc.doc_id == "npc_whereabouts:borin")
+        .expect("NPC whereabouts retrieval document");
+    assert!(whereabouts_doc
+        .text
+        .starts_with("Борин is currently present in the current scene."));
+
+    w.time.current_date_label.clear();
+    assert!(
+        w.time_context().contains("Current world time: Day 1,"),
+        "{}",
+        w.time_context()
+    );
+    assert_eq!(
+        w.time_export()["current_date_label"],
+        json!("День 1"),
+        "UI/state fallback remains unchanged"
+    );
 }
 
 #[test]

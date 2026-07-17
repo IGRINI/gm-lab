@@ -2,7 +2,7 @@ import { Fragment, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "../i18n/index.js";
 import Tooltip from "./Tooltip.jsx";
-import ImageThumbnail from "./ImagePreview.jsx";
+import ImageThumbnail, { ZoomableImage } from "./ImagePreview.jsx";
 import { EntityRegistryContext, canonicalKind, resolveEntity } from "../entityContext.js";
 
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
@@ -43,12 +43,24 @@ function EntityTooltip({ entity, kind, id, label }) {
   const subtitle = entity?.subtitle || typeLabel;
   const description = entity?.description || entity?.text || "";
   const meta = Array.isArray(entity?.meta) ? entity.meta : [];
+  const portraitUrl = entity?.portrait_url || "";
   return (
     <div className="entity-tip">
-      <div className="entity-tip-head">
-        <span>{typeLabel}</span>
-        <b style={{ color: entityColor(kind, entity) }}>{title}</b>
-        {subtitle && <em>{subtitle}</em>}
+      <div className={"entity-tip-top" + (portraitUrl ? " has-portrait" : "")}>
+        {portraitUrl && (
+          <ZoomableImage
+            className="entity-tip-portrait"
+            src={portraitUrl}
+            alt={title}
+            title={title}
+            loading="lazy"
+          />
+        )}
+        <div className="entity-tip-head">
+          <span>{typeLabel}</span>
+          <b style={{ color: entityColor(kind, entity) }}>{title}</b>
+          {subtitle && <em>{subtitle}</em>}
+        </div>
       </div>
       {description && <div className="entity-tip-desc">{description}</div>}
       {meta.length > 0 && (
@@ -75,6 +87,7 @@ function EntityRef({ token, registry, keyPrefix }) {
     <Tooltip
       className={["entity-ref", `entity-ref-${ref.kind}`, entity ? "" : "missing"].filter(Boolean).join(" ")}
       tipClassName="entity-tip-wrap"
+      pinnable
       content={<EntityTooltip entity={entity} kind={ref.kind} id={ref.id} label={label} />}
     >
       <span style={{ "--entity-color": entityColor(ref.kind, entity) }}>
@@ -205,6 +218,7 @@ function AutoEntityRef({ entity, kind, id, label }) {
     <Tooltip
       className={["entity-ref", `entity-ref-${kind}`].filter(Boolean).join(" ")}
       tipClassName="entity-tip-wrap"
+      pinnable
       content={<EntityTooltip entity={entity} kind={kind} id={id} label={label} />}
     >
       <span style={{ "--entity-color": entityColor(kind, entity) }}>{label}</span>

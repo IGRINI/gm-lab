@@ -25,11 +25,15 @@ use gml_orchestrator::{ClientFactory, CompactionThresholds, Session};
 
 pub mod character_store;
 pub mod chat_search;
+pub mod visual_assets;
 pub mod world_store;
-pub use character_store::{CharacterBaseRef, CharacterStore, CHARACTER_FORMAT};
+pub use character_store::{
+    CharacterBaseRef, CharacterStore, CHARACTER_ASSETS_DIR, CHARACTER_FORMAT,
+};
 pub use chat_search::{
     ChatSearchHit, ChatSearchPage, ChatSearchQuery, ChatSearchScope, ChatSearchSort,
 };
+pub use visual_assets::{DialogVisualAsset, DialogVisualAssets};
 pub use world_store::{WorldStore, ASSETS_DIR as ASSETS_DIR_NAME};
 
 /// `SCHEMA_VERSION = 1` — hard-checked on load (no migrations exist).
@@ -78,6 +82,8 @@ pub struct DialogRuntime {
     pub preview: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Generated portraits and location art persisted with this history.
+    pub visual_assets: DialogVisualAssets,
     /// Completed player turns with a retained pre-turn checkpoint, newest last.
     /// This is derived from `dialog_turn_checkpoints` and is not duplicated in
     /// the canonical session payload.
@@ -88,12 +94,23 @@ impl DialogRuntime {
     /// `_runtime_to_payload(runtime)` -> `{schema_version, turn_count, session,
     /// transcript}`.
     pub fn to_payload(&self) -> Value {
-        json!({
+        let mut payload = json!({
             "schema_version": SCHEMA_VERSION,
             "turn_count": self.turn_count,
             "session": self.session.to_payload(),
             "transcript": Value::Array(self.transcript.clone()),
-        })
+        });
+        if !self.visual_assets.is_empty() {
+            payload
+                .as_object_mut()
+                .expect("dialog payload is an object")
+                .insert(
+                    "visual_assets".to_string(),
+                    serde_json::to_value(&self.visual_assets)
+                        .expect("dialog visual assets are serializable"),
+                );
+        }
+        payload
     }
 
     /// Serialize the payload exactly as `DialogStore.save` writes it:
@@ -789,6 +806,7 @@ impl DialogStore {
             preview: clean_metadata_text(preview.unwrap_or(""), 180),
             created_at: String::new(),
             updated_at: String::new(),
+            visual_assets: DialogVisualAssets::default(),
             rewindable_turns: Vec::new(),
         };
         self.save(&mut runtime)?;
@@ -1310,6 +1328,13 @@ impl DialogStore {
             _ => Vec::new(),
         };
         let turn_count = data.get("turn_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let visual_assets = data
+            .get("visual_assets")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| StoreError::Payload(format!("invalid visual_assets: {error}")))?
+            .unwrap_or_default();
         Ok(DialogRuntime {
             guest_id: guest_id.to_string(),
             chat_id: chat_id.to_string(),
@@ -1320,6 +1345,7 @@ impl DialogStore {
             preview,
             created_at,
             updated_at,
+            visual_assets,
             rewindable_turns: Vec::new(),
         })
     }

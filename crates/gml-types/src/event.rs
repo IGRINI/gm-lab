@@ -109,6 +109,8 @@ pub mod event_kind {
     pub const TIME: &str = "time";
     /// Player character sheet changed.
     pub const PLAYER_CHARACTER_UPDATE: &str = "player_character_update";
+    /// Unified player/NPC card patch emitted by the `update_character` GM tool.
+    pub const CHARACTER_UPDATE: &str = "character_update";
     /// Offscreen NPC whereabouts changed.
     pub const NPC_WHEREABOUTS: &str = "npc_whereabouts";
     /// Scene replaced/updated (agent `"scene_sync"` for auto-applied deltas).
@@ -134,9 +136,10 @@ pub mod event_kind {
     pub const DONE: &str = "done";
 
     /// All event kinds emitted by `run_turn` plus the server-pushed `done`.
-    /// Ordered as: the 26 distinct `ev(...)` kinds (alphabetical, matching the
+    /// Ordered as: the distinct `ev(...)` kinds (alphabetical, matching the
     /// source extraction) followed by the server-only terminal `done`.
     pub const ALL: &[&str] = &[
+        CHARACTER_UPDATE,
         DELTA,
         DICE,
         ERROR,

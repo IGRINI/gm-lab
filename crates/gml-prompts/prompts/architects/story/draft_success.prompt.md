@@ -1,1 +1,1 @@
-Черновик сюжета создан/обновлён и показан пользователю. Дальше правь точечно через edit_story_plot (не пересылай весь сюжет), либо кратко ответь пользователю в чат.
+The story draft was created or updated and shown to the user. Continue with targeted edits through edit_story_plot (do not resend the whole plot), or reply briefly to the user in the configured response language.

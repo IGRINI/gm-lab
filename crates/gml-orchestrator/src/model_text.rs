@@ -565,7 +565,6 @@ pub fn model_time_text(payload: &Value) -> String {
             "absolute_minutes",
             current.get("absolute_minutes").unwrap_or(&Value::Null),
         ),
-        kv("summary", get(&compact, "summary")),
         kv("error", get(&compact, "error")),
     ];
     plain_lines("TIME", &lines)
@@ -604,6 +603,33 @@ pub fn model_player_character_update_text(payload: &Value) -> String {
         "PLAYER CHARACTER UPDATE",
         &[
             kv("ok", get(&compact, "ok")),
+            kv("updated", get(&compact, "updated")),
+            kv("revision", get(&compact, "card_revision")),
+            kv("error", get(&compact, "error")),
+        ],
+    )
+}
+
+pub fn compact_character_update_payload(payload: &Value) -> Value {
+    let mut out = match compact_player_character_update_payload(payload) {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    };
+    for key in ["target", "npc_id", "label"] {
+        out.insert(key.to_string(), get(payload, key).clone());
+    }
+    drop_empty(&Value::Object(out))
+}
+
+pub fn model_character_update_text(payload: &Value) -> String {
+    let compact = compact_character_update_payload(payload);
+    plain_lines(
+        "CHARACTER UPDATE",
+        &[
+            kv("ok", get(&compact, "ok")),
+            kv("target", get(&compact, "target")),
+            kv("npc_id", get(&compact, "npc_id")),
+            kv("label", get(&compact, "label")),
             kv("updated", get(&compact, "updated")),
             kv("revision", get(&compact, "card_revision")),
             kv("error", get(&compact, "error")),
@@ -743,14 +769,13 @@ pub fn model_ask_npc_text(payload: &Value) -> String {
 
 /// `_player_options_payload(args)` -> (payload, error).
 pub fn player_options_payload(args: &Value) -> (Value, String) {
-    let question = {
-        let q = clip_text(get(args, "question"), 180);
-        if q.is_empty() {
-            "Что ты делаешь дальше?".to_string()
-        } else {
-            q
-        }
-    };
+    let question = clip_text(get(args, "question"), 180);
+    if question.is_empty() {
+        return (
+            Value::Object(Map::new()),
+            "ask_player requires a non-empty question".to_string(),
+        );
+    }
     let raw_options = match get(args, "options") {
         Value::Array(a) => a.clone(),
         _ => Vec::new(),

@@ -10,8 +10,8 @@ use tokio::task::AbortHandle;
 
 use gml_llm::{
     Backend, ConnectorAuthKind, ConnectorAuthMethod, ConnectorAuthStart, ConnectorAuthStatus,
-    ConnectorCapability, ConnectorDescriptor, ConnectorError, ConnectorId, ModelConnector,
-    ModelDescriptor,
+    ConnectorCapability, ConnectorDescriptor, ConnectorError, ConnectorId, ImageGenerationRequest,
+    ImageGenerationResult, ModelConnector, ModelDescriptor,
 };
 
 use crate::{OAuthError, SuperGrokClient, SuperGrokConfig, SuperGrokOAuth, DEFAULT_MODEL_ID};
@@ -180,6 +180,7 @@ impl ModelConnector for SuperGrokConnector {
             .and_then(|descriptor| {
                 descriptor
                     .with_capability(ConnectorCapability::SpeechToText)
+                    .with_capability(ConnectorCapability::ImageGeneration)
                     .with_auth_method(ConnectorAuthMethod::new(
                         SUPERGROK_DEVICE_AUTH_METHOD_ID,
                         "xAI Device OAuth",
@@ -276,6 +277,13 @@ impl ModelConnector for SuperGrokConnector {
             language,
         )
         .await
+    }
+
+    async fn generate_images(
+        &self,
+        request: &ImageGenerationRequest,
+    ) -> Result<ImageGenerationResult, ConnectorError> {
+        crate::image::generate(&self.config, &self.http, &self.oauth, request).await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelDescriptor>, ConnectorError> {
@@ -406,7 +414,10 @@ mod tests {
         );
         assert_eq!(
             descriptor.capabilities,
-            vec![ConnectorCapability::SpeechToText]
+            vec![
+                ConnectorCapability::SpeechToText,
+                ConnectorCapability::ImageGeneration,
+            ]
         );
     }
 
