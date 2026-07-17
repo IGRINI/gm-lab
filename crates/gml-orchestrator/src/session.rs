@@ -70,10 +70,15 @@ fn rotated_branch_client_state(
 }
 
 fn compact_location_generator_request(request: &Value) -> Value {
+    if request.get("purpose").and_then(Value::as_str) == Some("travel_route") {
+        return compact_travel_route_request(request);
+    }
+
     let mut out = Map::new();
     for key in [
         "purpose",
         "target_place_id",
+        "entry_from_place_id",
         "parent_place_id",
         "route_transition_id",
         "situation_type",
@@ -87,7 +92,11 @@ fn compact_location_generator_request(request: &Value) -> Value {
             out.insert(key.to_string(), value.clone());
         }
     }
-    for key in ["player_observed", "enter_after_commit"] {
+    for key in [
+        "player_observed",
+        "enter_after_commit",
+        "requires_entry_transition",
+    ] {
         if let Some(value) = request.get(key).filter(|v| !v.is_null()) {
             out.insert(key.to_string(), value.clone());
         }
@@ -97,6 +106,10 @@ fn compact_location_generator_request(request: &Value) -> Value {
 }
 
 fn compact_location_generator_result(generated: &Value) -> Value {
+    if let Some(compact) = compact_travel_route_result(generated) {
+        return compact;
+    }
+
     let mut out = Map::new();
     for key in [
         "name",
@@ -119,13 +132,31 @@ fn compact_location_generator_result(generated: &Value) -> Value {
     ] {
         insert_clipped_string_list(&mut out, key, generated.get(key));
     }
+    if let Some(entry) = generated.get("entry_transition").and_then(Value::as_object) {
+        let mut compact = Map::new();
+        for key in ["label", "return_label", "directionality", "kind", "risk"] {
+            insert_clipped_string(&mut compact, key, entry.get(key));
+        }
+        if let Some(value) = entry.get("time_cost_minutes") {
+            compact.insert("time_cost_minutes".to_string(), value.clone());
+        }
+        if !compact.is_empty() {
+            out.insert("entry_transition".to_string(), Value::Object(compact));
+        }
+    }
     if let Some(Value::Array(transitions)) = generated.get("transitions") {
         let rows = transitions
             .iter()
             .filter_map(|transition| {
                 let row = transition.as_object()?;
                 let mut compact = Map::new();
-                for key in ["label", "destination_hint", "kind", "risk"] {
+                for key in [
+                    "label",
+                    "destination_hint",
+                    "directionality",
+                    "kind",
+                    "risk",
+                ] {
                     insert_clipped_string(&mut compact, key, row.get(key));
                 }
                 if let Some(value) = row.get("time_cost_minutes") {
@@ -140,6 +171,412 @@ fn compact_location_generator_result(generated: &Value) -> Value {
         }
     }
     Value::Object(out)
+}
+
+fn compact_travel_route_request(request: &Value) -> Value {
+    let mut out = Map::new();
+    out.insert(
+        "purpose".to_string(),
+        Value::String("travel_route".to_string()),
+    );
+
+    insert_exact_string(
+        &mut out,
+        "origin_place_id",
+        request
+            .pointer("/origin/place_id")
+            .or_else(|| request.get("origin_place_id")),
+    );
+    insert_exact_string(
+        &mut out,
+        "destination_place_id",
+        request
+            .pointer("/destination/place_id")
+            .or_else(|| request.get("destination_place_id")),
+    );
+    insert_exact_string(
+        &mut out,
+        "requested_network_id",
+        request.get("requested_network_id"),
+    );
+
+    Value::Object(out)
+}
+
+fn compact_travel_route_result(generated: &Value) -> Option<Value> {
+    let geography = generated.get("travel_geography")?.as_object()?;
+
+    let mut out = Map::new();
+    for key in ["name", "kind", "anti_repeat_key"] {
+        insert_clipped_string(&mut out, key, generated.get(key));
+    }
+
+    let compact = compact_travel_geography(geography);
+    if !compact.is_empty() {
+        out.insert("travel_geography".to_string(), Value::Object(compact));
+    }
+
+    Some(Value::Object(out))
+}
+
+fn compact_travel_geography(geography: &Map<String, Value>) -> Map<String, Value> {
+    const NETWORK_CAP: usize = 8;
+    const ANCHOR_CAP: usize = 24;
+    const ACCESS_CAP: usize = 24;
+    const LINK_CAP: usize = 32;
+
+    let mut out = Map::new();
+    insert_compact_travel_rows(
+        &mut out,
+        "networks",
+        geography.get("networks"),
+        NETWORK_CAP,
+        |row| {
+            compact_travel_row(
+                row,
+                &["network_id", "scope_id", "blocked_by"],
+                &["default_for_normal_travel", "passable"],
+                &[],
+                &[],
+            )
+        },
+    );
+    insert_compact_travel_rows(
+        &mut out,
+        "anchors",
+        geography.get("anchors"),
+        ANCHOR_CAP,
+        |row| {
+            compact_travel_row(
+                row,
+                &["anchor_id", "network_id", "blocked_by"],
+                &["passable"],
+                &[],
+                &[],
+            )
+        },
+    );
+    insert_compact_travel_rows(
+        &mut out,
+        "accesses",
+        geography.get("accesses"),
+        ACCESS_CAP,
+        |row| {
+            compact_travel_row(
+                row,
+                &["access_id", "place_id", "anchor_id", "blocked_by"],
+                &["passable"],
+                &[],
+                &["required_fact_ids"],
+            )
+        },
+    );
+    insert_compact_travel_rows(&mut out, "links", geography.get("links"), LINK_CAP, |row| {
+        compact_travel_row(
+            row,
+            &["link_id", "anchor_a", "anchor_b", "risk", "blocked_by"],
+            &["passable"],
+            &["time_cost_minutes"],
+            &["required_fact_ids"],
+        )
+    });
+    out
+}
+
+fn insert_compact_travel_rows<F>(
+    out: &mut Map<String, Value>,
+    key: &str,
+    value: Option<&Value>,
+    cap: usize,
+    compact_row: F,
+) where
+    F: Fn(&Map<String, Value>) -> Map<String, Value>,
+{
+    let Some(Value::Array(rows)) = value else {
+        return;
+    };
+    let compact = rows
+        .iter()
+        .filter_map(Value::as_object)
+        .map(compact_row)
+        .filter(|row| !row.is_empty())
+        .take(cap)
+        .map(Value::Object)
+        .collect::<Vec<_>>();
+    if !compact.is_empty() {
+        out.insert(key.to_string(), Value::Array(compact));
+    }
+}
+
+fn compact_travel_row(
+    row: &Map<String, Value>,
+    string_keys: &[&str],
+    boolean_keys: &[&str],
+    integer_keys: &[&str],
+    string_list_keys: &[&str],
+) -> Map<String, Value> {
+    let mut compact = Map::new();
+    for key in string_keys {
+        insert_exact_string(&mut compact, key, row.get(*key));
+    }
+    for key in boolean_keys {
+        if let Some(value) = row.get(*key).filter(|value| value.is_boolean()) {
+            compact.insert((*key).to_string(), value.clone());
+        }
+    }
+    for key in integer_keys {
+        if let Some(value) = row
+            .get(*key)
+            .filter(|value| value.is_i64() || value.is_u64())
+        {
+            compact.insert((*key).to_string(), value.clone());
+        }
+    }
+    for key in string_list_keys {
+        insert_exact_string_list(&mut compact, key, row.get(*key));
+    }
+    compact
+}
+
+fn insert_exact_string(out: &mut Map<String, Value>, key: &str, value: Option<&Value>) {
+    let Some(value @ Value::String(text)) = value else {
+        return;
+    };
+    if !text.trim().is_empty() {
+        out.insert(key.to_string(), value.clone());
+    }
+}
+
+fn insert_exact_string_list(out: &mut Map<String, Value>, key: &str, value: Option<&Value>) {
+    const FACT_ID_CAP: usize = 16;
+
+    let Some(Value::Array(items)) = value else {
+        return;
+    };
+    let items = items
+        .iter()
+        .filter(|item| item.as_str().is_some_and(|text| !text.trim().is_empty()))
+        .take(FACT_ID_CAP)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !items.is_empty() {
+        out.insert(key.to_string(), Value::Array(items));
+    }
+}
+
+#[cfg(test)]
+mod location_generator_history_tests {
+    use super::{compact_location_generator_request, compact_location_generator_result};
+    use serde_json::{json, Value};
+
+    #[test]
+    fn travel_route_request_keeps_only_explicit_route_identity() {
+        let request = json!({
+            "purpose": "travel_route",
+            "origin": {"place_id": "market_square", "name": "Market Square"},
+            "destination": {"place_id": "west_alley", "name": "West Alley"},
+            "origin_place_id": "stale_compat_origin",
+            "destination_place_id": "stale_compat_destination",
+            "requested_network_id": "greyhaven_public_streets",
+            "existing_travel_geography": {"links": [{"link_id": "large_context"}]},
+            "request": "Infer a route from names",
+            "unrelated": "drop me"
+        });
+
+        assert_eq!(
+            compact_location_generator_request(&request),
+            json!({
+                "purpose": "travel_route",
+                "origin_place_id": "market_square",
+                "destination_place_id": "west_alley",
+                "requested_network_id": "greyhaven_public_streets"
+            })
+        );
+    }
+
+    #[test]
+    fn travel_route_request_accepts_explicit_top_level_id_contract() {
+        let request = json!({
+            "purpose": "travel_route",
+            "origin_place_id": "dock_gate",
+            "destination_place_id": "old_shop"
+        });
+
+        assert_eq!(
+            compact_location_generator_request(&request),
+            json!({
+                "purpose": "travel_route",
+                "origin_place_id": "dock_gate",
+                "destination_place_id": "old_shop"
+            })
+        );
+    }
+
+    #[test]
+    fn travel_route_result_keeps_compact_canonical_geography() {
+        let exact_long_id = "n".repeat(700);
+        let mut links = (0..40)
+            .map(|index| {
+                json!({
+                    "link_id": format!("link_{index}"),
+                    "anchor_a": "market_surface",
+                    "anchor_b": "west_surface",
+                    "time_cost_minutes": 24,
+                    "risk": "low",
+                    "passable": true,
+                    "blocked_by": "",
+                    "required_fact_ids": ["gate_open"],
+                    "label": "not canonical travel data"
+                })
+            })
+            .collect::<Vec<_>>();
+        links[0]["link_id"] = Value::String(exact_long_id.clone());
+        let generated = json!({
+            "name": "Market to west route",
+            "kind": "travel_route",
+            "anti_repeat_key": "market-west-route",
+            "visible_summary": "not needed in route history",
+            "travel_geography": {
+                "networks": [{
+                    "network_id": "greyhaven_public_streets",
+                    "scope_id": "greyhaven",
+                    "default_for_normal_travel": true,
+                    "passable": true,
+                    "blocked_by": "",
+                    "display_name": "drop me"
+                }],
+                "anchors": [
+                    {"anchor_id": "market_surface", "network_id": "greyhaven_public_streets", "passable": true},
+                    {"anchor_id": "west_surface", "network_id": "greyhaven_public_streets", "passable": true}
+                ],
+                "accesses": [{
+                    "access_id": "shop_to_market",
+                    "place_id": "known_shop",
+                    "anchor_id": "market_surface",
+                    "passable": true,
+                    "required_fact_ids": ["shop_known"],
+                    "description": "drop me"
+                }],
+                "links": links,
+                "unknown_rows": [{"id": "drop me"}]
+            }
+        });
+
+        let compact = compact_location_generator_result(&generated);
+        assert_eq!(
+            compact["travel_geography"]["links"]
+                .as_array()
+                .unwrap()
+                .len(),
+            32
+        );
+        assert_eq!(
+            compact["travel_geography"]["links"][0]["link_id"],
+            Value::String(exact_long_id)
+        );
+        assert_eq!(
+            compact["travel_geography"]["networks"][0],
+            json!({
+                "network_id": "greyhaven_public_streets",
+                "scope_id": "greyhaven",
+                "default_for_normal_travel": true,
+                "passable": true
+            })
+        );
+        assert!(compact.get("visible_summary").is_none());
+        assert!(compact["travel_geography"].get("unknown_rows").is_none());
+        assert!(compact["travel_geography"]["links"][0]
+            .get("label")
+            .is_none());
+    }
+
+    #[test]
+    fn free_form_unavailability_does_not_override_canonical_geography() {
+        let generated = json!({
+            "kind": "travel_route",
+            "travel_unavailable_reason": "The west gate is canonically sealed.",
+            "travel_geography": {
+                "links": [{
+                    "link_id": "contradictory_link",
+                    "anchor_a": "a",
+                    "anchor_b": "b",
+                    "time_cost_minutes": 5,
+                    "risk": "none",
+                    "passable": true
+                }]
+            }
+        });
+
+        assert_eq!(
+            compact_location_generator_result(&generated),
+            json!({
+                "kind": "travel_route",
+                "travel_geography": {
+                    "links": [{
+                        "link_id": "contradictory_link",
+                        "anchor_a": "a",
+                        "anchor_b": "b",
+                        "time_cost_minutes": 5,
+                        "risk": "none",
+                        "passable": true
+                    }]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn ordinary_location_compaction_is_unchanged() {
+        let request = json!({
+            "purpose": "local_place",
+            "target_place_id": "kitchen",
+            "parent_place_id": "inn",
+            "request": "A working kitchen",
+            "unknown": "drop me"
+        });
+        assert_eq!(
+            compact_location_generator_request(&request),
+            json!({
+                "purpose": "local_place",
+                "target_place_id": "kitchen",
+                "parent_place_id": "inn",
+                "request": "A working kitchen"
+            })
+        );
+
+        let generated = json!({
+            "name": "Kitchen",
+            "kind": "room",
+            "visible_summary": "A smoky kitchen.",
+            "features": ["hearth"],
+            "transitions": [{
+                "label": "Back door",
+                "destination_hint": "yard",
+                "directionality": "bidirectional",
+                "kind": "door",
+                "risk": "none",
+                "time_cost_minutes": 1,
+                "extra": "drop me"
+            }]
+        });
+        assert_eq!(
+            compact_location_generator_result(&generated),
+            json!({
+                "name": "Kitchen",
+                "kind": "room",
+                "visible_summary": "A smoky kitchen.",
+                "features": ["hearth"],
+                "transitions": [{
+                    "label": "Back door",
+                    "destination_hint": "yard",
+                    "directionality": "bidirectional",
+                    "kind": "door",
+                    "risk": "none",
+                    "time_cost_minutes": 1
+                }]
+            })
+        );
+    }
 }
 
 fn insert_clipped_string(out: &mut Map<String, Value>, key: &str, value: Option<&Value>) {

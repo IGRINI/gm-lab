@@ -120,7 +120,7 @@
       "move_npc": "Updates a character's presence in the current scene.",
       "set_npc_presence": "Updates a character's presence in the current scene.",
       "set_npc_whereabouts": "Stores where an absent character can be found.",
-      "set_scene": "Replaces the current scene when the player reaches a new place.",
+      "set_scene": "Updates visible details of the current place without creating travel.",
       "roll_dice": "Makes a D&D 5e roll for an action with an uncertain outcome.",
       "get_world_fact": "Checks established facts and information in world memory.",
       "ask_player": "Offers the player quick action options.",

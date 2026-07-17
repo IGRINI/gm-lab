@@ -1,4 +1,4 @@
-//! `engine` — the apply loop, graph traversal, lazy generation, offscreen
+//! `engine` — the apply loop, graph traversal, travel interruptions, offscreen
 //! simulation, the gated player view and the debug/replay dump (TZ §5, §8, §10,
 //! §12).
 //!
@@ -10,10 +10,9 @@
 //! mutation and appends a structured [`CanonEvent`] describing what/when/where/
 //! who/why/effects/scope/traces, returning the committed events.
 //!
-//! Determinism: lazy generation and offscreen simulation derive every id and
-//! every bounded choice from [`ids::stable_id`] / [`ids::DetRng`], a stream
-//! entirely separate from the campaign dice RNG, so worldgen never perturbs
-//! `golden_turns` replay (TZ §7.3, §12).
+//! Deterministic engine-created ids use [`ids::stable_id`], entirely separate
+//! from the campaign dice RNG, so worldgen never perturbs `golden_turns` replay
+//! (TZ §7.3, §12).
 
 use std::collections::BTreeSet;
 
@@ -25,9 +24,10 @@ use super::entity::Containment;
 use super::event_log::{Account, CanonEvent};
 use super::ids;
 use super::knowledge::{Scope, Truthfulness};
+use super::navigation::{self, ActiveJourney, TravelPlan};
 use super::travel;
 use super::validator::{Rejection, Validator};
-use super::{Place, Provenance, Transition, WorldCanon};
+use super::{PassageDirectionality, Place, Provenance, Transition, WorldCanon};
 
 /// Apply a proposed action to the canon, gated by the [`Validator`].
 ///
@@ -50,7 +50,10 @@ pub fn apply(
     if proposed.time_delta > 0
         && !matches!(
             proposed.action,
-            Action::AdvanceClock { .. } | Action::MovePlayer { .. }
+            Action::AdvanceClock { .. }
+                | Action::MovePlayer { .. }
+                | Action::TravelPlayer { .. }
+                | Action::RelocatePlayer { .. }
         )
     {
         canon.clock_minutes += proposed.time_delta;
@@ -62,20 +65,30 @@ pub fn apply(
     let source = proposed.source.clone();
 
     let committed: Vec<CanonEvent> = match &proposed.action {
-        Action::MovePlayer { transition_id } => apply_move_player(
+        Action::MovePlayer { transition_id } => {
+            apply_move_player(canon, transition_id, turn, &reason)
+        }
+        Action::TravelPlayer {
+            destination_place_id,
+            network_id,
+        } => apply_travel_player(
             canon,
-            transition_id,
+            destination_place_id,
+            network_id.as_deref(),
             turn,
-            proposed.time_delta,
-            &source,
             &reason,
         ),
+        Action::RelocatePlayer {
+            destination_place_id,
+            elapsed_minutes,
+        } => apply_relocate_player(canon, destination_place_id, *elapsed_minutes, turn, &reason),
         Action::CreatePlace {
             place_id,
             name,
             kind,
             parent,
             region_id,
+            district_id,
             description,
             features,
             visited,
@@ -97,6 +110,7 @@ pub fn apply(
                 kind: kind.clone(),
                 parent: parent.clone(),
                 region_id: region_id.clone(),
+                district_id: district_id.clone(),
                 default_description: description.clone(),
                 state_flags: flags,
                 features: features.clone(),
@@ -147,6 +161,10 @@ pub fn apply(
                     place.mark_visited();
                 }
                 place.state_flags.insert("generated".to_string());
+                if source == "location_generator" {
+                    place.state_flags.remove("shell");
+                    place.state_flags.insert("revealed".to_string());
+                }
             }
             vec![event(
                 canon,
@@ -163,6 +181,8 @@ pub fn apply(
         }
         Action::CreateTransition {
             transition_id,
+            passage_id,
+            directionality,
             from_place,
             to_place,
             destination_hint,
@@ -174,16 +194,12 @@ pub fn apply(
             time_cost,
             risk,
         } => {
-            let clean_risk = risk.trim();
-            let clean_time = if *time_cost > 0 {
-                *time_cost
-            } else {
-                travel::infer_time_cost(kind, label, destination_hint)
-            };
             let clean_passable = passable.unwrap_or_else(|| blocked_by.is_empty());
             canon.insert_transition(Transition {
                 transition_id: transition_id.clone(),
                 source_exit_id: transition_id.clone(),
+                passage_id: passage_id.clone(),
+                directionality: *directionality,
                 from_place: from_place.clone(),
                 to_place: to_place.clone(),
                 destination_hint: destination_hint.clone(),
@@ -193,12 +209,8 @@ pub fn apply(
                 passable: clean_passable && blocked_by.is_empty(),
                 conditions: Vec::new(),
                 blocked_by: blocked_by.clone(),
-                time_cost: clean_time,
-                risk: if clean_risk.is_empty() {
-                    travel::infer_risk(kind, label, destination_hint)
-                } else {
-                    clean_risk.to_string()
-                },
+                time_cost: *time_cost,
+                risk: risk.clone(),
                 provenance: Provenance::by(nonempty(&source, "llm"), &reason, turn),
             });
             vec![event(
@@ -214,7 +226,150 @@ pub fn apply(
                 &[],
             )]
         }
-        Action::RevealPlace { place_id } => expand_place_interior(canon, place_id, turn),
+        Action::CreatePassage {
+            passage_id,
+            directionality,
+            forward_transition_id,
+            reverse_transition_id,
+            from_place,
+            to_place,
+            forward_label,
+            reverse_label,
+            kind,
+            time_cost,
+            risk,
+        } => {
+            let provenance = Provenance::by(nonempty(&source, "llm"), &reason, turn);
+            canon.insert_transition(passage_transition(
+                forward_transition_id,
+                passage_id,
+                *directionality,
+                from_place,
+                to_place,
+                forward_label,
+                kind,
+                *time_cost,
+                risk,
+                provenance.clone(),
+            ));
+            let mut effects = vec![
+                format!("passage:{passage_id}"),
+                format!("transition:{forward_transition_id}"),
+                format!(
+                    "directionality:{}",
+                    match directionality {
+                        PassageDirectionality::OneWay => "one_way",
+                        PassageDirectionality::Bidirectional => "bidirectional",
+                        PassageDirectionality::Unspecified => "unspecified",
+                    }
+                ),
+            ];
+            if *directionality == PassageDirectionality::Bidirectional {
+                canon.insert_transition(passage_transition(
+                    reverse_transition_id,
+                    passage_id,
+                    *directionality,
+                    to_place,
+                    from_place,
+                    reverse_label,
+                    kind,
+                    *time_cost,
+                    risk,
+                    provenance,
+                ));
+                effects.push(format!("transition:{reverse_transition_id}"));
+            }
+            vec![event(
+                canon,
+                "create_passage",
+                turn,
+                now,
+                from_place,
+                &[],
+                &reason,
+                &effects,
+                &scope,
+                &[],
+            )]
+        }
+        Action::SetPassageState {
+            transition_id,
+            open,
+            state_reason,
+        } => {
+            let selected = canon
+                .transition(transition_id)
+                .expect("validated passage transition");
+            let passage_id = selected.passage_id.clone();
+            let place_id = selected.from_place.clone();
+            let mut affected = Vec::new();
+            for transition in canon
+                .transitions
+                .values_mut()
+                .filter(|transition| transition.passage_id == passage_id)
+            {
+                transition.passable = *open;
+                transition.blocked_by = if *open {
+                    String::new()
+                } else {
+                    state_reason.clone()
+                };
+                affected.push(transition.transition_id.clone());
+            }
+            affected.sort();
+            let mut effects = vec![
+                format!("passage:{passage_id}"),
+                format!("passage_state:{}", if *open { "open" } else { "closed" }),
+                format!("state_reason:{state_reason}"),
+            ];
+            effects.extend(affected.iter().map(|id| format!("transition:{id}")));
+            vec![event(
+                canon,
+                "set_passage_state",
+                turn,
+                now,
+                &place_id,
+                &[],
+                &reason,
+                &effects,
+                &scope,
+                &[],
+            )]
+        }
+        Action::ConfigureTransition {
+            transition_id,
+            passage_id,
+            directionality,
+            to_place,
+            label,
+            kind,
+            time_cost,
+            risk,
+        } => {
+            let transition = canon
+                .transitions
+                .get_mut(transition_id)
+                .expect("validated transition");
+            transition.passage_id = passage_id.clone();
+            transition.directionality = *directionality;
+            transition.to_place = to_place.clone();
+            transition.label = label.clone();
+            transition.kind = kind.clone();
+            transition.time_cost = *time_cost;
+            transition.risk = risk.clone();
+            vec![event(
+                canon,
+                "configure_transition",
+                turn,
+                now,
+                to_place,
+                &[],
+                &reason,
+                &[format!("transition:{transition_id}")],
+                &scope,
+                &[],
+            )]
+        }
         Action::CreateActor {
             actor_id,
             public_label,
@@ -449,183 +604,272 @@ pub fn apply(
     Ok(committed)
 }
 
-/// Move the player along a transition, lazily creating/expanding the destination
-/// as needed and guaranteeing a return edge (TZ §7.4 "can always leave").
+/// Move the player along a fully configured transition.
 fn apply_move_player(
     canon: &mut WorldCanon,
     transition_id: &str,
     turn: i64,
-    time_override: i64,
-    source: &str,
     reason: &str,
 ) -> Vec<CanonEvent> {
-    let mut events = Vec::new();
-    let start_minutes = canon.clock_minutes;
-
-    // Snapshot what we need before mutating.
-    let (from_place, mut to_place, dest_hint, label, kind, stored_time, stored_risk) = {
+    // The validator guarantees that the endpoint and profile are complete.
+    let (from_place, to_place, stored_time, stored_risk) = {
         let t = canon
             .transition(transition_id)
             .expect("validated transition");
         (
             t.from_place.clone(),
             t.to_place.clone(),
-            t.destination_hint.clone(),
-            t.label.clone(),
-            t.kind.clone(),
             t.time_cost,
             t.risk.clone(),
         )
     };
-    let travel_minutes = if time_override > 0 {
-        time_override
-    } else {
-        travel::normalized_time_cost(&kind, &label, &dest_hint, stored_time)
-    };
-    let risk = travel::normalized_risk(&kind, &label, &dest_hint, &stored_risk);
+    let risk = travel::TravelRisk::parse(&stored_risk).expect("validated travel risk");
+    execute_player_travel(
+        canon,
+        PlayerTravel {
+            route_id: transition_id.to_string(),
+            from_place,
+            to_place,
+            duration_minutes: stored_time,
+            risk,
+            event_kind: "move_player",
+            extra_effects: Vec::new(),
+            plan: None,
+        },
+        turn,
+        reason,
+    )
+}
 
-    // Lazily materialise a dangling (shell) edge target.
-    if to_place.is_empty() {
-        let new_place_id = ids::stable_id(&canon.world_seed, &from_place, "place", transition_id);
-        // Name pick: the destination hint, unless it is a coercion placeholder
-        // ("unknown destination") or a bare id slug (no whitespace) — neither
-        // may become a player-facing place title. Fall back to the transition
-        // label, itself stripped of a trailing "-> id" (old saves carry the
-        // unsplit architect string).
-        let hint = dest_hint.trim();
-        let hint_usable = !hint.is_empty()
-            && !crate::helpers::is_placeholder_destination(hint)
-            && hint.chars().any(char::is_whitespace);
-        let name = if hint_usable {
-            hint.to_string()
-        } else {
-            crate::helpers::split_exit_label(&label).0
-        };
-        let mut flags = BTreeSet::new();
-        // A freshly lazy-generated destination is itself a shell interior until
-        // entered/expanded, EXCEPT we keep simple "named exits" concrete; here we
-        // mark it shell so the first entry expands an interior chain.
-        flags.insert("shell".to_string());
-        canon.insert_place(Place {
-            place_id: new_place_id.clone(),
-            name: nonempty(&name, "Неизведанное место").to_string(),
-            kind: "lazy".to_string(),
-            parent: String::new(),
-            region_id: String::new(),
-            default_description: String::new(),
-            state_flags: flags,
-            features: Vec::new(),
-            transition_ids: Vec::new(),
-            occupant_ids: BTreeSet::new(),
-            item_ids: Vec::new(),
-            event_ids: Vec::new(),
-            fact_ids: Vec::new(),
-            provenance: Provenance::by("lazy_gen", "materialised dangling exit", turn),
-        });
-        // Wire the forward edge's target.
-        if let Some(t) = canon.transitions.get_mut(transition_id) {
-            t.to_place = new_place_id.clone();
-        }
-        // Add a back transition so the player can always return (TZ §7.4).
-        let back_id = ids::stable_id(&canon.world_seed, &new_place_id, "transition", &from_place);
-        if !canon.transitions.contains_key(&back_id) {
-            canon.insert_transition(Transition {
-                transition_id: back_id.clone(),
-                source_exit_id: back_id.clone(),
-                from_place: new_place_id.clone(),
-                to_place: from_place.clone(),
-                destination_hint: String::new(),
-                label: "Назад".to_string(),
-                kind: "back".to_string(),
-                visible: true,
-                passable: true,
-                conditions: Vec::new(),
-                blocked_by: String::new(),
-                time_cost: travel_minutes,
-                risk: risk.clone(),
-                provenance: Provenance::by("lazy_gen", "return path", turn),
-            });
-        }
-        events.push(event(
-            canon,
-            "create_place",
-            turn,
-            start_minutes,
-            &new_place_id,
-            &[],
-            "lazy materialise destination",
-            &[format!("place:{new_place_id}")],
-            &Scope::GmPrivate,
-            &[],
-        ));
-        to_place = new_place_id;
+fn apply_relocate_player(
+    canon: &mut WorldCanon,
+    destination_place_id: &str,
+    elapsed_minutes: i64,
+    turn: i64,
+    reason: &str,
+) -> Vec<CanonEvent> {
+    let origin_place_id = canon.player_place_id.clone();
+    canon.clock_minutes += elapsed_minutes;
+    let now = canon.clock_minutes;
+    canon.player_place_id = destination_place_id.to_string();
+    canon.active_journey = None;
+    if let Some(destination) = canon.places.get_mut(destination_place_id) {
+        destination.mark_visited();
     }
+    let mut events = vec![event(
+        canon,
+        "relocate_player",
+        turn,
+        now,
+        destination_place_id,
+        &[],
+        nonempty(reason, "one-off player relocation"),
+        &[
+            format!("player_at:{destination_place_id}"),
+            format!("relocated_from:{origin_place_id}"),
+            format!("elapsed_minutes:{elapsed_minutes}"),
+            "reusable_passage:none".to_string(),
+        ],
+        &Scope::Player,
+        &[],
+    )];
+    events.extend(tick_offscreen(canon, now, turn));
+    events
+}
+
+fn apply_travel_player(
+    canon: &mut WorldCanon,
+    destination_place_id: &str,
+    requested_network_id: Option<&str>,
+    turn: i64,
+    reason: &str,
+) -> Vec<CanonEvent> {
+    let plan = navigation::plan_travel(canon, destination_place_id, requested_network_id)
+        .expect("validated travel plan");
+    let route_id = ids::stable_id(
+        &canon.world_seed,
+        &plan.origin_place_id,
+        "journey",
+        &format!(
+            "{}|{}|{}|{}",
+            plan.destination_place_id, plan.network_id, turn, canon.clock_minutes
+        ),
+    );
+    let risk = travel::TravelRisk::parse(&plan.risk).expect("validated travel plan risk");
+    let extra_effects = vec![
+        format!("travel_network:{}", plan.network_id),
+        format!("travel_links:{}", plan.link_ids.join(",")),
+        format!("travel_minutes:{}", plan.total_time_minutes),
+        format!("risk:{}", plan.risk),
+    ];
+    execute_player_travel(
+        canon,
+        PlayerTravel {
+            route_id,
+            from_place: plan.origin_place_id.clone(),
+            to_place: plan.destination_place_id.clone(),
+            duration_minutes: plan.total_time_minutes,
+            risk,
+            event_kind: "travel_player",
+            extra_effects,
+            plan: Some(plan),
+        },
+        turn,
+        reason,
+    )
+}
+
+struct PlayerTravel {
+    route_id: String,
+    from_place: String,
+    to_place: String,
+    duration_minutes: i64,
+    risk: travel::TravelRisk,
+    event_kind: &'static str,
+    extra_effects: Vec<String>,
+    plan: Option<TravelPlan>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn passage_transition(
+    transition_id: &str,
+    passage_id: &str,
+    directionality: PassageDirectionality,
+    from_place: &str,
+    to_place: &str,
+    label: &str,
+    kind: &str,
+    time_cost: i64,
+    risk: &str,
+    provenance: Provenance,
+) -> Transition {
+    Transition {
+        transition_id: transition_id.to_string(),
+        source_exit_id: transition_id.to_string(),
+        passage_id: passage_id.to_string(),
+        directionality,
+        from_place: from_place.to_string(),
+        to_place: to_place.to_string(),
+        destination_hint: String::new(),
+        label: label.to_string(),
+        kind: kind.to_string(),
+        visible: true,
+        passable: true,
+        conditions: Vec::new(),
+        blocked_by: String::new(),
+        time_cost,
+        risk: risk.to_string(),
+        provenance,
+    }
+}
+
+fn execute_player_travel(
+    canon: &mut WorldCanon,
+    travel: PlayerTravel,
+    turn: i64,
+    reason: &str,
+) -> Vec<CanonEvent> {
+    let mut events = Vec::new();
+    let start_minutes = canon.clock_minutes;
 
     if can_create_travel_situation(canon) {
         if let Some(situation) = travel::roll_travel_situation(travel::TravelRoll {
             world_seed: &canon.world_seed,
-            transition_id,
-            from_place: &from_place,
-            to_place: &to_place,
+            transition_id: &travel.route_id,
+            from_place: &travel.from_place,
+            to_place: &travel.to_place,
             turn,
             start_minutes,
-            duration_minutes: travel_minutes,
-            risk: &risk,
+            duration_minutes: travel.duration_minutes,
+            risk: travel.risk,
         }) {
             events.extend(apply_travel_situation(
                 canon,
-                transition_id,
-                &from_place,
-                &to_place,
-                &risk,
+                &travel.route_id,
+                &travel.from_place,
+                &travel.to_place,
+                travel.risk,
                 &situation,
                 turn,
                 reason,
             ));
+            if let Some(plan) = travel.plan.as_ref() {
+                canon.active_journey = Some(active_journey_at_situation(
+                    canon,
+                    &travel.route_id,
+                    plan,
+                    &situation.site_id,
+                    situation.elapsed_minutes,
+                ));
+            }
             let now = canon.clock_minutes;
             events.extend(tick_offscreen(canon, now, turn));
-            let _ = source;
             return events;
         }
     }
 
-    canon.clock_minutes += travel_minutes.max(0);
+    canon.clock_minutes += travel.duration_minutes.max(0);
     let now = canon.clock_minutes;
 
     // Move the player.
-    canon.player_place_id = to_place.clone();
-    if let Some(p) = canon.places.get_mut(&to_place) {
+    canon.player_place_id = travel.to_place.clone();
+    if let Some(p) = canon.places.get_mut(&travel.to_place) {
         p.mark_visited();
     }
+    if canon
+        .active_journey
+        .as_ref()
+        .is_some_and(|journey| journey.interruption_place_id == travel.from_place)
+    {
+        canon.active_journey = None;
+    }
 
+    let mut effects = vec![
+        format!("player_at:{}", travel.to_place),
+        format!("via:{}", travel.route_id),
+    ];
+    effects.extend(travel.extra_effects);
     events.push(event(
         canon,
-        "move_player",
+        travel.event_kind,
         turn,
         now,
-        &to_place,
+        &travel.to_place,
         &[],
         nonempty(reason, "player traversal"),
-        &[
-            format!("player_at:{to_place}"),
-            format!("via:{transition_id}"),
-        ],
+        &effects,
         &Scope::Player,
         &[],
     ));
-    let _ = source;
-
-    // If the destination is a shell, expand its interior now (first entry).
-    let is_shell = canon
-        .place(&to_place)
-        .map(|p| p.has_flag("shell"))
-        .unwrap_or(false);
-    if is_shell {
-        events.extend(expand_place_interior(canon, &to_place, turn));
-    }
     events.extend(tick_offscreen(canon, now, turn));
 
     events
+}
+
+fn active_journey_at_situation(
+    canon: &WorldCanon,
+    journey_id: &str,
+    plan: &TravelPlan,
+    place_id: &str,
+    elapsed_minutes: i64,
+) -> ActiveJourney {
+    let mut journey = ActiveJourney::from_plan(canon, journey_id, plan)
+        .expect("validated travel plan can create an active journey");
+    let mut elapsed_on_route = elapsed_minutes.max(0);
+    for (index, link_id) in plan.link_ids.iter().enumerate() {
+        let link = canon
+            .travel_link(link_id)
+            .expect("validated travel plan link");
+        if elapsed_on_route < link.time_cost_minutes {
+            journey.next_link_index = index;
+            journey.remaining_minutes_on_link = link.time_cost_minutes - elapsed_on_route;
+            break;
+        }
+        elapsed_on_route -= link.time_cost_minutes;
+    }
+    journey.elapsed_minutes = elapsed_minutes.max(0);
+    journey.interrupt_at(place_id);
+    journey
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -634,7 +878,7 @@ fn apply_travel_situation(
     transition_id: &str,
     from_place: &str,
     to_place: &str,
-    risk: &str,
+    risk: travel::TravelRisk,
     situation: &travel::TravelSituation,
     turn: i64,
     reason: &str,
@@ -644,6 +888,10 @@ fn apply_travel_situation(
     let region_id = canon
         .place(from_place)
         .map(|p| p.region_id.clone())
+        .unwrap_or_default();
+    let district_id = canon
+        .place(from_place)
+        .map(|p| p.district_id.clone())
         .unwrap_or_default();
 
     if !canon.places.contains_key(&site_id) {
@@ -657,6 +905,7 @@ fn apply_travel_situation(
             kind: "travel_site".to_string(),
             parent: from_place.to_string(),
             region_id,
+            district_id,
             default_description: situation.summary.clone(),
             state_flags: flags,
             features: vec!["дорожная ситуация".to_string()],
@@ -686,6 +935,8 @@ fn apply_travel_situation(
         canon.insert_transition(Transition {
             transition_id: continue_id.clone(),
             source_exit_id: continue_id.clone(),
+            passage_id: continue_id.clone(),
+            directionality: PassageDirectionality::OneWay,
             from_place: site_id.clone(),
             to_place: to_place.to_string(),
             destination_hint: String::new(),
@@ -696,15 +947,17 @@ fn apply_travel_situation(
             conditions: Vec::new(),
             blocked_by: String::new(),
             time_cost: situation.remaining_minutes,
-            risk: risk.to_string(),
+            risk: risk.as_str().to_string(),
             provenance: Provenance::by("travel", "remaining route", turn),
         });
     }
     let back_id = ids::stable_id(&canon.world_seed, &site_id, "transition", from_place);
     if !canon.transitions.contains_key(&back_id) {
         canon.insert_transition(Transition {
-            transition_id: back_id,
+            transition_id: back_id.clone(),
             source_exit_id: ids::stable_id(&canon.world_seed, &site_id, "exit", from_place),
+            passage_id: back_id,
+            directionality: PassageDirectionality::OneWay,
             from_place: site_id.clone(),
             to_place: from_place.to_string(),
             destination_hint: String::new(),
@@ -715,7 +968,7 @@ fn apply_travel_situation(
             conditions: Vec::new(),
             blocked_by: String::new(),
             time_cost: situation.elapsed_minutes,
-            risk: risk.to_string(),
+            risk: risk.as_str().to_string(),
             provenance: Provenance::by("travel", "return route", turn),
         });
     }
@@ -757,6 +1010,7 @@ fn apply_travel_situation(
             ),
             format!("situation_type:{}", situation.tone),
             format!("rarity:{}", situation.rarity),
+            format!("risk:{}", risk.as_str()),
             format!("chance_percent:{}", situation.chance_percent),
             format!("roll:{}", situation.roll),
             format!("elapsed_minutes:{}", situation.elapsed_minutes),
@@ -794,157 +1048,6 @@ fn move_actor(canon: &mut WorldCanon, actor_id: &str, to_place: &str) {
     if let Some(p) = canon.places.get_mut(to_place) {
         p.occupant_ids.insert(actor_id.to_string());
     }
-}
-
-/// Lazily generate a shell place's interior: a bounded chain of 2..=4 rooms, each
-/// linked forward AND back so the player can always leave (TZ §7.4). Removes the
-/// `shell` flag. Deterministic — uses only [`ids::DetRng`] and stable ids, zero
-/// campaign RNG. Bounded by `gen_budget.max_rooms_per_turn` /
-/// `max_events_per_turn`.
-pub fn expand_place_interior(canon: &mut WorldCanon, place_id: &str, turn: i64) -> Vec<CanonEvent> {
-    let mut events = Vec::new();
-    // Only expand a shell.
-    let was_shell = canon
-        .place(place_id)
-        .map(|p| p.has_flag("shell"))
-        .unwrap_or(false);
-    if !was_shell {
-        return events;
-    }
-    // Remove the shell flag (it is now revealed).
-    if let Some(p) = canon.places.get_mut(place_id) {
-        p.state_flags.remove("shell");
-        p.state_flags.insert("revealed".to_string());
-        if p.kind.is_empty() || p.kind == "lazy" {
-            p.kind = "dungeon_room".to_string();
-        }
-    }
-
-    let mut rng = ids::DetRng::from_parts(&[&canon.world_seed, place_id, "interior"]);
-    let cap = canon.gen_budget.max_rooms_per_turn.max(1);
-    // Each room adds a forward + back transition (2 edges), so the room count is
-    // also bounded by the per-turn transition budget (TZ §7.3 bounded).
-    let transition_cap = (canon.gen_budget.max_transitions_per_turn / 2).max(1);
-    let n_rooms = rng.range(2, 4).min(cap).min(transition_cap);
-    let max_events = canon.gen_budget.max_events_per_turn;
-    // Transition budget (TZ §7.3 "bounded"): each interior room wires a forward
-    // and a back edge (2 transitions). Stop creating rooms once another room's
-    // edges would exceed `max_transitions_per_turn`.
-    let max_transitions = canon.gen_budget.max_transitions_per_turn;
-    let mut transitions_made = 0usize;
-
-    let room_themes = [
-        "Тёмный коридор",
-        "Сырая келья",
-        "Обвалившийся зал",
-        "Старая крипта",
-    ];
-
-    let mut prev = place_id.to_string();
-    for i in 0..n_rooms {
-        // A room needs up to 2 new transitions; respect the per-turn cap.
-        if transitions_made + 2 > max_transitions {
-            break;
-        }
-        let room_id = ids::stable_id(&canon.world_seed, place_id, "room", &i.to_string());
-        if canon.places.contains_key(&room_id) {
-            prev = room_id;
-            continue;
-        }
-        let theme = rng.pick(&room_themes);
-        let mut flags = BTreeSet::new();
-        flags.insert("interior".to_string());
-        canon.insert_place(Place {
-            place_id: room_id.clone(),
-            name: format!("{theme} {}", i + 1),
-            kind: "dungeon_room".to_string(),
-            parent: place_id.to_string(),
-            region_id: String::new(),
-            default_description: String::new(),
-            state_flags: flags,
-            features: Vec::new(),
-            transition_ids: Vec::new(),
-            occupant_ids: BTreeSet::new(),
-            item_ids: Vec::new(),
-            event_ids: Vec::new(),
-            fact_ids: Vec::new(),
-            provenance: Provenance::by("lazy_gen", "interior room", turn),
-        });
-        if events.len() < max_events {
-            events.push(event(
-                canon,
-                "create_place",
-                turn,
-                canon.clock_minutes,
-                &room_id,
-                &[],
-                "interior room",
-                &[format!("place:{room_id}")],
-                &Scope::GmPrivate,
-                &[],
-            ));
-        }
-
-        // Forward edge prev -> room.
-        let fwd = ids::stable_id(&canon.world_seed, &prev, "transition", &room_id);
-        if !canon.transitions.contains_key(&fwd) {
-            canon.insert_transition(Transition {
-                transition_id: fwd.clone(),
-                source_exit_id: fwd.clone(),
-                from_place: prev.clone(),
-                to_place: room_id.clone(),
-                destination_hint: String::new(),
-                label: "Дальше".to_string(),
-                kind: "passage".to_string(),
-                visible: true,
-                passable: true,
-                conditions: Vec::new(),
-                blocked_by: String::new(),
-                time_cost: 2,
-                risk: "none: short interior passage".to_string(),
-                provenance: Provenance::by("lazy_gen", "interior passage", turn),
-            });
-            transitions_made += 1;
-            if events.len() < max_events {
-                events.push(event(
-                    canon,
-                    "create_transition",
-                    turn,
-                    canon.clock_minutes,
-                    &prev,
-                    &[],
-                    "interior passage",
-                    &[format!("transition:{fwd}")],
-                    &Scope::GmPrivate,
-                    &[],
-                ));
-            }
-        }
-        // Back edge room -> prev.
-        let back = ids::stable_id(&canon.world_seed, &room_id, "transition", &prev);
-        if !canon.transitions.contains_key(&back) {
-            canon.insert_transition(Transition {
-                transition_id: back.clone(),
-                source_exit_id: back.clone(),
-                from_place: room_id.clone(),
-                to_place: prev.clone(),
-                destination_hint: String::new(),
-                label: "Назад".to_string(),
-                kind: "back".to_string(),
-                visible: true,
-                passable: true,
-                conditions: Vec::new(),
-                blocked_by: String::new(),
-                time_cost: 2,
-                risk: "none: short interior return".to_string(),
-                provenance: Provenance::by("lazy_gen", "interior return", turn),
-            });
-            transitions_made += 1;
-        }
-        prev = room_id;
-    }
-
-    events
 }
 
 /// Resolve scheduled events whose `due_minutes <= now_minutes`, applying their

@@ -29,7 +29,7 @@ use gml_llm::{
 use gml_mock::MockClient;
 use gml_orchestrator::{run_tool_collect, ClientFactory, Session};
 use gml_stories::StoryStore;
-use gml_world::{Npc, Place, Provenance, Transition, World};
+use gml_world::{Npc, PassageDirectionality, Place, Provenance, Transition, World};
 
 fn factory() -> ClientFactory {
     Arc::new(|| Arc::new(MockClient::new()) as Arc<dyn Backend>)
@@ -202,23 +202,22 @@ fn a_valid_transition(session: &Session) -> String {
 }
 
 #[test]
-fn move_player_commits_a_valid_traversal_through_the_canon() {
+fn move_player_completes_an_unresolved_exit_through_the_location_creator() {
     let mut session = seeded_session();
     let start = session.world.world_canon.player_place_id.clone();
     let transition_id = a_valid_transition(&session);
-    let expected_minutes = session
+    let route = session
         .world
         .world_canon
-        .transition(&transition_id)
-        .map(|transition| {
-            gml_world::canon::travel::normalized_time_cost(
-                &transition.kind,
-                &transition.label,
-                &transition.destination_hint,
-                transition.time_cost,
-            )
-        })
-        .expect("valid transition");
+        .transitions
+        .get_mut(&transition_id)
+        .expect("selected transition exists");
+    route.kind = "path".to_string();
+    route.time_cost = 9;
+    route.risk = "medium".to_string();
+    route.passage_id = "passage:creator-authored-exit".to_string();
+    route.directionality = PassageDirectionality::Bidirectional;
+    route.provenance = Provenance::by("location_generator", "creator-authored exit", 0);
     let before_minutes = session.world.time.absolute_minutes;
 
     let (events, result) = block_on(run_tool_collect(
@@ -233,28 +232,48 @@ fn move_player_commits_a_valid_traversal_through_the_canon() {
         json!(true),
         "valid move must succeed: {payload}"
     );
-    assert_eq!(payload["status"], json!("moved"));
+    assert_eq!(payload["status"], json!("generated"));
+    assert_eq!(payload["applied"]["entered"], json!(true));
+    assert_eq!(
+        payload["request"]["creator_established_entry_profile"],
+        json!({
+            "kind": "path",
+            "time_cost_minutes": 9,
+            "risk": "medium",
+            "passage_id": "passage:creator-authored-exit",
+            "directionality": "bidirectional"
+        }),
+        "a valid unresolved profile authored by the location creator remains explicit context"
+    );
 
     let new_place = session.world.world_canon.player_place_id.clone();
     assert_ne!(new_place, start, "player must have left the start place");
     assert_eq!(
-        payload["place_id"].as_str().unwrap_or(""),
+        payload["applied"]["place_id"].as_str().unwrap_or(""),
         new_place,
         "reported place must match canon player_place_id"
     );
-    // At least the move_player event was committed to the canon log.
-    assert!(payload["events"].as_i64().unwrap_or(0) >= 1);
-    assert_eq!(payload["elapsed_minutes"], json!(expected_minutes));
+    let elapsed_minutes = payload["applied"]["elapsed_minutes"]
+        .as_i64()
+        .expect("creator-backed entry reports elapsed minutes");
+    assert!(elapsed_minutes > 0);
+    assert!(session
+        .world
+        .world_canon
+        .event_log
+        .events
+        .iter()
+        .any(|event| event.kind == "move_player" && event.place_id == new_place));
     assert_eq!(
         session.world.time.absolute_minutes,
-        before_minutes + expected_minutes
+        before_minutes + elapsed_minutes
     );
     assert_eq!(
         session.world.time.absolute_minutes, session.world.world_canon.clock_minutes,
         "ordinary movement must keep the visible and canonical clocks aligned"
     );
     assert!(events.iter().any(|event| {
-        event.kind == "time" && event.data["elapsed_minutes"] == json!(expected_minutes)
+        event.kind == "time" && event.data["elapsed_minutes"] == json!(elapsed_minutes)
     }));
 }
 
@@ -272,6 +291,15 @@ fn move_player_can_return_to_start_and_state_persists() {
     let arrived = session.world.world_canon.player_place_id.clone();
     assert_ne!(arrived, start);
 
+    let forward = session
+        .world
+        .world_canon
+        .transition(&out)
+        .expect("forward transition remains in canon");
+    assert_eq!(forward.directionality, PassageDirectionality::Bidirectional);
+    assert!(!forward.passage_id.is_empty());
+    let forward_passage_id = forward.passage_id.clone();
+
     // Find the return edge back to start and take it.
     let back = session
         .world
@@ -281,6 +309,16 @@ fn move_player_can_return_to_start_and_state_persists() {
         .find(|t| t.to_place == start && t.visible && t.passable)
         .map(|t| t.transition_id.clone())
         .expect("there must be a way back to the start place (TZ §7.4)");
+    let return_transition = session
+        .world
+        .world_canon
+        .transition(&back)
+        .expect("return transition remains in canon");
+    assert_eq!(
+        return_transition.directionality,
+        PassageDirectionality::Bidirectional
+    );
+    assert_eq!(return_transition.passage_id, forward_passage_id);
 
     let (_events, result) = block_on(run_tool_collect(
         &mut session,
@@ -293,6 +331,127 @@ fn move_player_can_return_to_start_and_state_persists() {
         session.world.world_canon.player_place_id, start,
         "player returned to the start place"
     );
+}
+
+#[test]
+fn one_way_drop_has_no_reverse_and_remains_reusable_from_its_source() {
+    let scripted: Map<String, Value> = serde_json::from_value(json!({
+        "name": "Дно обрыва",
+        "kind": "dungeon_point",
+        "visible_summary": "Каменное дно под отвесным уступом.",
+        "description": "Обратно на уступ отсюда не подняться тем же путём.",
+        "features": ["отвесный уступ"],
+        "choices": ["искать другой выход"],
+        "entry_transition": {
+            "label": "Прыгнуть в обрыв",
+            "directionality": "one_way",
+            "kind": "drop",
+            "time_cost_minutes": 1,
+            "risk": "high"
+        },
+        "transitions": [],
+        "anti_repeat_key": "test-one-way-chasm",
+        "memory_note": "Спуск в обрыв односторонний."
+    }))
+    .expect("scripted location is an object");
+    let generator_factory: ClientFactory = Arc::new(move || {
+        Arc::new(IdentityBackend::with_scripted_json(
+            "one-way-location-generator",
+            scripted.clone(),
+        )) as Arc<dyn Backend>
+    });
+    let world = World::from_seed_with_dice_seed(&default_story_seed(), 20260717);
+    let mut session = Session::with_world(client(), world, generator_factory);
+    let cave_id = session.world.world_canon.player_place_id.clone();
+
+    let (_events, generated) = block_on(run_tool_collect(
+        &mut session,
+        "generate_location",
+        &json!({
+            "purpose": "dungeon_point",
+            "request": "Игрок прыгает с уступа в обрыв; этот физический спуск необратим.",
+            "commit": true,
+            "player_observed": true,
+            "enter_after_commit": true,
+        }),
+    ));
+    let payload: Value = serde_json::from_str(&generated.full).expect("generation result JSON");
+    assert_eq!(payload["ok"], true, "{payload}");
+    let fall_id = payload["applied"]["entry_transition_id"]
+        .as_str()
+        .expect("fall transition id")
+        .to_string();
+    let chasm_id = session.world.world_canon.player_place_id.clone();
+    assert_ne!(chasm_id, cave_id);
+
+    let fall = session
+        .world
+        .world_canon
+        .transition(&fall_id)
+        .expect("fall transition")
+        .clone();
+    assert_eq!(fall.from_place, cave_id);
+    assert_eq!(fall.to_place, chasm_id);
+    assert_eq!(fall.directionality, PassageDirectionality::OneWay);
+    assert!(!fall.passage_id.is_empty());
+    assert!(session
+        .world
+        .world_canon
+        .exits_from(&fall.to_place)
+        .into_iter()
+        .all(|transition| transition.passage_id != fall.passage_id));
+
+    let before_wrong_side = session.world.world_canon.clone();
+    let (_events, rejected) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": fall_id}),
+    ));
+    assert!(
+        rejected.model.contains("code: not_here"),
+        "{}",
+        rejected.model
+    );
+    assert_eq!(session.world.world_canon, before_wrong_side);
+
+    let climb_id = "separate_chasm_climb".to_string();
+    session.world.world_canon.insert_transition(Transition {
+        transition_id: climb_id.clone(),
+        source_exit_id: climb_id.clone(),
+        passage_id: "separate_chasm_climb_passage".to_string(),
+        directionality: PassageDirectionality::OneWay,
+        from_place: chasm_id.clone(),
+        to_place: cave_id.clone(),
+        label: "Выбраться долгим обходом".to_string(),
+        kind: "climb".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 18,
+        risk: "medium".to_string(),
+        provenance: Provenance::by("test", "separate return route", 0),
+        ..Default::default()
+    });
+    let (_events, climbed) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": climb_id}),
+    ));
+    assert_eq!(
+        serde_json::from_str::<Value>(&climbed.full).unwrap()["ok"],
+        true
+    );
+    assert_eq!(session.world.world_canon.player_place_id, cave_id);
+
+    let (_events, repeated) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": fall_id}),
+    ));
+    assert_eq!(
+        serde_json::from_str::<Value>(&repeated.full).unwrap()["ok"],
+        true
+    );
+    assert_eq!(session.world.world_canon.player_place_id, chasm_id);
 }
 
 #[test]
@@ -659,7 +818,107 @@ fn generated_entry_uses_current_place_and_syncs_symmetric_travel_time() {
 }
 
 #[test]
-fn generate_location_skips_duplicate_generated_return_exit_to_parent() {
+fn move_player_profiles_a_legacy_route_without_guessing_its_reciprocal() {
+    let mut session = seeded_session();
+    let from_place = session.world.world_canon.player_place_id.clone();
+    let to_place = "legacy_shop".to_string();
+    session.world.world_canon.insert_place(Place {
+        place_id: to_place.clone(),
+        name: "Старая лавка".to_string(),
+        kind: "shop".to_string(),
+        provenance: Provenance::by("test", "legacy destination", 0),
+        ..Default::default()
+    });
+    let forward_id = "legacy_shop_forward".to_string();
+    let return_id = "legacy_shop_return".to_string();
+    session.world.world_canon.insert_transition(Transition {
+        transition_id: forward_id.clone(),
+        source_exit_id: forward_id.clone(),
+        from_place: from_place.clone(),
+        to_place: to_place.clone(),
+        label: "К лавке".to_string(),
+        kind: "path".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 4,
+        risk: "low".to_string(),
+        provenance: Provenance::by("test", "legacy forward", 0),
+        ..Default::default()
+    });
+    session.world.world_canon.insert_transition(Transition {
+        transition_id: return_id.clone(),
+        source_exit_id: return_id.clone(),
+        from_place: to_place.clone(),
+        to_place: from_place,
+        label: "К исходной локации".to_string(),
+        kind: "door".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 1,
+        risk: "none".to_string(),
+        provenance: Provenance::by("test", "legacy return", 0),
+        ..Default::default()
+    });
+
+    let (_events, result) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": forward_id, "reason": "вхожу в лавку"}),
+    ));
+    let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
+    assert_eq!(payload["ok"], json!(true), "payload: {payload}");
+    assert_eq!(payload["applied"]["entered"], json!(true));
+    assert!(
+        payload["request"]
+            .get("creator_established_entry_profile")
+            .is_none(),
+        "an asymmetric legacy profile must not constrain the location creator: {payload}"
+    );
+
+    let forward = session
+        .world
+        .world_canon
+        .transition("legacy_shop_forward")
+        .expect("forward transition");
+    assert_eq!(forward.directionality, PassageDirectionality::Bidirectional);
+    assert!(!forward.passage_id.is_empty());
+    assert_eq!(forward.time_cost, 7);
+
+    let explicit_reciprocal = session
+        .world
+        .world_canon
+        .exits_from(&to_place)
+        .into_iter()
+        .find(|candidate| {
+            candidate.transition_id != return_id
+                && candidate.to_place == forward.from_place
+                && candidate.passage_id == forward.passage_id
+        })
+        .expect("creator adds the explicit reciprocal for the new passage identity");
+    assert_eq!(explicit_reciprocal.kind, forward.kind);
+    assert_eq!(explicit_reciprocal.time_cost, forward.time_cost);
+    assert_eq!(explicit_reciprocal.risk, forward.risk);
+    assert_eq!(
+        explicit_reciprocal.directionality,
+        PassageDirectionality::Bidirectional
+    );
+
+    let unrelated_legacy_reverse = session
+        .world
+        .world_canon
+        .transition(&return_id)
+        .expect("legacy reverse remains in canon");
+    assert_eq!(unrelated_legacy_reverse.kind, "door");
+    assert_eq!(unrelated_legacy_reverse.time_cost, 1);
+    assert!(unrelated_legacy_reverse.passage_id.is_empty());
+    assert_eq!(
+        unrelated_legacy_reverse.directionality,
+        PassageDirectionality::Unspecified
+    );
+}
+
+#[test]
+fn generate_location_leaves_invalid_route_rejection_to_the_canon_validator() {
     let world = World::from_seed_with_dice_seed(&default_story_seed(), 20260622);
     let here = world.world_canon.player_place_id.clone();
     let scripted: Map<String, Value> = serde_json::from_value(json!({
@@ -674,9 +933,18 @@ fn generate_location_skips_duplicate_generated_return_exit_to_parent() {
         "consequences": [],
         "hidden_clues": [],
         "knows_more": [],
+        "entry_transition": {
+            "label": "Войти во двор",
+            "return_label": "Вернуться на площадь",
+            "directionality": "bidirectional",
+            "kind": "passage",
+            "time_cost_minutes": 2,
+            "risk": "none"
+        },
         "transitions": [{
             "label": "Назад к рыночной площади",
             "destination_hint": format!("Возврат к [[loc:{here}|Рыночная площадь]]"),
+            "directionality": "one_way",
             "kind": "back",
             "time_cost_minutes": 0,
             "risk": "none"
@@ -692,6 +960,7 @@ fn generate_location_skips_duplicate_generated_return_exit_to_parent() {
         )) as Arc<dyn Backend>
     });
     let mut session = Session::with_world(client(), world, generator_factory);
+    let before = session.world.world_canon.clone();
 
     let (_events, result) = block_on(run_tool_collect(
         &mut session,
@@ -705,27 +974,8 @@ fn generate_location_skips_duplicate_generated_return_exit_to_parent() {
         }),
     ));
     let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
-    let place_id = payload["applied"]["place_id"]
-        .as_str()
-        .expect("generated place id")
-        .to_string();
-    let exits = session.world.world_canon.exits_from(&place_id);
-    let parent_edges = exits
-        .iter()
-        .filter(|transition| transition.to_place == here)
-        .count();
-    assert_eq!(
-        parent_edges, 1,
-        "the engine-created back edge is enough; generator return hooks must not duplicate it"
-    );
-    assert!(
-        exits.iter().all(|transition| {
-            transition.to_place == here
-                || !transition.label.to_lowercase().contains("назад")
-                || !transition.to_place.is_empty()
-        }),
-        "duplicate generated return exits must not become lazy unknown destinations: {exits:?}"
-    );
+    assert_eq!(payload["applied"]["code"], "invalid_transition_profile");
+    assert_eq!(session.world.world_canon, before);
 }
 
 #[test]
@@ -841,9 +1091,18 @@ fn generate_location_rejection_is_validator_gated_and_atomic() {
         "consequences": [],
         "hidden_clues": [],
         "knows_more": [],
+        "entry_transition": {
+            "label": "В тестовый проход",
+            "return_label": "Вернуться",
+            "directionality": "bidirectional",
+            "kind": "path",
+            "time_cost_minutes": 2,
+            "risk": "none"
+        },
         "transitions": [{
             "label": "В тестовый тупик",
             "destination_hint": "тестовый тупик",
+            "directionality": "one_way",
             "kind": "path",
             "time_cost_minutes": -5,
             "risk": "test"
@@ -874,10 +1133,7 @@ fn generate_location_rejection_is_validator_gated_and_atomic() {
         }),
     ));
     let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
-    assert_eq!(payload["ok"], json!(false), "payload: {payload}");
-    assert_eq!(payload["committed"], json!(false), "payload: {payload}");
-    assert_eq!(payload["applied"]["status"], json!("rejected"));
-    assert_eq!(payload["applied"]["code"], json!("negative_travel_time"));
+    assert_eq!(payload["applied"]["code"], "invalid_transition_profile");
     assert_eq!(
         session.world.world_canon, before,
         "rejected generation must not partially commit the generated place/event/transition"
@@ -940,7 +1196,7 @@ fn set_model_for_all_clients_updates_location_generator_state_and_cache_identity
 }
 
 #[test]
-fn move_player_auto_fills_lazy_destination_with_one_scene_update() {
+fn move_player_fills_a_contentless_destination_with_one_scene_update() {
     let mut session = seeded_session();
     let from = session.world.world_canon.player_place_id.clone();
     let destination = "raw_cell".to_string();
@@ -955,6 +1211,8 @@ fn move_player_auto_fills_lazy_destination_with_one_scene_update() {
     session.world.world_canon.insert_transition(Transition {
         transition_id: transition_id.clone(),
         source_exit_id: transition_id.clone(),
+        passage_id: "follow_tracks_passage".to_string(),
+        directionality: PassageDirectionality::OneWay,
         from_place: from,
         to_place: destination.clone(),
         destination_hint: "сырая келья".to_string(),
@@ -981,7 +1239,7 @@ fn move_player_auto_fills_lazy_destination_with_one_scene_update() {
         payload["generated_destination"]["applied"]["place_id"]
             .as_str()
             .is_some(),
-        "the lazy destination must be filled: {payload}"
+        "the contentless destination must be filled: {payload}"
     );
     assert_eq!(
         events
@@ -990,6 +1248,85 @@ fn move_player_auto_fills_lazy_destination_with_one_scene_update() {
             .count(),
         1,
         "one move must publish exactly one final scene update: {events:?}"
+    );
+}
+
+#[test]
+fn move_player_resolves_a_shell_through_the_location_creator_before_entry() {
+    let mut session = seeded_session();
+    let from = session.world.world_canon.player_place_id.clone();
+    let destination = "sealed_crypt".to_string();
+    session.world.world_canon.insert_place(Place {
+        place_id: destination.clone(),
+        name: "Запечатанная крипта".to_string(),
+        kind: "dungeon".to_string(),
+        state_flags: ["shell".to_string()].into_iter().collect(),
+        provenance: Provenance::by("test", "unresolved shell", 0),
+        ..Default::default()
+    });
+    let transition_id = "enter_sealed_crypt".to_string();
+    session.world.world_canon.insert_transition(Transition {
+        transition_id: transition_id.clone(),
+        source_exit_id: transition_id.clone(),
+        from_place: from.clone(),
+        to_place: destination.clone(),
+        destination_hint: "запечатанная крипта".to_string(),
+        label: "Войти в крипту".to_string(),
+        kind: "stairs".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 2,
+        risk: "low".to_string(),
+        provenance: Provenance::by("test", "known shell entrance", 0),
+        ..Default::default()
+    });
+
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "move_player",
+        &json!({"transition_id": transition_id, "reason": "спускаюсь в крипту"}),
+    ));
+    let payload: Value = serde_json::from_str(&result.full).expect("full is JSON");
+
+    assert_eq!(payload["ok"], json!(true), "{payload}");
+    assert_eq!(payload["applied"]["place_id"], destination);
+    assert_eq!(session.world.world_canon.player_place_id, destination);
+    let place = session
+        .world
+        .world_canon
+        .place(&destination)
+        .expect("creator completed the existing shell");
+    assert!(!place.has_flag("shell"));
+    assert!(place.has_flag("generated"));
+    assert!(
+        !session
+            .world
+            .world_canon
+            .places
+            .values()
+            .any(|candidate| candidate.parent == destination),
+        "the canon engine must not synthesize hard-coded interior rooms"
+    );
+    let forward = session
+        .world
+        .world_canon
+        .transition("enter_sealed_crypt")
+        .expect("creator configured the entry route");
+    let reverse = session
+        .world
+        .world_canon
+        .exits_from(&destination)
+        .into_iter()
+        .find(|route| route.to_place == from)
+        .expect("creator configured the return route");
+    assert_eq!(forward.time_cost, reverse.time_cost);
+    assert_eq!(forward.risk, reverse.risk);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "scene_update")
+            .count(),
+        1
     );
 }
 
@@ -1009,6 +1346,8 @@ fn move_player_auto_generates_long_road_situation_content() {
     session.world.world_canon.insert_transition(Transition {
         transition_id: transition_id.clone(),
         source_exit_id: transition_id.clone(),
+        passage_id: "test_long_road_passage".to_string(),
+        directionality: PassageDirectionality::OneWay,
         from_place: from,
         to_place: destination.clone(),
         destination_hint: "дальняя башня".to_string(),
@@ -1017,7 +1356,7 @@ fn move_player_auto_generates_long_road_situation_content() {
         visible: true,
         passable: true,
         time_cost: 48 * 60,
-        risk: "certain wild road: test-only guaranteed situation".to_string(),
+        risk: "certain".to_string(),
         provenance: Provenance::by("test", "long road", 0),
         ..Default::default()
     });
@@ -1076,9 +1415,8 @@ fn canon_tools_are_available_in_the_canon_catalog() {
     assert!(!static_names.iter().any(|n| n == "world_debug"));
 
     // The new tools live in the separate additive builder, appended at the end.
-    // The core additive set is fixed; `long_rest` is a later deferred addition by
-    // the canon builder, so tolerate (but do not require) its presence rather than
-    // pinning an exact length that the parallel owner would break.
+    // The core additive set is fixed; deferred/rest and distant-travel tools are
+    // recognized trailing additions rather than part of the legacy ordering.
     let core = [
         "move_player",
         "world_debug",
@@ -1108,8 +1446,249 @@ fn canon_tools_are_available_in_the_canon_catalog() {
     );
     // Any trailing entry beyond the core must be a recognized later addition.
     for extra in canon_names.iter().skip(core.len()) {
-        assert_eq!(extra, "long_rest", "unexpected extra canon tool: {extra}");
+        assert!(
+            matches!(
+                extra.as_str(),
+                "long_rest"
+                    | "travel_to"
+                    | "relocate_player"
+                    | "create_passage"
+                    | "set_passage_state"
+            ),
+            "unexpected extra canon tool: {extra}"
+        );
     }
+}
+
+fn add_complete_place(session: &mut Session, place_id: &str, name: &str) {
+    let mut place = Place {
+        place_id: place_id.to_string(),
+        name: name.to_string(),
+        kind: "test_place".to_string(),
+        default_description: format!("Complete test place: {name}"),
+        provenance: Provenance::by("test", "dynamic passage endpoint", 0),
+        ..Default::default()
+    };
+    place.mark_visited();
+    session.world.world_canon.insert_place(place);
+}
+
+fn assert_place_card_unchanged(before: &Place, after: &Place) {
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.kind, before.kind);
+    assert_eq!(after.parent, before.parent);
+    assert_eq!(after.region_id, before.region_id);
+    assert_eq!(after.district_id, before.district_id);
+    assert_eq!(after.default_description, before.default_description);
+    assert_eq!(after.state_flags, before.state_flags);
+    assert_eq!(after.features, before.features);
+    assert_eq!(after.provenance, before.provenance);
+}
+
+#[test]
+fn relocate_player_moves_once_without_creating_reusable_geography() {
+    let mut session = seeded_session();
+    let destination_id = "relocation_destination";
+    add_complete_place(&mut session, destination_id, "Верх обрыва");
+    let origin_id = session.world.world_canon.player_place_id.clone();
+    let transitions_before = session.world.world_canon.transitions.clone();
+    let clock_before = session.world.world_canon.clock_minutes;
+
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "relocate_player",
+        &json!({
+            "destination_place_id": destination_id,
+            "elapsed_minutes": 3,
+            "reason": "Игрок взлетел обратно на собственных крыльях"
+        }),
+    ));
+
+    let payload: Value = serde_json::from_str(&result.full).expect("relocation payload");
+    assert_eq!(payload["ok"], json!(true));
+    assert_eq!(payload["status"], json!("relocated"));
+    assert_eq!(payload["origin_place_id"], json!(origin_id));
+    assert_eq!(payload["destination_place_id"], json!(destination_id));
+    assert_eq!(payload["reusable_passage_created"], json!(false));
+    assert_eq!(session.world.world_canon.player_place_id, destination_id);
+    assert_eq!(session.world.world_canon.transitions, transitions_before);
+    assert_eq!(session.world.world_canon.clock_minutes, clock_before + 3);
+    assert!(events.iter().any(|event| event.kind == "scene_update"));
+}
+
+#[test]
+fn create_passage_uses_location_creator_without_rewriting_endpoint_cards() {
+    let scripted = json!({
+        "entry_transition": {
+            "label": "Через разбитое окно",
+            "return_label": "Влезть обратно через окно",
+            "directionality": "bidirectional",
+            "kind": "window",
+            "time_cost_minutes": 2,
+            "risk": "low"
+        },
+        "anti_repeat_key": "broken-window-route"
+    })
+    .as_object()
+    .expect("scripted passage profile")
+    .clone();
+    let generator_factory: ClientFactory = Arc::new(move || {
+        Arc::new(IdentityBackend::with_scripted_json(
+            "passage-location-generator",
+            scripted.clone(),
+        )) as Arc<dyn Backend>
+    });
+    let world = World::from_seed_with_dice_seed(&default_story_seed(), 20260717);
+    let mut session = Session::with_world(client(), world, generator_factory);
+    let from_place_id = session.world.world_canon.player_place_id.clone();
+    let to_place_id = "known_street_outside_window";
+    add_complete_place(&mut session, to_place_id, "Улица под окном");
+    let from_before = session
+        .world
+        .world_canon
+        .place(&from_place_id)
+        .expect("source place")
+        .clone();
+    let to_before = session
+        .world
+        .world_canon
+        .place(to_place_id)
+        .expect("target place")
+        .clone();
+
+    let (_events, result) = block_on(run_tool_collect(
+        &mut session,
+        "create_passage",
+        &json!({
+            "from_place_id": from_place_id,
+            "to_place_id": to_place_id,
+            "request": "Разбитое окно теперь образует постоянный проход между комнатой и улицей",
+            "reason": "Окно разбито и проём остаётся доступным"
+        }),
+    ));
+
+    let payload: Value = serde_json::from_str(&result.full).expect("passage payload");
+    assert_eq!(payload["ok"], json!(true));
+    assert_eq!(payload["status"], json!("passage_created"));
+    assert_eq!(payload["directionality"], json!("bidirectional"));
+    assert_eq!(payload["place_cards_updated"], json!(false));
+    assert_place_card_unchanged(
+        &from_before,
+        session
+            .world
+            .world_canon
+            .place(&from_place_id)
+            .expect("source after passage"),
+    );
+    assert_place_card_unchanged(
+        &to_before,
+        session
+            .world
+            .world_canon
+            .place(to_place_id)
+            .expect("target after passage"),
+    );
+
+    let passage_id = payload["passage_id"].as_str().expect("passage id");
+    let transition_ids = payload["transition_ids"]
+        .as_array()
+        .expect("transition ids");
+    assert_eq!(transition_ids.len(), 2);
+    for transition_id in transition_ids {
+        let transition = session
+            .world
+            .world_canon
+            .transition(transition_id.as_str().expect("transition id"))
+            .expect("created transition");
+        assert_eq!(transition.passage_id, passage_id);
+        assert_eq!(
+            transition.directionality,
+            PassageDirectionality::Bidirectional
+        );
+        assert!(transition.passable);
+    }
+    let generator_history =
+        serde_json::to_string(&session.location_generator_messages).expect("generator history");
+    assert!(generator_history.contains("passage"));
+    assert!(generator_history.contains(to_place_id));
+
+    let selected_transition_id = transition_ids[0].as_str().expect("selected transition");
+    let (_events, closed) = block_on(run_tool_collect(
+        &mut session,
+        "set_passage_state",
+        &json!({
+            "transition_id": selected_transition_id,
+            "state": "closed",
+            "reason": "Окно заколотили досками"
+        }),
+    ));
+    let closed_payload: Value = serde_json::from_str(&closed.full).expect("closed payload");
+    assert_eq!(closed_payload["status"], json!("passage_closed"));
+    for transition in session
+        .world
+        .world_canon
+        .transitions
+        .values()
+        .filter(|transition| transition.passage_id == passage_id)
+    {
+        assert!(!transition.passable);
+        assert_eq!(transition.blocked_by, "Окно заколотили досками");
+    }
+
+    let (_events, opened) = block_on(run_tool_collect(
+        &mut session,
+        "set_passage_state",
+        &json!({
+            "transition_id": selected_transition_id,
+            "state": "open",
+            "reason": "Доски сняли"
+        }),
+    ));
+    let opened_payload: Value = serde_json::from_str(&opened.full).expect("opened payload");
+    assert_eq!(opened_payload["status"], json!("passage_opened"));
+    for transition in session
+        .world
+        .world_canon
+        .transitions
+        .values()
+        .filter(|transition| transition.passage_id == passage_id)
+    {
+        assert!(transition.passable);
+        assert!(transition.blocked_by.is_empty());
+    }
+}
+
+#[test]
+fn invalid_location_creator_passage_profile_is_atomic() {
+    let scripted = json!({"name": "No passage profile"})
+        .as_object()
+        .expect("invalid scripted response")
+        .clone();
+    let generator_factory: ClientFactory = Arc::new(move || {
+        Arc::new(IdentityBackend::with_scripted_json(
+            "invalid-passage-generator",
+            scripted.clone(),
+        )) as Arc<dyn Backend>
+    });
+    let world = World::from_seed_with_dice_seed(&default_story_seed(), 20260717);
+    let mut session = Session::with_world(client(), world, generator_factory);
+    let from_place_id = session.world.world_canon.player_place_id.clone();
+    let to_place_id = "invalid_passage_target";
+    add_complete_place(&mut session, to_place_id, "Другой двор");
+    let before = session.world.world_canon.clone();
+
+    let (_events, result) = block_on(run_tool_collect(
+        &mut session,
+        "create_passage",
+        &json!({
+            "from_place_id": from_place_id,
+            "to_place_id": to_place_id,
+            "request": "Новый постоянный проход"
+        }),
+    ));
+
+    assert!(result.model.contains("code: invalid_generated_passage"));
+    assert_eq!(session.world.world_canon, before);
 }
 
 // --- read_state dispatch (GM_CONTEXT_TZ §4) --------------------------------

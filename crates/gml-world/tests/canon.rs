@@ -14,7 +14,7 @@
 
 use serde_json::{json, Value};
 
-use gml_world::{World, GENERATOR_VERSION};
+use gml_world::{PassageDirectionality, World, GENERATOR_VERSION};
 
 /// A self-contained seed: a tavern hall with two NPCs, one item, and three
 /// exits (one blocked) — enough to exercise the full Phase-1 derivation.
@@ -107,6 +107,9 @@ fn every_exit_becomes_a_transition() {
         // Phase 1: targets are unresolved shells; the freetext destination is
         // preserved for later resolution.
         assert!(t.is_shell(), "Phase 1 transitions are shells");
+        assert!(t.kind.is_empty());
+        assert_eq!(t.time_cost, 0);
+        assert!(t.risk.is_empty());
         // Passability is derived from the legacy blocker.
         assert_eq!(t.passable, exit.blocked_by.is_empty());
     }
@@ -250,15 +253,43 @@ fn build_current_view_anchors_on_canon_player_place() {
     let start = world.world_canon.player_place_id.clone();
     assert_eq!(world.scene.location_id, start);
 
-    // Move the player through the canon (north_gate -> a lazily materialised
-    // place). The legacy scene is now STALE until refreshed.
-    let tid = world
+    // Resolve the seed shell with an explicit destination/profile, then move.
+    // The legacy scene is now STALE until refreshed.
+    let transition = world
         .world_canon
         .exits_from(&start)
         .into_iter()
         .find(|t| t.visible && t.passable)
-        .map(|t| t.transition_id.clone())
+        .cloned()
         .expect("an open exit");
+    let tid = transition.transition_id.clone();
+    let destination = "resolved_north_gate".to_string();
+    world.world_canon.insert_place(gml_world::canon::Place {
+        place_id: destination.clone(),
+        name: "Resolved destination".to_string(),
+        kind: "site".to_string(),
+        provenance: gml_world::canon::Provenance::by("test", "resolved seed exit", 0),
+        ..Default::default()
+    });
+    engine::apply(
+        &mut world.world_canon,
+        &ProposedAction::new(
+            Action::ConfigureTransition {
+                transition_id: tid.clone(),
+                passage_id: "resolved_north_gate_passage".to_string(),
+                directionality: PassageDirectionality::OneWay,
+                to_place: destination,
+                label: transition.label,
+                kind: "path".to_string(),
+                time_cost: 5,
+                risk: "none".to_string(),
+            },
+            "gm",
+            "configure route",
+        ),
+        1,
+    )
+    .unwrap();
     engine::apply(
         &mut world.world_canon,
         &ProposedAction::new(Action::MovePlayer { transition_id: tid }, "gm", "move"),
@@ -301,6 +332,7 @@ fn refresh_scene_reflects_present_actors_from_canon() {
                 kind: String::new(),
                 parent: String::new(),
                 region_id: String::new(),
+                district_id: String::new(),
                 description: "Кухня".to_string(),
                 features: Vec::new(),
                 visited: false,

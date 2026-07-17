@@ -6,6 +6,8 @@
 //! A `Settlement` is never just a list of buildings: it must have a *function*
 //! in the world — economy, routes, power, conflict, important NPCs (TZ §6.3).
 
+use std::{error::Error, fmt};
+
 use serde::{Deserialize, Serialize};
 
 use super::Provenance;
@@ -82,6 +84,9 @@ pub struct Settlement {
     pub local_rumors: Vec<String>,
     #[serde(default)]
     pub threats: Vec<String>,
+    /// Explicit city/settlement subdivisions. Older saves may leave this empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub district_ids: Vec<String>,
     /// Atomic places that make up the settlement.
     #[serde(default)]
     pub place_ids: Vec<String>,
@@ -100,3 +105,78 @@ impl Settlement {
         !self.economy.is_empty() && (!self.conflict.is_empty() || !self.routes.is_empty())
     }
 }
+
+/// A stable subdivision of a [`Settlement`].
+///
+/// Districts are structural geography, not prose labels. A place belongs to a
+/// district only through its explicit `district_id`; names and visit history
+/// are never used to infer membership.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct District {
+    pub district_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub settlement_id: String,
+    #[serde(default)]
+    pub region_id: String,
+    #[serde(default)]
+    pub kind: String,
+    /// Canonical places assigned to this district.
+    #[serde(default)]
+    pub place_ids: Vec<String>,
+    #[serde(default)]
+    pub provenance: Provenance,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DistrictValidationError {
+    MissingId,
+    MissingName,
+    DuplicateId(String),
+    UnknownSettlement(String),
+    UnknownRegion(String),
+    SettlementRegionMismatch {
+        settlement_id: String,
+        settlement_region_id: String,
+        district_region_id: String,
+    },
+    DuplicatePlace(String),
+    UnknownPlace(String),
+    PlaceMembershipMismatch {
+        place_id: String,
+        district_id: String,
+    },
+}
+
+impl fmt::Display for DistrictValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingId => f.write_str("district_id is empty"),
+            Self::MissingName => f.write_str("district name is empty"),
+            Self::DuplicateId(id) => write!(f, "district '{id}' already exists"),
+            Self::UnknownSettlement(id) => {
+                write!(f, "district references unknown settlement '{id}'")
+            }
+            Self::UnknownRegion(id) => write!(f, "district references unknown region '{id}'"),
+            Self::SettlementRegionMismatch {
+                settlement_id,
+                settlement_region_id,
+                district_region_id,
+            } => write!(
+                f,
+                "district region '{district_region_id}' does not match settlement '{settlement_id}' region '{settlement_region_id}'"
+            ),
+            Self::DuplicatePlace(id) => write!(f, "district repeats place '{id}'"),
+            Self::UnknownPlace(id) => write!(f, "district references unknown place '{id}'"),
+            Self::PlaceMembershipMismatch {
+                place_id,
+                district_id,
+            } => write!(
+                f,
+                "place '{place_id}' is not explicitly assigned to district '{district_id}'"
+            ),
+        }
+    }
+}
+
+impl Error for DistrictValidationError {}

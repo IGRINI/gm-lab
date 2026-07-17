@@ -47,8 +47,11 @@ Description: Утро в общем зале трактира тяжёлое и 
 Present named NPCs: Борин (borin, трактирщик), крупный пожилой человек, distinctive features: медное кольцо на пальце, хриплый голос, привычка натирать кружку, condition: устал, насторожен, внешне здоров, gender: masculine at за стойкой, служанка (lysa, служанка), молодая быстрая женщина, distinctive features: быстрые движения, сбивчивый шёпот, постоянно оглядывается на стойку, condition: напугана, но держится на работе, gender: feminine at между столами
 Known offscreen NPC whereabouts: - Капитан Марет (mareth, капитан стражи); NOT in current scene; status: likely; location: служба городской стражи; details: расследует убийство Алдрика; если точное место не установлено, её логично искать в караульной, у городских ворот или у места находки тела
 Visible objects: стойка, кружки, бочки с элем, мокрые следы с тёмной пылью, остывшая миска похлёбки Алдрика, доска объявлений с караванными расписками, зола с обрывком синей сургучной печати
-Visible exits: главная дверь -> улица Тёрнвейла [move_player transition_id=main_door; travel_minutes=1; road_risk=none: бытовой переход без дорожной ситуации], дверь на кухню -> кухня и задний двор трактира [move_player transition_id=kitchen_door; travel_minutes=1; road_risk=none: бытовой переход без дорожной ситуации], лестница к комнатам -> гостевые комнаты второго этажа [move_player transition_id=stairs; travel_minutes=2; road_risk=none: бытовой переход без дорожной ситуации], люк в погреб -> погреб под трактиром [move_player transition_id=cellar_hatch; travel_minutes=2; road_risk=none: бытовой переход без дорожной ситуации]
+Visible exits: главная дверь -> улица Тёрнвейла [move_player transition_id=main_door; travel_minutes=0; road_risk=], дверь на кухню -> кухня и задний двор трактира [move_player transition_id=kitchen_door; travel_minutes=0; road_risk=], лестница к комнатам -> гостевые комнаты второго этажа [move_player transition_id=stairs; travel_minutes=0; road_risk=], люк в погреб -> погреб под трактиром [move_player transition_id=cellar_hatch; travel_minutes=0; road_risk=]
 Tension: В зале тесно и нервно: каждый боится убийцы, но ещё больше боится оказаться свидетелем, которого потом заставят молчать.
+
+CANON WORLD (structured truth — region, settlement, factions, recent history):
+Visited travel destinations: Трактир «Серый грифон» [grey_griffon]
 
 LIVING MEMORY SNAPSHOT:
 Access-gated short memory snapshot (player/local/public only; use get_memory or ask_npc for details):

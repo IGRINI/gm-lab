@@ -237,6 +237,7 @@ impl MockClient {
                     serde_json::json!({
                         "label": "К дорожной остановке",
                         "return_label": "Вернуться назад",
+                        "directionality": "bidirectional",
                         "kind": "path",
                         "time_cost_minutes": 7,
                         "risk": "low"

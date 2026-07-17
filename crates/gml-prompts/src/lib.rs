@@ -80,6 +80,7 @@ pub enum PromptId {
     ToolReminderMoveNpc,
     ToolReminderSetScene,
     ToolReminderMovePlayer,
+    ToolReminderTravelTo,
     ToolReminderUpdateCharacter,
     ToolReminderCastSpell,
     OrchestratorPlayerOptionsNext,
@@ -151,6 +152,7 @@ impl PromptId {
         Self::ToolReminderMoveNpc,
         Self::ToolReminderSetScene,
         Self::ToolReminderMovePlayer,
+        Self::ToolReminderTravelTo,
         Self::ToolReminderUpdateCharacter,
         Self::ToolReminderCastSpell,
         Self::OrchestratorPlayerOptionsNext,
@@ -240,6 +242,7 @@ impl PromptId {
             Self::ToolReminderMoveNpc => "orchestrator/tool_reminders/move_npc.prompt.md",
             Self::ToolReminderSetScene => "orchestrator/tool_reminders/set_scene.prompt.md",
             Self::ToolReminderMovePlayer => "orchestrator/tool_reminders/move_player.prompt.md",
+            Self::ToolReminderTravelTo => "orchestrator/tool_reminders/travel_to.prompt.md",
             Self::ToolReminderUpdateCharacter => {
                 "orchestrator/tool_reminders/update_character.prompt.md"
             }
@@ -403,6 +406,7 @@ cached_static_prompt!(REMINDER_SET_NPC_WHEREABOUTS, ToolReminderSetNpcWhereabout
 cached_static_prompt!(REMINDER_MOVE_NPC, ToolReminderMoveNpc);
 cached_static_prompt!(REMINDER_SET_SCENE, ToolReminderSetScene);
 cached_static_prompt!(REMINDER_MOVE_PLAYER, ToolReminderMovePlayer);
+cached_static_prompt!(REMINDER_TRAVEL_TO, ToolReminderTravelTo);
 cached_static_prompt!(REMINDER_UPDATE_CHARACTER, ToolReminderUpdateCharacter);
 cached_static_prompt!(REMINDER_CAST_SPELL, ToolReminderCastSpell);
 
@@ -427,6 +431,7 @@ pub fn tool_reminder(name: &str) -> &'static str {
         "move_npc" => REMINDER_MOVE_NPC.as_str(),
         "set_scene" => REMINDER_SET_SCENE.as_str(),
         "move_player" => REMINDER_MOVE_PLAYER.as_str(),
+        "travel_to" => REMINDER_TRAVEL_TO.as_str(),
         "update_character" | "update_player_character" => REMINDER_UPDATE_CHARACTER.as_str(),
         "cast_spell" => REMINDER_CAST_SPELL.as_str(),
         _ => "",
@@ -663,7 +668,7 @@ mod tests {
 
     // Hashes and lengths intentionally pin the cacheable English prompt prefix.
     // The selected response language is injected separately at request time.
-    const GM_SYSTEM_SHA: &str = "4e7d4eb580cb4a263e6f7502741d77f11ca2163c622821e10875ab9ef2a90704";
+    const GM_SYSTEM_SHA: &str = "198f38e1b364bbdf04bb67ef4498a87f04e0938b88b7c72374428f6630e59ffb";
     const NPC_SYSTEM_STATIC_SHA: &str =
         "abf06e47f2ef6b3b598bd3af634d780f5608fdbc76b5cd2659e7b78599cad197";
     const NPC_CARD_TEMPLATE_SHA: &str =
@@ -686,8 +691,8 @@ mod tests {
     fn gm_system_byte_identical() {
         assert_bytes_eq!(gm_system(), "GM_SYSTEM.txt");
         assert_eq!(sha256_hex(GM_SYSTEM), GM_SYSTEM_SHA);
-        assert_eq!(GM_SYSTEM.chars().count(), 49692);
-        assert_eq!(GM_SYSTEM.len(), 49757);
+        assert_eq!(GM_SYSTEM.chars().count(), 58634);
+        assert_eq!(GM_SYSTEM.len(), 58705);
     }
 
     #[test]
@@ -1029,6 +1034,7 @@ mod tests {
             "move_npc",
             "set_scene",
             "move_player",
+            "travel_to",
             "update_character",
             "cast_spell",
         ] {
@@ -1040,6 +1046,50 @@ mod tests {
             );
         }
         assert_eq!(tool_reminder("unknown_tool"), "");
+    }
+
+    #[test]
+    fn distant_travel_rejection_cannot_fall_back_to_local_movement() {
+        let prompt = gm_system();
+        assert!(prompt.contains(
+            "If travel_to reports rejection, unavailability, or an error, the\n  distant journey has not begun"
+        ));
+        assert!(
+            prompt.contains("do not substitute one or more move_player calls along local exits")
+        );
+        assert!(prompt.contains(
+            "A distant\n  destination request never counts as choosing the first local exit"
+        ));
+        assert!(prompt
+            .contains("before\n  narrating any departure, route, travel underway, or arrival"));
+        assert!(prompt
+            .contains("Never enumerate, retrace, or claim traversal through the explored chain"));
+
+        let reminder = tool_reminder("travel_to");
+        assert!(reminder.contains("the journey has not begun"));
+        assert!(reminder.contains("never substitute move_player"));
+        assert!(reminder.contains("one concrete visible local exit"));
+        assert!(
+            reminder.contains("Never list, retrace, or claim traversal through the explored chain")
+        );
+    }
+
+    #[test]
+    fn travel_geography_scope_must_come_from_explicit_allowlist() {
+        let prompt = render_prompt(PromptId::LocationGeneratorSystem, serde_json::json!({}))
+            .expect("location generator prompt");
+
+        assert!(prompt.contains(
+            "Every returned network `scope_id`\nmust be copied byte-for-byte from that list"
+        ));
+        assert!(prompt.contains(
+            "Never invent, normalize, translate,\nor derive a scope id from a settlement, town, city, district, or region name"
+        ));
+        assert!(prompt.contains("a `scope_id` copied exactly from `allowed_scope_ids`"));
+        assert!(prompt.contains(
+            "a `place_id` copied exactly\nfrom the request's `allowed_access_place_ids`"
+        ));
+        assert!(prompt.contains("must be passable with no\nblocker or required facts"));
     }
 
     #[test]

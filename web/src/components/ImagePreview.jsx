@@ -33,8 +33,46 @@ export function ImageViewer({ src, title, alt, onClose }) {
   }, [resetView, src]);
 
   useEffect(() => {
+    const previousFocus = document.activeElement;
+    const focusTimer = window.setTimeout(() => {
+      const overlay = overlayRef.current;
+      const target = overlay?.querySelector(".image-viewer-close") ?? overlay;
+      target?.focus({ preventScroll: true });
+    }, 0);
+    return () => {
+      window.clearTimeout(focusTimer);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+        previousFocus.focus({ preventScroll: true });
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (event) => {
-      if (event.key === "Escape") {
+      if (event.key === "Tab") {
+        const overlay = overlayRef.current;
+        const focusable = [...(overlay?.querySelectorAll(
+          "button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"
+        ) ?? [])];
+        if (!focusable.length) {
+          event.preventDefault();
+          overlay?.focus({ preventScroll: true });
+          return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        const active = document.activeElement;
+        if (!overlay?.contains(active)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        } else if (event.shiftKey && active === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && active === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      } else if (event.key === "Escape") {
         event.preventDefault();
         onClose?.();
       } else if (event.key === "+" || event.key === "=") {
@@ -124,7 +162,13 @@ export function ImageViewer({ src, title, alt, onClose }) {
   if (!src) return null;
 
   return (
-    <div ref={overlayRef} className="image-viewer-overlay" role="dialog" aria-modal="true">
+    <div
+      ref={overlayRef}
+      className="image-viewer-overlay"
+      role="dialog"
+      aria-modal="true"
+      tabIndex={-1}
+    >
       <div className="image-viewer-toolbar">
         <div className="image-viewer-title">
           <strong>{title || alt || t("image.defaultAlt")}</strong>

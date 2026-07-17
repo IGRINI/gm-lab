@@ -10054,8 +10054,12 @@ async fn post_debug_scene(State(state): State<AppState>, body: Bytes) -> Respons
             Some(Value::Object(_)) => data.get("patch").unwrap().clone(),
             _ => Value::Object(data.clone()),
         };
-        rt.session.world.patch_scene(&patch);
-        payload::debug_data(rt, cfg, settings)
+        let result = rt.session.world.patch_scene(&patch);
+        if result.get("ok").and_then(Value::as_bool) == Some(false) {
+            result
+        } else {
+            payload::debug_data(rt, cfg, settings)
+        }
     })
     .await
 }

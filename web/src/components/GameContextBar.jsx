@@ -125,6 +125,8 @@ export default function GameContextBar({
   scene = null,
   npcs = [],
   statusLabels = {},
+  mapAvailable = false,
+  onOpenMap,
   onExportJson,
   onReset,
   locked = false,
@@ -210,44 +212,56 @@ export default function GameContextBar({
         />
       </div>
 
-      <div className="game-context-menu" ref={menuRef}>
+      <div className="game-context-actions">
         <button
           type="button"
-          className="btn btn-icon game-context-more"
-          aria-label={t("context.actionsAria")}
-          aria-haspopup="true"
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((open) => !open)}
+          className="btn btn-icon game-context-map"
+          aria-label={t("context.openMap")}
+          title={t("context.openMap")}
+          disabled={!mapAvailable}
+          onClick={onOpenMap}
         >
-          <Icon name="dots" size={18} />
+          <Icon name="map" size={18} />
         </button>
-        {menuOpen && (
-          <div className="game-context-dropdown" role="menu">
-            <button
-              type="button"
-              className="game-context-item"
-              role="menuitem"
-              onClick={() => {
-                setMenuOpen(false);
-                onExportJson?.();
-              }}
-            >
-              {t("context.downloadJson")}
-            </button>
-            <button
-              type="button"
-              className="game-context-item danger"
-              role="menuitem"
-              disabled={locked}
-              onClick={() => {
-                setMenuOpen(false);
-                setConfirmReset(true);
-              }}
-            >
-              {t("context.reset.menu")}
-            </button>
-          </div>
-        )}
+        <div className="game-context-menu" ref={menuRef}>
+          <button
+            type="button"
+            className="btn btn-icon game-context-more"
+            aria-label={t("context.actionsAria")}
+            aria-haspopup="true"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <Icon name="dots" size={18} />
+          </button>
+          {menuOpen && (
+            <div className="game-context-dropdown" role="menu">
+              <button
+                type="button"
+                className="game-context-item"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onExportJson?.();
+                }}
+              >
+                {t("context.downloadJson")}
+              </button>
+              <button
+                type="button"
+                className="game-context-item danger"
+                role="menuitem"
+                disabled={locked}
+                onClick={() => {
+                  setMenuOpen(false);
+                  setConfirmReset(true);
+                }}
+              >
+                {t("context.reset.menu")}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {detail === "story" && (

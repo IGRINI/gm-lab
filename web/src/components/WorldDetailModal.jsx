@@ -486,16 +486,27 @@ function CharacterDetail({ pc }) {
   );
 }
 
-export default function WorldDetailModal({ kind, scene, playerCharacter, npcs, statusLabels, onClose }) {
+export default function WorldDetailModal({
+  kind,
+  scene,
+  playerCharacter,
+  npcs,
+  statusLabels,
+  onClose,
+  closeOnEscape = true,
+  footer = null,
+}) {
   const { t } = useTranslation("studio");
-  // Standalone modal (not part of the DebugPanel stack) — handle ESC itself.
+  // Standalone usages handle Escape here; embedded owners may keep control of
+  // their own overlay stack by disabling this listener.
   useEffect(() => {
+    if (!closeOnEscape) return undefined;
     const onKey = (e) => {
       if (e.key === "Escape") onClose?.();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [closeOnEscape, onClose]);
 
   if (kind === "scene") {
     return (
@@ -504,6 +515,7 @@ export default function WorldDetailModal({ kind, scene, playerCharacter, npcs, s
         subtitle={t("worldDetail.location.title")}
         onClose={onClose}
         className="wd-modal"
+        footer={footer}
       >
         <LocationDetail scene={scene} npcs={npcs} statusLabels={statusLabels} />
       </Modal>
@@ -522,6 +534,7 @@ export default function WorldDetailModal({ kind, scene, playerCharacter, npcs, s
         subtitle={subtitle}
         onClose={onClose}
         className="wd-modal"
+        footer={footer}
       >
         <CharacterDetail pc={pc} />
       </Modal>

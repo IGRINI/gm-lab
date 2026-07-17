@@ -7,13 +7,18 @@
 //! returns the exact JSON shape the React frontend consumes (see
 //! `tests/reference/server/{state,debug}.json`).
 
+use std::collections::BTreeSet;
+
 use serde_json::{json, Map, Value};
 
 use gml_config::{Config, RuntimeSettings};
 use gml_orchestrator::compact::context_usage;
 use gml_orchestrator::Session;
-use gml_persistence::{DialogRuntime, DEFAULT_CHAT_TITLE};
-use gml_world::{public_gender, public_role, StateRecordQuery, WHEREABOUTS_STATUS_LABELS};
+use gml_persistence::{DialogRuntime, DialogVisualAssets, DEFAULT_CHAT_TITLE};
+use gml_world::{
+    canon::{Place, WorldCanon},
+    public_gender, public_role, StateRecordQuery, WHEREABOUTS_STATUS_LABELS,
+};
 
 /// Convert a settings `BTreeMap` into a JSON value (object). Frontend
 /// `JSON.parse`s the body, so key order is not load-bearing.
@@ -32,6 +37,309 @@ fn status_labels() -> Value {
         m.insert(k.to_string(), Value::String(v.to_string()));
     }
     Value::Object(m)
+}
+
+fn json_text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+fn visible_scene_rows(scene: &Value, key: &str) -> Vec<Value> {
+    scene
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    row.is_object() && row.get("visible").and_then(Value::as_bool) != Some(false)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn location_image_url(
+    place: &Place,
+    current_scene: Option<&Value>,
+    visual_assets: &DialogVisualAssets,
+) -> Option<String> {
+    current_scene
+        .and_then(|scene| json_text(scene, "image_url"))
+        .and_then(crate::safe_dialog_visual_url)
+        .or_else(|| {
+            [place.place_id.as_str(), place.name.as_str()]
+                .into_iter()
+                .find_map(|key| {
+                    visual_assets
+                        .locations
+                        .get(key)
+                        .and_then(|asset| crate::safe_dialog_visual_url(&asset.url))
+                })
+        })
+}
+
+fn insert_scene_image(scene: &mut Value, image_url: Option<&str>) {
+    if let (Some(scene), Some(image_url)) = (scene.as_object_mut(), image_url) {
+        scene.insert(
+            "image_url".to_string(),
+            Value::String(image_url.to_string()),
+        );
+    }
+}
+
+fn current_location_scene(
+    place: &Place,
+    current_scene: &Value,
+    title: &str,
+    description: &str,
+    image_url: Option<&str>,
+) -> Value {
+    let scene_id = json_text(current_scene, "scene_id").unwrap_or(&place.place_id);
+    let present_npcs = current_scene
+        .get("present_npcs")
+        .filter(|value| value.is_array())
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let npc_whereabouts = current_scene
+        .get("npc_whereabouts")
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(|| Value::Object(Map::new()));
+    let mut scene = json!({
+        "scene_id": scene_id,
+        "location_id": place.place_id,
+        "title": title,
+        "description": description,
+        "present_npcs": present_npcs,
+        "npc_whereabouts": npc_whereabouts,
+        "exits": visible_scene_rows(current_scene, "exits"),
+        "items": visible_scene_rows(current_scene, "items"),
+    });
+    insert_scene_image(&mut scene, image_url);
+    scene
+}
+
+fn historical_location_scene(
+    canon: &WorldCanon,
+    place: &Place,
+    visible_place_ids: &BTreeSet<String>,
+    image_url: Option<&str>,
+) -> Value {
+    let exits = canon
+        .exits_from(&place.place_id)
+        .into_iter()
+        .filter(|transition| transition.visible)
+        .map(|transition| {
+            let exit_id = if transition.source_exit_id.trim().is_empty() {
+                transition.transition_id.as_str()
+            } else {
+                transition.source_exit_id.as_str()
+            };
+            let destination = visible_place_ids
+                .contains(&transition.to_place)
+                .then(|| canon.places.get(&transition.to_place))
+                .flatten()
+                .map(|target| target.name.as_str())
+                .unwrap_or(transition.destination_hint.as_str());
+            json!({
+                "exit_id": exit_id,
+                "name": transition.label,
+                "destination": destination,
+                "visible": true,
+                "blocked_by": transition.blocked_by,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut scene = json!({
+        "scene_id": place.place_id,
+        "location_id": place.place_id,
+        "title": place.name,
+        "description": place.default_description,
+        "present_npcs": [],
+        "npc_whereabouts": {},
+        "exits": exits,
+        // Canon stores item links, not a durable player-visible item snapshot.
+        // Returning ids here could leak hidden generation data and would not be
+        // useful to WorldDetailModal, so historical items stay empty.
+        "items": [],
+    });
+    insert_scene_image(&mut scene, image_url);
+    scene
+}
+
+/// Player-safe projection of the persistent canonical place graph.
+///
+/// Only visited places (plus the current place) become full nodes. A visible
+/// exit whose target is still unknown to the player remains an edge-local
+/// placeholder, so pre-generated canon cannot leak through the state API.
+fn player_location_graph(
+    canon: &WorldCanon,
+    current_scene: &Value,
+    visual_assets: &DialogVisualAssets,
+) -> Value {
+    let player_place_id = canon.player_place_id.trim();
+    let current = (!player_place_id.is_empty() && canon.places.contains_key(player_place_id))
+        .then(|| player_place_id.to_string());
+
+    let visible_place_ids: BTreeSet<String> = canon
+        .places
+        .values()
+        .filter(|place| place.is_visited() || current.as_deref() == Some(place.place_id.as_str()))
+        .map(|place| place.place_id.clone())
+        .collect();
+
+    let root = location_graph_root(canon, &visible_place_ids, current.as_deref());
+    let nodes = visible_place_ids
+        .iter()
+        .filter_map(|place_id| canon.places.get(place_id))
+        .map(|place| {
+            let is_current = current.as_deref() == Some(place.place_id.as_str());
+            let live_scene = is_current.then_some(current_scene);
+            let name = live_scene
+                .and_then(|scene| json_text(scene, "title"))
+                .unwrap_or(&place.name);
+            let description = live_scene
+                .and_then(|scene| json_text(scene, "description"))
+                .unwrap_or(&place.default_description);
+            let image_url = location_image_url(place, live_scene, visual_assets);
+            let scene = if is_current {
+                current_location_scene(
+                    place,
+                    current_scene,
+                    name,
+                    description,
+                    image_url.as_deref(),
+                )
+            } else {
+                historical_location_scene(canon, place, &visible_place_ids, image_url.as_deref())
+            };
+            let mut node = json!({
+                "id": place.place_id,
+                "name": name,
+                "description": description,
+                "kind": place.kind,
+                "scene": scene,
+            });
+            if let (Some(node), Some(image_url)) = (node.as_object_mut(), image_url) {
+                node.insert("image_url".to_string(), Value::String(image_url));
+            }
+            node
+        })
+        .collect::<Vec<_>>();
+
+    let mut edges = Vec::new();
+    for from_place_id in &visible_place_ids {
+        for transition in canon.exits_from(from_place_id) {
+            if !transition.visible {
+                continue;
+            }
+            let parsed_risk = gml_world::canon::travel::TravelRisk::parse(&transition.risk);
+            let profile_is_valid = transition.has_explicit_passage_profile()
+                && !transition.kind.trim().is_empty()
+                && transition.time_cost > 0
+                && parsed_risk.is_some()
+                && !gml_world::canon::travel::has_asymmetric_reciprocal_profile(
+                    canon,
+                    &transition.transition_id,
+                );
+            let known_target = visible_place_ids
+                .contains(&transition.to_place)
+                .then(|| transition.to_place.clone());
+            let passable = transition.passable && transition.blocked_by.trim().is_empty();
+            let mut edge = json!({
+                "id": transition.transition_id,
+                "from": from_place_id,
+                "to": known_target,
+                "label": transition.label,
+                "description": transition.destination_hint,
+                "kind": profile_is_valid.then_some(transition.kind.as_str()),
+                "passable": passable,
+                "blocked_by": transition.blocked_by,
+                "time_cost_minutes": profile_is_valid.then_some(transition.time_cost),
+            });
+            if transition.has_explicit_passage_profile() {
+                let edge_object = edge
+                    .as_object_mut()
+                    .expect("location graph edge is an object");
+                edge_object.insert(
+                    "passage_id".to_string(),
+                    Value::String(transition.passage_id.clone()),
+                );
+                edge_object.insert(
+                    "directionality".to_string(),
+                    json!(transition.directionality),
+                );
+            }
+            if let Some(risk) = parsed_risk
+                .filter(|_| profile_is_valid)
+                .filter(|risk| *risk != gml_world::canon::travel::TravelRisk::Certain)
+            {
+                edge["risk"] = json!(risk.as_str());
+            }
+            if edge.get("to").is_some_and(Value::is_null) {
+                let placeholder_name = if transition.label.trim().is_empty() {
+                    transition.destination_hint.trim()
+                } else {
+                    transition.label.trim()
+                };
+                edge.as_object_mut()
+                    .expect("location graph edge is an object")
+                    .insert(
+                        "placeholder".to_string(),
+                        json!({
+                            "id": format!("exit:{}", transition.transition_id),
+                            "name": placeholder_name,
+                            "hint": transition.destination_hint,
+                        }),
+                    );
+            }
+            edges.push(edge);
+        }
+    }
+
+    json!({
+        "current": current,
+        "root": root,
+        "nodes": nodes,
+        "edges": edges,
+    })
+}
+
+fn location_graph_root(
+    canon: &WorldCanon,
+    visible_place_ids: &BTreeSet<String>,
+    current: Option<&str>,
+) -> Option<String> {
+    // Once the player has moved, the source of the first committed traversal
+    // is the stable campaign entry point even when all worldgen places share
+    // the same creation turn and parent settlement.
+    let first_traversal_source = canon
+        .event_log
+        .events
+        .iter()
+        .filter(|event| event.kind == "move_player")
+        .flat_map(|event| event.effects.iter())
+        .filter_map(|effect| effect.strip_prefix("via:"))
+        .filter_map(|transition_id| canon.transitions.get(transition_id))
+        .map(|transition| transition.from_place.as_str())
+        .find(|place_id| visible_place_ids.contains(*place_id));
+    if let Some(place_id) = first_traversal_source {
+        return Some(place_id.to_string());
+    }
+
+    canon
+        .places
+        .values()
+        .find(|place| {
+            visible_place_ids.contains(&place.place_id) && place.provenance.origin == "seed"
+        })
+        .map(|place| place.place_id.clone())
+        .or_else(|| current.map(str::to_string))
+        .or_else(|| visible_place_ids.first().cloned())
 }
 
 /// `_debug_state_records(world)` -> memory-backed StateRecord-shaped export.
@@ -80,6 +388,7 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
             }
         }
     }
+    let location_graph = player_location_graph(&w.world_canon, &scene, &visual_assets);
     let entities = w.entity_refs();
 
     // Public NPC projection (`public_npc(npc)`), in roster order.
@@ -171,6 +480,7 @@ pub fn state(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeSettin
         );
     }
     data.insert("scene".to_string(), scene);
+    data.insert("location_graph".to_string(), location_graph);
     data.insert("entities".to_string(), entities);
     data.insert("status_labels".to_string(), status_labels());
     data.insert("npcs".to_string(), Value::Array(npcs));
@@ -745,4 +1055,381 @@ pub fn debug_data(runtime: &mut DialogRuntime, cfg: &Config, settings: &RuntimeS
             "delivered": delivered,
         },
     })
+}
+
+#[cfg(test)]
+mod location_graph_tests {
+    use std::collections::BTreeSet;
+
+    use gml_persistence::{DialogVisualAsset, DialogVisualAssets};
+    use gml_world::canon::{PassageDirectionality, Place, Provenance, Transition, WorldCanon};
+    use serde_json::{json, Value};
+
+    use super::player_location_graph;
+
+    fn place(id: &str, name: &str, visited: bool, provenance: Provenance) -> Place {
+        let mut state_flags = BTreeSet::new();
+        if visited {
+            state_flags.insert("visited".to_string());
+        }
+        Place {
+            place_id: id.to_string(),
+            name: name.to_string(),
+            kind: "room".to_string(),
+            default_description: format!("Описание: {name}"),
+            state_flags,
+            provenance,
+            ..Default::default()
+        }
+    }
+
+    fn transition(
+        id: &str,
+        from: &str,
+        to: &str,
+        label: &str,
+        hint: &str,
+        visible: bool,
+    ) -> Transition {
+        Transition {
+            transition_id: id.to_string(),
+            from_place: from.to_string(),
+            to_place: to.to_string(),
+            label: label.to_string(),
+            destination_hint: hint.to_string(),
+            kind: "door".to_string(),
+            visible,
+            passable: true,
+            time_cost: 1,
+            risk: "none".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn graph_node<'a>(graph: &'a Value, id: &str) -> &'a Value {
+        graph["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|node| node["id"] == id)
+            .expect("graph node")
+    }
+
+    fn graph_edge<'a>(graph: &'a Value, id: &str) -> Option<&'a Value> {
+        graph["edges"]
+            .as_array()
+            .expect("edges")
+            .iter()
+            .find(|edge| edge["id"] == id)
+    }
+
+    #[test]
+    fn graph_exposes_visited_and_current_places_without_leaking_unknown_targets() {
+        let mut canon = WorldCanon::default();
+        canon.insert_place(place("kitchen", "Кухня", true, Provenance::seed()));
+        canon.insert_place(place(
+            "hall",
+            "Коридор",
+            false,
+            Provenance::by("worldgen", "prepared", 0),
+        ));
+        canon.insert_place(place(
+            "yard",
+            "Тайный двор с контрабандистами",
+            false,
+            Provenance::by("worldgen", "hidden", 0),
+        ));
+        canon.player_place_id = "hall".to_string();
+        canon.insert_transition(transition(
+            "kitchen_hall",
+            "kitchen",
+            "hall",
+            "В коридор",
+            "коридор",
+            true,
+        ));
+        canon
+            .transitions
+            .get_mut("kitchen_hall")
+            .expect("hall transition")
+            .risk = "low".to_string();
+        let kitchen_hall = canon
+            .transitions
+            .get_mut("kitchen_hall")
+            .expect("hall transition");
+        kitchen_hall.passage_id = "kitchen_hall_passage".to_string();
+        kitchen_hall.directionality = PassageDirectionality::OneWay;
+        canon.insert_transition(transition(
+            "kitchen_yard",
+            "kitchen",
+            "yard",
+            "Выход в задний двор",
+            "задний двор",
+            true,
+        ));
+        canon.insert_transition(transition(
+            "hall_unknown",
+            "hall",
+            "",
+            "Дверь вниз",
+            "нижний этаж",
+            true,
+        ));
+        canon.insert_transition(transition(
+            "hidden_tunnel",
+            "kitchen",
+            "yard",
+            "Скрытый тоннель",
+            "тайный путь",
+            false,
+        ));
+        let yard_exit = canon
+            .transitions
+            .get_mut("kitchen_yard")
+            .expect("yard exit");
+        yard_exit.passable = false;
+        yard_exit.blocked_by = "ржавая цепь".to_string();
+        yard_exit.time_cost = 7;
+        yard_exit.conditions = vec!["gm-only: тайный знак".to_string()];
+        yard_exit.risk = "gm-only: засада контрабандистов".to_string();
+
+        let current_scene = json!({
+            "scene_id": "hall-live",
+            "location_id": "hall",
+            "title": "Закопчённый коридор",
+            "description": "На стенах ещё свежая копоть.",
+            "present_npcs": ["guard"],
+            "npc_whereabouts": {},
+            "exits": [
+                {
+                    "exit_id": "live_exit",
+                    "name": "Дверь в зал",
+                    "destination": "зал",
+                    "visible": true,
+                    "blocked_by": "",
+                },
+                {
+                    "exit_id": "secret_exit",
+                    "name": "Секретный лаз",
+                    "destination": "тайник",
+                    "visible": false,
+                    "blocked_by": "",
+                },
+            ],
+            "items": [
+                {"item_id": "lamp", "name": "Фонарь", "visible": true},
+                {"item_id": "key", "name": "Спрятанный ключ", "visible": false},
+            ],
+        });
+
+        let graph = player_location_graph(&canon, &current_scene, &DialogVisualAssets::default());
+
+        assert_eq!(graph["current"], "hall");
+        assert_eq!(graph["root"], "kitchen");
+        assert_eq!(graph["nodes"].as_array().expect("nodes").len(), 2);
+        assert!(graph_node(&graph, "kitchen").is_object());
+        let hall = graph_node(&graph, "hall");
+        assert_eq!(hall["name"], "Закопчённый коридор");
+        assert_eq!(hall["scene"]["scene_id"], "hall-live");
+        assert_eq!(hall["scene"]["exits"].as_array().unwrap().len(), 1);
+        assert_eq!(hall["scene"]["items"].as_array().unwrap().len(), 1);
+        let kitchen_scene = &graph_node(&graph, "kitchen")["scene"];
+        assert_eq!(kitchen_scene["title"], "Кухня");
+        assert_eq!(kitchen_scene["items"], json!([]));
+        assert_eq!(kitchen_scene["exits"].as_array().unwrap().len(), 2);
+        assert_eq!(kitchen_scene["exits"][1]["destination"], "задний двор");
+        assert!(graph_edge(&graph, "hidden_tunnel").is_none());
+        assert_eq!(graph_edge(&graph, "kitchen_hall").unwrap()["to"], "hall");
+        assert_eq!(graph_edge(&graph, "kitchen_hall").unwrap()["risk"], "low");
+        assert_eq!(
+            graph_edge(&graph, "kitchen_hall").unwrap()["passage_id"],
+            "kitchen_hall_passage"
+        );
+        assert_eq!(
+            graph_edge(&graph, "kitchen_hall").unwrap()["directionality"],
+            "one_way"
+        );
+        assert!(graph_edge(&graph, "kitchen_hall").unwrap()["placeholder"].is_null());
+        assert_eq!(
+            graph_edge(&graph, "kitchen_yard").unwrap(),
+            &json!({
+                "id": "kitchen_yard",
+                "from": "kitchen",
+                "to": null,
+                "label": "Выход в задний двор",
+                "description": "задний двор",
+                "kind": null,
+                "passable": false,
+                "blocked_by": "ржавая цепь",
+                "time_cost_minutes": null,
+                "placeholder": {
+                    "id": "exit:kitchen_yard",
+                    "name": "Выход в задний двор",
+                    "hint": "задний двор",
+                },
+            })
+        );
+        assert_eq!(
+            graph_edge(&graph, "hall_unknown").unwrap()["placeholder"]["hint"],
+            "нижний этаж"
+        );
+        let serialized = graph.to_string();
+        assert!(!serialized.contains("Тайный двор с контрабандистами"));
+        assert!(!serialized.contains("Скрытый тоннель"));
+        assert!(!serialized.contains("Секретный лаз"));
+        assert!(!serialized.contains("Спрятанный ключ"));
+        assert!(!serialized.contains("gm-only"));
+        assert!(!serialized.contains("засада контрабандистов"));
+    }
+
+    #[test]
+    fn graph_adds_only_safe_persisted_images_to_full_nodes() {
+        let mut canon = WorldCanon::default();
+        canon.insert_place(place("kitchen", "Кухня", true, Provenance::seed()));
+        canon.insert_place(place("hall", "Коридор", true, Provenance::seed()));
+        canon.player_place_id = "hall".to_string();
+
+        let mut assets = DialogVisualAssets::default();
+        assets.locations.insert(
+            "kitchen".to_string(),
+            DialogVisualAsset {
+                url: "/image-files/run/kitchen.png".to_string(),
+                provider: "test".to_string(),
+                model: String::new(),
+            },
+        );
+        assets.locations.insert(
+            "hall".to_string(),
+            DialogVisualAsset {
+                url: "https://example.invalid/private.png".to_string(),
+                provider: "test".to_string(),
+                model: String::new(),
+            },
+        );
+
+        let current_scene = json!({
+            "scene_id": "hall",
+            "location_id": "hall",
+            "title": "Коридор",
+            "description": "Описание: Коридор",
+            "image_url": "https://example.invalid/live-private.png",
+            "exits": [],
+            "items": [],
+        });
+        let graph = player_location_graph(&canon, &current_scene, &assets);
+
+        assert_eq!(
+            graph_node(&graph, "kitchen")["image_url"],
+            "/image-files/run/kitchen.png"
+        );
+        assert_eq!(
+            graph_node(&graph, "kitchen")["scene"]["image_url"],
+            "/image-files/run/kitchen.png"
+        );
+        assert!(graph_node(&graph, "hall")["image_url"].is_null());
+        assert!(graph_node(&graph, "hall")["scene"]["image_url"].is_null());
+    }
+
+    #[test]
+    fn graph_hides_an_asymmetric_route_profile_until_it_is_reauthored() {
+        let mut canon = WorldCanon::default();
+        canon.insert_place(place("alley", "Переулок", true, Provenance::seed()));
+        canon.insert_place(place("shop", "Лавка", true, Provenance::seed()));
+        canon.player_place_id = "alley".to_string();
+
+        let mut forward = transition("alley_to_shop", "alley", "shop", "В лавку", "лавка", true);
+        forward.passage_id = "alley_shop_passage".to_string();
+        forward.directionality = PassageDirectionality::Bidirectional;
+        forward.kind = "path".to_string();
+        forward.time_cost = 4;
+        forward.risk = "medium".to_string();
+        canon.insert_transition(forward);
+
+        let mut reverse = transition(
+            "shop_to_alley",
+            "shop",
+            "alley",
+            "В переулок",
+            "переулок",
+            true,
+        );
+        reverse.passage_id = "alley_shop_passage".to_string();
+        reverse.directionality = PassageDirectionality::Bidirectional;
+        reverse.kind = "door".to_string();
+        reverse.time_cost = 1;
+        reverse.risk = "none".to_string();
+        canon.insert_transition(reverse);
+
+        let graph = player_location_graph(&canon, &json!({}), &DialogVisualAssets::default());
+        for transition_id in ["alley_to_shop", "shop_to_alley"] {
+            let edge = graph_edge(&graph, transition_id).expect("route edge");
+            assert!(edge["kind"].is_null());
+            assert!(edge["time_cost_minutes"].is_null());
+            assert!(edge["risk"].is_null());
+        }
+    }
+
+    #[test]
+    fn graph_preserves_a_closed_bidirectional_passage_and_its_blocker() {
+        let mut canon = WorldCanon::default();
+        canon.insert_place(place("cave", "Пещера", true, Provenance::seed()));
+        canon.insert_place(place("ledge", "Уступ", true, Provenance::seed()));
+        canon.player_place_id = "cave".to_string();
+
+        let mut down = transition(
+            "cave_to_ledge",
+            "cave",
+            "ledge",
+            "По верёвке вниз",
+            "уступ",
+            true,
+        );
+        down.passage_id = "cave_rope".to_string();
+        down.directionality = PassageDirectionality::Bidirectional;
+        down.passable = false;
+        down.blocked_by = "верёвку убрали".to_string();
+        canon.insert_transition(down);
+
+        let mut up = transition(
+            "ledge_to_cave",
+            "ledge",
+            "cave",
+            "По верёвке наверх",
+            "пещера",
+            true,
+        );
+        up.passage_id = "cave_rope".to_string();
+        up.directionality = PassageDirectionality::Bidirectional;
+        // Harden the player projection against an inconsistent legacy save:
+        // a recorded blocker always makes the passage unavailable.
+        up.passable = true;
+        up.blocked_by = "верёвку убрали".to_string();
+        canon.insert_transition(up);
+
+        let closed = player_location_graph(&canon, &json!({}), &DialogVisualAssets::default());
+        assert_eq!(closed["edges"].as_array().expect("edges").len(), 2);
+        for transition_id in ["cave_to_ledge", "ledge_to_cave"] {
+            let edge = graph_edge(&closed, transition_id).expect("closed passage edge");
+            assert_eq!(edge["passage_id"], "cave_rope");
+            assert_eq!(edge["directionality"], "bidirectional");
+            assert_eq!(edge["passable"], false);
+            assert_eq!(edge["blocked_by"], "верёвку убрали");
+        }
+
+        for transition_id in ["cave_to_ledge", "ledge_to_cave"] {
+            let transition = canon
+                .transitions
+                .get_mut(transition_id)
+                .expect("passage direction");
+            transition.passable = true;
+            transition.blocked_by.clear();
+        }
+        let reopened = player_location_graph(&canon, &json!({}), &DialogVisualAssets::default());
+        assert_eq!(reopened["edges"].as_array().expect("edges").len(), 2);
+        for transition_id in ["cave_to_ledge", "ledge_to_cave"] {
+            let edge = graph_edge(&reopened, transition_id).expect("reopened passage edge");
+            assert_eq!(edge["passable"], true);
+            assert_eq!(edge["blocked_by"], "");
+        }
+    }
 }

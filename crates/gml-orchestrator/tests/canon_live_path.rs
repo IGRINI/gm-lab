@@ -127,12 +127,11 @@ fn move_player_makes_scene_export_and_gm_context_follow_the_canon() {
         );
     }
 
-    // The contentless lazy destination was auto-filled on first entry: the move
-    // payload records it and the canon place now carries the generated content.
+    // The unresolved exit was completed by the location creator before entry.
     assert_eq!(
-        payload["generated_destination"]["ok"],
+        payload["applied"]["entered"],
         json!(true),
-        "auto-fill reported in the move payload: {payload}"
+        "location creator reported the completed entry: {payload}"
     );
     let place = session
         .world
@@ -162,80 +161,86 @@ fn move_player_makes_scene_export_and_gm_context_follow_the_canon() {
 }
 
 #[test]
-fn set_scene_authors_a_canon_place_and_moves_the_player_there() {
+fn set_scene_only_updates_the_current_canon_place() {
     let mut session = seeded_session();
-    let start = session.world.world_canon.player_place_id.clone();
+    let current = session.world.world_canon.player_place_id.clone();
     let before_places = session.world.world_canon.places.len();
+    let before_transitions = session.world.world_canon.transitions.len();
 
-    // set_scene is now a canon mutation: it must upsert a NEW Place, ensure a
-    // transition from the current place, and set canon.player_place_id.
     let (events, result) = block_on(run_tool_collect(
         &mut session,
         "set_scene",
         &json!({
-            "title": "Заброшенная часовня",
-            "description": "Холодный неф под обвалившейся крышей.",
-            "location_id": "abandoned_chapel",
-            "reason": "игрок входит в часовню",
+            "title": "Обновлённый зал",
+            "description": "В зале погасла половина свечей.",
+            "location_id": current.clone(),
+            "reason": "видимая обстановка изменилась",
         }),
     ));
-    assert!(!result.full.is_empty());
-    let _ = events;
 
-    let dest = session.world.world_canon.player_place_id.clone();
+    let payload: Value = serde_json::from_str(&result.full).expect("set_scene JSON result");
+    assert_eq!(payload["location_id"], current);
+    assert_eq!(session.world.world_canon.player_place_id, current);
+    assert_eq!(session.world.world_canon.places.len(), before_places);
     assert_eq!(
-        dest, "abandoned_chapel",
-        "set_scene must move the player into the new canon place"
+        session.world.world_canon.transitions.len(),
+        before_transitions,
+        "a current-scene patch must not author routes"
     );
-    assert_ne!(dest, start);
+    assert_eq!(session.world.scene.title, "Обновлённый зал");
+    assert!(events.iter().any(|event| event.kind == "scene_update"));
+}
 
-    // The canon gained the authored place.
-    assert!(
-        session
-            .world
-            .world_canon
-            .places
-            .contains_key("abandoned_chapel"),
-        "set_scene must upsert a canonical Place"
-    );
-    assert!(
-        session.world.world_canon.places.len() > before_places,
-        "a brand-new place was added to the canon"
-    );
+#[test]
+fn set_scene_cannot_recreate_a_missing_current_place() {
+    let mut session = seeded_session();
+    let current = session.world.world_canon.player_place_id.clone();
+    session.world.world_canon.places.remove(&current);
+    let before = session.world.world_canon.clone();
 
-    // A transition from the start place to the destination now exists.
-    assert!(
-        session
-            .world
-            .world_canon
-            .exits_from(&start)
-            .iter()
-            .any(|t| t.to_place == "abandoned_chapel"),
-        "set_scene must ensure a transition from the current place to the destination"
-    );
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "set_scene",
+        &json!({
+            "title": "Подменённая сцена",
+            "description": "Этого места не должно появиться.",
+            "location_id": current,
+        }),
+    ));
 
-    // The derived live scene + GM context reflect the canon place and title.
-    assert_eq!(session.world.scene.location_id, "abandoned_chapel");
-    assert_eq!(session.world.scene.title, "Заброшенная часовня");
-    let export = session.world.scene_export();
-    assert_eq!(
-        export["location_id"].as_str().unwrap_or(""),
-        "abandoned_chapel"
-    );
-    let gm_ctx = session.world.scene_context();
-    assert!(gm_ctx.contains("Location: abandoned_chapel"));
-    assert!(gm_ctx.contains("Заброшенная часовня"));
+    assert!(result.model.contains("code: location_requires_generator"));
+    assert_eq!(session.world.world_canon, before);
+    assert!(events.iter().any(|event| event.kind == "error"));
+    assert!(!events.iter().any(|event| event.kind == "scene_update"));
+}
 
-    // And the player can always go back (guaranteed return edge).
-    assert!(
-        session
-            .world
-            .world_canon
-            .exits_from("abandoned_chapel")
-            .iter()
-            .any(|t| t.to_place == start),
-        "set_scene must leave a return path so the player can go back"
-    );
+#[test]
+fn set_scene_cannot_use_a_hidden_transition_profile_to_create_a_location() {
+    let mut session = seeded_session();
+    let before = session.world.world_canon.clone();
+
+    let (events, result) = block_on(run_tool_collect(
+        &mut session,
+        "set_scene",
+        &json!({
+            "title": "Старая дозорная башня",
+            "description": "Каменная башня над дорогой.",
+            "location_id": "old_watchtower",
+            "entry_transition": {
+                "label": "К башне",
+                "return_label": "Вернуться",
+                "kind": "path",
+                "time_cost_minutes": 3,
+                "risk": "none"
+            },
+            "reason": "попытка обойти создатель локаций",
+        }),
+    ));
+
+    assert!(result.model.contains("code: location_requires_generator"));
+    assert_eq!(session.world.world_canon, before);
+    assert!(events.iter().any(|event| event.kind == "error"));
+    assert!(!events.iter().any(|event| event.kind == "scene_update"));
 }
 
 #[test]
@@ -296,7 +301,7 @@ fn set_scene_does_not_bypass_an_existing_transition() {
 }
 
 #[test]
-fn set_scene_does_not_bypass_a_matching_shell_transition() {
+fn set_scene_does_not_match_an_unresolved_transition_by_title_or_hint() {
     let mut session = seeded_session();
     let start = session.world.world_canon.player_place_id.clone();
     let transition_id = "shell_exit_to_garden".to_string();
@@ -322,13 +327,14 @@ fn set_scene_does_not_bypass_a_matching_shell_transition() {
         &json!({
             "title": "Сад за таверной",
             "description": "Игрок внезапно оказывается в саду за дверью.",
+            "location_id": "garden_behind_tavern",
             "reason": "обход shell-перехода",
         }),
     ));
 
     assert!(
-        result.model.contains("code: use_move_player"),
-        "set_scene must reject matching shell-route bypasses: {}",
+        result.model.contains("code: location_requires_generator"),
+        "set_scene must not identify an unresolved route from title text: {}",
         result.model
     );
     assert_eq!(
@@ -347,15 +353,16 @@ fn set_scene_authoring_is_recorded_in_the_event_log_and_causal_log() {
     use gml_world::canon::engine;
     let mut session = seeded_session();
     let before = session.world.world_canon.event_log.events.len();
+    let current = session.world.world_canon.player_place_id.clone();
 
     block_on(run_tool_collect(
         &mut session,
         "set_scene",
         &json!({
-            "title": "Старая мельница",
-            "description": "Скрипучая мельница над запрудой.",
-            "location_id": "old_mill",
-            "reason": "игрок входит на мельницу",
+            "title": "Зал после обыска",
+            "description": "Стулья сдвинуты, на полу рассыпана зола.",
+            "location_id": current.clone(),
+            "reason": "видимое состояние текущего места изменилось",
         }),
     ));
 
@@ -463,9 +470,9 @@ fn advance_time_advances_the_canon_clock_and_resolves_due_events() {
 }
 
 #[test]
-fn set_scene_present_npc_becomes_a_living_actor_at_the_new_place() {
+fn set_scene_present_npc_becomes_a_living_actor_at_the_current_place() {
     let mut session = seeded_session();
-    // Pick a known npc from the seeded roster to mark present in the new place.
+    let current = session.world.world_canon.player_place_id.clone();
     let npc_id = session
         .world
         .npcs
@@ -478,11 +485,11 @@ fn set_scene_present_npc_becomes_a_living_actor_at_the_new_place() {
         &mut session,
         "set_scene",
         &json!({
-            "title": "Тихий двор",
-            "description": "Мощёный двор за таверной.",
-            "location_id": "quiet_yard",
+            "title": "Тихий зал",
+            "description": "Зал почти опустел.",
+            "location_id": current.clone(),
             "present_npcs": [npc_id.clone()],
-            "reason": "игрок выходит во двор, NPC уже там",
+            "reason": "NPC вошёл в текущую сцену",
         }),
     ));
 
@@ -494,8 +501,8 @@ fn set_scene_present_npc_becomes_a_living_actor_at_the_new_place() {
         .actor(&npc_id)
         .expect("present npc must have a canon actor");
     assert!(
-        actor.is_at("quiet_yard"),
-        "present npc must be located at the new canon place"
+        actor.is_at(&current),
+        "present npc must be located at the current canon place"
     );
     assert!(
         session.world.scene.present_npcs.contains(&npc_id),

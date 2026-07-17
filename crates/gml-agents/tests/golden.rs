@@ -368,6 +368,53 @@ fn model_facing_tool_schemas_are_english_only() {
 }
 
 #[test]
+fn distant_travel_tool_contract_is_explicit_and_primary() {
+    let catalog = agents::gm_tool_catalog();
+    let tool = catalog.get("travel_to").expect("travel_to schema");
+    let function = tool.get("function").expect("travel_to function");
+    let parameters = function.get("parameters").expect("travel_to parameters");
+
+    assert_eq!(
+        parameters.get("required"),
+        Some(&json!(["destination_place_id"]))
+    );
+    assert_eq!(
+        parameters.pointer("/properties/destination_place_id/type"),
+        Some(&json!("string"))
+    );
+    assert_eq!(
+        parameters.pointer("/properties/network_id/type"),
+        Some(&json!("string"))
+    );
+    assert_eq!(
+        parameters.pointer("/properties/reason/type"),
+        Some(&json!("string"))
+    );
+    assert_eq!(parameters.get("additionalProperties"), Some(&json!(false)));
+
+    let description = function
+        .get("description")
+        .and_then(Value::as_str)
+        .expect("travel_to description");
+    for required_policy in [
+        "previously visited, player-known",
+        "explicit travel network",
+        "before narrating any departure or route",
+        "explored local chain of rooms",
+        "never derives this route from the chain of local transitions",
+        "do NOT also call advance_time",
+        "dedicated location creator",
+    ] {
+        assert!(
+            description.contains(required_policy),
+            "travel_to description must state policy: {required_policy}"
+        );
+    }
+
+    assert!(agents::initial_gm_tool_names(false).contains("travel_to"));
+}
+
+#[test]
 fn gm_tools_have_no_dynamic_enums_or_roster() {
     let tools = agents::build_gm_tools();
     let json = serde_json::to_string(&Value::Array(tools.clone())).unwrap();
@@ -437,9 +484,9 @@ fn build_for_model_filters_loaded_set() {
     // The full catalog is the static tools PLUS living-world canon tools and
     // the stable loader/invoker tools appended at the end.
     let all = agents::build_gm_tools_for_model(None, false);
-    assert_eq!(all.len(), 24); // catalog minus ask_player (+take_item/drop_item/cast_spell/generate_npc/read_state/long_rest)
+    assert_eq!(all.len(), 28); // catalog minus ask_player, including deferred canon tools
     let all_with = agents::build_gm_tools_for_model(None, true);
-    assert_eq!(all_with.len(), 25);
+    assert_eq!(all_with.len(), 29);
     // Hidden loaded names no longer mutate top-level tools; move_player is a
     // PRIMARY/initial tool, world_debug and move_npc are invoked through the
     // stable schema loader path.
@@ -457,6 +504,10 @@ fn build_for_model_filters_loaded_set() {
     assert!(
         names.contains("move_player"),
         "move_player is a primary/initial tool"
+    );
+    assert!(
+        names.contains("travel_to"),
+        "travel_to is a primary/initial tool"
     );
     assert!(
         names.contains("get_memory"),
@@ -494,6 +545,7 @@ fn native_tool_search_catalog_is_cache_stable() {
         .collect();
     assert!(function_names.contains("ask_npc"));
     assert!(function_names.contains("move_player"));
+    assert!(function_names.contains("travel_to"));
     assert!(function_names.contains("get_memory"));
     assert!(function_names.contains("note_memory"));
     assert!(!function_names.contains("npc_remember"));
@@ -526,6 +578,9 @@ fn native_tool_search_catalog_is_cache_stable() {
     assert!(deferred_names.contains("set_scene"));
     assert!(deferred_names.contains("world_debug"));
     assert!(deferred_names.contains("consolidate_memory"));
+    assert!(deferred_names.contains("relocate_player"));
+    assert!(deferred_names.contains("create_passage"));
+    assert!(deferred_names.contains("set_passage_state"));
     assert!(!function_names.contains("update_world_state"));
     assert!(!function_names.contains("query_world_state"));
     assert!(!deferred_names.contains("update_world_state"));

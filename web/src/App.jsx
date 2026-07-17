@@ -38,9 +38,15 @@ import ScenePanel from "./components/ScenePanel.jsx";
 import Toasts, { useToasts } from "./components/Toasts.jsx";
 import ImageLabPanel from "./components/ImageLabPanel.jsx";
 import GlobalSearchPalette from "./components/GlobalSearchPalette.jsx";
+import LocationMapOverlay from "./components/LocationMapOverlay.jsx";
 import { normalizeEntities } from "./entityContext.js";
 import { useDevSettings, computeVisibility, VisibilityContext, isMessageVisible } from "./devSettings.js";
 import { useInterfaceSettings } from "./interfaceSettings.js";
+import {
+  createLocationTransition,
+  hasLocationGraph,
+  locationTravelIntent,
+} from "./locationTransition.js";
 import {
   connectorAuthState,
   connectorAuthUrl,
@@ -121,6 +127,7 @@ const EMPTY_SRV = {
   npcs: [],
   entities: { byKey: {} },
   statusLabels: {},
+  locationGraph: null,
 };
 
 // Settings values and option enums are owned by the backend and delivered through
@@ -297,6 +304,10 @@ export default function App() {
   );
 
   const [srv, setSrv] = useState(EMPTY_SRV);
+  const srvRef = useRef(EMPTY_SRV);
+  const locationTransitionSequenceRef = useRef(0);
+  const [locationTransition, setLocationTransition] = useState(null);
+  const [locationMapOpen, setLocationMapOpen] = useState(false);
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
   const [settingsOptions, setSettingsOptions] = useState(EMPTY_SETTINGS_OPTIONS);
   const [runUsage, setRunUsage] = useState(EMPTY_RUN_USAGE);
@@ -409,12 +420,12 @@ export default function App() {
     connectorAuthOperationsRef.current.clear();
   }, []);
 
-  const setStateFromServer = useCallback((s) => {
+  const setStateFromServer = useCallback((s, { animateLocationChange = false } = {}) => {
     const binding = normalizeModelBinding(s.model_binding || {
       connector_id: s.backend,
       model_id: s.model,
     });
-    setSrv({
+    const nextSrv = {
       backend: binding.connector_id || s.backend,
       model: binding.model_id || s.model,
       modelBinding: binding,
@@ -433,7 +444,23 @@ export default function App() {
       npcs: s.npcs || [],
       entities: normalizeEntities(s.entities, s.npcs),
       statusLabels: s.status_labels || {},
-    });
+      locationGraph: s.location_graph || null,
+    };
+    const transition = createLocationTransition(
+      srvRef.current,
+      nextSrv,
+      animateLocationChange
+    );
+    srvRef.current = nextSrv;
+    setSrv(nextSrv);
+    if (transition) {
+      locationTransitionSequenceRef.current += 1;
+      setLocationMapOpen(false);
+      setLocationTransition({
+        ...transition,
+        sequence: locationTransitionSequenceRef.current,
+      });
+    }
     if (s.settings) setSettings((prev) => ({ ...prev, ...s.settings }));
     if (s.settings_options) {
       setSettingsOptions((prev) => ({ ...prev, ...s.settings_options }));
@@ -557,13 +584,13 @@ export default function App() {
   }, []);
 
   const restoreChatSession = useCallback(
-    (payload) => {
+    (payload, { animateLocationChange = false } = {}) => {
       const { chatId: nextChatId, state: nextState, transcript: nextTranscript } =
         requireChatSessionPayload(payload);
 
       store.clear();
       setFailedTurn(null);
-      setStateFromServer(nextState);
+      setStateFromServer(nextState, { animateLocationChange });
       const events = nextTranscript?.events || [];
       store.dispatchMany(events);
       setPlayerOptions(playerOptionsFromEvents(events));
@@ -745,6 +772,7 @@ export default function App() {
         canonicalRestored: false,
         cancelling: false,
         cancelPromise: null,
+        animateLocationChange: !historyMutation,
       };
       activeTurnRef.current = activeTurn;
       const previousPlayerOptions = playerOptions;
@@ -983,7 +1011,7 @@ export default function App() {
             store.clear();
             store.dispatchMany(events);
             setPlayerOptions(playerOptionsFromEvents(events));
-            setStateFromServer(nextState);
+            setStateFromServer(nextState, { animateLocationChange: !historyMutation });
           } catch (error) {
             restoreAttemptUi();
             if (legacyResume) {
@@ -1018,7 +1046,7 @@ export default function App() {
             store.clear();
             store.dispatchMany(events);
             setPlayerOptions(playerOptionsFromEvents(events));
-            setStateFromServer(nextState);
+            setStateFromServer(nextState, { animateLocationChange: !historyMutation });
           } catch (error) {
             notify(error?.message || appText("errors.turnTranscriptRefresh"));
           }
@@ -1080,7 +1108,10 @@ export default function App() {
         // The cancel endpoint crosses the same commit fence as SQLite and returns
         // the only canonical outcome: either the pre-turn snapshot or a turn that
         // had already committed. Apply it before closing the SSE stream.
-        restoreChatSession(data);
+        restoreChatSession(data, {
+          animateLocationChange:
+            data.status === "committed" && activeTurn.animateLocationChange,
+        });
         activeTurn.canonicalRestored = true;
         activeTurn.controller.abort();
         if (data.status === "committed") {
@@ -2323,6 +2354,20 @@ export default function App() {
   }, [store, setStateFromServer, refreshChats, notify, notifyApiError]);
 
   const onExportJson = useCallback(() => api.export(), []);
+  const openLocationMap = useCallback(() => {
+    setLocationTransition(null);
+    setLocationMapOpen(true);
+  }, []);
+  const requestMappedLocationTravel = useCallback((node) => {
+    const intent = locationTravelIntent(node, (destinationReference) => i18n.t(
+      "locationMap.travelIntent",
+      { ns: "game", destination: destinationReference }
+    ));
+    if (!intent || turnInFlightRef.current || busy || chatActionBusy) return;
+    setLocationMapOpen(false);
+    setMainView("chat");
+    void sendTurn(intent);
+  }, [busy, chatActionBusy, sendTurn]);
 
   const currentModel = useMemo(
     () => modelsForConnector(models, srv.modelBinding.connector_id)
@@ -2331,6 +2376,7 @@ export default function App() {
   );
   const interactionBusy = busy || chatActionBusy;
   const isGame = mainView === "chat";
+  const locationMapAvailable = hasLocationGraph(srv.locationGraph);
   const speechToTextEnabled = Boolean(
     connectorById(connectors, srv.modelBinding.connector_id)?.capabilities?.includes(
       "speech_to_text"
@@ -2537,6 +2583,8 @@ export default function App() {
               scene={srv.scene}
               npcs={srv.npcs}
               statusLabels={srv.statusLabels}
+              mapAvailable={locationMapAvailable}
+              onOpenMap={openLocationMap}
               onExportJson={onExportJson}
               onReset={onReset}
               locked={interactionBusy}
@@ -2620,6 +2668,37 @@ export default function App() {
           onClose={() => setBasePickerKind(null)}
         />
       )}
+      {locationTransition ? (
+        <LocationMapOverlay
+          key={`location-transition-${locationTransition.sequence}`}
+          graph={locationTransition.graph}
+          mode="transition"
+          fromLocationId={locationTransition.fromLocationId}
+          toLocationId={locationTransition.toLocationId}
+          onClose={() => {
+            setLocationTransition((current) =>
+              current?.sequence === locationTransition.sequence ? null : current
+            );
+          }}
+          onTransitionComplete={() => {
+            setLocationTransition((current) =>
+              current?.sequence === locationTransition.sequence ? null : current
+            );
+          }}
+        />
+      ) : locationMapOpen ? (
+        <LocationMapOverlay
+          key={`location-map-${activeChatId || "active"}`}
+          graph={srv.locationGraph}
+          mode="map"
+          currentScene={srv.scene}
+          npcs={srv.npcs}
+          statusLabels={srv.statusLabels}
+          onTravelRequest={requestMappedLocationTravel}
+          travelBusy={interactionBusy}
+          onClose={() => setLocationMapOpen(false)}
+        />
+      ) : null}
       <Toasts toasts={toasts} onDismiss={dismissToast} />
       {visibility.historyDebug && (
         <DebugPanel

@@ -4,9 +4,50 @@
 //! than campaign dice RNG. Travel situations must replay from the same
 //! world/transition/time inputs without perturbing player-facing dice rolls.
 
-use super::ids::{self, DetRng};
+use super::{
+    ids::{self, DetRng},
+    PassageDirectionality, Transition, WorldCanon,
+};
 
 pub const SITUATION_THRESHOLD_MINUTES: i64 = 30;
+
+/// Structured encounter risk for a transition.
+///
+/// Persistence still stores the canonical lowercase string, but runtime rules
+/// only consume values that parse as one of these exact variants. Free-form
+/// prose belongs in a separate description field and never changes travel
+/// mechanics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TravelRisk {
+    None,
+    Low,
+    Medium,
+    High,
+    Certain,
+}
+
+impl TravelRisk {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "certain" => Some(Self::Certain),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Certain => "certain",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TravelSituation {
@@ -30,7 +71,7 @@ pub struct TravelRoll<'a> {
     pub turn: i64,
     pub start_minutes: i64,
     pub duration_minutes: i64,
-    pub risk: &'a str,
+    pub risk: TravelRisk,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,103 +112,86 @@ impl Rarity {
     }
 }
 
-pub fn normalized_time_cost(kind: &str, label: &str, destination_hint: &str, stored: i64) -> i64 {
-    if stored > 0 {
-        stored
-    } else {
-        infer_time_cost(kind, label, destination_hint)
+fn reciprocal_transition<'a>(
+    canon: &'a WorldCanon,
+    transition: &Transition,
+) -> Option<&'a Transition> {
+    if transition.directionality != PassageDirectionality::Bidirectional
+        || transition.passage_id.is_empty()
+    {
+        return None;
     }
+
+    let mut candidates = canon.transitions.values().filter(|candidate| {
+        candidate.transition_id != transition.transition_id
+            && candidate.directionality == PassageDirectionality::Bidirectional
+            && candidate.passage_id == transition.passage_id
+            && candidate.from_place == transition.to_place
+            && candidate.to_place == transition.from_place
+    });
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
 }
 
-pub fn normalized_risk(kind: &str, label: &str, destination_hint: &str, stored: &str) -> String {
-    let clean = stored.trim();
-    if !clean.is_empty() {
-        clean.to_string()
-    } else {
-        infer_risk(kind, label, destination_hint)
-    }
+fn transition_profiles_match(left: &Transition, right: &Transition) -> bool {
+    left.kind == right.kind && left.time_cost == right.time_cost && left.risk == right.risk
 }
 
-pub fn infer_time_cost(kind: &str, label: &str, destination_hint: &str) -> i64 {
-    let kind = kind.to_lowercase();
-    let text = format!("{label} {destination_hint}").to_lowercase();
-
-    if contains_any(&kind, &["door", "back"]) || contains_any(&text, &["двер", "выход"]) {
-        return 1;
-    }
-    if contains_any(&kind, &["stairs", "ladder", "passage", "tunnel"])
-        || contains_any(&text, &["лестн", "люк", "погреб", "коридор", "ход"])
-    {
-        return 2;
-    }
-    if contains_any(&text, &["кузниц", "лавк", "дом", "таверн", "зал"]) {
-        return 4;
-    }
-    if contains_any(&text, &["ворот", "gate", "окраин"]) {
-        return 12;
-    }
-    if contains_any(&text, &["крипт", "курган", "руин", "мельниц", "брод"])
-    {
-        return 30;
-    }
-    if contains_any(&kind, &["road", "path"])
-        || contains_any(&text, &["тракт", "дорог", "тропа", "road"])
-    {
-        return 25;
-    }
-    if contains_any(&text, &["город", "деревн", "монастыр", "перевал"]) {
-        return 240;
-    }
-    5
+/// Returns true only for an explicitly identified bidirectional passage whose
+/// two directed sides have conflicting mechanical profiles. Labels may differ
+/// because they are directional display text; kind, duration, and risk belong
+/// to the shared physical passage.
+pub fn has_asymmetric_reciprocal_profile(canon: &WorldCanon, transition_id: &str) -> bool {
+    let Some(transition) = canon.transition(transition_id) else {
+        return false;
+    };
+    reciprocal_transition(canon, transition)
+        .is_some_and(|reciprocal| !transition_profiles_match(transition, reciprocal))
 }
 
-pub fn infer_risk(kind: &str, label: &str, destination_hint: &str) -> String {
-    let kind = kind.to_lowercase();
-    let text = format!("{label} {destination_hint}").to_lowercase();
+/// Invalidates an explicitly identified bidirectional passage when its two
+/// stored mechanical profiles disagree. No side is chosen as authoritative
+/// and no value is copied or inferred. The location creator must provide one
+/// new shared profile before either direction can be traversed again.
+pub fn invalidate_asymmetric_reciprocal_profiles(canon: &mut WorldCanon) -> usize {
+    let mut invalidated_ids = std::collections::BTreeSet::new();
+    for transition in canon.transitions.values() {
+        let Some(reciprocal) = reciprocal_transition(canon, transition) else {
+            continue;
+        };
+        if transition.transition_id >= reciprocal.transition_id {
+            continue;
+        }
+        if !transition_profiles_match(transition, reciprocal) {
+            invalidated_ids.insert(transition.transition_id.clone());
+            invalidated_ids.insert(reciprocal.transition_id.clone());
+        }
+    }
 
-    if contains_any(&kind, &["door", "back", "stairs", "passage"])
-        || contains_any(
-            &text,
-            &["двер", "лестн", "люк", "погреб", "кузниц", "таверн"],
-        )
-    {
-        return "none: бытовой переход без дорожной ситуации".to_string();
+    for transition_id in &invalidated_ids {
+        let Some(transition) = canon.transitions.get_mut(transition_id) else {
+            continue;
+        };
+        transition.kind.clear();
+        transition.time_cost = 0;
+        transition.risk.clear();
     }
-    if contains_any(&text, &["ворот", "площад", "рынок"]) {
-        return "settled: людный путь внутри поселения".to_string();
-    }
-    if contains_any(&text, &["тракт", "road"]) {
-        return "guarded_road: оживленная дорога с патрулями, пошлинами и свидетелями".to_string();
-    }
-    if contains_any(&text, &["крипт", "курган", "руин", "лес", "болот"]) {
-        return "wild_road: старая опасная дорога с редкими путниками и следами угроз".to_string();
-    }
-    if contains_any(&kind, &["road", "path"]) {
-        return "settled: обычный местный путь".to_string();
-    }
-    "none: короткий переход".to_string()
+    invalidated_ids.len()
 }
 
-pub fn situation_chance_percent(duration_minutes: i64, risk: &str) -> u8 {
-    if duration_minutes <= SITUATION_THRESHOLD_MINUTES {
+pub fn situation_chance_percent(duration_minutes: i64, risk: TravelRisk) -> u8 {
+    if duration_minutes <= SITUATION_THRESHOLD_MINUTES || risk == TravelRisk::None {
         return 0;
     }
-    let risk = risk.to_lowercase();
-    if contains_any(&risk, &["certain", "forced", "guaranteed"]) {
+    if risk == TravelRisk::Certain {
         return 100;
     }
-    let base = if contains_any(&risk, &["none", "safe", "бытовой"]) {
-        0
-    } else if contains_any(&risk, &["royal", "guarded", "патрул", "оживлен"]) {
-        18
-    } else if contains_any(&risk, &["settled", "людн", "обычный"]) {
-        24
-    } else if contains_any(&risk, &["wild", "forest", "болот", "старая", "опас"]) {
-        46
-    } else if contains_any(&risk, &["danger", "bandit", "haunt", "разбой", "прокля"]) {
-        64
-    } else {
-        30
+    let base = match risk {
+        TravelRisk::Low => 18,
+        TravelRisk::Medium => 30,
+        TravelRisk::High => 64,
+        TravelRisk::None => unreachable!("none risk returned above"),
+        TravelRisk::Certain => unreachable!("certain risk returned above"),
     };
     let time_bonus = ((duration_minutes - SITUATION_THRESHOLD_MINUTES) / 120).clamp(0, 20) as u8;
     (base as u8).saturating_add(time_bonus).min(85)
@@ -220,41 +244,34 @@ pub fn roll_travel_situation(input: TravelRoll<'_>) -> Option<TravelSituation> {
     })
 }
 
-fn pick_tone(rng: &mut DetRng, risk: &str) -> SituationTone {
-    let risk = risk.to_lowercase();
-    let weights = if contains_any(
-        &risk,
-        &["danger", "bandit", "haunt", "разбой", "прокля", "wild"],
-    ) {
-        [
+fn pick_tone(rng: &mut DetRng, risk: TravelRisk) -> SituationTone {
+    let weights = match risk {
+        TravelRisk::High | TravelRisk::Certain => [
             (SituationTone::Good, 10),
             (SituationTone::Bad, 45),
             (SituationTone::Neutral, 20),
             (SituationTone::Mixed, 25),
-        ]
-    } else if contains_any(&risk, &["guarded", "royal", "патрул", "оживлен"]) {
-        [
+        ],
+        TravelRisk::Low => [
             (SituationTone::Good, 22),
             (SituationTone::Bad, 18),
             (SituationTone::Neutral, 38),
             (SituationTone::Mixed, 22),
-        ]
-    } else {
-        [
+        ],
+        TravelRisk::None | TravelRisk::Medium => [
             (SituationTone::Good, 18),
             (SituationTone::Bad, 28),
             (SituationTone::Neutral, 32),
             (SituationTone::Mixed, 22),
-        ]
+        ],
     };
     pick_weighted(rng, &weights)
 }
 
-fn pick_rarity(rng: &mut DetRng, risk: &str, duration_minutes: i64) -> Rarity {
-    let risk = risk.to_lowercase();
-    let long_or_strange =
-        duration_minutes >= 8 * 60 || contains_any(&risk, &["haunt", "legend", "прокля", "древн"]);
-    let weights = if long_or_strange {
+fn pick_rarity(rng: &mut DetRng, risk: TravelRisk, duration_minutes: i64) -> Rarity {
+    let long_or_dangerous =
+        duration_minutes >= 8 * 60 || matches!(risk, TravelRisk::High | TravelRisk::Certain);
+    let weights = if long_or_dangerous {
         [
             (Rarity::Common, 58),
             (Rarity::Uncommon, 28),
@@ -310,6 +327,297 @@ fn summary_for(tone: SituationTone) -> &'static str {
     }
 }
 
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canon::Provenance;
+
+    fn transition(
+        id: &str,
+        from: &str,
+        to: &str,
+        kind: &str,
+        time_cost: i64,
+        risk: &str,
+        reason: &str,
+    ) -> Transition {
+        Transition {
+            transition_id: id.to_string(),
+            source_exit_id: id.to_string(),
+            passage_id: id.to_string(),
+            directionality: PassageDirectionality::OneWay,
+            from_place: from.to_string(),
+            to_place: to.to_string(),
+            label: format!("route-{id}"),
+            kind: kind.to_string(),
+            visible: true,
+            passable: true,
+            time_cost,
+            risk: risk.to_string(),
+            provenance: Provenance::by("llm", reason, 3),
+            ..Default::default()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bidirectional_transition(
+        id: &str,
+        passage_id: &str,
+        from: &str,
+        to: &str,
+        kind: &str,
+        time_cost: i64,
+        risk: &str,
+        reason: &str,
+    ) -> Transition {
+        Transition {
+            passage_id: passage_id.to_string(),
+            directionality: PassageDirectionality::Bidirectional,
+            ..transition(id, from, to, kind, time_cost, risk, reason)
+        }
+    }
+
+    #[test]
+    fn travel_risk_parser_accepts_only_structured_values() {
+        for (raw, expected) in [
+            ("none", TravelRisk::None),
+            ("low", TravelRisk::Low),
+            ("medium", TravelRisk::Medium),
+            ("high", TravelRisk::High),
+            ("certain", TravelRisk::Certain),
+        ] {
+            assert_eq!(TravelRisk::parse(raw), Some(expected));
+            assert_eq!(expected.as_str(), raw);
+        }
+
+        assert_eq!(TravelRisk::parse("High"), None);
+        assert_eq!(TravelRisk::parse(" high "), None);
+        assert_eq!(TravelRisk::parse("wild road"), None);
+        assert_eq!(TravelRisk::parse("high: bandits"), None);
+    }
+
+    #[test]
+    fn structured_risk_controls_situation_chance() {
+        assert_eq!(situation_chance_percent(31, TravelRisk::None), 0);
+        assert_eq!(situation_chance_percent(24 * 60, TravelRisk::None), 0);
+        assert_eq!(situation_chance_percent(31, TravelRisk::Low), 18);
+        assert_eq!(situation_chance_percent(31, TravelRisk::Medium), 30);
+        assert_eq!(situation_chance_percent(31, TravelRisk::High), 64);
+        assert_eq!(situation_chance_percent(31, TravelRisk::Certain), 100);
+        assert_eq!(situation_chance_percent(30, TravelRisk::Certain), 0);
+    }
+
+    #[test]
+    fn asymmetric_reciprocal_profiles_are_invalidated_without_copying_values() {
+        let mut canon = WorldCanon {
+            world_seed: "legacy-travel".to_string(),
+            ..Default::default()
+        };
+        let forward_id = ids::stable_id(&canon.world_seed, "alley", "transition", "shop");
+        let return_id = ids::stable_id(&canon.world_seed, "shop", "transition", "alley");
+        canon.insert_transition(bidirectional_transition(
+            &forward_id,
+            "shop_door",
+            "alley",
+            "shop",
+            "path",
+            4,
+            "medium",
+            "link generated place",
+        ));
+        canon.insert_transition(bidirectional_transition(
+            &return_id,
+            "shop_door",
+            "shop",
+            "alley",
+            "back",
+            1,
+            "none",
+            "return from generated place",
+        ));
+
+        assert!(has_asymmetric_reciprocal_profile(&canon, &forward_id));
+        assert!(has_asymmetric_reciprocal_profile(&canon, &return_id));
+        assert_eq!(invalidate_asymmetric_reciprocal_profiles(&mut canon), 2);
+        for transition_id in [&forward_id, &return_id] {
+            let transition = canon.transition(transition_id).expect("transition");
+            assert_eq!(transition.time_cost, 0);
+            assert!(transition.risk.is_empty());
+            assert!(transition.kind.is_empty());
+        }
+        assert!(!has_asymmetric_reciprocal_profile(&canon, &forward_id));
+        assert_eq!(invalidate_asymmetric_reciprocal_profiles(&mut canon), 0);
+    }
+
+    #[test]
+    fn matching_reciprocal_profiles_are_left_unchanged() {
+        let mut canon = WorldCanon {
+            world_seed: "legacy-incomplete".to_string(),
+            ..Default::default()
+        };
+        let forward_id = ids::stable_id(&canon.world_seed, "alley", "transition", "shop");
+        let return_id = ids::stable_id(&canon.world_seed, "shop", "transition", "alley");
+        canon.insert_transition(bidirectional_transition(
+            &forward_id,
+            "shop_door",
+            "alley",
+            "shop",
+            "path",
+            4,
+            "low",
+            "link generated place",
+        ));
+        canon.insert_transition(bidirectional_transition(
+            &return_id,
+            "shop_door",
+            "shop",
+            "alley",
+            "path",
+            4,
+            "low",
+            "return from generated place",
+        ));
+
+        let before = canon.clone();
+        assert!(!has_asymmetric_reciprocal_profile(&canon, &forward_id));
+        assert_eq!(invalidate_asymmetric_reciprocal_profiles(&mut canon), 0);
+        assert_eq!(canon, before);
+    }
+
+    #[test]
+    fn leaves_one_way_or_ambiguous_transitions_unchanged() {
+        let mut ambiguous = WorldCanon {
+            world_seed: "ambiguous".to_string(),
+            ..Default::default()
+        };
+        ambiguous.insert_transition(transition(
+            "one-way", "ridge", "river", "path", 4, "medium", "authored",
+        ));
+        ambiguous.insert_transition(transition(
+            "door-forward",
+            "alley",
+            "shop",
+            "door",
+            1,
+            "none",
+            "authored",
+        ));
+        ambiguous.insert_transition(transition(
+            "path-forward",
+            "alley",
+            "shop",
+            "path",
+            4,
+            "medium",
+            "authored",
+        ));
+        ambiguous.insert_transition(transition(
+            "legacy-return",
+            "shop",
+            "alley",
+            "back",
+            1,
+            "none",
+            "legacy inferred return path",
+        ));
+        let before = ambiguous.clone();
+        assert_eq!(invalidate_asymmetric_reciprocal_profiles(&mut ambiguous), 0);
+        assert_eq!(ambiguous, before);
+        assert_eq!(ambiguous.transition("legacy-return").unwrap().time_cost, 1);
+    }
+
+    #[test]
+    fn opposite_one_way_passages_between_same_places_are_never_paired() {
+        let mut canon = WorldCanon::default();
+        canon.insert_transition(transition(
+            "fall",
+            "cave",
+            "chasm",
+            "drop",
+            1,
+            "high",
+            "one-way fall",
+        ));
+        canon.insert_transition(transition(
+            "climb",
+            "chasm",
+            "cave",
+            "climb",
+            15,
+            "medium",
+            "separate climb",
+        ));
+
+        assert!(!has_asymmetric_reciprocal_profile(&canon, "fall"));
+        assert!(!has_asymmetric_reciprocal_profile(&canon, "climb"));
+        let before = canon.clone();
+        assert_eq!(invalidate_asymmetric_reciprocal_profiles(&mut canon), 0);
+        assert_eq!(canon, before);
+    }
+
+    #[test]
+    fn different_passage_ids_are_not_paired_even_for_opposite_bidirectional_edges() {
+        let mut canon = WorldCanon::default();
+        canon.insert_transition(bidirectional_transition(
+            "door",
+            "door_passage",
+            "cave",
+            "chasm",
+            "door",
+            2,
+            "none",
+            "door route",
+        ));
+        canon.insert_transition(bidirectional_transition(
+            "rope",
+            "rope_passage",
+            "chasm",
+            "cave",
+            "climb",
+            15,
+            "medium",
+            "separate rope route",
+        ));
+
+        assert!(!has_asymmetric_reciprocal_profile(&canon, "door"));
+        assert!(!has_asymmetric_reciprocal_profile(&canon, "rope"));
+        let before = canon.clone();
+        assert_eq!(invalidate_asymmetric_reciprocal_profiles(&mut canon), 0);
+        assert_eq!(canon, before);
+    }
+
+    #[test]
+    fn legacy_endpoint_reverses_never_gain_reciprocal_identity() {
+        let mut canon = WorldCanon::default();
+        let mut forward = transition(
+            "legacy_forward",
+            "cave",
+            "chasm",
+            "drop",
+            1,
+            "high",
+            "legacy route",
+        );
+        forward.passage_id.clear();
+        forward.directionality = PassageDirectionality::Unspecified;
+        let mut reverse = transition(
+            "legacy_reverse",
+            "chasm",
+            "cave",
+            "climb",
+            15,
+            "medium",
+            "legacy route",
+        );
+        reverse.passage_id.clear();
+        reverse.directionality = PassageDirectionality::Unspecified;
+        canon.insert_transition(forward);
+        canon.insert_transition(reverse);
+
+        assert!(!has_asymmetric_reciprocal_profile(&canon, "legacy_forward"));
+        assert!(!has_asymmetric_reciprocal_profile(&canon, "legacy_reverse"));
+        let before = canon.clone();
+        assert_eq!(invalidate_asymmetric_reciprocal_profiles(&mut canon), 0);
+        assert_eq!(canon, before);
+    }
 }

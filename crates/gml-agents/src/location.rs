@@ -106,6 +106,15 @@ mod tests {
     fn location_generator_templates_render_the_legacy_message_shape() {
         let system = render_location_generator_system();
         assert!(system.starts_with("You are the GM-Lab location generator"));
+        assert!(system.contains(
+            "An empty or disconnected supplied travel graph is missing geography for you to"
+        ));
+        assert!(system.contains("current-scene prose, canon descriptions, local exits"));
+        assert!(system.contains("Never invent a blocker from prose"));
+        assert!(system.contains("Set `directionality` explicitly to exactly"));
+        assert!(system.contains("creates a return transition only for"));
+        assert!(system.contains("refusal."));
+        assert!(!system.contains("return `travel_unavailable_reason`"));
         assert!(system.ends_with("Return JSON only."));
         assert_eq!(
             render_location_generator_user(

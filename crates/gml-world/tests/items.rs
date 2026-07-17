@@ -5,6 +5,7 @@
 
 use serde_json::{json, Value};
 
+use gml_world::canon::{ids, PassageDirectionality, Place, Provenance, Transition};
 use gml_world::helpers::{item_entry_string, item_head, item_tail};
 use gml_world::{SceneItem, World};
 
@@ -324,13 +325,60 @@ fn move_out_and_refresh(w: &mut World) -> String {
     use gml_world::canon::action::{Action, ProposedAction};
     use gml_world::canon::engine;
     let here = w.world_canon.player_place_id.clone();
-    let tid = w
+    let route = w
         .world_canon
         .exits_from(&here)
         .into_iter()
         .find(|t| t.visible && t.passable && t.blocked_by.is_empty())
-        .map(|t| t.transition_id.clone())
+        .cloned()
         .expect("an open exit");
+    let tid = route.transition_id.clone();
+    let destination = if route.to_place.is_empty() {
+        format!("{}_destination", tid)
+    } else {
+        route.to_place.clone()
+    };
+    if w.world_canon.place(&destination).is_none() {
+        w.world_canon.insert_place(Place {
+            place_id: destination.clone(),
+            name: "Явно заданная тестовая локация".to_string(),
+            kind: "test_place".to_string(),
+            provenance: Provenance::by("test", "explicit item-test destination", 0),
+            ..Default::default()
+        });
+    }
+    {
+        let transition = w
+            .world_canon
+            .transitions
+            .get_mut(&tid)
+            .expect("selected transition");
+        transition.to_place = destination.clone();
+        transition.passage_id = "item_test_round_trip".to_string();
+        transition.directionality = PassageDirectionality::Bidirectional;
+        transition.kind = "path".to_string();
+        transition.time_cost = 3;
+        transition.risk = "none".to_string();
+    }
+    let return_id = ids::stable_id(&w.world_canon.world_seed, &destination, "transition", &here);
+    if w.world_canon.transition(&return_id).is_none() {
+        w.world_canon.insert_transition(Transition {
+            transition_id: return_id.clone(),
+            source_exit_id: return_id,
+            passage_id: "item_test_round_trip".to_string(),
+            directionality: PassageDirectionality::Bidirectional,
+            from_place: destination.clone(),
+            to_place: here,
+            label: "Вернуться".to_string(),
+            kind: "path".to_string(),
+            visible: true,
+            passable: true,
+            time_cost: 3,
+            risk: "none".to_string(),
+            provenance: Provenance::by("test", "explicit item-test return", 0),
+            ..Default::default()
+        });
+    }
     engine::apply(
         &mut w.world_canon,
         &ProposedAction::new(Action::MovePlayer { transition_id: tid }, "gm", "move"),
@@ -350,7 +398,7 @@ fn items_do_not_travel_on_move_player_and_are_stashed_under_the_old_place() {
 
     let arrived = move_out_and_refresh(&mut w);
     assert_ne!(arrived, start, "player moved");
-    // The leak is fixed: the new (lazily-generated) place carries NO leftover
+    // The leak is fixed: the explicitly configured destination carries NO leftover
     // items from the start place.
     assert!(
         w.scene.items.is_empty(),
@@ -405,22 +453,18 @@ fn items_restore_on_return_to_the_original_place() {
 
 #[test]
 fn set_scene_overwrites_the_stored_items_for_that_place() {
-    // set_scene stages the destination's items and pins scene.location_id to the
-    // destination BEFORE refresh, so its staged items survive (are NOT stashed
-    // under the old place then wiped). On the NEXT leave they replace whatever
-    // that place held in place_items.
     let mut w = seeded_world();
+    let start_place = w.world_canon.player_place_id.clone();
     let out = w.set_scene(
         "Новый зал",
         "Пустой каменный зал.",
-        "stone_hall",
+        &start_place,
         &json!(["borin"]),
         &json!([{"id": "lamp", "name": "Лампа", "location": "на крюке"}]),
         &json!([]),
         &json!([]),
         "",
     );
-    // The destination shows its staged item, not the old tavern items.
     let items = out["items"].as_array().expect("scene items");
     let names: Vec<&str> = items
         .iter()
@@ -429,44 +473,79 @@ fn set_scene_overwrites_the_stored_items_for_that_place() {
     assert_eq!(
         names,
         vec!["Лампа"],
-        "set_scene destination shows its own items"
+        "set_scene shows the updated current-place items"
     );
     assert_eq!(
         item_ids(&w),
         vec!["lamp".to_string()],
-        "the live scene carries the staged item, not the old place's items"
+        "the live scene carries the updated current-place item"
     );
-    assert_eq!(w.scene.location_id, "stone_hall");
+    assert_eq!(w.scene.location_id, start_place);
 
-    // On the NEXT leave, the staged items are what gets stashed under this place
-    // — i.e. set_scene's items overwrite the store on the next stash cycle.
     use gml_world::canon::action::{Action, ProposedAction};
     use gml_world::canon::engine;
-    let back = w
+    let destination = "item_test_destination";
+    w.world_canon.insert_place(Place {
+        place_id: destination.to_string(),
+        name: "Соседний зал".to_string(),
+        kind: "room".to_string(),
+        default_description: "Соседний пустой зал.".to_string(),
+        provenance: Provenance::by("test", "explicit item test destination", 0),
+        ..Default::default()
+    });
+    let departure_id = "item_test_departure";
+    w.world_canon.insert_transition(Transition {
+        transition_id: departure_id.to_string(),
+        source_exit_id: departure_id.to_string(),
+        passage_id: departure_id.to_string(),
+        directionality: PassageDirectionality::OneWay,
+        from_place: start_place.clone(),
+        to_place: destination.to_string(),
+        label: "В соседний зал".to_string(),
+        kind: "passage".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 1,
+        risk: "none".to_string(),
+        provenance: Provenance::by("test", "explicit item test route", 0),
+        ..Default::default()
+    });
+    let departure = w
         .world_canon
-        .exits_from("stone_hall")
+        .exits_from(&start_place)
         .into_iter()
-        .find(|t| t.visible && t.passable && t.blocked_by.is_empty())
+        .find(|transition| {
+            transition.visible
+                && transition.passable
+                && transition.blocked_by.is_empty()
+                && !transition.to_place.is_empty()
+                && !transition.kind.is_empty()
+                && transition.time_cost > 0
+                && gml_world::canon::travel::TravelRisk::parse(&transition.risk).is_some()
+        })
         .map(|t| t.transition_id.clone())
-        .expect("set_scene created a way back");
+        .expect("seeded current place has a complete departure");
     engine::apply(
         &mut w.world_canon,
         &ProposedAction::new(
             Action::MovePlayer {
-                transition_id: back,
+                transition_id: departure,
             },
             "gm",
-            "back",
+            "leave",
         ),
         3,
     )
     .unwrap();
     w.refresh_scene_from_canon();
-    let stashed = w.place_items.get("stone_hall").expect("stone_hall stashed");
+    let stashed = w
+        .place_items
+        .get(&start_place)
+        .expect("current place items stashed");
     let stashed_ids: Vec<String> = stashed.iter().map(|i| i.item_id.clone()).collect();
     assert_eq!(
         stashed_ids,
         vec!["lamp".to_string()],
-        "the set_scene-staged items become this place's store on the next leave"
+        "the set_scene-updated items become this place's store on the next leave"
     );
 }

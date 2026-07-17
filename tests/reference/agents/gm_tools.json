@@ -82,7 +82,7 @@
     "type": "function",
     "function": {
       "name": "set_npc_whereabouts",
-      "description": "Update an absent named NPC's known, likely, rumored, or unknown offscreen whereabouts without adding them to the current scene. WHEN TO CALL: testimony, public facts, travel, or scene logic establishes where an absent NPC is, was last seen, or is likely to be found; or a previous guess is corrected. DO NOT CALL to make the NPC speak, react, enter, leave the current scene, or become visible. Use move_npc for current-scene presence and set_scene when the player actually reaches that place. Use the npc_id from the current roster in CURRENT TURN CONTEXT; an unknown id returns an error instead of recording whereabouts. The result is compact structured text with whereabouts status.",
+      "description": "Update an absent named NPC's known, likely, rumored, or unknown offscreen whereabouts without adding them to the current scene. WHEN TO CALL: testimony, public facts, travel, or scene logic establishes where an absent NPC is, was last seen, or is likely to be found; or a previous guess is corrected. DO NOT CALL to make the NPC speak, react, enter, leave the current scene, or become visible. Use move_npc for current-scene presence; player travel goes through move_player or generate_location. Use the npc_id from the current roster in CURRENT TURN CONTEXT; an unknown id returns an error instead of recording whereabouts. The result is compact structured text with whereabouts status.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -195,28 +195,28 @@
     "type": "function",
     "function": {
       "name": "set_scene",
-      "description": "Compatibility/debug fallback for applying a fully-authored current scene patch. DO NOT use this as the normal way to invent a new room, side chamber, street, building, point of interest, dungeon point, or road situation. For living-world play, prefer move_player whenever a listed exit already leads where the player is going, and call generate_location FIRST when the player discovers, opens, enters, or needs a not-yet-authored place/situation. Use set_scene only after generate_location is unavailable or rejected, or when an external tool/user debug patch already supplies the complete visible scene. The destination is upserted as a canonical Place (stable id from location_id or the title), a transition from the player's current place is ensured, and the player's canonical place is set to it; the live scene is then rebuilt FROM the canon, so it is authoritative — not a wholesale scene replacement. DO NOT CALL for movement inside the same place, plans to go somewhere, failed travel, vague searching without arrival, or when a visible exit already leads there (use move_player). Include only visible/public state. The title must name the exact current area, e.g. 'Outside the guardhouse entrance' if they are still outside. Do not invent hidden facts or conclusions. List in present_npcs only the npc_ids (from the current roster in CURRENT TURN CONTEXT) of NPCs actually in the new place; unknown ids are ignored and reported back so you can correct them. The result is compact structured text with the new canonical place id, title, items, exits, and dropped NPC ids.",
+      "description": "Compatibility/debug patch for visible details of the player's CURRENT canonical location only. It cannot create a place, create an exit, or move the player. Use move_player for an existing route and generate_location for every new place or exit. Include only visible/public state and only known npc_ids that are actually present. The live scene is rebuilt from canon after the patch. The result is compact structured text with the current place, visible items, and dropped NPC ids.",
       "parameters": {
         "type": "object",
         "properties": {
           "title": {
             "type": "string",
-            "description": "Player-facing title of the new current scene."
+            "description": "Player-facing title of the current scene."
           },
           "description": {
             "type": "string",
-            "description": "Visible description of the new current scene."
+            "description": "Visible description of the current scene."
           },
           "location_id": {
             "type": "string",
-            "description": "Optional lowercase ascii snake_case id for the new location."
+            "description": "Optional current canonical location id. A different id is rejected."
           },
           "present_npcs": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Known named NPC ids visibly present in the new scene."
+            "description": "Known named NPC ids visibly present in the current scene."
           },
           "items": {
             "type": "array",
@@ -242,33 +242,6 @@
                   "type": "string"
                 },
                 "details": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "exits": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "name": {
-                  "type": "string"
-                },
-                "destination": {
-                  "type": "string"
-                },
-                "visible": {
-                  "type": "boolean"
-                },
-                "blocked_by": {
                   "type": "string"
                 }
               },

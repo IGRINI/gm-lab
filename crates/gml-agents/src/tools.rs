@@ -78,14 +78,15 @@ const NPC_PROFILE_FIELDS: [&str; 26] = [
     "voice",
 ];
 
-/// `_INITIAL_GM_TOOL_NAMES` — the always-loaded GM tools. `move_player` is a
-/// PRIMARY living-world tool (LOCKED DECISION #2): travel goes through the canon,
-/// so the model always has it without a `tool_search`. `generate_npc` is NOT
+/// `_INITIAL_GM_TOOL_NAMES` — the always-loaded GM tools. `move_player` and
+/// `travel_to` are PRIMARY living-world tools: local and distant travel both go
+/// through the canon, so the model always has them without a `tool_search`.
+/// `generate_npc` is NOT
 /// initial: significant-NPC creation is a narrow, engine-authoritative trigger,
 /// so the generator is DEFERRED like the other canon tools and the GM reaches it
 /// through `tool_search`. Loaded tools persist for the session, so that search is
 /// a one-time cost, not a per-turn hop.
-pub(crate) const INITIAL_GM_TOOL_NAMES: [&str; 11] = [
+pub(crate) const INITIAL_GM_TOOL_NAMES: [&str; 12] = [
     "ask_npc",
     "roll_dice",
     "get_world_fact",
@@ -94,6 +95,7 @@ pub(crate) const INITIAL_GM_TOOL_NAMES: [&str; 11] = [
     "update_character",
     "advance_time",
     "move_player",
+    "travel_to",
     "load_tool_schema",
     "invoke_loaded_tool",
     "tool_search",
@@ -106,8 +108,8 @@ pub(crate) const LOAD_TOOL_SCHEMA_TOOL_NAME: &str = "load_tool_schema";
 pub(crate) const INVOKE_LOADED_TOOL_NAME: &str = "invoke_loaded_tool";
 
 /// `_TOOL_SEARCH_HINTS` — name -> hint keywords. Includes the living-world canon
-/// tools (`move_player`, `world_debug`).
-pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 22] = [
+/// tools (`move_player`, `travel_to`, `world_debug`).
+pub(crate) const TOOL_SEARCH_HINTS: [(&str, &str); 26] = [
     (
         "ask_npc",
         "npc character talk ask question interrogate answer response reaction speech \
@@ -125,8 +127,8 @@ likely rumored rumor absent offscreen",
     ),
     (
         "set_scene",
-        "scene location transition enter exit reach place room street building \
-travel exits items present_npcs canon patch fallback",
+        "current scene patch visible details items present_npcs constraints tension \
+canon debug compatibility",
     ),
     (
         "move_player",
@@ -140,8 +142,8 @@ world dump snapshot",
     ),
     (
         "generate_location",
-        "generator generate location scene area room city village dungeon road travel \
-situation encounter point of interest anti-repeat",
+        "generator generate new location place scene area room street building city village \
+dungeon road exit unresolved door travel situation encounter point of interest anti-repeat",
     ),
     (
         "take_item",
@@ -212,6 +214,25 @@ skills inventory equipment condition status update damage heal",
         "ask_player",
         "player options actions dialogue lines buttons quick replies suggest choices \
 ask question what to do next",
+    ),
+    (
+        "travel_to",
+        "distant travel journey known visited destination explicit network route city district \
+surface sewer transport fast travel canon place",
+    ),
+    (
+        "relocate_player",
+        "one off story relocation forced carried escorted teleported transported existing place \
+no route no passage player movement",
+    ),
+    (
+        "create_passage",
+        "create permanent passage connection shortcut door window tunnel bridge rope existing places \
+location creator directionality",
+    ),
+    (
+        "set_passage_state",
+        "open close block unblock passage transition door window cave rope rubble boards state reason",
     ),
 ];
 
@@ -434,8 +455,8 @@ pub fn build_gm_tools() -> Vec<Value> {
     public facts, travel, or scene logic establishes where an absent NPC is, was \
     last seen, or is likely to be found; or a previous guess is corrected. DO NOT \
     CALL to make the NPC speak, react, enter, leave the current scene, or become \
-    visible. Use move_npc for current-scene presence and set_scene when the player \
-    actually reaches that place. Use the npc_id from the current roster in CURRENT \
+    visible. Use move_npc for current-scene presence; player travel goes through \
+    move_player or generate_location. Use the npc_id from the current roster in CURRENT \
     TURN CONTEXT; an unknown id returns an error instead of recording whereabouts. \
     The result is compact structured text with whereabouts status.",
         "parameters": {"type": "object", "properties": {
@@ -476,36 +497,22 @@ pub fn build_gm_tools() -> Vec<Value> {
         "name": "set_scene",
         "description":
             "\
-    Compatibility/debug fallback for applying a fully-authored current scene patch. \
-    DO NOT use this as the normal way to invent a new room, side chamber, street, \
-    building, point of interest, dungeon point, or road situation. For living-world \
-    play, prefer move_player whenever a listed exit already leads where the player is \
-    going, and call generate_location FIRST when the player discovers, opens, enters, \
-    or needs a not-yet-authored place/situation. Use set_scene only after \
-    generate_location is unavailable or rejected, or when an external tool/user debug \
-    patch already supplies the complete visible scene. The destination is upserted as \
-    a canonical Place (stable id from location_id or the title), a transition from the \
-    player's current place is ensured, and the player's canonical place is set to it; \
-    the live scene is then rebuilt FROM the canon, so it is authoritative — not a \
-    wholesale scene replacement. DO NOT CALL for movement inside the same place, plans \
-    to go somewhere, failed travel, vague searching without arrival, or when a visible \
-    exit already leads there (use move_player). Include only visible/public state. The \
-    title must name the exact current area, e.g. \
-    'Outside the guardhouse entrance' if they are still outside. Do not invent hidden facts or \
-    conclusions. List in present_npcs only the npc_ids (from the current roster in \
-    CURRENT TURN CONTEXT) of NPCs actually in the new place; unknown ids are ignored \
-    and reported back so you can correct them. The result is compact structured text \
-    with the new canonical place id, title, items, exits, and dropped NPC ids.",
+    Compatibility/debug patch for visible details of the player's CURRENT canonical \
+    location only. It cannot create a place, create an exit, or move the player. Use \
+    move_player for an existing route and generate_location for every new place or exit. \
+    Include only visible/public state and only known npc_ids that are actually present. \
+    The live scene is rebuilt from canon after the patch. The result is compact \
+    structured text with the current place, visible items, and dropped NPC ids.",
         "parameters": {"type": "object", "properties": {
             "title": {"type": "string",
-                       "description": "Player-facing title of the new current scene."},
+                       "description": "Player-facing title of the current scene."},
             "description": {"type": "string",
-                             "description": "Visible description of the new current scene."},
+                             "description": "Visible description of the current scene."},
             "location_id": {"type": "string",
-                            "description": "Optional lowercase ascii snake_case id for the new location."},
+                            "description": "Optional current canonical location id. A different id is rejected."},
             "present_npcs": {"type": "array",
                              "items": {"type": "string"},
-                             "description": "Known named NPC ids visibly present in the new scene."},
+                             "description": "Known named NPC ids visibly present in the current scene."},
             "items": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"},
                 "name": {"type": "string"},
@@ -514,13 +521,6 @@ pub fn build_gm_tools() -> Vec<Value> {
                 "portable": {"type": "boolean"},
                 "owner": {"type": "string"},
                 "details": {"type": "string"},
-            }, "required": ["name"], "additionalProperties": false}},
-            "exits": {"type": "array", "items": {"type": "object", "properties": {
-                "id": {"type": "string"},
-                "name": {"type": "string"},
-                "destination": {"type": "string"},
-                "visible": {"type": "boolean"},
-                "blocked_by": {"type": "string"},
             }, "required": ["name"], "additionalProperties": false}},
             "constraints": {"type": "array", "items": {"type": "string"}},
             "tension": {"type": "string"},
@@ -821,7 +821,7 @@ pub fn build_gm_tools() -> Vec<Value> {
 /// re-bless), matching the move_player precedent. `long_rest` is the Phase-О
 /// deferred full-rest mover, appended at the END after the core set: like the
 /// other card movers it is NOT part of the byte-gated static catalog.
-pub const CANON_GM_TOOL_NAMES: [&str; 9] = [
+pub const CANON_GM_TOOL_NAMES: [&str; 13] = [
     "move_player",
     "world_debug",
     "generate_location",
@@ -831,6 +831,10 @@ pub const CANON_GM_TOOL_NAMES: [&str; 9] = [
     "generate_npc",
     "read_state",
     "long_rest",
+    "travel_to",
+    "relocate_player",
+    "create_passage",
+    "set_passage_state",
 ];
 
 /// The additive living-world GM tools that commit through the canon engine.
@@ -847,9 +851,11 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
     remaining travel time. The transition is committed through the world canon and gated by the \
     validator: an unknown transition, one that does not start at the player's current \
     place, a hidden exit, or a blocked way is REJECTED and changes nothing, so the \
-    player can never reach a contradictory location. If the destination has not been \
-    authored yet it is lazily generated on first entry and then becomes canon, with a \
-    guaranteed return path so the player can always go back. DO NOT CALL to invent an \
+    player can never reach a contradictory location. If the destination or route profile \
+    is unresolved, incomplete, or still a shell, this tool delegates completion to the \
+    dedicated location creator before committing the move; the creator explicitly declares \
+    whether that physical passage is one-way or bidirectional, and the engine creates a return \
+    transition only for a bidirectional passage. DO NOT CALL to invent an \
     exit that does not exist, to teleport, or for movement inside the same place. Use \
     the transition_id from the player's visible exits. The result is compact \
     structured text with the new current place and the committed canon events, or a \
@@ -860,6 +866,100 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
             "reason": {"type": "string",
                         "description": "Very short reason for the move."},
         }, "required": ["transition_id"], "additionalProperties": false},
+    }});
+    let travel_to = json!({"type": "function", "function": {
+        "name": "travel_to",
+        "description":
+            "Travel to a previously visited, player-known canon destination through an explicit \
+    travel network, without replaying every local exit. WHEN TO CALL: the player commits \
+             to a distant journey to a known place. This is distinct from move_player: move_player \
+             traverses exactly one listed visible transition, while travel_to resolves a distant \
+             route through explicit travel-network records. Call travel_to before narrating any \
+             departure or route. After success, narrate only the travel-network journey; never \
+             enumerate or claim traversal through the explored local chain of rooms, corridors, \
+             doors, or sewers. The engine never derives this route \
+    from the chain of local transitions, the player's visit history, place names, free-text \
+    destination hints, parent/region containment, or string matching. It validates the \
+    current departure access, known visited destination, selected network, route conditions, \
+    and blockers before changing anything. If an explicit route still needs authored \
+    details, the engine may ask the dedicated location creator to generate that route and \
+    then validates it before committing the journey. The journey advances canon time by its \
+    committed duration automatically; do NOT also call advance_time for the same travel. \
+    A risky journey may stop at a generated travel situation instead of the destination. \
+    Never invent a destination_place_id or network_id. The result reports the committed \
+    destination or interruption, elapsed time, and rejection reason when unavailable.",
+        "parameters": {"type": "object", "properties": {
+            "destination_place_id": {"type": "string",
+                                     "description": "Exact stable id of the previously visited, player-known canon destination."},
+            "network_id": {"type": "string",
+                           "description": "Optional exact id of an explicit travel network available from the current place. Omit when the player did not choose one; never infer or invent it from names."},
+            "reason": {"type": "string",
+                       "description": "Very short reason for the distant journey."},
+        }, "required": ["destination_place_id"], "additionalProperties": false},
+    }});
+    let relocate_player = json!({"type": "function", "function": {
+        "name": "relocate_player",
+        "description":
+            "Commit one exceptional, story-established relocation from the player's current \
+    place to another EXISTING canon place without creating a reusable transition or travel \
+    route. WHEN TO CALL: a one-time conveyance or force actually moves the player — an escort, \
+    vehicle drop-off, teleport, abduction, current, scripted collapse, or comparable event — \
+    and the destination already has an exact place id. Supply the exact elapsed time and a \
+    canonical reason. DO NOT CALL for an ordinary listed exit (move_player), an ordinary distant \
+    journey (travel_to), a new location (generate_location), or to bypass a rejected/blocked \
+    route. Success moves and rebuilds the scene but adds no graph edge, so it cannot be repeated \
+    later unless fiction establishes another relocation.",
+        "parameters": {"type": "object", "properties": {
+            "destination_place_id": {"type": "string",
+                                     "description": "Exact stable id of an existing complete canon place."},
+            "elapsed_minutes": {"type": "integer", "minimum": 0,
+                                "description": "Exact non-negative time consumed by this one-off relocation."},
+            "reason": {"type": "string",
+                       "description": "Short canonical reason that establishes why this exceptional relocation occurs."},
+        }, "required": ["destination_place_id", "elapsed_minutes", "reason"], "additionalProperties": false},
+    }});
+    let create_passage = json!({"type": "function", "function": {
+        "name": "create_passage",
+        "description":
+            "Create one NEW permanent physical passage between two EXISTING canon places without \
+    rewriting either place card and without moving the player. Pass only the exact endpoint ids \
+    and a short physical brief. The dedicated location creator — never the GM — authors \
+    directionality, directional labels, kind, duration, and risk; the engine generates ids, \
+    validates the complete profile, and atomically creates one directed edge for one_way or two \
+    reciprocal edges for bidirectional. WHEN TO CALL: fiction permanently establishes a new door, \
+    opened wall, bridge, rope route, tunnel, window route, or shortcut between places that already \
+    exist. DO NOT CALL for temporary movement, an existing passage, a new destination, or by \
+    inventing mechanical values from endpoint names or prose.",
+        "parameters": {"type": "object", "properties": {
+            "from_place_id": {"type": "string",
+                              "description": "Exact stable id of the existing source place."},
+            "to_place_id": {"type": "string",
+                            "description": "Exact stable id of the existing destination place."},
+            "request": {"type": "string",
+                        "description": "Short concrete physical brief describing the newly established passage; no ids, duration, risk, labels, or directionality."},
+            "reason": {"type": "string",
+                       "description": "Optional short canonical cause/provenance. Defaults to request."},
+        }, "required": ["from_place_id", "to_place_id", "request"], "additionalProperties": false},
+    }});
+    let set_passage_state = json!({"type": "function", "function": {
+        "name": "set_passage_state",
+        "description":
+            "Open or close an EXISTING physical passage without deleting it. Select one exact \
+    transition_id from canon/current exits and provide the new state plus canonical cause. The \
+    engine resolves only that edge's exact passage_id: a bidirectional physical passage updates \
+    both directed sides together, while independent one-way passages remain independent even when \
+    they connect the same endpoints. WHEN TO CALL: a window is boarded/unboarded, a cave is \
+    blocked/cleared, a rope is removed/restored, a door is barred/opened, or equivalent world \
+    state changes. Never search by name, label, endpoint pair, or words in prose, and never delete \
+    the edge.",
+        "parameters": {"type": "object", "properties": {
+            "transition_id": {"type": "string",
+                              "description": "Exact id of one existing side of the physical passage."},
+            "state": {"type": "string", "enum": ["open", "closed"],
+                      "description": "The new canonical passability state."},
+            "reason": {"type": "string",
+                       "description": "Short canonical cause of opening or closing the passage."},
+        }, "required": ["transition_id", "state", "reason"], "additionalProperties": false},
     }});
     let world_debug = json!({"type": "function", "function": {
         "name": "world_debug",
@@ -891,7 +991,9 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
     recent anti-repeat keys, so it avoids repeating nearby motifs. It returns short \
     player-visible description, hidden GM-only notes, concrete features/choices/\
     consequences, optional exits, and an anti_repeat_key. Do not use it for NPC speech \
-    or for teleporting the player; use move_player for travel along existing exits.",
+    or for teleporting the player. A listed visible exit is always handled with \
+    move_player, including when its destination has not been generated yet. Never estimate \
+    transition fields or directionality in the GM call; the dedicated creator owns them.",
         "parameters": {"type": "object", "properties": {
             "purpose": {"type": "string",
                         "enum": ["place", "local_place", "room", "travel_situation", "city_point", "village_point", "dungeon_point"],
@@ -903,15 +1005,13 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
             "parent_place_id": {"type": "string",
                                 "description": "Optional geographic/containment parent for a new place. When enter_after_commit=true, the engine always creates the entry route from the player's actual current place; do not use this field as a movement source."},
             "route_transition_id": {"type": "string",
-                                    "description": "Transition id for a road/travel situation."},
+                                    "description": "Existing transition id supplied by the engine when completing a route or generating a travel situation."},
             "commit": {"type": "boolean",
                        "description": "When true, apply generated place details to canon. Default true."},
             "player_observed": {"type": "boolean",
                                 "description": "True when the player can already see or directly learn this generated place/situation. This reveals only player-safe generated fields."},
             "enter_after_commit": {"type": "boolean",
                                     "description": "True when the latest player action enters the generated place now. The tool commits the place and moves the player through the new/current transition atomically."},
-            "entry_time_minutes": {"type": "integer", "minimum": 1,
-                                   "description": "Optional established travel time from the current place to the generated place. Omit when unknown so the location generator estimates it from the brief."},
             "elapsed_minutes": {"type": "integer",
                                 "description": "For travel situations: minutes already travelled before the interruption."},
             "remaining_minutes": {"type": "integer",
@@ -1098,6 +1198,10 @@ pub fn build_canon_gm_tools() -> Vec<Value> {
         generate_npc,
         read_state,
         long_rest,
+        travel_to,
+        relocate_player,
+        create_passage,
+        set_passage_state,
     ]
 }
 
@@ -1396,7 +1500,7 @@ struct ToolSearchMetadata {
     capabilities: &'static [&'static str],
 }
 
-const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
+const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 26] = [
     ToolSearchMetadata {
         name: "ask_npc",
         title: "Ask NPC",
@@ -1496,10 +1600,10 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
     ToolSearchMetadata {
         name: "set_scene",
         title: "Set Scene",
-        description: "Compatibility/debug fallback for applying a fully authored scene patch; use generate_location for new living-world places.",
-        keywords: &["scene", "debug", "fallback", "patch", "legacy"],
+        description: "Compatibility/debug patch for visible details of the current canonical location; it never creates places, exits, or travel.",
+        keywords: &["scene", "debug", "current", "patch", "legacy"],
         aliases: &["manual scene patch"],
-        capabilities: &["scene_patch_fallback"],
+        capabilities: &["current_scene_patch"],
     },
     ToolSearchMetadata {
         name: "move_player",
@@ -1572,6 +1676,38 @@ const TOOL_SEARCH_METADATA: [ToolSearchMetadata; 22] = [
         keywords: &["rest", "sleep", "recover", "restore", "overnight", "recovery"],
         aliases: &["long rest", "overnight stay", "night sleep"],
         capabilities: &["full_restore", "slot_hp_recovery", "world_clock"],
+    },
+    ToolSearchMetadata {
+        name: "travel_to",
+        title: "Distant Travel",
+        description: "Travel to a visited known destination through an explicit canon travel network.",
+        keywords: &["travel", "distant", "journey", "destination", "network", "visited"],
+        aliases: &["travel to", "journey", "cross town"],
+        capabilities: &["distant_travel", "travel_network_validation", "canon_travel"],
+    },
+    ToolSearchMetadata {
+        name: "relocate_player",
+        title: "One-off Relocation",
+        description: "Move the player once to an existing place without creating reusable geography.",
+        keywords: &["relocate", "one-off", "escort", "teleport", "transport", "existing"],
+        aliases: &["forced move", "carried away", "drop off"],
+        capabilities: &["one_off_relocation", "no_graph_edge", "canon_movement"],
+    },
+    ToolSearchMetadata {
+        name: "create_passage",
+        title: "Create Passage",
+        description: "Ask the location creator to profile and atomically add a permanent passage between existing places.",
+        keywords: &["passage", "connection", "shortcut", "door", "tunnel", "bridge"],
+        aliases: &["new connection", "permanent shortcut", "link places"],
+        capabilities: &["passage_generation", "existing_place_connection", "atomic_graph_update"],
+    },
+    ToolSearchMetadata {
+        name: "set_passage_state",
+        title: "Set Passage State",
+        description: "Open or close an existing physical passage by exact transition identity without deleting it.",
+        keywords: &["passage", "open", "close", "block", "unblock", "transition"],
+        aliases: &["bar door", "clear cave", "remove rope", "restore route"],
+        capabilities: &["passage_state", "bidirectional_sync", "non_destructive_blocking"],
     },
 ];
 

@@ -38,6 +38,10 @@ pub struct Place {
     /// Owning region id, or empty until regions exist (P6).
     #[serde(default)]
     pub region_id: String,
+    /// Explicit owning district id. Empty is valid for old saves and places
+    /// outside settlements; membership is never inferred from names or visits.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub district_id: String,
     /// Default player-facing description when no event has altered the place.
     #[serde(default)]
     pub default_description: String,

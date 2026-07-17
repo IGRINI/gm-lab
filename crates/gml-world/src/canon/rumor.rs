@@ -42,10 +42,27 @@ pub fn scopes_for_place(
         if include_wide && !place.region_id.is_empty() {
             scopes.insert(format!("region:{}", actor_key(&place.region_id)));
         }
+        if include_wide {
+            if let Some(district) = canon.district(&place.district_id) {
+                scopes.insert(format!("district:{}", actor_key(&district.district_id)));
+                if let Some(settlement) = canon.settlement(&district.settlement_id) {
+                    scopes.insert(format!(
+                        "settlement:{}",
+                        actor_key(&settlement.settlement_id)
+                    ));
+                    if !settlement.region_id.is_empty() {
+                        scopes.insert(format!("region:{}", actor_key(&settlement.region_id)));
+                    }
+                }
+            }
+        }
         if place.parent.is_empty() {
             break;
         }
         let parent = actor_key(&place.parent);
+        if canon.districts.contains_key(&parent) {
+            break;
+        }
         if canon.settlements.contains_key(&parent) {
             if include_wide {
                 scopes.insert(format!("settlement:{parent}"));
@@ -173,29 +190,30 @@ pub fn memory_unit_for_rumor(rumor: &Rumor, canon: &WorldCanon) -> MemoryUnit {
 }
 
 fn is_route_like(transition: &Transition) -> bool {
-    let kind = transition.kind.to_lowercase();
-    let text = format!(
-        "{} {} {} {}",
-        transition.label, transition.destination_hint, transition.risk, transition.blocked_by
+    matches!(
+        transition.kind.as_str(),
+        "road" | "route" | "path" | "trail" | "road_segment"
     )
-    .to_lowercase();
-    contains_any(&kind, &["road", "route", "path", "trail", "road_segment"])
-        || contains_any(
-            &text,
-            &[
-                "дорог",
-                "тракт",
-                "тропа",
-                "лес",
-                "road",
-                "route",
-                "trail",
-                "wild",
-                "guarded",
-            ],
-        )
 }
 
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_classification_uses_only_the_structured_kind() {
+        let mut transition = Transition {
+            label: "Дорога через лес".to_string(),
+            destination_hint: "Северный тракт".to_string(),
+            risk: "high".to_string(),
+            ..Default::default()
+        };
+        assert!(!is_route_like(&transition));
+
+        transition.kind = "road".to_string();
+        assert!(is_route_like(&transition));
+
+        transition.kind = "Road".to_string();
+        assert!(!is_route_like(&transition));
+    }
 }

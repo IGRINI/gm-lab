@@ -21,9 +21,39 @@ use super::entity::Faction;
 use super::event_log::{Account, CanonEvent};
 use super::ids;
 use super::knowledge::{Scope, Truthfulness};
-use super::region::{Region, Settlement};
-use super::travel;
-use super::{Place, Provenance, Transition, WorldCanon, WorldLore, GENERATOR_VERSION};
+use super::region::{District, Region, Settlement};
+use super::travel::TravelRisk;
+use super::{
+    PassageDirectionality, Place, Provenance, Transition, WorldCanon, WorldLore, GENERATOR_VERSION,
+};
+
+#[derive(Clone, Copy)]
+struct LinkProfile {
+    kind: &'static str,
+    time_cost: i64,
+    risk: TravelRisk,
+}
+
+const SMITHY_LINK: LinkProfile = LinkProfile {
+    kind: "path",
+    time_cost: 4,
+    risk: TravelRisk::None,
+};
+const GATE_LINK: LinkProfile = LinkProfile {
+    kind: "path",
+    time_cost: 12,
+    risk: TravelRisk::Low,
+};
+const ROAD_LINK: LinkProfile = LinkProfile {
+    kind: "road",
+    time_cost: 25,
+    risk: TravelRisk::Low,
+};
+const CRYPT_LINK: LinkProfile = LinkProfile {
+    kind: "path",
+    time_cost: 30,
+    risk: TravelRisk::Medium,
+};
 
 /// The high-level brief a campaign hands to world generation (TZ §7.2 input).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,7 +94,7 @@ impl WorldSpec {
 /// The result satisfies TZ §14's "new campaign" criterion: at least one region,
 /// one settlement (with `has_function() == true`), a start place, several
 /// neighbouring places linked by two-way transitions, a point-of-interest shell
-/// reachable via a transition (a dungeon entry — lazy interior on first entry),
+/// reachable via a transition (the location creator fills it before first entry),
 /// one faction, and an initial history. No actors are seeded — the roster
 /// starts empty and grows through lazy NPC generation at play time.
 pub fn generate(spec: &WorldSpec) -> WorldCanon {
@@ -151,6 +181,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
         "налёты с болот истощают запасы",
         "две семьи борются за власть в совете",
     ];
+    let district_id = ids::stable_id(&seed, &settlement_id, "district", "center");
     let settlement = Settlement {
         settlement_id: settlement_id.clone(),
         name: rng.pick(&town_names).to_string(),
@@ -168,8 +199,18 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
         important_npc_ids: Vec::new(),
         local_rumors: vec!["в старой крипте на холме кто-то снова зажигает огни".to_string()],
         threats: vec!["разбойники на тракте".to_string()],
+        district_ids: vec![district_id.clone()],
         place_ids: Vec::new(),
         history_event_ids: Vec::new(),
+        provenance: prov(),
+    };
+    let district = District {
+        district_id: district_id.clone(),
+        name: "Центральный район".to_string(),
+        settlement_id: settlement_id.clone(),
+        region_id: region_id.clone(),
+        kind: "center".to_string(),
+        place_ids: Vec::new(),
         provenance: prov(),
     };
     debug_assert!(
@@ -185,8 +226,9 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
         place_id: start_id.clone(),
         name: "Рыночная площадь".to_string(),
         kind: "square".to_string(),
-        parent: settlement_id.clone(),
+        parent: district_id.clone(),
         region_id: region_id.clone(),
+        district_id: district_id.clone(),
         default_description: "Мощёная площадь в центре поселения: колодец, лавки, гул торга."
             .to_string(),
         state_flags: start_flags,
@@ -199,25 +241,29 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
         provenance: prov(),
     };
 
-    // Neighbour specs: (salt, name, kind, description).
-    let neighbours: [(&str, &str, &str, &str); 3] = [
+    // Neighbour specs carry explicit travel metadata. Player-facing names never
+    // participate in route mechanics.
+    let neighbours: [(&str, &str, &str, &str, LinkProfile); 3] = [
         (
             "smithy",
             "Кузница",
             "building",
             "Жаркая кузница: звон молота, запах угля и железа.",
+            SMITHY_LINK,
         ),
         (
             "gate",
             "Северные ворота",
             "gate",
             "Окованные ворота, ведущие на тракт.",
+            GATE_LINK,
         ),
         (
             "road",
             "Северный тракт",
             "road",
             "Разбитая дорога, уходящая в холмы.",
+            ROAD_LINK,
         ),
     ];
 
@@ -229,7 +275,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
     let max_transitions = canon.gen_budget.max_transitions_per_turn;
     let mut transitions_made = 0usize;
 
-    for (salt, name, kind, desc) in neighbours {
+    for (salt, name, kind, desc, travel_profile) in neighbours {
         if transitions_made + 2 > max_transitions {
             break;
         }
@@ -238,8 +284,9 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
             place_id: pid.clone(),
             name: name.to_string(),
             kind: kind.to_string(),
-            parent: settlement_id.clone(),
+            parent: district_id.clone(),
             region_id: region_id.clone(),
+            district_id: district_id.clone(),
             default_description: desc.to_string(),
             state_flags: BTreeSet::new(),
             features: Vec::new(),
@@ -252,12 +299,20 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
         });
         settlement_place_ids.push(pid.clone());
         // Two-way transitions start <-> neighbour.
-        transitions_made += link_two_way(&mut canon, &seed, &start_id, &pid, name, "Площадь");
+        transitions_made += link_two_way(
+            &mut canon,
+            &seed,
+            &start_id,
+            &pid,
+            name,
+            "Площадь",
+            travel_profile,
+        );
     }
 
-    // --- Layer 5: a point-of-interest reached via a SHELL transition ------
-    // From the north road, a transition whose target is a shell dungeon entry:
-    // entering it triggers lazy interior generation (engine::expand_place_interior).
+    // --- Layer 5: a point-of-interest shell -------------------------------
+    // The shell carries only established world structure. The dedicated
+    // location creator authors its playable content before first entry.
     let road_id = ids::stable_id(&seed, &settlement_id, "place", "road");
     let crypt_id = ids::stable_id(&seed, &region_id, "place", "crypt");
     let mut crypt_flags = BTreeSet::new();
@@ -268,6 +323,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
         kind: "dungeon".to_string(),
         parent: String::new(),
         region_id: region_id.clone(),
+        district_id: String::new(),
         default_description: "Покосившийся вход в старую крипту; из темноты тянет холодом."
             .to_string(),
         state_flags: crypt_flags,
@@ -288,6 +344,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
             &crypt_id,
             "Вход в крипту",
             "Тракт",
+            CRYPT_LINK,
         );
     }
     let _ = transitions_made;
@@ -305,9 +362,14 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
 
     let mut settlement = settlement;
     settlement.place_ids = settlement_place_ids;
+    let mut district = district;
+    district.place_ids = settlement.place_ids.clone();
 
     canon.regions.insert(region_id.clone(), region);
     canon.settlements.insert(settlement_id.clone(), settlement);
+    canon
+        .insert_district(district)
+        .expect("worldgen district must satisfy canonical geography");
     canon.factions.insert(faction_id.clone(), faction);
 
     // --- Layer 7: initial history (TZ §6.9, §14) --------------------------
@@ -335,29 +397,30 @@ fn link_two_way(
     b: &str,
     label_ab: &str,
     label_ba: &str,
+    profile: LinkProfile,
 ) -> usize {
     let mut made = 0usize;
+    let (passage_left, passage_right) = if a <= b { (a, b) } else { (b, a) };
+    let passage_id = ids::stable_id(seed, passage_left, "passage", passage_right);
     let fwd = ids::stable_id(seed, a, "transition", b);
-    let fwd_time_cost = travel::infer_time_cost("path", label_ab, label_ba);
-    let fwd_risk = travel::infer_risk("path", label_ab, label_ba);
-    let back_time_cost = travel::infer_time_cost("path", label_ba, label_ab);
-    let back_risk = travel::infer_risk("path", label_ba, label_ab);
     if !canon.transitions.contains_key(&fwd) {
         made += 1;
         canon.insert_transition(Transition {
             transition_id: fwd.clone(),
             source_exit_id: fwd.clone(),
+            passage_id: passage_id.clone(),
+            directionality: PassageDirectionality::Bidirectional,
             from_place: a.to_string(),
             to_place: b.to_string(),
             destination_hint: String::new(),
             label: label_ab.to_string(),
-            kind: "path".to_string(),
+            kind: profile.kind.to_string(),
             visible: true,
             passable: true,
             conditions: Vec::new(),
             blocked_by: String::new(),
-            time_cost: fwd_time_cost,
-            risk: fwd_risk,
+            time_cost: profile.time_cost,
+            risk: profile.risk.as_str().to_string(),
             provenance: Provenance::by("worldgen", "two-way link", 0),
         });
     }
@@ -367,17 +430,19 @@ fn link_two_way(
         canon.insert_transition(Transition {
             transition_id: back.clone(),
             source_exit_id: back.clone(),
+            passage_id: passage_id.clone(),
+            directionality: PassageDirectionality::Bidirectional,
             from_place: b.to_string(),
             to_place: a.to_string(),
             destination_hint: String::new(),
             label: label_ba.to_string(),
-            kind: "path".to_string(),
+            kind: profile.kind.to_string(),
             visible: true,
             passable: true,
             conditions: Vec::new(),
             blocked_by: String::new(),
-            time_cost: back_time_cost,
-            risk: back_risk,
+            time_cost: profile.time_cost,
+            risk: profile.risk.as_str().to_string(),
             provenance: Provenance::by("worldgen", "two-way link", 0),
         });
     }
@@ -461,4 +526,37 @@ fn seed_initial_history(
         truth: Truthfulness::Partial,
         scope: Scope::Rumor,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_two_way_links_share_one_explicit_profile() {
+        let canon = generate(&WorldSpec::from_seed("explicit-link-profiles"));
+
+        for transition in canon.transitions.values() {
+            let reverse = canon
+                .transitions
+                .values()
+                .find(|candidate| {
+                    candidate.from_place == transition.to_place
+                        && candidate.to_place == transition.from_place
+                })
+                .expect("worldgen transition has a reciprocal edge");
+            assert_eq!(reverse.kind, transition.kind);
+            assert_eq!(reverse.time_cost, transition.time_cost);
+            assert_eq!(reverse.risk, transition.risk);
+            assert_eq!(reverse.passage_id, transition.passage_id);
+            assert!(!transition.passage_id.is_empty());
+            assert_eq!(
+                transition.directionality,
+                PassageDirectionality::Bidirectional
+            );
+            assert_eq!(reverse.directionality, transition.directionality);
+            assert!(transition.time_cost > 0);
+            assert!(TravelRisk::parse(&transition.risk).is_some());
+        }
+    }
 }

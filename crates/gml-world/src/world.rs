@@ -390,8 +390,7 @@ pub struct World {
     /// that CHANGES the player's place, [`Self::refresh_scene_from_canon`]
     /// STASHES the leaving place's live `scene.items` here and RESTORES the
     /// entered place's stored items (empty when unvisited). Same-place refreshes
-    /// (the common case, incl. `set_scene` which stages the destination's items
-    /// and pins `scene.location_id` to the new place FIRST) leave the live items
+    /// (the common case, including a current-place `set_scene` patch) leave the live items
     /// untouched. Persisted additively — a trailing `place_items` key emitted
     /// ONLY when non-empty (`BTreeMap` for deterministic bytes), parsed with a
     /// default, so pre-Phase-И saves stay byte-identical. Items are NOT canon
@@ -835,7 +834,7 @@ impl World {
             let exits = scene.get("exits").cloned().unwrap_or(Value::Null);
             let constraints = scene.get("constraints").cloned().unwrap_or(Value::Null);
             let tension = get_str(scene, "tension");
-            self.set_scene(
+            self.set_initial_scene(
                 &scene_title,
                 &description,
                 &location_id,
@@ -1870,10 +1869,25 @@ impl World {
             if !place.region_id.is_empty() {
                 scopes.insert(format!("region:{}", actor_key(&place.region_id)));
             }
+            if let Some(district) = self.world_canon.district(&place.district_id) {
+                scopes.insert(format!("district:{}", actor_key(&district.district_id)));
+                if let Some(settlement) = self.world_canon.settlement(&district.settlement_id) {
+                    scopes.insert(format!(
+                        "settlement:{}",
+                        actor_key(&settlement.settlement_id)
+                    ));
+                    if !settlement.region_id.is_empty() {
+                        scopes.insert(format!("region:{}", actor_key(&settlement.region_id)));
+                    }
+                }
+            }
             if place.parent.is_empty() {
                 break;
             }
             let parent = actor_key(&place.parent);
+            if self.world_canon.districts.contains_key(&parent) {
+                break;
+            }
             if self.world_canon.settlements.contains_key(&parent) {
                 scopes.insert(format!("settlement:{parent}"));
                 if let Some(settlement) = self.world_canon.settlements.get(&parent) {
@@ -3501,20 +3515,13 @@ impl World {
         }))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// `set_scene` — REPURPOSED to a canon mutation (LOCKED DECISION #3). Its
-    /// legacy "replace the live scene wholesale" semantics are dead: the canon is
-    /// now authoritative. This upserts a canonical [`crate::canon::Place`] for the
-    /// destination (stable id from `location_id` or the title), ensures a
-    /// transition from the player's current place, sets `canon.player_place_id` to
-    /// the destination, mirrors the present NPCs as canon [`crate::canon::Actor`]s
-    /// at the destination (so the derived `present_npcs` reflects them), then
-    /// rebuilds the live `self.scene` FROM the canon via
-    /// [`World::refresh_scene_from_canon`].
+    /// Updates authored content for the current canonical place.
     ///
-    /// The return shape is unchanged (a `scene_export` of the now-canon-derived
-    /// scene, plus `dropped_present_npcs` / `repair_hint` for unknown ids) so the
-    /// orchestrator tool path and the model-facing text are stable.
+    /// Runtime location changes must go through the orchestrator's structured
+    /// transition flow. This legacy API deliberately rejects a different
+    /// `location_id`, so debug edits and old callers cannot create a route or
+    /// teleport the player around the location creator.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_scene(
         &mut self,
         title: &str,
@@ -3526,9 +3533,59 @@ impl World {
         constraints: &Value,
         tension: &str,
     ) -> Value {
+        self.set_scene_inner(
+            title,
+            description,
+            location_id,
+            present_npcs,
+            items,
+            exits,
+            constraints,
+            tension,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set_initial_scene(
+        &mut self,
+        title: &str,
+        description: &str,
+        location_id: &str,
+        present_npcs: &Value,
+        items: &Value,
+        exits: &Value,
+        constraints: &Value,
+        tension: &str,
+    ) -> Value {
+        self.set_scene_inner(
+            title,
+            description,
+            location_id,
+            present_npcs,
+            items,
+            exits,
+            constraints,
+            tension,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set_scene_inner(
+        &mut self,
+        title: &str,
+        description: &str,
+        location_id: &str,
+        present_npcs: &Value,
+        items: &Value,
+        exits: &Value,
+        constraints: &Value,
+        tension: &str,
+        allow_initial_relocation: bool,
+    ) -> Value {
         use crate::canon::{Containment, Provenance, Transition};
 
-        self.ensure_npc_whereabouts();
         let title = nonempty_or(title.trim().to_string(), "Новая сцена");
         let description = nonempty_or(description.trim().to_string(), &title);
         let fallback_id = format!("scene_{}", ord_sum(&title) % 100000);
@@ -3546,6 +3603,16 @@ impl World {
         }
         let turn = self.world_canon.event_log.events.len() as i64;
         let from_place = self.world_canon.player_place_id.clone();
+        if !allow_initial_relocation && !from_place.is_empty() && from_place != dest_id {
+            return json!({
+                "ok": false,
+                "error": "set_scene cannot change location; use move_player or generate_location",
+                "code": "location_change_requires_transition",
+                "current_location_id": from_place,
+                "requested_location_id": dest_id,
+            });
+        }
+        self.ensure_npc_whereabouts();
 
         // Resolve present_npcs to known npc ids; collect unknowns to report back.
         let mut present: BTreeSet<String> = BTreeSet::new();
@@ -3582,6 +3649,7 @@ impl World {
                     kind: "scene".to_string(),
                     parent: String::new(),
                     region_id: String::new(),
+                    district_id: String::new(),
                     default_description: description.clone(),
                     state_flags: flags,
                     features: Vec::new(),
@@ -3595,103 +3663,45 @@ impl World {
             }
         }
 
-        // --- ensure a transition from the current place to the destination -
-        if !from_place.is_empty() && from_place != dest_id {
-            let already = self
-                .world_canon
-                .exits_from(&from_place)
-                .iter()
-                .any(|t| t.to_place == dest_id);
-            if !already {
-                let tid = crate::canon::ids::stable_id(
-                    &self.world_canon.world_seed,
-                    &from_place,
-                    "transition",
-                    &dest_id,
-                );
-                if !self.world_canon.transitions.contains_key(&tid) {
-                    self.world_canon.insert_transition(Transition {
-                        transition_id: tid.clone(),
-                        source_exit_id: tid.clone(),
-                        from_place: from_place.clone(),
-                        to_place: dest_id.clone(),
-                        destination_hint: title.clone(),
-                        label: nonempty_or(title.clone(), "Переход"),
-                        kind: "scene".to_string(),
-                        visible: true,
-                        passable: true,
-                        conditions: Vec::new(),
-                        blocked_by: String::new(),
-                        time_cost: crate::canon::travel::infer_time_cost("scene", &title, &title),
-                        risk: crate::canon::travel::infer_risk("scene", &title, &title),
-                        provenance: Provenance::by("llm", "set_scene transition", turn),
-                    });
+        // Seed hydration may establish unresolved exit shells. Runtime scene
+        // patches preserve canon exits; the dedicated location creator owns
+        // every new route and its profile.
+        if allow_initial_relocation {
+            for exit in coerce_initial_scene_exits(Some(exits)) {
+                let base = if exit.exit_id.is_empty() {
+                    safe_id(&exit.name, "exit")
+                } else {
+                    exit.exit_id.clone()
+                };
+                let mut tid = format!("{dest_id}_{base}");
+                let mut n = 2;
+                while self.world_canon.transitions.contains_key(&tid) {
+                    tid = format!("{dest_id}_{base}_{n}");
+                    n += 1;
                 }
-                // A guaranteed return edge so the player can always go back.
-                let back = crate::canon::ids::stable_id(
-                    &self.world_canon.world_seed,
-                    &dest_id,
-                    "transition",
-                    &from_place,
-                );
-                if !self.world_canon.transitions.contains_key(&back) {
-                    let back_label = self
-                        .world_canon
-                        .place(&from_place)
-                        .map(|p| p.name.clone())
-                        .unwrap_or_else(|| "Назад".to_string());
-                    self.world_canon.insert_transition(Transition {
-                        transition_id: back.clone(),
-                        source_exit_id: back.clone(),
-                        from_place: dest_id.clone(),
-                        to_place: from_place.clone(),
-                        destination_hint: String::new(),
-                        label: nonempty_or(back_label.clone(), "Назад"),
-                        kind: "back".to_string(),
-                        visible: true,
-                        passable: true,
-                        conditions: Vec::new(),
-                        blocked_by: String::new(),
-                        time_cost: crate::canon::travel::infer_time_cost("back", &back_label, ""),
-                        risk: crate::canon::travel::infer_risk("back", &back_label, ""),
-                        provenance: Provenance::by("llm", "set_scene return path", turn),
-                    });
-                }
+                self.world_canon.insert_transition(Transition {
+                    transition_id: tid.clone(),
+                    source_exit_id: exit.exit_id.clone(),
+                    passage_id: String::new(),
+                    directionality: crate::canon::PassageDirectionality::Unspecified,
+                    from_place: dest_id.clone(),
+                    to_place: String::new(),
+                    destination_hint: exit.destination.clone(),
+                    label: exit.name.clone(),
+                    kind: String::new(),
+                    visible: exit.visible,
+                    passable: exit.blocked_by.is_empty(),
+                    conditions: Vec::new(),
+                    blocked_by: exit.blocked_by.clone(),
+                    time_cost: 0,
+                    risk: String::new(),
+                    provenance: Provenance::by("llm", "initial scene exit", turn),
+                });
             }
         }
 
-        // --- append any GM-authored extra exits onto the destination ------
-        for exit in coerce_scene_exits_setscene(Some(exits)) {
-            let base = if exit.exit_id.is_empty() {
-                safe_id(&exit.name, "exit")
-            } else {
-                exit.exit_id.clone()
-            };
-            let mut tid = format!("{dest_id}_{base}");
-            let mut n = 2;
-            while self.world_canon.transitions.contains_key(&tid) {
-                tid = format!("{dest_id}_{base}_{n}");
-                n += 1;
-            }
-            self.world_canon.insert_transition(Transition {
-                transition_id: tid.clone(),
-                source_exit_id: exit.exit_id.clone(),
-                from_place: dest_id.clone(),
-                to_place: String::new(),
-                destination_hint: exit.destination.clone(),
-                label: exit.name.clone(),
-                kind: String::new(),
-                visible: exit.visible,
-                passable: exit.blocked_by.is_empty(),
-                conditions: Vec::new(),
-                blocked_by: exit.blocked_by.clone(),
-                time_cost: crate::canon::travel::infer_time_cost("", &exit.name, &exit.destination),
-                risk: crate::canon::travel::infer_risk("", &exit.name, &exit.destination),
-                provenance: Provenance::by("llm", "set_scene exit", turn),
-            });
-        }
-
-        // --- move the player into the destination -------------------------
+        // Seed hydration establishes the initial position; runtime callers can
+        // only update the place the player already occupies.
         self.world_canon.player_place_id = dest_id.clone();
 
         // --- mirror present NPCs as canon actors AT the destination -------
@@ -3770,15 +3780,17 @@ impl World {
             }
         }
 
-        // --- record the authored change in the canon event log ------------
-        // set_scene is a privileged GM *authoring* commit (the destination place,
-        // the transition, the move and the present roster). Logging it as a
-        // committed event makes the causal log explain WHY these canon objects
-        // exist (TZ §6.9, §12) — player *traversal* still goes through the
-        // validator-gated engine via move_player.
+        // --- record the current-scene update in the canon event log --------
         {
             let mut effects = vec![
-                format!("authored_place:{dest_id}"),
+                format!(
+                    "{}:{dest_id}",
+                    if allow_initial_relocation {
+                        "initialized_place"
+                    } else {
+                        "updated_place"
+                    }
+                ),
                 format!("player_at:{dest_id}"),
             ];
             if !present.is_empty() {
@@ -3808,7 +3820,15 @@ impl World {
                 possible_traces: Vec::new(),
                 scheduled: false,
                 due_minutes: 0,
-                provenance: Provenance::by("llm", "set_scene authored place + move", turn),
+                provenance: Provenance::by(
+                    "llm",
+                    if allow_initial_relocation {
+                        "initial scene hydration"
+                    } else {
+                        "set_scene updated current place"
+                    },
+                    turn,
+                ),
             });
         }
 
@@ -4348,13 +4368,13 @@ impl World {
         let mut lines: Vec<String> = Vec::new();
         lines.extend(c.world_lore.gm_context_lines());
         if let Some(p) = c.place(&c.player_place_id) {
-            if let Some(r) = c.region(&p.region_id) {
+            if let Some(r) = c.region_for_place(&p.place_id) {
                 lines.push(format!(
                     "Region: {} — climate {}, danger {}/5",
                     r.name, r.climate, r.danger_level
                 ));
             }
-            if let Some(s) = c.settlement(&p.parent) {
+            if let Some(s) = c.settlement_for_place(&p.place_id) {
                 let mut s_line = format!("Settlement: {}", s.name);
                 if !s.power.is_empty() {
                     s_line.push_str(&format!("; power: {}", s.power));
@@ -4364,6 +4384,25 @@ impl World {
                 }
                 lines.push(s_line);
             }
+            if let Some(district) = c.district_for_place(&p.place_id) {
+                lines.push(format!(
+                    "District: {} [{}]",
+                    district.name, district.district_id
+                ));
+            }
+        }
+        let visited_places = c
+            .places
+            .values()
+            .filter(|place| place.is_visited())
+            .take(32)
+            .map(|place| format!("{} [{}]", place.name, place.place_id))
+            .collect::<Vec<_>>();
+        if !visited_places.is_empty() {
+            lines.push(format!(
+                "Visited travel destinations: {}",
+                visited_places.join(" | ")
+            ));
         }
         let factions: Vec<String> = c
             .factions
@@ -6329,10 +6368,8 @@ fn coerce_scene_exits(raw: Option<&Value>, default_dest: &str) -> Vec<SceneExit>
     exits
 }
 
-/// set_scene's exit coercion uses a different fallback name for the
-/// string-list branch ("unknown destination") and the dict branch
-/// ("неизвестное направление") — mirror world.py exactly.
-fn coerce_scene_exits_setscene(raw: Option<&Value>) -> Vec<SceneExit> {
+/// Initial seed exit coercion kept for compatibility with legacy story seeds.
+fn coerce_initial_scene_exits(raw: Option<&Value>) -> Vec<SceneExit> {
     let list = match raw {
         Some(v) => as_list(v),
         None => Vec::new(),

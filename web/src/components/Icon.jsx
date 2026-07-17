@@ -18,6 +18,7 @@ const P = {
   "arrow-up": <path d="M12 19V5.5M5.8 11.2L12 5l6.2 6.2" />,
   "arrow-down": <path d="M12 5v13.5M5.8 12.8L12 19l6.2-6.2" />,
   "arrow-left": <path d="M19 12H5.5M11.2 5.8L5 12l6.2 6.2" />,
+  "arrow-right": <path d="M5 12h13.5M12.8 5.8L19 12l-6.2 6.2" />,
   dots: <><circle cx="4.5" cy="12" r="2.3" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="2.3" fill="currentColor" stroke="none" /><circle cx="19.5" cy="12" r="2.3" fill="currentColor" stroke="none" /></>,
 
   // действия

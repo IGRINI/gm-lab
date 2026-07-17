@@ -979,6 +979,7 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
             format!("unsupported world payload: world_canon present but malformed: {e}")
         })?,
     };
+    gml_world::canon::travel::invalidate_asymmetric_reciprocal_profiles(&mut world.world_canon);
 
     world.dice_seed = data
         .get("dice_seed")
@@ -1602,7 +1603,13 @@ fn first_nonempty(m: &Map<String, Value>, keys: &[&str]) -> String {
 #[cfg(test)]
 mod package_ref_tests {
     use super::*;
-    use gml_world::{PackageRef, World, WorldSpec};
+    use gml_world::{
+        canon::{
+            action::{Action, ProposedAction},
+            engine, ids, PassageDirectionality, Place, Provenance, Transition,
+        },
+        PackageRef, World, WorldSpec,
+    };
 
     /// A deterministic, fully-formed World (worldgen populates npcs/scene/
     /// fact_records so the payload round-trips through `world_from_payload`).
@@ -1839,6 +1846,120 @@ mod package_ref_tests {
 
         let restored = world_from_payload(Some(&payload)).expect("restore world");
         assert!(restored.place_scene_contexts.is_empty());
+    }
+
+    #[test]
+    fn legacy_pair_keeps_data_but_requires_explicit_creator_passage_profile() {
+        let mut world = worldgen_world();
+        let alley_id = "aldrick_alley";
+        let shop_id = "aldrick_shop";
+        for (place_id, name, kind) in [
+            (alley_id, "Переулок у лавки Алдрика", "street"),
+            (shop_id, "Внутри лавки Алдрика", "building"),
+        ] {
+            let mut place = Place {
+                place_id: place_id.to_string(),
+                name: name.to_string(),
+                kind: kind.to_string(),
+                provenance: Provenance::by("lazy_gen", "generated place", 3),
+                ..Default::default()
+            };
+            place.mark_visited();
+            world.world_canon.insert_place(place);
+        }
+
+        let forward_id = ids::stable_id(
+            &world.world_canon.world_seed,
+            alley_id,
+            "transition",
+            shop_id,
+        );
+        let return_id = ids::stable_id(
+            &world.world_canon.world_seed,
+            shop_id,
+            "transition",
+            alley_id,
+        );
+        world.world_canon.insert_transition(Transition {
+            transition_id: forward_id,
+            from_place: alley_id.to_string(),
+            to_place: shop_id.to_string(),
+            destination_hint: "Внутри лавки Алдрика".to_string(),
+            label: "К лавке Алдрика".to_string(),
+            kind: "path".to_string(),
+            visible: true,
+            passable: true,
+            time_cost: 4,
+            risk: "low".to_string(),
+            provenance: Provenance::by("llm", "link generated place", 3),
+            ..Default::default()
+        });
+        world.world_canon.insert_transition(Transition {
+            transition_id: return_id.clone(),
+            from_place: shop_id.to_string(),
+            to_place: alley_id.to_string(),
+            destination_hint: "Переулок у лавки Алдрика".to_string(),
+            label: "Назад".to_string(),
+            kind: "back".to_string(),
+            visible: true,
+            passable: true,
+            time_cost: 1,
+            risk: "Безопасно".to_string(),
+            provenance: Provenance::by("llm", "return from generated place", 3),
+            ..Default::default()
+        });
+        world.world_canon.player_place_id = shop_id.to_string();
+        world.world_canon.clock_minutes = 100;
+
+        let payload = world_to_payload(&world);
+        let mut restored = world_from_payload(Some(&payload)).expect("restore legacy world");
+        let legacy_return = restored
+            .world_canon
+            .transition(&return_id)
+            .expect("return transition");
+        assert_eq!(legacy_return.time_cost, 1);
+        assert_eq!(legacy_return.risk, "Безопасно");
+        assert_eq!(legacy_return.kind, "back");
+        assert!(legacy_return.passage_id.is_empty());
+        assert_eq!(
+            legacy_return.directionality,
+            PassageDirectionality::Unspecified
+        );
+        let legacy_forward = restored
+            .world_canon
+            .exits_from(alley_id)
+            .into_iter()
+            .find(|transition| transition.to_place == shop_id)
+            .expect("forward transition");
+        assert_eq!(legacy_forward.time_cost, 4);
+        assert_eq!(legacy_forward.risk, "low");
+        assert_eq!(legacy_forward.kind, "path");
+        assert!(legacy_forward.passage_id.is_empty());
+        assert_eq!(
+            legacy_forward.directionality,
+            PassageDirectionality::Unspecified
+        );
+        assert_eq!(
+            world_to_payload(&restored)["world_canon"]["transitions"][&return_id]["time_cost"],
+            json!(1)
+        );
+
+        let before = restored.world_canon.clock_minutes;
+        let rejection = engine::apply(
+            &mut restored.world_canon,
+            &ProposedAction::new(
+                Action::MovePlayer {
+                    transition_id: return_id,
+                },
+                "test",
+                "verify migrated travel time",
+            ),
+            4,
+        )
+        .expect_err("the location creator must repair the pair before traversal");
+        assert_eq!(rejection.code, "needs_transition_profile");
+        assert_eq!(restored.world_canon.clock_minutes, before);
+        assert_eq!(restored.world_canon.player_place_id, shop_id);
     }
 
     // --- Фаза С §С1: player_character spell fields round-trip ----------------

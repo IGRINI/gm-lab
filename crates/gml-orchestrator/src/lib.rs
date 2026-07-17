@@ -27,6 +27,7 @@ pub mod query_dedup;
 pub mod rag;
 pub mod session;
 pub mod session_payload;
+pub mod travel_geography;
 pub mod turn;
 pub mod worldstate;
 

@@ -66,32 +66,55 @@ fn placeholder_destinations_are_recognised() {
 }
 
 #[test]
-fn set_scene_string_exit_with_arrow_carries_real_destination() {
+fn runtime_set_scene_does_not_author_exits() {
     let mut world = World::from_worldgen_with_lore(
         &WorldSpec::from_seed("exit-labels"),
         gml_world::canon::WorldLore::default(),
     );
+    let current_place = world.world_canon.player_place_id.clone();
+    let before = world.world_canon.transitions.clone();
     world.set_scene(
         "Зал таверны",
         "Низкий зал.",
-        "tavern_hall",
+        &current_place,
         &json!(["хозяйка"]),
         &json!([]),
         &json!(["двор к пирсу -> pyer_ryadom", "служебная дверь"]),
         &json!([]),
         "",
     );
-    let exits = &world.scene.exits;
-    let arrow = exits
-        .iter()
-        .find(|e| e.name == "двор к пирсу")
-        .expect("arrow exit split into a clean label");
-    assert_eq!(arrow.destination, "pyer_ryadom");
-    let plain = exits
-        .iter()
-        .find(|e| e.name == "служебная дверь")
-        .expect("plain exit kept whole");
-    assert_eq!(plain.destination, "unknown destination");
+    assert_eq!(
+        world.world_canon.transitions, before,
+        "runtime scene patches must leave route authoring to the location creator"
+    );
+}
+
+#[test]
+fn set_scene_cannot_create_a_transition_from_location_text() {
+    let mut world = World::from_worldgen_with_lore(
+        &WorldSpec::from_seed("symmetric-shop-travel"),
+        gml_world::canon::WorldLore::default(),
+    );
+    let alley_id = world.world_canon.player_place_id.clone();
+    let shop_id = "aldrick_shop";
+
+    let before = world.world_canon.clone();
+    let result = world.set_scene(
+        "Внутри лавки Алдрика",
+        "Тесная лавка у переулка.",
+        shop_id,
+        &json!([]),
+        &json!([]),
+        &json!([]),
+        &json!([]),
+        "",
+    );
+
+    assert_eq!(result["ok"], false);
+    assert_eq!(result["code"], "location_change_requires_transition");
+    assert_eq!(world.world_canon, before);
+    assert_eq!(world.world_canon.player_place_id, alley_id);
+    assert!(world.world_canon.place(shop_id).is_none());
 }
 
 #[test]
@@ -114,79 +137,50 @@ fn seed_scene_string_exit_with_arrow_carries_real_destination() {
 }
 
 #[test]
-fn lazy_place_is_never_titled_with_placeholder_or_slug() {
+fn dangling_exit_text_never_materialises_a_place() {
     let mut canon = worldgen::generate(&WorldSpec::from_seed("lazy-name"));
     let from = canon.player_place_id.clone();
+    let original_place_count = canon.places.len();
 
-    // A dangling architect-style exit: placeholder hint + unsplit arrow label
-    // (the shape old saves carry in canon).
-    canon.insert_transition(Transition {
-        transition_id: "arrow_exit".to_string(),
-        source_exit_id: "arrow_exit".to_string(),
-        from_place: from.clone(),
-        to_place: String::new(),
-        destination_hint: "unknown destination".to_string(),
-        label: "двор к пирсу -> pyer_ryadom_s_tavernoy".to_string(),
-        kind: "door".to_string(),
-        visible: true,
-        passable: true,
-        time_cost: 3,
-        risk: "none: короткий проход".to_string(),
-        provenance: Provenance::by("test", "arrow exit", 0),
-        ..Default::default()
-    });
-
-    engine::apply(
-        &mut canon,
-        &ProposedAction::new(
-            Action::MovePlayer {
-                transition_id: "arrow_exit".to_string(),
-            },
-            "test",
-            "walk",
+    for (transition_id, hint, label) in [
+        (
+            "arrow_exit",
+            "unknown destination",
+            "двор к пирсу -> pyer_ryadom_s_tavernoy",
         ),
-        1,
-    )
-    .expect("move through the dangling exit");
+        ("slug_exit", "doki_seroy_gavani", "вход в доки"),
+    ] {
+        canon.insert_transition(Transition {
+            transition_id: transition_id.to_string(),
+            source_exit_id: transition_id.to_string(),
+            from_place: from.clone(),
+            to_place: String::new(),
+            destination_hint: hint.to_string(),
+            label: label.to_string(),
+            kind: "door".to_string(),
+            visible: true,
+            passable: true,
+            time_cost: 3,
+            risk: "none".to_string(),
+            provenance: Provenance::by("test", "legacy dangling exit", 0),
+            ..Default::default()
+        });
 
-    let place = canon
-        .place(&canon.player_place_id)
-        .expect("lazily materialised place");
-    assert_eq!(
-        place.name, "двор к пирсу",
-        "lazy place takes the cleaned transition label, not the placeholder"
-    );
-
-    // A slug destination hint must not become a title either.
-    canon.insert_transition(Transition {
-        transition_id: "slug_exit".to_string(),
-        source_exit_id: "slug_exit".to_string(),
-        from_place: canon.player_place_id.clone(),
-        to_place: String::new(),
-        destination_hint: "doki_seroy_gavani".to_string(),
-        label: "вход в доки".to_string(),
-        kind: "door".to_string(),
-        visible: true,
-        passable: true,
-        time_cost: 3,
-        risk: "none: короткий проход".to_string(),
-        provenance: Provenance::by("test", "slug exit", 0),
-        ..Default::default()
-    });
-    engine::apply(
-        &mut canon,
-        &ProposedAction::new(
-            Action::MovePlayer {
-                transition_id: "slug_exit".to_string(),
-            },
-            "test",
-            "walk",
-        ),
-        2,
-    )
-    .expect("move through the slug exit");
-    let place = canon
-        .place(&canon.player_place_id)
-        .expect("second lazily materialised place");
-    assert_eq!(place.name, "вход в доки");
+        let before = canon.clone();
+        let rejection = engine::apply(
+            &mut canon,
+            &ProposedAction::new(
+                Action::MovePlayer {
+                    transition_id: transition_id.to_string(),
+                },
+                "test",
+                "walk",
+            ),
+            1,
+        )
+        .expect_err("dangling transition must be configured before movement");
+        assert_eq!(rejection.code, "needs_transition_profile");
+        assert_eq!(canon, before);
+        assert_eq!(canon.places.len(), original_place_count);
+    }
 }

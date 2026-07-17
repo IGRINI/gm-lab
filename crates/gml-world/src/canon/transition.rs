@@ -2,8 +2,8 @@
 //!
 //! TZ §6.5: an exit must be a real entity, not a substring of prose. A
 //! `Transition` is *directed* (from → to). A two-way path is modelled as two
-//! directed transitions (or, later, one edge with two explicit sides) — never
-//! by implicit magic — so one-way drops, doors locked from one side, and real
+//! directed transitions sharing one explicit physical `passage_id` — never by
+//! endpoint inference — so one-way drops, doors locked from one side, and real
 //! pathfinding all work.
 //!
 //! Phase 1 derives one `Transition` per `SceneExit`. The target is left as a
@@ -17,6 +17,30 @@ use super::Provenance;
 
 fn default_true() -> bool {
     true
+}
+
+/// Whether a physical passage may be traversed in one or both directions.
+///
+/// `Unspecified` exists solely for safe deserialization of legacy saves. It is
+/// not a valid value for newly authored transitions and cannot be traversed
+/// until the location creator explicitly profiles the passage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PassageDirectionality {
+    #[default]
+    Unspecified,
+    OneWay,
+    Bidirectional,
+}
+
+impl PassageDirectionality {
+    pub const fn is_unspecified(&self) -> bool {
+        matches!(self, Self::Unspecified)
+    }
+
+    pub const fn is_explicit(self) -> bool {
+        !matches!(self, Self::Unspecified)
+    }
 }
 
 /// A directed edge between places. Empty `to_place` means "no canonical target
@@ -35,6 +59,15 @@ pub struct Transition {
     /// `transition_id` was uniquified.
     #[serde(default)]
     pub source_exit_id: String,
+    /// Stable identity of the physical passage represented by this directed
+    /// edge. The two directed sides of one bidirectional passage share this id.
+    /// An empty id is reserved for legacy, not-yet-profiled transitions.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub passage_id: String,
+    /// Explicit physical directionality. Missing legacy data deserializes as
+    /// `Unspecified` and is never treated as reciprocal by endpoint inference.
+    #[serde(default, skip_serializing_if = "PassageDirectionality::is_unspecified")]
+    pub directionality: PassageDirectionality,
     /// Source place id.
     pub from_place: String,
     /// Target place id, or empty when not yet canonical (shell/dangling).
@@ -86,5 +119,50 @@ impl Transition {
     /// Whether the edge resolves to a concrete target place.
     pub fn has_target(&self) -> bool {
         !self.to_place.is_empty()
+    }
+
+    /// True only after the physical passage has an explicit identity and
+    /// directionality. Legacy transitions intentionally return false.
+    pub fn has_explicit_passage_profile(&self) -> bool {
+        !self.passage_id.trim().is_empty() && self.directionality.is_explicit()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_transition_deserializes_without_inventing_passage_identity() {
+        let transition: Transition = serde_json::from_value(serde_json::json!({
+            "transition_id": "legacy_drop",
+            "from_place": "cave",
+            "to_place": "chasm"
+        }))
+        .expect("legacy transition");
+
+        assert!(transition.passage_id.is_empty());
+        assert_eq!(
+            transition.directionality,
+            PassageDirectionality::Unspecified
+        );
+        assert!(!transition.has_explicit_passage_profile());
+
+        let serialized = serde_json::to_value(&transition).expect("serialize transition");
+        assert!(serialized.get("passage_id").is_none());
+        assert!(serialized.get("directionality").is_none());
+    }
+
+    #[test]
+    fn explicit_directionality_uses_stable_snake_case_values() {
+        let transition = Transition {
+            passage_id: "cave_drop".to_string(),
+            directionality: PassageDirectionality::OneWay,
+            ..Default::default()
+        };
+
+        let serialized = serde_json::to_value(&transition).expect("serialize transition");
+        assert_eq!(serialized["passage_id"], "cave_drop");
+        assert_eq!(serialized["directionality"], "one_way");
     }
 }

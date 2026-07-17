@@ -328,6 +328,7 @@ async fn drive(
     let max_tool_hops = settings.max_tool_hops(None);
     let mut tool_hops = 0_i64;
     let mut player_options_shown = false;
+    let mut turn_tool_state = TurnToolState::default();
 
     while max_tool_hops <= 0 || tool_hops < max_tool_hops {
         tool_hops += 1;
@@ -419,6 +420,9 @@ async fn drive(
         }
 
         let calls = normalize_tool_calls(&calls, &format!("gm_{sid}"));
+        turn_tool_state.travel_scheduled_in_batch = calls
+            .iter()
+            .any(|call| call_targets_tool(call, "travel_to"));
         let mut assistant_msg = assistant_with_tool_calls(assistant_msg, &calls);
         let mut prelude_text = content.trim().to_string();
         let mut prelude_generated = false;
@@ -477,7 +481,8 @@ async fn drive(
                     None,
                 ));
             }
-            let mut result = run_tool(session, &name, &args, metas, sink).await;
+            let mut result =
+                run_tool(session, &name, &args, metas, sink, &mut turn_tool_state).await;
             if show_tool_event {
                 sink.emit(ev(
                     event_kind::TOOL_RESULT,
@@ -868,6 +873,43 @@ fn tool_emits_visible_output(name: &str, result: &ToolExecutionResult) -> bool {
 // _run_tool
 // =========================================================================
 
+#[derive(Default)]
+struct TurnToolState {
+    travel_scheduled_in_batch: bool,
+    travel_attempted: bool,
+    travel_rejected: bool,
+}
+
+fn call_targets_tool(call: &ParsedCall, target: &str) -> bool {
+    call.name == target
+        || (call.name == "invoke_loaded_tool"
+            && call.arguments.get("name").and_then(Value::as_str) == Some(target))
+}
+
+fn movement_blocked_by_travel_to(
+    tool: &str,
+    state: &TurnToolState,
+    sink: &Sink,
+) -> ToolExecutionResult {
+    let message = if !state.travel_attempted {
+        "move_player cannot run in the same tool batch as travel_to; distant travel is one atomic movement operation"
+    } else if state.travel_rejected {
+        "movement is blocked for the rest of this turn because travel_to was rejected; wait for a new explicit player action"
+    } else {
+        "movement is blocked for the rest of this turn because travel_to already handled the journey"
+    };
+    sink.emit(ev(
+        event_kind::ERROR,
+        Some("ГМ"),
+        Value::String(message.to_string()),
+        None,
+    ));
+    with_model_reminder(
+        tool_error(tool, message, None, "movement_blocked_after_travel_to", &[]),
+        tool_reminder("travel_to"),
+    )
+}
+
 /// Test-facing driver for a single tool dispatch — the Rust analogue of the
 /// Python contract-test idiom `_drive(_run_tool(session, name, args, []))`.
 ///
@@ -884,7 +926,8 @@ pub async fn run_tool_collect(
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let sink = Sink { tx };
     let mut metas: Vec<Value> = Vec::new();
-    let result = run_tool(session, name, args, &mut metas, &sink).await;
+    let mut turn_tool_state = TurnToolState::default();
+    let result = run_tool(session, name, args, &mut metas, &sink, &mut turn_tool_state).await;
     drop(sink);
     let mut events = Vec::new();
     while let Some(e) = rx.recv().await {
@@ -899,6 +942,7 @@ async fn run_tool(
     args: &Value,
     metas: &mut Vec<Value>,
     sink: &Sink,
+    turn_tool_state: &mut TurnToolState,
 ) -> ToolExecutionResult {
     let args = if args.is_object() {
         args.clone()
@@ -907,10 +951,10 @@ async fn run_tool(
     };
 
     if name == "invoke_loaded_tool" {
-        return run_invoke_loaded_tool(session, &args, metas, sink).await;
+        return run_invoke_loaded_tool(session, &args, metas, sink, turn_tool_state).await;
     }
 
-    run_executable_tool(session, name, &args, metas, sink).await
+    run_executable_tool(session, name, &args, metas, sink, turn_tool_state).await
 }
 
 async fn run_executable_tool(
@@ -919,6 +963,7 @@ async fn run_executable_tool(
     args: &Value,
     metas: &mut Vec<Value>,
     sink: &Sink,
+    turn_tool_state: &mut TurnToolState,
 ) -> ToolExecutionResult {
     // Staleness "last used" signal for the compaction-time prune of searched
     // tools — recorded for EVERY executed tool (this is the single choke for
@@ -929,6 +974,13 @@ async fn run_executable_tool(
     } else {
         name
     });
+    if matches!(name, "move_player" | "travel_to")
+        && (turn_tool_state.travel_attempted
+            || (name == "move_player" && turn_tool_state.travel_scheduled_in_batch))
+    {
+        return movement_blocked_by_travel_to(name, turn_tool_state, sink);
+    }
+
     match name {
         "tool_search" => run_tool_search(session, args, sink),
         "load_tool_schema" => run_load_tool_schema(session, args, sink),
@@ -948,6 +1000,15 @@ async fn run_executable_tool(
         "move_npc" | "set_npc_presence" => run_move_npc(session, args, sink),
         "set_scene" => run_set_scene(session, args, sink),
         "move_player" => run_move_player(session, args, sink).await,
+        "travel_to" => {
+            let outcome = run_travel_to(session, args, sink).await;
+            turn_tool_state.travel_attempted = true;
+            turn_tool_state.travel_rejected = outcome.rejected;
+            outcome.result
+        }
+        "relocate_player" => run_relocate_player(session, args, sink),
+        "create_passage" => run_create_passage(session, args, sink).await,
+        "set_passage_state" => run_set_passage_state(session, args, sink),
         "take_item" => run_take_item(session, args, sink),
         "drop_item" => run_drop_item(session, args, sink),
         "cast_spell" => run_cast_spell(session, args, sink),
@@ -1134,6 +1195,7 @@ async fn run_invoke_loaded_tool(
     args: &Value,
     metas: &mut Vec<Value>,
     sink: &Sink,
+    turn_tool_state: &mut TurnToolState,
 ) -> ToolExecutionResult {
     let requested = arg_str(args, "name").trim();
     if requested.is_empty() {
@@ -1200,7 +1262,15 @@ async fn run_invoke_loaded_tool(
     // under it at the next compaction.
     session.mark_tool_loaded(&canonical);
 
-    run_executable_tool(session, &canonical, &invocation_args, metas, sink).await
+    run_executable_tool(
+        session,
+        &canonical,
+        &invocation_args,
+        metas,
+        sink,
+        turn_tool_state,
+    )
+    .await
 }
 
 fn run_ask_player(args: &Value, sink: &Sink) -> ToolExecutionResult {
@@ -1820,18 +1890,13 @@ fn run_move_npc(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecuti
 }
 
 fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
-    use gml_world::canon::{engine, ids, travel, Action, ProposedAction, Scope, WorldCanon};
+    use gml_world::canon::{engine, Action, ProposedAction, Scope, WorldCanon};
     use gml_world::helpers::{as_list, as_str, safe_id};
     use gml_world::NpcWhereabouts;
 
     session.world.ensure_npc_whereabouts();
     let title = nonempty_string(arg_str(args, "title").trim().to_string(), "Новая сцена");
     let description = nonempty_string(arg_str(args, "description").trim().to_string(), &title);
-    let fallback_id = format!("scene_{}", set_scene_ord_sum(&title) % 100000);
-    let dest_id = safe_id(
-        &nonempty_string(arg_str(args, "location_id").trim().to_string(), &title),
-        &fallback_id,
-    );
     let reason = nonempty_string(arg_str(args, "reason").trim().to_string(), "set_scene");
 
     if session.world.world_canon.is_empty() {
@@ -1839,6 +1904,34 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         session.world.world_canon = WorldCanon::from_scene(&session.world.scene, &seed);
     }
     let from_place = session.world.world_canon.player_place_id.clone();
+    if from_place.is_empty() || session.world.world_canon.place(&from_place).is_none() {
+        let msg = "set_scene requires an existing current location; use generate_location.";
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("ГМ"),
+            Value::String(msg.to_string()),
+            None,
+        ));
+        return tool_error("set_scene", msg, None, "location_requires_generator", &[]);
+    }
+
+    let requested_place = arg_str(args, "location_id").trim();
+    let dest_id = if requested_place.is_empty() {
+        from_place.clone()
+    } else {
+        safe_id(requested_place, &from_place)
+    };
+
+    if dest_id.is_empty() {
+        let msg = "set_scene requires an existing current location; use generate_location.";
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("ГМ"),
+            Value::String(msg.to_string()),
+            None,
+        ));
+        return tool_error("set_scene", msg, None, "location_requires_generator", &[]);
+    }
 
     if !from_place.is_empty() && from_place != dest_id {
         if let Some(existing) = session
@@ -1846,15 +1939,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
             .world_canon
             .exits_from(&from_place)
             .into_iter()
-            .find(|transition| {
-                transition.to_place == dest_id
-                    || (transition.to_place.is_empty()
-                        && (set_scene_shell_text_matches(
-                            &transition.destination_hint,
-                            &dest_id,
-                            &title,
-                        ) || set_scene_shell_text_matches(&transition.label, &dest_id, &title)))
-            })
+            .find(|transition| transition.to_place == dest_id)
         {
             let msg = format!(
                 "set_scene cannot bypass existing transition '{}'; call move_player with that transition_id.",
@@ -1874,6 +1959,15 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
                 &[("transition_id", json!(existing.transition_id))],
             );
         }
+
+        let msg = "set_scene only updates the current location; use generate_location for a new location.";
+        sink.emit(ev(
+            event_kind::ERROR,
+            Some("ГМ"),
+            Value::String(msg.to_string()),
+            None,
+        ));
+        return tool_error("set_scene", msg, None, "location_requires_generator", &[]);
     }
 
     let present_raw = args.get("present_npcs").unwrap_or(&Value::Null);
@@ -1892,7 +1986,6 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     }
 
     let coerced_items = coerce_set_scene_items(args.get("items").unwrap_or(&Value::Null));
-    let coerced_exits = coerce_set_scene_exits(args.get("exits").unwrap_or(&Value::Null));
     let constraints: Vec<String> = as_list(args.get("constraints").unwrap_or(&Value::Null))
         .iter()
         .map(as_str)
@@ -1900,132 +1993,17 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         .collect();
     let tension = arg_str(args, "tension").trim().to_string();
 
-    let mut actions: Vec<(Action, String)> = Vec::new();
-    if session.world.world_canon.place(&dest_id).is_some() {
-        actions.push((
-            Action::UpdatePlace {
-                place_id: dest_id.clone(),
-                name: title.clone(),
-                kind: "scene".to_string(),
-                description: description.clone(),
-                features: Vec::new(),
-                visited: true,
-            },
-            reason.clone(),
-        ));
-    } else {
-        actions.push((
-            Action::CreatePlace {
-                place_id: dest_id.clone(),
-                name: title.clone(),
-                kind: "scene".to_string(),
-                parent: String::new(),
-                region_id: String::new(),
-                description: description.clone(),
-                features: Vec::new(),
-                visited: true,
-                shell: false,
-            },
-            reason.clone(),
-        ));
-    }
-
-    let mut move_transition_id = String::new();
-    let move_time_minutes = travel::infer_time_cost("scene", &title, &title);
-    let move_risk = travel::infer_risk("scene", &title, &title);
-    if !from_place.is_empty() && from_place != dest_id {
-        move_transition_id = ids::stable_id(
-            &session.world.world_canon.world_seed,
-            &from_place,
-            "transition",
-            &dest_id,
-        );
-        actions.push((
-            Action::CreateTransition {
-                transition_id: move_transition_id.clone(),
-                from_place: from_place.clone(),
-                to_place: dest_id.clone(),
-                destination_hint: title.clone(),
-                label: nonempty_string(title.clone(), "Переход"),
-                kind: "scene".to_string(),
-                visible: Some(true),
-                passable: Some(true),
-                blocked_by: String::new(),
-                time_cost: move_time_minutes,
-                risk: move_risk.clone(),
-            },
-            "set_scene transition".to_string(),
-        ));
-
-        let back_id = ids::stable_id(
-            &session.world.world_canon.world_seed,
-            &dest_id,
-            "transition",
-            &from_place,
-        );
-        if !session.world.world_canon.transitions.contains_key(&back_id) {
-            let back_label = session
-                .world
-                .world_canon
-                .place(&from_place)
-                .map(|place| place.name.clone())
-                .unwrap_or_else(|| "Назад".to_string());
-            actions.push((
-                Action::CreateTransition {
-                    transition_id: back_id,
-                    from_place: dest_id.clone(),
-                    to_place: from_place.clone(),
-                    destination_hint: String::new(),
-                    label: nonempty_string(back_label.clone(), "Назад"),
-                    kind: "back".to_string(),
-                    visible: Some(true),
-                    passable: Some(true),
-                    blocked_by: String::new(),
-                    time_cost: move_time_minutes,
-                    risk: move_risk.clone(),
-                },
-                "set_scene return path".to_string(),
-            ));
-        }
-    }
-
-    let mut planned_transition_ids = BTreeSet::new();
-    for exit in &coerced_exits {
-        let base = if exit.exit_id.is_empty() {
-            safe_id(&exit.name, "exit")
-        } else {
-            exit.exit_id.clone()
-        };
-        let mut transition_id = format!("{dest_id}_{base}");
-        let mut n = 2;
-        while session
-            .world
-            .world_canon
-            .transitions
-            .contains_key(&transition_id)
-            || planned_transition_ids.contains(&transition_id)
-        {
-            transition_id = format!("{dest_id}_{base}_{n}");
-            n += 1;
-        }
-        planned_transition_ids.insert(transition_id.clone());
-        actions.push((
-            Action::CreateTransition {
-                transition_id,
-                from_place: dest_id.clone(),
-                to_place: String::new(),
-                destination_hint: exit.destination.clone(),
-                label: exit.name.clone(),
-                kind: String::new(),
-                visible: Some(exit.visible),
-                passable: Some(exit.blocked_by.is_empty()),
-                blocked_by: exit.blocked_by.clone(),
-                time_cost: travel::infer_time_cost("", &exit.name, &exit.destination),
-                risk: travel::infer_risk("", &exit.name, &exit.destination),
-            },
-            "set_scene exit".to_string(),
-        ));
-    }
+    let mut actions: Vec<(Action, String)> = vec![(
+        Action::UpdatePlace {
+            place_id: dest_id.clone(),
+            name: title.clone(),
+            kind: "scene".to_string(),
+            description: description.clone(),
+            features: Vec::new(),
+            visited: true,
+        },
+        reason.clone(),
+    )];
 
     for npc_id in &present {
         let npc = &session.world.npcs[npc_id];
@@ -2055,17 +2033,8 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         }
     }
 
-    if !move_transition_id.is_empty() {
-        actions.push((
-            Action::MovePlayer {
-                transition_id: move_transition_id.clone(),
-            },
-            reason.clone(),
-        ));
-    }
-
     let mut effects = vec![
-        format!("authored_place:{dest_id}"),
+        format!("updated_place:{dest_id}"),
         format!("player_at:{dest_id}"),
     ];
     if !present.is_empty() {
@@ -2085,11 +2054,9 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
             scope: Scope::Player,
             traces: Vec::new(),
         },
-        "set_scene authored place + move".to_string(),
+        "set_scene updated current place".to_string(),
     ));
 
-    let before_time = session.world.time_export();
-    let before_clock_minutes = session.world.world_canon.clock_minutes;
     let mut staged = session.world.world_canon.clone();
     let mut committed_events = Vec::new();
     for (action, action_reason) in actions {
@@ -2117,14 +2084,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     }
 
     session.world.world_canon = staged;
-    let elapsed_minutes = sync_canon_move_time(
-        session,
-        sink,
-        before_time,
-        before_clock_minutes,
-        &move_transition_id,
-        &reason,
-    );
+    let elapsed_minutes = 0;
 
     let destination_context = gml_world::PlaceSceneContext {
         scene_id: dest_id.clone(),
@@ -2218,20 +2178,6 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     )
 }
 
-fn set_scene_ord_sum(s: &str) -> u64 {
-    s.chars().map(|c| c as u64).sum()
-}
-
-fn set_scene_shell_text_matches(text: &str, dest_id: &str, title: &str) -> bool {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    trimmed.eq_ignore_ascii_case(dest_id)
-        || trimmed.eq_ignore_ascii_case(title.trim())
-        || gml_world::helpers::safe_id(trimmed, "") == dest_id
-}
-
 fn set_scene_bool(value: Option<&Value>, default: bool) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
@@ -2287,43 +2233,6 @@ fn coerce_set_scene_items(raw: &Value) -> Vec<gml_world::SceneItem> {
         }
     }
     items
-}
-
-fn coerce_set_scene_exits(raw: &Value) -> Vec<gml_world::SceneExit> {
-    use gml_world::helpers::{as_list, as_str, get_str, safe_id};
-
-    let mut exits = Vec::new();
-    for (idx, exit) in as_list(raw).iter().enumerate() {
-        let number = idx + 1;
-        match exit {
-            Value::Object(map) => {
-                let name = nonempty_string(get_str(map, "name"), &format!("выход {number}"));
-                exits.push(gml_world::SceneExit {
-                    exit_id: safe_id(&get_str(map, "id"), &format!("exit_{number}")),
-                    name,
-                    destination: nonempty_string(
-                        get_str(map, "destination"),
-                        "неизвестное направление",
-                    ),
-                    visible: set_scene_bool(map.get("visible"), true),
-                    blocked_by: get_str(map, "blocked_by"),
-                });
-            }
-            other => {
-                let name = as_str(other);
-                if !name.is_empty() {
-                    exits.push(gml_world::SceneExit {
-                        exit_id: safe_id(&name, &format!("exit_{number}")),
-                        name,
-                        destination: "unknown destination".to_string(),
-                        visible: true,
-                        blocked_by: String::new(),
-                    });
-                }
-            }
-        }
-    }
-    exits
 }
 
 // =========================================================================
@@ -2388,6 +2297,972 @@ fn sync_canon_move_time(
     elapsed_minutes
 }
 
+fn travel_geography_context(
+    canon: &gml_world::canon::WorldCanon,
+    policy: &crate::travel_geography::TravelGeographyPolicy,
+) -> Value {
+    json!({
+        "networks": canon.travel_networks.values().filter(|network| {
+            policy.allows_existing_network(&network.network_id)
+        }).map(|network| json!({
+            "network_id": network.network_id,
+            "scope_id": network.scope_id,
+            "default_for_normal_travel": network.default_for_normal_travel,
+            "passable": network.passable,
+            "blocked_by": network.blocked_by,
+        })).collect::<Vec<_>>(),
+        "anchors": canon.travel_anchors.values().filter(|anchor| {
+            policy.allows_existing_anchor(&anchor.anchor_id)
+        }).map(|anchor| json!({
+            "anchor_id": anchor.anchor_id,
+            "network_id": anchor.network_id,
+            "passable": anchor.passable,
+            "blocked_by": anchor.blocked_by,
+        })).collect::<Vec<_>>(),
+        "accesses": canon.travel_accesses.values().filter(|access| {
+            policy.allows_existing_access(&access.access_id)
+        }).map(|access| json!({
+            "access_id": access.access_id,
+            "place_id": access.place_id,
+            "anchor_id": access.anchor_id,
+            "passable": access.passable,
+            "blocked_by": access.blocked_by,
+            "required_fact_ids": access.required_fact_ids,
+        })).collect::<Vec<_>>(),
+        "links": canon.travel_links.values().filter(|link| {
+            policy.allows_existing_link(&link.link_id)
+        }).map(|link| json!({
+            "link_id": link.link_id,
+            "anchor_a": link.anchor_a,
+            "anchor_b": link.anchor_b,
+            "time_cost_minutes": link.time_cost_minutes,
+            "risk": link.risk,
+            "passable": link.passable,
+            "blocked_by": link.blocked_by,
+            "required_fact_ids": link.required_fact_ids,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn travel_place_context(
+    canon: &gml_world::canon::WorldCanon,
+    place: &gml_world::canon::Place,
+) -> Value {
+    let district = canon.district_for_place(&place.place_id).map(|district| {
+        json!({
+            "district_id": district.district_id,
+            "name": district.name,
+            "settlement_id": district.settlement_id,
+            "region_id": district.region_id,
+            "kind": district.kind,
+        })
+    });
+    let settlement = canon
+        .settlement_for_place(&place.place_id)
+        .map(|settlement| {
+            json!({
+                "settlement_id": settlement.settlement_id,
+                "name": settlement.name,
+                "region_id": settlement.region_id,
+                "kind": settlement.kind,
+            })
+        });
+    json!({
+        "place_id": place.place_id,
+        "name": place.name,
+        "kind": place.kind,
+        "parent_place_id": place.parent,
+        "region_id": place.region_id,
+        "district_id": place.district_id,
+        "district": district,
+        "settlement": settlement,
+    })
+}
+
+fn travel_route_allowed_scope_ids(
+    canon: &gml_world::canon::WorldCanon,
+    origin_place_id: &str,
+    destination_place_id: &str,
+) -> Vec<String> {
+    let mut relevant_places = BTreeSet::from([
+        origin_place_id.to_string(),
+        destination_place_id.to_string(),
+    ]);
+    let mut relevant_districts = BTreeSet::new();
+    let mut relevant_settlements = BTreeSet::new();
+    let mut allowed = relevant_places.clone();
+
+    for endpoint_id in [origin_place_id, destination_place_id] {
+        let mut next_id = endpoint_id.to_string();
+        let mut visited = BTreeSet::new();
+        while visited.insert(next_id.clone()) {
+            let Some(place) = canon.places.get(&next_id) else {
+                break;
+            };
+            relevant_places.insert(place.place_id.clone());
+            allowed.insert(place.place_id.clone());
+            if canon.regions.contains_key(&place.region_id) {
+                allowed.insert(place.region_id.clone());
+            }
+            if let Some(district) = canon.district(&place.district_id) {
+                relevant_districts.insert(district.district_id.clone());
+                allowed.insert(district.district_id.clone());
+                if let Some(settlement) = canon.settlement(&district.settlement_id) {
+                    relevant_settlements.insert(settlement.settlement_id.clone());
+                    allowed.insert(settlement.settlement_id.clone());
+                    if canon.regions.contains_key(&settlement.region_id) {
+                        allowed.insert(settlement.region_id.clone());
+                    }
+                }
+                if canon.regions.contains_key(&district.region_id) {
+                    allowed.insert(district.region_id.clone());
+                }
+            }
+            if canon.districts.contains_key(&place.parent) {
+                allowed.insert(place.parent.clone());
+                break;
+            }
+            if canon.settlements.contains_key(&place.parent) {
+                relevant_settlements.insert(place.parent.clone());
+                allowed.insert(place.parent.clone());
+                break;
+            }
+            if canon.regions.contains_key(&place.parent) {
+                allowed.insert(place.parent.clone());
+                break;
+            }
+            if canon.places.contains_key(&place.parent) {
+                next_id.clone_from(&place.parent);
+            } else {
+                break;
+            }
+        }
+    }
+
+    for district in canon.districts.values() {
+        if relevant_districts.contains(&district.district_id) {
+            allowed.insert(district.district_id.clone());
+            if canon.settlements.contains_key(&district.settlement_id) {
+                relevant_settlements.insert(district.settlement_id.clone());
+                allowed.insert(district.settlement_id.clone());
+            }
+            if canon.regions.contains_key(&district.region_id) {
+                allowed.insert(district.region_id.clone());
+            }
+        }
+    }
+
+    for settlement in canon.settlements.values() {
+        if settlement
+            .place_ids
+            .iter()
+            .any(|place_id| relevant_places.contains(place_id))
+        {
+            relevant_settlements.insert(settlement.settlement_id.clone());
+            allowed.insert(settlement.settlement_id.clone());
+            if canon.regions.contains_key(&settlement.region_id) {
+                allowed.insert(settlement.region_id.clone());
+            }
+        }
+    }
+
+    for region in canon.regions.values() {
+        let contains_relevant_place = region
+            .site_ids
+            .iter()
+            .any(|place_id| relevant_places.contains(place_id));
+        let contains_relevant_settlement = region
+            .settlement_ids
+            .iter()
+            .any(|settlement_id| relevant_settlements.contains(settlement_id));
+        if contains_relevant_place || contains_relevant_settlement {
+            allowed.insert(region.region_id.clone());
+        }
+    }
+
+    allowed.into_iter().collect()
+}
+
+fn travel_route_generator_request(
+    canon: &gml_world::canon::WorldCanon,
+    origin: &gml_world::canon::Place,
+    destination: &gml_world::canon::Place,
+    requested_network_id: Option<&str>,
+    policy: &crate::travel_geography::TravelGeographyPolicy,
+    validation_error: Option<&str>,
+) -> Value {
+    let preferred_scope_id = if !origin.district_id.is_empty()
+        && origin.district_id == destination.district_id
+        && canon.district(&origin.district_id).is_some()
+    {
+        Some(origin.district_id.clone())
+    } else {
+        let origin_settlement = canon
+            .settlement_for_place(&origin.place_id)
+            .map(|settlement| settlement.settlement_id.as_str());
+        let destination_settlement = canon
+            .settlement_for_place(&destination.place_id)
+            .map(|settlement| settlement.settlement_id.as_str());
+        if origin_settlement.is_some() && origin_settlement == destination_settlement {
+            origin_settlement.map(ToString::to_string)
+        } else {
+            let origin_region = canon
+                .region_for_place(&origin.place_id)
+                .map(|region| region.region_id.as_str());
+            let destination_region = canon
+                .region_for_place(&destination.place_id)
+                .map(|region| region.region_id.as_str());
+            (origin_region.is_some() && origin_region == destination_region)
+                .then(|| origin_region.map(ToString::to_string))
+                .flatten()
+        }
+    };
+    let mut payload = json!({
+        "purpose": "travel_route",
+        "request": "Author the smallest explicit canonical travel geography needed for these exact visited endpoints. An empty or disconnected travel graph is the missing geography you must author, not a reason to refuse. Every network scope_id must exactly equal one id from allowed_scope_ids, and every access place_id must exactly equal one id from allowed_access_place_ids. Do not invent a scope, endpoint, or existing travel entity id. Do not derive availability or blockers from scene prose, local transitions, exploration history, names, labels, containment, region membership, entities, or rumors. Only preserve exact mechanics already present on a supplied canonical travel entity; every newly authored entity must be passable with no blocker or required facts. Return complete travel_geography for validation.",
+        "origin": travel_place_context(canon, origin),
+        "destination": travel_place_context(canon, destination),
+        "requested_network_id": requested_network_id,
+        "preferred_scope_id": preferred_scope_id,
+        "allowed_scope_ids": policy.allowed_scope_ids(),
+        "allowed_access_place_ids": [origin.place_id.as_str(), destination.place_id.as_str()],
+        "existing_travel_geography": travel_geography_context(canon, policy),
+    });
+    if let Some(validation_error) = validation_error {
+        payload["repair"] = json!({
+            "attempt": 1,
+            "validation_error": validation_error,
+            "instruction": "The prior travel_geography was rejected. Return one complete replacement travel_geography that fixes this exact error. Use only exact ids supplied in this request, including allowed_scope_ids for every network scope_id and allowed_access_place_ids for every access place_id."
+        });
+    }
+    payload
+}
+
+fn travel_plan_may_be_authored(error: &gml_world::canon::TravelPlanError) -> bool {
+    matches!(
+        error,
+        gml_world::canon::TravelPlanError::NoDefaultNetwork
+            | gml_world::canon::TravelPlanError::NoRoute { .. }
+    )
+}
+
+fn travel_plan_error_code(error: &gml_world::canon::TravelPlanError) -> &'static str {
+    use gml_world::canon::TravelPlanError;
+
+    match error {
+        TravelPlanError::UnknownOrigin(_)
+        | TravelPlanError::UnknownDestination(_)
+        | TravelPlanError::DestinationNotVisited(_)
+        | TravelPlanError::AlreadyAtDestination(_) => "invalid_travel_destination",
+        TravelPlanError::UnknownNetwork(_) | TravelPlanError::NetworkUnavailable(_) => {
+            "invalid_travel_network"
+        }
+        TravelPlanError::NoDefaultNetwork | TravelPlanError::NoRoute { .. } => {
+            "travel_route_unavailable"
+        }
+        _ => "invalid_travel_graph",
+    }
+}
+
+struct TravelToExecution {
+    result: ToolExecutionResult,
+    rejected: bool,
+}
+
+fn reject_travel_to(
+    destination_place_id: &str,
+    code: &str,
+    message: impl Into<String>,
+    sink: &Sink,
+) -> TravelToExecution {
+    let message = message.into();
+    sink.emit(ev(
+        event_kind::ERROR,
+        Some("ГМ"),
+        Value::String(message.clone()),
+        None,
+    ));
+    TravelToExecution {
+        result: with_model_reminder(
+            tool_error(
+                "travel_to",
+                &message,
+                None,
+                code,
+                &[("destination_place_id", json!(destination_place_id))],
+            ),
+            tool_reminder("travel_to"),
+        ),
+        rejected: true,
+    }
+}
+
+async fn run_travel_to(session: &mut Session, args: &Value, sink: &Sink) -> TravelToExecution {
+    use gml_world::canon::{engine, plan_travel, Action, ProposedAction};
+
+    let destination_place_id = arg_str(args, "destination_place_id").trim().to_string();
+    if destination_place_id.is_empty() {
+        return reject_travel_to(
+            "",
+            "missing_destination_place_id",
+            "travel_to requires a non-empty exact destination_place_id.",
+            sink,
+        );
+    }
+    let network_id = args
+        .get("network_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let reason = arg_str(args, "reason").trim().to_string();
+    let origin_place_id = session.world.world_canon.player_place_id.clone();
+
+    let Some(destination) = session
+        .world
+        .world_canon
+        .place(&destination_place_id)
+        .cloned()
+    else {
+        return reject_travel_to(
+            &destination_place_id,
+            "invalid_travel_destination",
+            format!("unknown travel destination '{destination_place_id}'"),
+            sink,
+        );
+    };
+    if !destination.is_visited() {
+        return reject_travel_to(
+            &destination_place_id,
+            "invalid_travel_destination",
+            format!("travel destination '{destination_place_id}' has not been visited"),
+            sink,
+        );
+    }
+    if destination_place_id == origin_place_id {
+        return reject_travel_to(
+            &destination_place_id,
+            "invalid_travel_destination",
+            format!("player is already at '{destination_place_id}'"),
+            sink,
+        );
+    }
+    let Some(origin) = session.world.world_canon.place(&origin_place_id).cloned() else {
+        return reject_travel_to(
+            &destination_place_id,
+            "invalid_travel_destination",
+            format!("unknown travel origin '{origin_place_id}'"),
+            sink,
+        );
+    };
+
+    let initial_plan = plan_travel(
+        &session.world.world_canon,
+        &destination_place_id,
+        network_id.as_deref(),
+    );
+    let mut candidate_canon = session.world.world_canon.clone();
+    let mut generated_geography = None;
+    if let Err(error) = &initial_plan {
+        if !travel_plan_may_be_authored(error) {
+            return reject_travel_to(
+                &destination_place_id,
+                travel_plan_error_code(error),
+                error.to_string(),
+                sink,
+            );
+        }
+
+        let allowed_scope_ids = travel_route_allowed_scope_ids(
+            &session.world.world_canon,
+            &origin_place_id,
+            &destination_place_id,
+        );
+        let policy = crate::travel_geography::TravelGeographyPolicy::for_route(
+            &session.world.world_canon,
+            &origin_place_id,
+            &destination_place_id,
+            allowed_scope_ids,
+            network_id.as_deref(),
+        );
+        let mut validation_error = None;
+        loop {
+            let request_payload = travel_route_generator_request(
+                &session.world.world_canon,
+                &origin,
+                &destination,
+                network_id.as_deref(),
+                &policy,
+                validation_error.as_deref(),
+            );
+            let generated = match call_location_generator(session, &request_payload).await {
+                Ok(generated) => Value::Object(generated),
+                Err(error) => {
+                    return reject_travel_to(
+                        &destination_place_id,
+                        "travel_route_unavailable",
+                        format!("Location generator failed to author travel geography: {error}"),
+                        sink,
+                    );
+                }
+            };
+            let staged = match crate::travel_geography::stage_travel_geography(
+                &session.world.world_canon,
+                &generated,
+                session.turn,
+                &policy,
+            ) {
+                Ok(staged) => staged,
+                Err(error) if validation_error.is_none() => {
+                    validation_error = Some(error.to_string());
+                    continue;
+                }
+                Err(error) => {
+                    return reject_travel_to(
+                        &destination_place_id,
+                        "travel_route_unavailable",
+                        format!("Travel geography remained invalid after one repair: {error}"),
+                        sink,
+                    );
+                }
+            };
+            if let Err(error) = plan_travel(&staged.0, &destination_place_id, network_id.as_deref())
+            {
+                if validation_error.is_none() {
+                    validation_error = Some(format!(
+                        "generated travel geography does not provide the requested route: {error}"
+                    ));
+                    continue;
+                }
+                return reject_travel_to(
+                    &destination_place_id,
+                    "travel_route_unavailable",
+                    format!("Travel geography remained unusable after one repair: {error}"),
+                    sink,
+                );
+            }
+            candidate_canon = staged.0;
+            generated_geography = serde_json::to_value(staged.1).ok();
+            break;
+        }
+    }
+
+    let plan = match plan_travel(
+        &candidate_canon,
+        &destination_place_id,
+        network_id.as_deref(),
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            return reject_travel_to(
+                &destination_place_id,
+                travel_plan_error_code(&error),
+                error.to_string(),
+                sink,
+            );
+        }
+    };
+    let proposed = ProposedAction::new(
+        Action::TravelPlayer {
+            destination_place_id: destination_place_id.clone(),
+            network_id: network_id.clone(),
+        },
+        "gm",
+        &reason,
+    );
+    let before_time = session.world.time_export();
+    let before_clock_minutes = session.world.world_canon.clock_minutes;
+    let events = match engine::apply(&mut candidate_canon, &proposed, session.turn) {
+        Ok(events) => events,
+        Err(rejection) => {
+            return reject_travel_to(
+                &destination_place_id,
+                &rejection.code,
+                format!("travel rejected: {} ({})", rejection.reason, rejection.code),
+                sink,
+            );
+        }
+    };
+    session.world.world_canon = candidate_canon;
+    if let Some(summary) = generated_geography.as_ref() {
+        sink.emit(ev(
+            event_kind::WORLD_STATE_UPDATE,
+            Some("location_generator"),
+            json!({
+                "ok": true,
+                "status": "travel_geography_committed",
+                "summary": summary,
+            }),
+            None,
+        ));
+    }
+    let elapsed_minutes = sync_canon_move_time(
+        session,
+        sink,
+        before_time,
+        before_clock_minutes,
+        "",
+        &reason,
+    );
+    session.world.refresh_scene_from_canon();
+    let generated_situation =
+        auto_generate_travel_situation(session, &events, "", &reason, sink).await;
+    session.world.refresh_scene_from_canon();
+
+    let place_id = session.world.world_canon.player_place_id.clone();
+    let title = session
+        .world
+        .world_canon
+        .place(&place_id)
+        .map(|place| place.name.clone())
+        .unwrap_or_default();
+    let interrupted = place_id != destination_place_id;
+    let effects = events
+        .iter()
+        .flat_map(|event| event.effects.iter().cloned())
+        .collect::<Vec<_>>();
+    let payload = json!({
+        "ok": true,
+        "status": if interrupted { "travel_interrupted" } else { "travelled" },
+        "origin_place_id": origin_place_id,
+        "destination_place_id": destination_place_id,
+        "place_id": place_id,
+        "title": title,
+        "network_id": plan.network_id,
+        "link_ids": plan.link_ids,
+        "total_time_minutes": plan.total_time_minutes,
+        "risk": plan.risk,
+        "elapsed_minutes": elapsed_minutes,
+        "clock_minutes": session.world.world_canon.clock_minutes,
+        "events": events.len(),
+        "effects": effects,
+        "generated_geography": generated_geography,
+        "generated_situation": generated_situation,
+        "current": session.world.time_export(),
+        "time_summary": session.world.time_summary(),
+    });
+    sink.emit(ev(
+        event_kind::SCENE_UPDATE,
+        Some("ГМ"),
+        session.world.scene_export(),
+        None,
+    ));
+    let model = if interrupted {
+        format!(
+            "Travel toward '{}' was interrupted at '{}'. Time: {}",
+            destination.name,
+            if title.is_empty() {
+                place_id.as_str()
+            } else {
+                title.as_str()
+            },
+            session.world.model_time_summary(),
+        )
+    } else {
+        format!(
+            "Player travelled to '{}' ({}). Time: {}",
+            destination.name,
+            destination_place_id,
+            session.world.model_time_summary(),
+        )
+    };
+    TravelToExecution {
+        result: tool_result(
+            &json_compact(&payload),
+            Some(&model),
+            Some(tool_reminder("travel_to")),
+            false,
+        ),
+        rejected: false,
+    }
+}
+
+fn reject_dynamic_passage_tool(
+    tool: &str,
+    code: &str,
+    message: impl Into<String>,
+    sink: &Sink,
+    fields: &[(&str, Value)],
+) -> ToolExecutionResult {
+    let message = message.into();
+    sink.emit(ev(
+        event_kind::ERROR,
+        Some("ГМ"),
+        Value::String(message.clone()),
+        None,
+    ));
+    tool_error(tool, &message, None, code, fields)
+}
+
+fn run_relocate_player(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    use gml_world::canon::{engine, Action, ProposedAction};
+
+    let destination_place_id = arg_str(args, "destination_place_id").trim().to_string();
+    let Some(elapsed_minutes) = args.get("elapsed_minutes").and_then(Value::as_i64) else {
+        return reject_dynamic_passage_tool(
+            "relocate_player",
+            "missing_elapsed_minutes",
+            "relocate_player requires explicit elapsed_minutes.",
+            sink,
+            &[("destination_place_id", json!(destination_place_id))],
+        );
+    };
+    let reason = arg_str(args, "reason").trim().to_string();
+    if destination_place_id.is_empty() || reason.is_empty() {
+        return reject_dynamic_passage_tool(
+            "relocate_player",
+            "invalid_relocation_request",
+            "relocate_player requires an exact destination_place_id and a canonical reason.",
+            sink,
+            &[("destination_place_id", json!(destination_place_id))],
+        );
+    }
+    let origin_place_id = session.world.world_canon.player_place_id.clone();
+    let before_time = session.world.time_export();
+    let before_clock_minutes = session.world.world_canon.clock_minutes;
+    let proposed = ProposedAction::new(
+        Action::RelocatePlayer {
+            destination_place_id: destination_place_id.clone(),
+            elapsed_minutes,
+        },
+        "gm",
+        &reason,
+    );
+    let events = match engine::apply(&mut session.world.world_canon, &proposed, session.turn) {
+        Ok(events) => events,
+        Err(rejection) => {
+            return reject_dynamic_passage_tool(
+                "relocate_player",
+                &rejection.code,
+                rejection.reason,
+                sink,
+                &[("destination_place_id", json!(destination_place_id))],
+            );
+        }
+    };
+    let elapsed_minutes = sync_canon_move_time(
+        session,
+        sink,
+        before_time,
+        before_clock_minutes,
+        "",
+        &reason,
+    );
+    session.world.refresh_scene_from_canon();
+    let place_id = session.world.world_canon.player_place_id.clone();
+    let payload = json!({
+        "ok": true,
+        "status": "relocated",
+        "origin_place_id": origin_place_id,
+        "destination_place_id": destination_place_id,
+        "place_id": place_id,
+        "elapsed_minutes": elapsed_minutes,
+        "clock_minutes": session.world.world_canon.clock_minutes,
+        "reusable_passage_created": false,
+        "events": events.len(),
+    });
+    sink.emit(ev(
+        event_kind::SCENE_UPDATE,
+        Some("ГМ"),
+        session.world.scene_export(),
+        None,
+    ));
+    tool_result(
+        &json_compact(&payload),
+        Some("One-off relocation committed. No reusable passage or transition was created."),
+        None,
+        false,
+    )
+}
+
+async fn run_create_passage(
+    session: &mut Session,
+    args: &Value,
+    sink: &Sink,
+) -> ToolExecutionResult {
+    use gml_world::canon::{engine, ids, Action, PassageDirectionality, ProposedAction};
+
+    let from_place_id = arg_str(args, "from_place_id").trim().to_string();
+    let to_place_id = arg_str(args, "to_place_id").trim().to_string();
+    let request = arg_str(args, "request").trim().to_string();
+    let reason = {
+        let explicit = arg_str(args, "reason").trim();
+        if explicit.is_empty() {
+            request.clone()
+        } else {
+            explicit.to_string()
+        }
+    };
+    if from_place_id.is_empty() || to_place_id.is_empty() || request.is_empty() {
+        return reject_dynamic_passage_tool(
+            "create_passage",
+            "invalid_passage_request",
+            "create_passage requires exact from_place_id/to_place_id and a short request.",
+            sink,
+            &[
+                ("from_place_id", json!(from_place_id)),
+                ("to_place_id", json!(to_place_id)),
+            ],
+        );
+    }
+    if from_place_id == to_place_id {
+        return reject_dynamic_passage_tool(
+            "create_passage",
+            "same_passage_endpoint",
+            "a permanent passage must connect two different existing places.",
+            sink,
+            &[("from_place_id", json!(from_place_id))],
+        );
+    }
+    let Some(from_place) = session.world.world_canon.place(&from_place_id).cloned() else {
+        return reject_dynamic_passage_tool(
+            "create_passage",
+            "unknown_from",
+            format!("from_place '{from_place_id}' does not exist"),
+            sink,
+            &[("from_place_id", json!(from_place_id))],
+        );
+    };
+    let Some(to_place) = session.world.world_canon.place(&to_place_id).cloned() else {
+        return reject_dynamic_passage_tool(
+            "create_passage",
+            "unknown_target",
+            format!("to_place '{to_place_id}' does not exist"),
+            sink,
+            &[("to_place_id", json!(to_place_id))],
+        );
+    };
+    if from_place.has_flag("shell") || to_place.has_flag("shell") {
+        return reject_dynamic_passage_tool(
+            "create_passage",
+            "incomplete_passage_endpoint",
+            "both permanent-passage endpoints must be complete existing places.",
+            sink,
+            &[],
+        );
+    }
+
+    let request_payload = json!({
+        "purpose": "passage",
+        "request": request,
+        "requires_entry_transition": true,
+        "entry_from_place_id": from_place_id,
+        "target_place_id": to_place_id,
+        "from_place": travel_place_context(&session.world.world_canon, &from_place),
+        "to_place": travel_place_context(&session.world.world_canon, &to_place),
+    });
+    let generated = match call_location_generator(session, &request_payload).await {
+        Ok(generated) => Value::Object(generated),
+        Err(error) => {
+            return reject_dynamic_passage_tool(
+                "create_passage",
+                "passage_generation_failed",
+                format!("Location creator failed to author the passage: {error}"),
+                sink,
+                &[],
+            );
+        }
+    };
+    let Some(entry) = generated.get("entry_transition") else {
+        return reject_dynamic_passage_tool(
+            "create_passage",
+            "invalid_generated_passage",
+            "Location creator returned no entry_transition for the permanent passage.",
+            sink,
+            &[],
+        );
+    };
+    let Some(directionality) = generated_passage_directionality(entry) else {
+        return reject_dynamic_passage_tool(
+            "create_passage",
+            "invalid_generated_passage",
+            "Location creator must set passage directionality to one_way or bidirectional.",
+            sink,
+            &[],
+        );
+    };
+    let forward_label = generated_str(entry, "label");
+    let reverse_label = generated_str(entry, "return_label");
+    let kind = generated_str(entry, "kind");
+    let time_cost = generated_i64(entry, "time_cost_minutes");
+    let risk = generated_str(entry, "risk");
+    let world_seed = if session.world.world_canon.world_seed.is_empty() {
+        session.world.dice_seed.to_string()
+    } else {
+        session.world.world_canon.world_seed.clone()
+    };
+    let passage_id = ids::stable_id(
+        &world_seed,
+        &from_place_id,
+        "passage",
+        &format!("{}|{}", to_place_id, request),
+    );
+    let forward_transition_id = ids::stable_id(
+        &world_seed,
+        &from_place_id,
+        "transition",
+        &format!("{passage_id}|forward"),
+    );
+    let reverse_transition_id = if directionality == PassageDirectionality::Bidirectional {
+        ids::stable_id(
+            &world_seed,
+            &to_place_id,
+            "transition",
+            &format!("{passage_id}|reverse"),
+        )
+    } else {
+        String::new()
+    };
+    let proposed = ProposedAction::new(
+        Action::CreatePassage {
+            passage_id: passage_id.clone(),
+            directionality,
+            forward_transition_id: forward_transition_id.clone(),
+            reverse_transition_id: reverse_transition_id.clone(),
+            from_place: from_place_id.clone(),
+            to_place: to_place_id.clone(),
+            forward_label: forward_label.clone(),
+            reverse_label: reverse_label.clone(),
+            kind: kind.clone(),
+            time_cost,
+            risk: risk.clone(),
+        },
+        "location_generator",
+        &reason,
+    );
+    let events = match engine::apply(&mut session.world.world_canon, &proposed, session.turn) {
+        Ok(events) => events,
+        Err(rejection) => {
+            return reject_dynamic_passage_tool(
+                "create_passage",
+                "invalid_generated_passage",
+                format!("Generated passage was rejected: {}", rejection.reason),
+                sink,
+                &[("validator_code", json!(rejection.code))],
+            );
+        }
+    };
+    let anti_repeat_key = generated_str(&generated, "anti_repeat_key");
+    if !anti_repeat_key.is_empty() {
+        session.note_location_anti_repeat_key(&anti_repeat_key);
+    }
+    session.world.refresh_scene_from_canon();
+    let transition_ids = if reverse_transition_id.is_empty() {
+        vec![forward_transition_id.clone()]
+    } else {
+        vec![forward_transition_id.clone(), reverse_transition_id.clone()]
+    };
+    let payload = json!({
+        "ok": true,
+        "status": "passage_created",
+        "passage_id": passage_id,
+        "from_place_id": from_place_id,
+        "to_place_id": to_place_id,
+        "directionality": match directionality {
+            PassageDirectionality::OneWay => "one_way",
+            PassageDirectionality::Bidirectional => "bidirectional",
+            PassageDirectionality::Unspecified => "unspecified",
+        },
+        "transition_ids": transition_ids,
+        "forward_transition_id": forward_transition_id,
+        "reverse_transition_id": reverse_transition_id,
+        "label": forward_label,
+        "return_label": reverse_label,
+        "kind": kind,
+        "time_cost_minutes": time_cost,
+        "risk": risk,
+        "events": events.len(),
+        "place_cards_updated": false,
+    });
+    sink.emit(ev(
+        event_kind::SCENE_UPDATE,
+        Some("location_generator"),
+        session.world.scene_export(),
+        None,
+    ));
+    tool_result(
+        &json_compact(&payload),
+        Some("Permanent passage created from a validated location-creator profile; endpoint place cards were not rewritten."),
+        None,
+        false,
+    )
+}
+
+fn run_set_passage_state(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    use gml_world::canon::{engine, Action, ProposedAction};
+
+    let transition_id = arg_str(args, "transition_id").trim().to_string();
+    let state = arg_str(args, "state").trim();
+    let reason = arg_str(args, "reason").trim().to_string();
+    if transition_id.is_empty() || reason.is_empty() || !matches!(state, "open" | "closed") {
+        return reject_dynamic_passage_tool(
+            "set_passage_state",
+            "invalid_passage_state_request",
+            "set_passage_state requires an exact transition_id, state=open|closed, and canonical reason.",
+            sink,
+            &[("transition_id", json!(transition_id)), ("state", json!(state))],
+        );
+    }
+    let passage_id = session
+        .world
+        .world_canon
+        .transition(&transition_id)
+        .map(|transition| transition.passage_id.clone())
+        .unwrap_or_default();
+    let proposed = ProposedAction::new(
+        Action::SetPassageState {
+            transition_id: transition_id.clone(),
+            open: state == "open",
+            state_reason: reason.clone(),
+        },
+        "gm",
+        &reason,
+    );
+    let events = match engine::apply(&mut session.world.world_canon, &proposed, session.turn) {
+        Ok(events) => events,
+        Err(rejection) => {
+            return reject_dynamic_passage_tool(
+                "set_passage_state",
+                &rejection.code,
+                rejection.reason,
+                sink,
+                &[("transition_id", json!(transition_id))],
+            );
+        }
+    };
+    let affected_transition_ids = session
+        .world
+        .world_canon
+        .transitions
+        .values()
+        .filter(|transition| transition.passage_id == passage_id)
+        .map(|transition| transition.transition_id.clone())
+        .collect::<Vec<_>>();
+    session.world.refresh_scene_from_canon();
+    let payload = json!({
+        "ok": true,
+        "status": if state == "open" { "passage_opened" } else { "passage_closed" },
+        "passage_id": passage_id,
+        "selected_transition_id": transition_id,
+        "affected_transition_ids": affected_transition_ids,
+        "state": state,
+        "reason": reason,
+        "events": events.len(),
+    });
+    sink.emit(ev(
+        event_kind::SCENE_UPDATE,
+        Some("ГМ"),
+        session.world.scene_export(),
+        None,
+    ));
+    tool_result(
+        &json_compact(&payload),
+        Some("Canonical passage state updated by exact passage identity; no edge was deleted."),
+        None,
+        false,
+    )
+}
+
 async fn run_move_player(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
     use gml_world::canon::{engine, Action, ProposedAction};
 
@@ -2404,6 +3279,65 @@ from the player's current place.";
             None,
         ));
         return tool_error("move_player", msg, None, "missing_transition_id", &[]);
+    }
+
+    if let Some(route) = session
+        .world
+        .world_canon
+        .transition(&transition_id)
+        .cloned()
+        .filter(|route| {
+            route.from_place == session.world.world_canon.player_place_id
+                && route.visible
+                && route.passable
+                && route.blocked_by.is_empty()
+        })
+    {
+        let has_exact_risk = gml_world::canon::travel::TravelRisk::parse(&route.risk).is_some();
+        let destination_is_shell = !route.to_place.is_empty()
+            && session
+                .world
+                .world_canon
+                .place(&route.to_place)
+                .is_some_and(|place| place.has_flag("shell"));
+        let requires_location_creator = route.to_place.is_empty()
+            || destination_is_shell
+            || !route.has_explicit_passage_profile()
+            || route.kind.trim().is_empty()
+            || route.time_cost <= 0
+            || !has_exact_risk
+            || gml_world::canon::travel::has_asymmetric_reciprocal_profile(
+                &session.world.world_canon,
+                &route.transition_id,
+            );
+        if requires_location_creator {
+            let destination = if route.destination_hint.trim().is_empty() {
+                route.label.clone()
+            } else {
+                route.destination_hint.clone()
+            };
+            let request = format!(
+                "Resolve the existing visible exit with transition_id '{}'. The player is taking it now. \
+                 Create or complete its destination '{}' from current canon context and return the full \
+                 entry_transition profile with explicit directionality=one_way or bidirectional. Preserve \
+                 any existing destination place identity and content. A return transition is created only \
+                 when this same physical passage is explicitly bidirectional; do not add a separate return \
+                 route.",
+                route.transition_id, destination
+            );
+            let mut generator_args = json!({
+                "purpose": "local_place",
+                "request": request,
+                "route_transition_id": route.transition_id,
+                "commit": true,
+                "player_observed": true,
+                "enter_after_commit": true,
+            });
+            if !route.to_place.is_empty() {
+                generator_args["target_place_id"] = json!(route.to_place);
+            }
+            return run_generate_location(session, &generator_args, sink, true).await;
+        }
     }
 
     let proposed = ProposedAction::new(
@@ -2433,10 +3367,10 @@ from the player's current place.";
                     .await;
             session.world.refresh_scene_from_canon();
             // A road situation means the player stopped at an already-generated
-            // travel site; otherwise the destination itself may be a contentless
-            // lazy shell — fill it with the location generator on first entry.
+            // travel site; otherwise fill a contentless destination through the
+            // location creator after arrival.
             let generated_destination = if generated_situation.is_none() {
-                auto_fill_lazy_destination(session, &transition_id, &reason, sink).await
+                auto_fill_contentless_destination(session, &transition_id, &reason, sink).await
             } else {
                 None
             };
@@ -2715,6 +3649,7 @@ async fn auto_generate_travel_situation(
 
     let situation_type = event_effect_str(events, "situation_type:");
     let rarity = event_effect_str(events, "rarity:");
+    let risk = event_effect_str(events, "risk:");
     let elapsed_minutes = event_effect_i64(events, "elapsed_minutes:");
     let remaining_minutes = event_effect_i64(events, "remaining_minutes:");
     let roll = event_effect_i64(events, "roll:");
@@ -2744,6 +3679,7 @@ async fn auto_generate_travel_situation(
         "route_time_minutes": elapsed_minutes + remaining_minutes,
         "situation_type": situation_type,
         "rarity": rarity,
+        "road_risk": risk,
     });
     let result = run_generate_location(session, &generator_args, sink, false).await;
     let parsed = serde_json::from_str::<Value>(&result.full).unwrap_or_else(|_| {
@@ -2759,15 +3695,10 @@ async fn auto_generate_travel_situation(
     }))
 }
 
-/// Auto-fill a CONTENTLESS destination with the local location generator on
-/// first entry. The GM's contract says a listed visible exit needs only
-/// `move_player` — nobody calls `generate_location` for the lazily materialised
-/// shell behind it, so the engine invokes the generator itself (the same
-/// pattern as [`auto_generate_travel_situation`] for road stops). A place that
-/// already carries a description/items never re-enters here, so each place is
-/// filled at most once; a generator failure degrades gracefully (the move
-/// stands, the stub fills on a later entry).
-async fn auto_fill_lazy_destination(
+/// Fill an already-reached contentless destination through the dedicated
+/// location creator. A place that already carries a description or items never
+/// enters here, so each place is filled at most once.
+async fn auto_fill_contentless_destination(
     session: &mut Session,
     transition_id: &str,
     reason: &str,
@@ -2821,6 +3752,27 @@ async fn auto_fill_lazy_destination(
         "place_id": place_id,
         "applied": parsed.get("applied").cloned().unwrap_or(Value::Null),
     }))
+}
+
+async fn call_location_generator(
+    session: &mut Session,
+    request_payload: &Value,
+) -> Result<Map<String, Value>, BackendError> {
+    let client = session.ensure_location_generator_client();
+    let recent = session.location_generator_anti_repeat.clone();
+    let history = session.location_generator_messages.clone();
+    let generated = gml_agents::generate_location(
+        client.as_ref(),
+        &mut session.world,
+        request_payload,
+        &recent,
+        &history,
+    )
+    .await?;
+    session.location_generator_client = Some(client);
+    session.remember_location_generator_client();
+    session.record_location_generator_exchange(request_payload, &Value::Object(generated.clone()));
+    Ok(generated)
 }
 
 async fn run_generate_location(
@@ -2878,46 +3830,129 @@ async fn run_generate_location(
     let parent_place_id = arg_str(args, "parent_place_id").trim().to_string();
     let route_transition_id = arg_str(args, "route_transition_id").trim().to_string();
     let commit = args.get("commit").map(crate::truthy).unwrap_or(true);
+    let player_observed = args
+        .get("player_observed")
+        .map(crate::truthy)
+        .unwrap_or(false);
+    let enter_after_commit = args
+        .get("enter_after_commit")
+        .map(crate::truthy)
+        .unwrap_or(false);
     let transition = if route_transition_id.is_empty() {
         None
     } else {
         session.world.world_canon.transition(&route_transition_id)
     };
-    let road_risk = transition.map(|t| t.risk.clone()).unwrap_or_default();
-    let route_time_minutes = args
-        .get("route_time_minutes")
-        .and_then(Value::as_i64)
-        .or_else(|| transition.map(|t| t.time_cost))
-        .unwrap_or(0);
-    let request_payload = json!({
+    let entry_from_place_id = if enter_after_commit {
+        transition
+            .map(|route| route.from_place.clone())
+            .filter(|place_id| !place_id.is_empty())
+            .unwrap_or_else(|| current_place_id.clone())
+    } else if !parent_place_id.is_empty() {
+        parent_place_id.clone()
+    } else {
+        current_place_id.clone()
+    };
+    let requires_entry_transition = (commit || enter_after_commit)
+        && !entry_from_place_id.is_empty()
+        && (target_place_id.is_empty() || target_place_id != entry_from_place_id);
+    let is_travel_situation = purpose == "travel_situation";
+    let road_risk = if is_travel_situation {
+        transition
+            .map(|route| route.risk.clone())
+            .filter(|risk| !risk.is_empty())
+            .unwrap_or_else(|| arg_str(args, "road_risk").trim().to_string())
+    } else {
+        String::new()
+    };
+    let route_time_minutes = if is_travel_situation {
+        args.get("route_time_minutes")
+            .and_then(Value::as_i64)
+            .or_else(|| transition.map(|route| route.time_cost))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let creator_established_entry_profile = transition
+        .filter(|route| {
+            route.provenance.origin == "location_generator"
+                && route.has_explicit_passage_profile()
+                && !route.kind.trim().is_empty()
+                && route.time_cost > 0
+                && gml_world::canon::travel::TravelRisk::parse(&route.risk).is_some()
+                && !gml_world::canon::travel::has_asymmetric_reciprocal_profile(
+                    &session.world.world_canon,
+                    &route.transition_id,
+                )
+        })
+        .map(|route| {
+            json!({
+                "kind": route.kind,
+                "time_cost_minutes": route.time_cost,
+                "risk": route.risk,
+                "passage_id": route.passage_id,
+                "directionality": route.directionality,
+            })
+        });
+    let mut allowed_district_ids = BTreeSet::new();
+    for canonical_id in [
+        current_place_id.as_str(),
+        target_place_id.as_str(),
+        parent_place_id.as_str(),
+        entry_from_place_id.as_str(),
+    ] {
+        if let Some(district) = session.world.world_canon.district(canonical_id) {
+            allowed_district_ids.insert(district.district_id.clone());
+        }
+        if let Some(place) = session.world.world_canon.place(canonical_id) {
+            if session
+                .world
+                .world_canon
+                .district(&place.district_id)
+                .is_some()
+            {
+                allowed_district_ids.insert(place.district_id.clone());
+            }
+        }
+    }
+    let allowed_districts = allowed_district_ids
+        .iter()
+        .filter_map(|district_id| session.world.world_canon.district(district_id))
+        .map(|district| {
+            json!({
+                "district_id": district.district_id,
+                "name": district.name,
+                "settlement_id": district.settlement_id,
+                "region_id": district.region_id,
+                "kind": district.kind,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut request_payload = json!({
         "purpose": purpose,
         "request": request,
         "commit": commit,
         "target_place_id": target_place_id,
         "parent_place_id": parent_place_id,
         "current_place_id": current_place_id,
+        "entry_from_place_id": entry_from_place_id,
         "route_transition_id": route_transition_id,
+        "requires_entry_transition": requires_entry_transition,
+        "enter_after_commit": enter_after_commit,
+        "player_observed": player_observed,
         "elapsed_minutes": args.get("elapsed_minutes").and_then(Value::as_i64).unwrap_or(0),
         "remaining_minutes": args.get("remaining_minutes").and_then(Value::as_i64).unwrap_or(0),
         "route_time_minutes": route_time_minutes,
-        "entry_time_minutes": args.get("entry_time_minutes").and_then(Value::as_i64).unwrap_or(0),
         "situation_type": arg_str(args, "situation_type"),
         "rarity": arg_str(args, "rarity"),
         "road_risk": road_risk,
+        "allowed_districts": allowed_districts,
     });
+    if let Some(profile) = creator_established_entry_profile {
+        request_payload["creator_established_entry_profile"] = profile;
+    }
 
-    let client = session.ensure_location_generator_client();
-    let recent = session.location_generator_anti_repeat.clone();
-    let history = session.location_generator_messages.clone();
-    let generated = match gml_agents::generate_location(
-        client.as_ref(),
-        &mut session.world,
-        &request_payload,
-        &recent,
-        &history,
-    )
-    .await
-    {
+    let generated = match call_location_generator(session, &request_payload).await {
         Ok(data) => data,
         Err(e) => {
             sink.emit(ev(
@@ -2935,15 +3970,12 @@ async fn run_generate_location(
             );
         }
     };
-    session.location_generator_client = Some(client);
-    session.remember_location_generator_client();
 
     let generated_value = Value::Object(generated.clone());
-    session.record_location_generator_exchange(&request_payload, &generated_value);
     let before_time = session.world.time_export();
     let before_clock_minutes = session.world.world_canon.clock_minutes;
     let mut applied = if commit {
-        commit_generated_location(session, args, &generated_value)
+        commit_generated_location(session, args, &generated_value, requires_entry_transition)
     } else {
         json!({"ok": true, "status": "preview", "committed": false})
     };
@@ -3166,8 +4198,20 @@ fn generated_string_list(generated: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn generated_i64(item: &Value, key: &str) -> i64 {
-    item.get(key).and_then(Value::as_i64).unwrap_or(0)
+fn generated_i64(generated: &Value, key: &str) -> i64 {
+    generated.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn generated_passage_directionality(
+    generated: &Value,
+) -> Option<gml_world::canon::PassageDirectionality> {
+    use gml_world::canon::PassageDirectionality;
+
+    match generated_str(generated, "directionality").as_str() {
+        "one_way" => Some(PassageDirectionality::OneWay),
+        "bidirectional" => Some(PassageDirectionality::Bidirectional),
+        _ => None,
+    }
 }
 
 fn nonempty_string(primary: String, fallback: &str) -> String {
@@ -3178,65 +4222,15 @@ fn nonempty_string(primary: String, fallback: &str) -> String {
     }
 }
 
-struct GeneratedEntryTransition {
-    label: String,
-    return_label: String,
-    kind: String,
-    time_cost_minutes: i64,
-    risk: String,
-}
-
-fn generated_entry_transition(
+fn commit_generated_location(
+    session: &mut Session,
     args: &Value,
     generated: &Value,
-    purpose: &str,
-    name: &str,
-) -> GeneratedEntryTransition {
-    let empty_entry = Value::Null;
-    let entry = generated
-        .get("entry_transition")
-        .filter(|value| value.is_object())
-        .unwrap_or(&empty_entry);
-    let fallback_kind = match purpose {
-        "room" => "door",
-        "dungeon_point" => "passage",
-        _ => "path",
-    };
-    let kind = nonempty_string(generated_str(entry, "kind"), fallback_kind);
-    let label = nonempty_string(generated_str(entry, "label"), &format!("К {name}"));
-    let return_label = nonempty_string(generated_str(entry, "return_label"), "Назад");
-    let requested_time = args
-        .get("entry_time_minutes")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let generated_time = generated_i64(entry, "time_cost_minutes");
-    let raw_time = if requested_time != 0 {
-        requested_time
-    } else {
-        generated_time
-    };
-    let time_cost_minutes = if raw_time == 0 {
-        gml_world::canon::travel::infer_time_cost(&kind, &label, name)
-    } else {
-        raw_time
-    };
-    let risk = nonempty_string(
-        generated_str(entry, "risk"),
-        &gml_world::canon::travel::infer_risk(&kind, &label, name),
-    );
-    GeneratedEntryTransition {
-        label,
-        return_label,
-        kind,
-        time_cost_minutes,
-        risk,
-    }
-}
-
-fn commit_generated_location(session: &mut Session, args: &Value, generated: &Value) -> Value {
+    requires_entry_transition: bool,
+) -> Value {
     use gml_world::canon::{
-        engine, ids, travel, Action, MemoryInjectionState, MemoryTier, MemoryTruthStatus,
-        MemoryUnit, ProposedAction, Scope,
+        engine, ids, Action, MemoryInjectionState, MemoryTier, MemoryTruthStatus, MemoryUnit,
+        ProposedAction, Scope,
     };
 
     let purpose = arg_str(args, "purpose").trim().to_string();
@@ -3244,6 +4238,28 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
     let current_place_id = session.world.world_canon.player_place_id.clone();
     let explicit_target = arg_str(args, "target_place_id").trim().to_string();
     let explicit_parent = arg_str(args, "parent_place_id").trim().to_string();
+    let route_transition_id = arg_str(args, "route_transition_id").trim().to_string();
+    let routed_transition = if route_transition_id.is_empty() {
+        None
+    } else {
+        match session
+            .world
+            .world_canon
+            .transition(&route_transition_id)
+            .cloned()
+        {
+            Some(transition) => Some(transition),
+            None => {
+                return json!({
+                    "ok": false,
+                    "status": "rejected",
+                    "committed": false,
+                    "code": "unknown_route_transition",
+                    "reason": format!("route_transition_id '{}' does not exist", route_transition_id),
+                });
+            }
+        }
+    };
     let player_observed_requested = args
         .get("player_observed")
         .map(crate::truthy)
@@ -3252,16 +4268,43 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
         .get("enter_after_commit")
         .map(crate::truthy)
         .unwrap_or(false);
+    let generated_parent = generated_str(generated, "parent_place_id");
+    let existing_parent = if explicit_target.is_empty() {
+        routed_transition
+            .as_ref()
+            .and_then(|route| session.world.world_canon.place(&route.to_place))
+            .map(|place| place.parent.clone())
+            .unwrap_or_default()
+    } else {
+        session
+            .world
+            .world_canon
+            .place(&explicit_target)
+            .map(|place| place.parent.clone())
+            .unwrap_or_default()
+    };
     let parent_place_id = if !explicit_parent.is_empty() {
         explicit_parent
+    } else if !generated_parent.is_empty() {
+        generated_parent
     } else {
-        current_place_id.clone()
+        existing_parent
     };
     // `parent_place_id` is containment/geography. Entering is always linked
     // from the player's actual current place, so a broader logical parent can
     // never turn an otherwise valid arrival into a rejected teleport.
-    let entry_from_place_id = if enter_after_commit && !current_place_id.is_empty() {
-        current_place_id.clone()
+    let entry_from_place_id = if requires_entry_transition {
+        routed_transition
+            .as_ref()
+            .map(|route| route.from_place.clone())
+            .filter(|place_id| !place_id.is_empty())
+            .unwrap_or_else(|| {
+                if !current_place_id.is_empty() {
+                    current_place_id.clone()
+                } else {
+                    parent_place_id.clone()
+                }
+            })
     } else {
         parent_place_id.clone()
     };
@@ -3273,7 +4316,55 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
 
     let name = nonempty_string(generated_str(generated, "name"), "Unnamed place");
     let kind = nonempty_string(generated_str(generated, "kind"), "generated_place");
-    let entry = generated_entry_transition(args, generated, &purpose, &name);
+    let entry = requires_entry_transition
+        .then(|| generated.get("entry_transition"))
+        .flatten()
+        .filter(|value| value.is_object());
+    if requires_entry_transition && entry.is_none() {
+        return json!({
+            "ok": false,
+            "status": "rejected",
+            "committed": false,
+            "code": "missing_entry_transition",
+            "reason": "the location creator did not provide the required entry transition",
+        });
+    }
+    let entry_label = entry
+        .map(|value| generated_str(value, "label"))
+        .unwrap_or_default();
+    let return_label = entry
+        .map(|value| generated_str(value, "return_label"))
+        .unwrap_or_default();
+    let entry_kind = entry
+        .map(|value| generated_str(value, "kind"))
+        .unwrap_or_default();
+    let entry_time_minutes = entry
+        .map(|value| generated_i64(value, "time_cost_minutes"))
+        .unwrap_or(0);
+    let entry_risk = entry
+        .map(|value| generated_str(value, "risk"))
+        .unwrap_or_default();
+    let entry_directionality = entry.and_then(generated_passage_directionality);
+    if entry.is_some() && entry_directionality.is_none() {
+        return json!({
+            "ok": false,
+            "status": "rejected",
+            "committed": false,
+            "code": "invalid_passage_directionality",
+            "reason": "entry_transition.directionality must be exactly one_way or bidirectional",
+        });
+    }
+    if entry_directionality == Some(gml_world::canon::PassageDirectionality::Bidirectional)
+        && return_label.is_empty()
+    {
+        return json!({
+            "ok": false,
+            "status": "rejected",
+            "committed": false,
+            "code": "missing_return_label",
+            "reason": "a bidirectional entry_transition requires a non-empty return_label",
+        });
+    }
     let visible_summary = generated_str(generated, "visible_summary");
     let description = nonempty_string(generated_str(generated, "description"), &visible_summary);
     let hidden_summary = generated_str(generated, "hidden_summary");
@@ -3288,6 +4379,13 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
 
     let place_id = if !explicit_target.is_empty() {
         explicit_target
+    } else if let Some(route_target) = routed_transition
+        .as_ref()
+        .filter(|_| requires_entry_transition)
+        .map(|route| route.to_place.trim())
+        .filter(|target| !target.is_empty())
+    {
+        route_target.to_string()
     } else {
         ids::stable_id(
             &world_seed,
@@ -3301,15 +4399,76 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
         )
     };
 
+    if let Some(route) = routed_transition.as_ref() {
+        if requires_entry_transition && !route.to_place.is_empty() && route.to_place != place_id {
+            return json!({
+                "ok": false,
+                "status": "rejected",
+                "committed": false,
+                "code": "route_target_mismatch",
+                "reason": format!(
+                    "route_transition_id '{}' targets '{}', not '{}'",
+                    route.transition_id, route.to_place, place_id
+                ),
+                "place_id": place_id,
+            });
+        }
+        if requires_entry_transition && route.from_place != entry_from_place_id {
+            return json!({
+                "ok": false,
+                "status": "rejected",
+                "committed": false,
+                "code": "route_source_mismatch",
+                "reason": format!(
+                    "route_transition_id '{}' starts at '{}', not '{}'",
+                    route.transition_id, route.from_place, entry_from_place_id
+                ),
+                "place_id": place_id,
+            });
+        }
+    }
+
     let created_place = session.world.world_canon.place(&place_id).is_none();
     let mut transitions_added: Vec<String> = Vec::new();
-    let region_id = session
+    let generated_region_id = generated_str(generated, "region_id");
+    let existing_region_id = session
         .world
         .world_canon
-        .place(&parent_place_id)
-        .or_else(|| session.world.world_canon.place(&entry_from_place_id))
-        .map(|p| p.region_id.clone())
+        .place(&place_id)
+        .map(|place| place.region_id.clone())
         .unwrap_or_default();
+    let region_id = if generated_region_id.is_empty() {
+        existing_region_id
+    } else {
+        generated_region_id
+    };
+    let generated_district_id = generated_str(generated, "district_id");
+    let existing_district_id = session
+        .world
+        .world_canon
+        .place(&place_id)
+        .map(|place| place.district_id.clone())
+        .unwrap_or_default();
+    let inherited_district_id = session
+        .world
+        .world_canon
+        .district(&parent_place_id)
+        .map(|district| district.district_id.clone())
+        .or_else(|| {
+            session
+                .world
+                .world_canon
+                .place(&parent_place_id)
+                .map(|place| place.district_id.clone())
+        })
+        .unwrap_or_default();
+    let district_id = if !generated_district_id.is_empty() {
+        generated_district_id
+    } else if !existing_district_id.is_empty() {
+        existing_district_id
+    } else {
+        inherited_district_id
+    };
     let mut actions: Vec<(Action, String)> = Vec::new();
     let existing_was_visited = session
         .world
@@ -3339,6 +4498,7 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
                 kind: kind.clone(),
                 parent: parent_place_id.clone(),
                 region_id,
+                district_id,
                 description: description.clone(),
                 features: features.clone(),
                 visited,
@@ -3362,135 +4522,192 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
 
     let canon = &session.world.world_canon;
     let mut planned_transition_ids = BTreeSet::new();
-    let mut entry_transition_id = if !entry_from_place_id.is_empty()
-        && entry_from_place_id != place_id
-        && canon.place(&entry_from_place_id).is_some()
-    {
-        canon
-            .exits_from(&entry_from_place_id)
-            .iter()
-            .find(|transition| transition.to_place == place_id)
-            .map(|transition| transition.transition_id.clone())
-    } else {
-        None
-    };
-    let mut entry_time_minutes = entry_transition_id
-        .as_deref()
-        .and_then(|transition_id| canon.transition(transition_id))
-        .map(|transition| {
-            travel::normalized_time_cost(
-                &transition.kind,
-                &transition.label,
-                &transition.destination_hint,
-                transition.time_cost,
-            )
-        })
-        .unwrap_or(entry.time_cost_minutes);
-    let mut entry_risk = entry_transition_id
-        .as_deref()
-        .and_then(|transition_id| canon.transition(transition_id))
-        .map(|transition| {
-            travel::normalized_risk(
-                &transition.kind,
-                &transition.label,
-                &transition.destination_hint,
-                &transition.risk,
-            )
-        })
-        .unwrap_or_else(|| entry.risk.clone());
-    if !entry_from_place_id.is_empty()
-        && entry_from_place_id != place_id
-        && canon.place(&entry_from_place_id).is_some()
-        && !canon
-            .exits_from(&entry_from_place_id)
-            .iter()
-            .any(|t| t.to_place == place_id)
-    {
-        let forward_id = ids::stable_id(&world_seed, &entry_from_place_id, "transition", &place_id);
-        planned_transition_ids.insert(forward_id.clone());
-        transitions_added.push(forward_id.clone());
+    let mut entry_transition_id = None;
+
+    if entry.is_some() {
+        use gml_world::canon::PassageDirectionality;
+
+        if entry_from_place_id.is_empty()
+            || entry_from_place_id == place_id
+            || canon.place(&entry_from_place_id).is_none()
+        {
+            return json!({
+                "ok": false,
+                "status": "rejected",
+                "committed": false,
+                "code": "invalid_entry_source",
+                "reason": "entry_transition requires a distinct existing entry_from_place_id",
+                "place_id": place_id,
+            });
+        }
+        let directionality = entry_directionality.expect("validated entry directionality");
+
+        let generated_passage_id = ids::stable_id(
+            &world_seed,
+            &entry_from_place_id,
+            "passage",
+            &format!("entry|{place_id}"),
+        );
+        let passage_id = routed_transition
+            .as_ref()
+            .map(|transition| transition.passage_id.trim())
+            .filter(|passage_id| !passage_id.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or(generated_passage_id);
+        let forward_id = routed_transition
+            .as_ref()
+            .map(|route| route.transition_id.clone())
+            .unwrap_or_else(|| ids::stable_id(&world_seed, &passage_id, "transition", "forward"));
+        let existing_forward = canon.transition(&forward_id);
+        if let Some(existing) = existing_forward.filter(|transition| {
+            transition.provenance.origin == "location_generator"
+                && transition.directionality != PassageDirectionality::Unspecified
+                && transition.directionality != directionality
+        }) {
+            return json!({
+                "ok": false,
+                "status": "rejected",
+                "committed": false,
+                "code": "creator_passage_directionality_conflict",
+                "reason": format!(
+                    "the location creator changed passage '{}' from {:?} to {:?}",
+                    existing.passage_id, existing.directionality, directionality
+                ),
+                "place_id": place_id,
+            });
+        }
         entry_transition_id = Some(forward_id.clone());
-        entry_time_minutes = entry.time_cost_minutes;
-        entry_risk = entry.risk.clone();
-        actions.push((
-            Action::CreateTransition {
-                transition_id: forward_id,
-                from_place: entry_from_place_id.clone(),
-                to_place: place_id.clone(),
-                destination_hint: name.clone(),
-                label: entry.label.clone(),
-                kind: entry.kind.clone(),
-                visible: Some(true),
-                passable: Some(true),
-                blocked_by: String::new(),
-                time_cost: entry_time_minutes,
-                risk: entry_risk.clone(),
-            },
-            "link generated place".to_string(),
-        ));
-    }
+        if canon.transition(&forward_id).is_some() {
+            actions.push((
+                Action::ConfigureTransition {
+                    transition_id: forward_id.clone(),
+                    to_place: place_id.clone(),
+                    label: entry_label.clone(),
+                    kind: entry_kind.clone(),
+                    time_cost: entry_time_minutes,
+                    risk: entry_risk.clone(),
+                    passage_id: passage_id.clone(),
+                    directionality,
+                },
+                "configure generated entry".to_string(),
+            ));
+        } else {
+            planned_transition_ids.insert(forward_id.clone());
+            transitions_added.push(forward_id.clone());
+            actions.push((
+                Action::CreateTransition {
+                    transition_id: forward_id,
+                    from_place: entry_from_place_id.clone(),
+                    to_place: place_id.clone(),
+                    destination_hint: name.clone(),
+                    label: entry_label.clone(),
+                    kind: entry_kind.clone(),
+                    visible: Some(true),
+                    passable: Some(true),
+                    blocked_by: String::new(),
+                    time_cost: entry_time_minutes,
+                    risk: entry_risk.clone(),
+                    passage_id: passage_id.clone(),
+                    directionality,
+                },
+                "link generated place".to_string(),
+            ));
+        }
 
-    if !entry_from_place_id.is_empty()
-        && entry_from_place_id != place_id
-        && canon.place(&entry_from_place_id).is_some()
-        && !canon
+        let reverse_ids = canon
             .exits_from(&place_id)
-            .iter()
-            .any(|t| t.to_place == entry_from_place_id)
-    {
-        let back_id = ids::stable_id(&world_seed, &place_id, "transition", &entry_from_place_id);
-        planned_transition_ids.insert(back_id.clone());
-        transitions_added.push(back_id.clone());
-        actions.push((
-            Action::CreateTransition {
-                transition_id: back_id,
-                from_place: place_id.clone(),
-                to_place: entry_from_place_id.clone(),
-                destination_hint: String::new(),
-                label: entry.return_label.clone(),
-                kind: entry.kind.clone(),
-                visible: Some(true),
-                passable: Some(true),
-                blocked_by: String::new(),
-                time_cost: entry_time_minutes,
-                risk: entry_risk.clone(),
-            },
-            "return from generated place".to_string(),
-        ));
+            .into_iter()
+            .filter(|transition| {
+                transition.to_place == entry_from_place_id && transition.passage_id == passage_id
+            })
+            .map(|transition| transition.transition_id.clone())
+            .collect::<Vec<_>>();
+        if directionality == PassageDirectionality::OneWay && !reverse_ids.is_empty() {
+            return json!({
+                "ok": false,
+                "status": "rejected",
+                "committed": false,
+                "code": "passage_directionality_conflict",
+                "reason": "a one-way passage already has a reverse transition with the same passage_id",
+                "place_id": place_id,
+            });
+        }
+        if directionality == PassageDirectionality::Bidirectional {
+            if reverse_ids.len() > 1 {
+                return json!({
+                    "ok": false,
+                    "status": "rejected",
+                    "committed": false,
+                    "code": "ambiguous_return_transition",
+                    "reason": "multiple return transitions claim the same passage_id",
+                    "place_id": place_id,
+                });
+            }
+            let stable_reverse_id =
+                ids::stable_id(&world_seed, &passage_id, "transition", "reverse");
+            let reverse_id = reverse_ids.first().cloned().unwrap_or(stable_reverse_id);
+            if canon.transition(&reverse_id).is_some() {
+                actions.push((
+                    Action::ConfigureTransition {
+                        transition_id: reverse_id,
+                        to_place: entry_from_place_id.clone(),
+                        label: return_label.clone(),
+                        kind: entry_kind.clone(),
+                        time_cost: entry_time_minutes,
+                        risk: entry_risk.clone(),
+                        passage_id: passage_id.clone(),
+                        directionality,
+                    },
+                    "configure generated return".to_string(),
+                ));
+            } else {
+                planned_transition_ids.insert(reverse_id.clone());
+                transitions_added.push(reverse_id.clone());
+                actions.push((
+                    Action::CreateTransition {
+                        transition_id: reverse_id,
+                        from_place: place_id.clone(),
+                        to_place: entry_from_place_id.clone(),
+                        destination_hint: String::new(),
+                        label: return_label.clone(),
+                        kind: entry_kind.clone(),
+                        visible: Some(true),
+                        passable: Some(true),
+                        blocked_by: String::new(),
+                        time_cost: entry_time_minutes,
+                        risk: entry_risk.clone(),
+                        passage_id: passage_id.clone(),
+                        directionality,
+                    },
+                    "return from generated place".to_string(),
+                ));
+            }
+        }
     }
 
-    if let Some(items) = generated.get("transitions").and_then(Value::as_array) {
-        for (idx, item) in items.iter().enumerate() {
-            let label = generated_str(item, "label");
-            if label.is_empty() {
-                continue;
-            }
-            let destination_hint = generated_str(item, "destination_hint");
-            let back_to_parent = if !parent_place_id.is_empty() && parent_place_id != place_id {
-                let haystack = format!("{label} {destination_hint}").to_lowercase();
-                let parent_id = parent_place_id.to_lowercase();
-                let parent_name = canon
-                    .place(&parent_place_id)
-                    .map(|place| place.name.to_lowercase())
-                    .unwrap_or_default();
-                haystack.contains("назад")
-                    || haystack.contains("обратно")
-                    || haystack.contains("возврат")
-                    || haystack.contains(&parent_id)
-                    || (!parent_name.is_empty() && haystack.contains(&parent_name))
-            } else {
-                false
+    if let Some(routes) = generated.get("transitions").and_then(Value::as_array) {
+        for (idx, route) in routes.iter().enumerate() {
+            let label = generated_str(route, "label");
+            let destination_hint = generated_str(route, "destination_hint");
+            let Some(directionality) = generated_passage_directionality(route) else {
+                return json!({
+                    "ok": false,
+                    "status": "rejected",
+                    "committed": false,
+                    "code": "invalid_passage_directionality",
+                    "reason": format!(
+                        "transitions[{idx}].directionality must be exactly one_way or bidirectional"
+                    ),
+                    "place_id": place_id,
+                });
             };
-            if back_to_parent {
-                continue;
-            }
-            let edge_kind = nonempty_string(generated_str(item, "kind"), "path");
-            let edge_id = ids::stable_id(
+            let passage_id = ids::stable_id(
                 &world_seed,
                 &place_id,
-                "transition",
-                &format!("{idx}|{label}|{destination_hint}"),
+                "passage",
+                &format!("generated_exit|{idx}|{anti_repeat_key}"),
             );
+            let edge_id = ids::stable_id(&world_seed, &passage_id, "transition", "forward");
             if canon.transitions.contains_key(&edge_id) || planned_transition_ids.contains(&edge_id)
             {
                 continue;
@@ -3504,12 +4721,14 @@ fn commit_generated_location(session: &mut Session, args: &Value, generated: &Va
                     to_place: String::new(),
                     destination_hint,
                     label,
-                    kind: edge_kind,
+                    kind: generated_str(route, "kind"),
                     visible: Some(true),
                     passable: Some(true),
                     blocked_by: String::new(),
-                    time_cost: generated_i64(item, "time_cost_minutes"),
-                    risk: generated_str(item, "risk"),
+                    time_cost: generated_i64(route, "time_cost_minutes"),
+                    risk: generated_str(route, "risk"),
+                    passage_id,
+                    directionality,
                 },
                 "generated exit hook".to_string(),
             ));
@@ -4841,7 +6060,14 @@ impl DeltaSink for NpcSpeechCollector<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::situation_includes_room_witnesses;
+    use std::sync::Arc;
+
+    use gml_llm::Backend;
+    use gml_mock::MockClient;
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    use super::{run_tool, situation_includes_room_witnesses, Session, Sink, TurnToolState};
 
     #[test]
     fn situation_witness_mode_prefers_private_markers_over_loud_words() {
@@ -4854,5 +6080,47 @@ mod tests {
         assert!(situation_includes_room_witnesses(
             "Игрок громко говорит при всех, чтобы весь зал услышал."
         ));
+    }
+
+    #[tokio::test]
+    async fn rejected_travel_blocks_local_movement_until_the_next_turn() {
+        let client: Arc<dyn Backend> = Arc::new(MockClient::new());
+        let mut session = Session::new(client);
+        let before_place = session.world.world_canon.player_place_id.clone();
+        let before_clock = session.world.world_canon.clock_minutes;
+        let before_transitions = session.world.world_canon.transitions.clone();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let sink = Sink { tx };
+        let mut metas = Vec::new();
+        let mut state = TurnToolState::default();
+
+        let rejected = run_tool(
+            &mut session,
+            "travel_to",
+            &json!({"destination_place_id": "missing_destination"}),
+            &mut metas,
+            &sink,
+            &mut state,
+        )
+        .await;
+        assert!(rejected.model.contains("code: invalid_travel_destination"));
+        assert!(state.travel_attempted);
+        assert!(state.travel_rejected);
+
+        let blocked = run_tool(
+            &mut session,
+            "move_player",
+            &json!({}),
+            &mut metas,
+            &sink,
+            &mut state,
+        )
+        .await;
+        assert!(blocked
+            .model
+            .contains("code: movement_blocked_after_travel_to"));
+        assert_eq!(session.world.world_canon.player_place_id, before_place);
+        assert_eq!(session.world.world_canon.clock_minutes, before_clock);
+        assert_eq!(session.world.world_canon.transitions, before_transitions);
     }
 }

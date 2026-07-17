@@ -22,10 +22,12 @@ pub mod state_record;
 mod world;
 
 pub use canon::{
-    Account, Action, Actor, CanonEvent, Containment, Faction, MemoryAccess, MemoryInjectionState,
-    MemoryStore, MemoryTier, MemoryTruthStatus, MemoryUnit, Place, PlayerView, ProposedAction,
-    Provenance, Region, Rejection, Scope, Settlement, Transition, Truthfulness, Validator,
-    WorldCanon, WorldLore, WorldSpec, GENERATOR_VERSION,
+    plan_travel, plan_travel_from, Account, Action, ActiveJourney, Actor, CanonEvent, Containment,
+    District, DistrictValidationError, Faction, MemoryAccess, MemoryInjectionState, MemoryStore,
+    MemoryTier, MemoryTruthStatus, MemoryUnit, PassageDirectionality, Place, PlayerView,
+    ProposedAction, Provenance, Region, Rejection, Scope, Settlement, Transition, TravelAccess,
+    TravelAnchor, TravelLink, TravelLinkValidationError, TravelNetwork, TravelPlan,
+    TravelPlanError, Truthfulness, Validator, WorldCanon, WorldLore, WorldSpec, GENERATOR_VERSION,
 };
 pub use model::{
     FactRecord, Npc, NpcWhereabouts, PlaceSceneContext, PlayerCharacter, Presence, Rumor,

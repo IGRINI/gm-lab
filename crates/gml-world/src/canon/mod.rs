@@ -1,7 +1,7 @@
 //! `canon` — the living-world canonical layer (LIVING_WORLD_ARCHITECTURE_TZ.md).
 //!
 //! The structural source of truth: a graph of [`Region`]s / [`Settlement`]s /
-//! [`Place`]s connected by directed [`Transition`]s, populated by [`Actor`]s and
+//! [`District`]s / [`Place`]s connected by directed [`Transition`]s, populated by [`Actor`]s and
 //! [`Faction`]s, with an append-only [`EventLog`] and a game clock. Prose and the
 //! live [`crate::SceneState`] are a *view* over it, never the owner (TZ §5).
 //!
@@ -21,6 +21,7 @@ pub mod ids;
 pub mod knowledge;
 pub mod lore;
 pub mod memory;
+pub mod navigation;
 mod place;
 pub mod region;
 pub mod rumor;
@@ -32,8 +33,8 @@ pub mod worldgen;
 
 pub use action::{Action, ProposedAction};
 pub use engine::{
-    advance_clock, apply, causal_log, debug_bundle, debug_dump, expand_place_interior, player_view,
-    tick_offscreen, PlayerView, ViewActor, ViewEvent, ViewExit,
+    advance_clock, apply, causal_log, debug_bundle, debug_dump, player_view, tick_offscreen,
+    PlayerView, ViewActor, ViewEvent, ViewExit,
 };
 pub use entity::{Actor, Containment, Faction};
 pub use event_log::{Account, CanonEvent, EventLog};
@@ -43,15 +44,19 @@ pub use memory::{
     canonical_scope, MemoryAccess, MemoryInjectionState, MemoryStore, MemoryTier,
     MemoryTruthStatus, MemoryUnit,
 };
+pub use navigation::{
+    plan_travel, plan_travel_from, ActiveJourney, TravelAccess, TravelAnchor, TravelLink,
+    TravelLinkValidationError, TravelNetwork, TravelPlan, TravelPlanError,
+};
 pub use place::Place;
-pub use region::{Region, Settlement};
+pub use region::{District, DistrictValidationError, Region, Settlement};
 pub use rumor::{
     memory_id_for_rumor, memory_unit_for_rumor, route_scope_for_transition,
     scopes_added_by_carrier_at_place, scopes_for_place, scopes_for_transition, should_decay_rumor,
     should_spread_place_rumor,
 };
-pub use transition::Transition;
-pub use travel::{roll_travel_situation, TravelRoll, TravelSituation};
+pub use transition::{PassageDirectionality, Transition};
+pub use travel::{roll_travel_situation, TravelRisk, TravelRoll, TravelSituation};
 pub use validator::{Rejection, Validator};
 pub use worldgen::{generate, generate_with_lore, WorldSpec};
 
@@ -162,10 +167,23 @@ pub struct WorldCanon {
     pub regions: BTreeMap<String, Region>,
     #[serde(default)]
     pub settlements: BTreeMap<String, Settlement>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub districts: BTreeMap<String, District>,
     #[serde(default)]
     pub places: BTreeMap<String, Place>,
     #[serde(default)]
     pub transitions: BTreeMap<String, Transition>,
+    /// Abstract long-distance networks, separate from immediate place exits.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub travel_networks: BTreeMap<String, TravelNetwork>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub travel_anchors: BTreeMap<String, TravelAnchor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub travel_accesses: BTreeMap<String, TravelAccess>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub travel_links: BTreeMap<String, TravelLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_journey: Option<ActiveJourney>,
     #[serde(default)]
     pub actors: BTreeMap<String, Actor>,
     #[serde(default)]
@@ -195,8 +213,14 @@ impl WorldCanon {
     pub fn is_empty(&self) -> bool {
         self.places.is_empty()
             && self.transitions.is_empty()
+            && self.travel_networks.is_empty()
+            && self.travel_anchors.is_empty()
+            && self.travel_accesses.is_empty()
+            && self.travel_links.is_empty()
+            && self.active_journey.is_none()
             && self.regions.is_empty()
             && self.settlements.is_empty()
+            && self.districts.is_empty()
             && self.actors.is_empty()
             && self.factions.is_empty()
             && self.event_log.is_empty()
@@ -216,6 +240,18 @@ impl WorldCanon {
     pub fn transition(&self, transition_id: &str) -> Option<&Transition> {
         self.transitions.get(transition_id)
     }
+    pub fn travel_network(&self, network_id: &str) -> Option<&TravelNetwork> {
+        self.travel_networks.get(network_id)
+    }
+    pub fn travel_anchor(&self, anchor_id: &str) -> Option<&TravelAnchor> {
+        self.travel_anchors.get(anchor_id)
+    }
+    pub fn travel_access(&self, access_id: &str) -> Option<&TravelAccess> {
+        self.travel_accesses.get(access_id)
+    }
+    pub fn travel_link(&self, link_id: &str) -> Option<&TravelLink> {
+        self.travel_links.get(link_id)
+    }
     pub fn actor(&self, actor_id: &str) -> Option<&Actor> {
         self.actors.get(actor_id)
     }
@@ -224,6 +260,42 @@ impl WorldCanon {
     }
     pub fn settlement(&self, settlement_id: &str) -> Option<&Settlement> {
         self.settlements.get(settlement_id)
+    }
+    pub fn district(&self, district_id: &str) -> Option<&District> {
+        self.districts.get(district_id)
+    }
+
+    /// Resolve a place's explicitly assigned district. This never falls back
+    /// to names, descriptions, visit history, or collection membership.
+    pub fn district_for_place(&self, place_id: &str) -> Option<&District> {
+        let district_id = &self.place(place_id)?.district_id;
+        (!district_id.is_empty())
+            .then(|| self.district(district_id))
+            .flatten()
+    }
+
+    /// Resolve the settlement that structurally owns a place.
+    pub fn settlement_for_place(&self, place_id: &str) -> Option<&Settlement> {
+        let place = self.place(place_id)?;
+        if let Some(district) = self.district_for_place(place_id) {
+            return self.settlement(&district.settlement_id);
+        }
+        self.settlement(&place.parent)
+    }
+
+    /// Resolve the region that structurally owns a place.
+    pub fn region_for_place(&self, place_id: &str) -> Option<&Region> {
+        let place = self.place(place_id)?;
+        if !place.region_id.is_empty() {
+            return self.region(&place.region_id);
+        }
+        if let Some(district) = self.district_for_place(place_id) {
+            if !district.region_id.is_empty() {
+                return self.region(&district.region_id);
+            }
+        }
+        self.settlement_for_place(place_id)
+            .and_then(|settlement| self.region(&settlement.region_id))
     }
 
     /// Outgoing transitions from a place, in the place's stored order.
@@ -238,6 +310,20 @@ impl WorldCanon {
         }
     }
 
+    pub fn travel_accesses_from(&self, place_id: &str) -> Vec<&TravelAccess> {
+        self.travel_accesses
+            .values()
+            .filter(|access| access.place_id == place_id)
+            .collect()
+    }
+
+    pub fn travel_links_from(&self, anchor_id: &str) -> Vec<&TravelLink> {
+        self.travel_links
+            .values()
+            .filter(|link| link.anchor_a == anchor_id || link.anchor_b == anchor_id)
+            .collect()
+    }
+
     /// Actors physically located at a place (the canonical source for the
     /// derived `present_npcs`, TZ §6.7).
     pub fn actors_at(&self, place_id: &str) -> Vec<&Actor> {
@@ -247,9 +333,91 @@ impl WorldCanon {
             .collect()
     }
 
-    /// Register a place and (if a parent place is known) leave it discoverable.
+    /// Register a place and maintain its explicit district/settlement links.
     pub fn insert_place(&mut self, place: Place) {
-        self.places.insert(place.place_id.clone(), place);
+        let place_id = place.place_id.clone();
+        let previous_district_id = self
+            .places
+            .get(&place_id)
+            .map(|existing| existing.district_id.clone())
+            .unwrap_or_default();
+        if previous_district_id != place.district_id {
+            if let Some(previous) = self.districts.get_mut(&previous_district_id) {
+                previous.place_ids.retain(|id| id != &place_id);
+            }
+        }
+
+        let district_id = place.district_id.clone();
+        self.places.insert(place_id.clone(), place);
+        if let Some(district) = self.districts.get_mut(&district_id) {
+            if !district.place_ids.contains(&place_id) {
+                district.place_ids.push(place_id.clone());
+            }
+            if let Some(settlement) = self.settlements.get_mut(&district.settlement_id) {
+                if !settlement.place_ids.contains(&place_id) {
+                    settlement.place_ids.push(place_id);
+                }
+            }
+        }
+    }
+
+    /// Validate and register a district, maintaining the owning settlement's
+    /// link set. District membership must be explicit on every listed place.
+    pub fn insert_district(&mut self, district: District) -> Result<(), DistrictValidationError> {
+        if district.district_id.trim().is_empty() {
+            return Err(DistrictValidationError::MissingId);
+        }
+        if district.name.trim().is_empty() {
+            return Err(DistrictValidationError::MissingName);
+        }
+        let district_id = district.district_id.clone();
+        if self.districts.contains_key(&district_id) {
+            return Err(DistrictValidationError::DuplicateId(district_id));
+        }
+        let Some(settlement) = self.settlements.get(&district.settlement_id) else {
+            return Err(DistrictValidationError::UnknownSettlement(
+                district.settlement_id,
+            ));
+        };
+        if !district.region_id.is_empty() && !self.regions.contains_key(&district.region_id) {
+            return Err(DistrictValidationError::UnknownRegion(district.region_id));
+        }
+        if district.region_id != settlement.region_id {
+            return Err(DistrictValidationError::SettlementRegionMismatch {
+                settlement_id: settlement.settlement_id.clone(),
+                settlement_region_id: settlement.region_id.clone(),
+                district_region_id: district.region_id,
+            });
+        }
+        let mut seen_place_ids = std::collections::BTreeSet::new();
+        for place_id in &district.place_ids {
+            if !seen_place_ids.insert(place_id) {
+                return Err(DistrictValidationError::DuplicatePlace(place_id.clone()));
+            }
+            let Some(place) = self.place(place_id) else {
+                return Err(DistrictValidationError::UnknownPlace(place_id.clone()));
+            };
+            if place.district_id != district_id {
+                return Err(DistrictValidationError::PlaceMembershipMismatch {
+                    place_id: place_id.clone(),
+                    district_id,
+                });
+            }
+        }
+        let settlement_id = district.settlement_id.clone();
+        let district_place_ids = district.place_ids.clone();
+        self.districts.insert(district_id.clone(), district);
+        if let Some(settlement) = self.settlements.get_mut(&settlement_id) {
+            if !settlement.district_ids.contains(&district_id) {
+                settlement.district_ids.push(district_id);
+            }
+            for place_id in district_place_ids {
+                if !settlement.place_ids.contains(&place_id) {
+                    settlement.place_ids.push(place_id);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Register a transition and wire it into its source place's exit list.
@@ -260,6 +428,24 @@ impl WorldCanon {
             }
         }
         self.transitions.insert(t.transition_id.clone(), t);
+    }
+
+    pub fn insert_travel_network(&mut self, network: TravelNetwork) {
+        self.travel_networks
+            .insert(network.network_id.clone(), network);
+    }
+
+    pub fn insert_travel_anchor(&mut self, anchor: TravelAnchor) {
+        self.travel_anchors.insert(anchor.anchor_id.clone(), anchor);
+    }
+
+    pub fn insert_travel_access(&mut self, access: TravelAccess) {
+        self.travel_accesses
+            .insert(access.access_id.clone(), access);
+    }
+
+    pub fn insert_travel_link(&mut self, link: TravelLink) {
+        self.travel_links.insert(link.link_id.clone(), link);
     }
 
     // --- Phase-1 seed derivation -----------------------------------------
@@ -304,6 +490,8 @@ impl WorldCanon {
                 Transition {
                     transition_id: tid,
                     source_exit_id: exit.exit_id.clone(),
+                    passage_id: String::new(),
+                    directionality: PassageDirectionality::Unspecified,
                     from_place: place_id.clone(),
                     to_place: String::new(),
                     destination_hint: exit.destination.clone(),
@@ -313,8 +501,8 @@ impl WorldCanon {
                     passable: exit.blocked_by.is_empty(),
                     conditions: Vec::new(),
                     blocked_by: exit.blocked_by.clone(),
-                    time_cost: travel::infer_time_cost("", &exit.name, &exit.destination),
-                    risk: travel::infer_risk("", &exit.name, &exit.destination),
+                    time_cost: 0,
+                    risk: String::new(),
                     provenance: prov.clone(),
                 },
             );
@@ -331,6 +519,7 @@ impl WorldCanon {
                 kind: "scene".to_string(),
                 parent: String::new(),
                 region_id: String::new(),
+                district_id: String::new(),
                 default_description: scene.description.clone(),
                 state_flags,
                 features: Vec::new(),

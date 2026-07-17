@@ -8,7 +8,7 @@
 use gml_world::canon::action::{Action, ProposedAction};
 use gml_world::canon::engine;
 use gml_world::canon::worldgen::{self, WorldSpec};
-use gml_world::canon::{Place, Provenance, Scope, Transition};
+use gml_world::canon::{PassageDirectionality, Place, Provenance, Scope, Transition};
 use gml_world::World;
 
 fn gen(seed: &str) -> gml_world::WorldCanon {
@@ -254,6 +254,8 @@ fn long_risky_travel_can_stop_at_a_road_situation_before_destination() {
     canon.insert_transition(Transition {
         transition_id: transition_id.clone(),
         source_exit_id: transition_id.clone(),
+        passage_id: transition_id.clone(),
+        directionality: PassageDirectionality::OneWay,
         from_place: from.clone(),
         to_place: destination.clone(),
         destination_hint: destination.clone(),
@@ -262,7 +264,7 @@ fn long_risky_travel_can_stop_at_a_road_situation_before_destination() {
         visible: true,
         passable: true,
         time_cost: 48 * 60,
-        risk: "certain wild road: test-only guaranteed situation".to_string(),
+        risk: "certain".to_string(),
         provenance: Provenance::by("test", "long road", 0),
         ..Default::default()
     });
@@ -366,19 +368,16 @@ fn player_can_return_to_start_and_state_persists() {
 }
 
 // =========================================================================
-// §14: a new room / point-of-interest can be lazy-generated on first entry and
-// then becomes canon.
+// Shell content belongs to the dedicated location creator, never the canon
+// traversal engine.
 // =========================================================================
 #[test]
-fn poi_is_lazy_generated_on_first_entry_then_canon() {
+fn entering_a_shell_requires_the_location_creator() {
     let mut canon = gen("camp4");
 
-    // Walk to the road, then into the crypt shell.
     let road_id = ids_place(&canon, "road");
     walk_to(&mut canon, &road_id);
 
-    let places_before = canon.places.len();
-    // The crypt edge from the road.
     let crypt_edge = canon
         .exits_from(&road_id)
         .into_iter()
@@ -396,45 +395,19 @@ fn poi_is_lazy_generated_on_first_entry_then_canon() {
         canon.place(&crypt_id).unwrap().has_flag("shell"),
         "crypt is a shell first"
     );
+    let before = canon.clone();
 
-    let events = engine::apply(
+    let rejection = engine::apply(
         &mut canon,
         &propose(Action::MovePlayer {
             transition_id: crypt_edge,
         }),
         3,
     )
-    .expect("enter crypt");
+    .expect_err("shell entry must be completed by the location creator first");
 
-    // Entering expanded the interior.
-    assert!(
-        !canon.place(&crypt_id).unwrap().has_flag("shell"),
-        "shell flag removed after first entry"
-    );
-    assert!(
-        canon.places.len() > places_before,
-        "lazy generation added interior rooms (now canon)"
-    );
-    assert!(
-        events.iter().any(|e| e.kind == "create_place"),
-        "create_place events recorded for the new rooms"
-    );
-
-    // The interior rooms persist (are canon) and are reachable / leavable.
-    let interior_rooms: Vec<_> = canon
-        .places
-        .values()
-        .filter(|p| p.parent == crypt_id)
-        .collect();
-    assert!(!interior_rooms.is_empty(), "interior rooms became canon");
-    for room in &interior_rooms {
-        // Every interior room has at least one outgoing edge (can always leave).
-        assert!(
-            !canon.exits_from(&room.place_id).is_empty(),
-            "interior room {} has an exit (TZ §7.4 can always leave)",
-            room.place_id
-        );
-    }
+    assert_eq!(rejection.code, "needs_location_generation");
+    assert_eq!(canon, before, "rejected shell entry must mutate nothing");
 }
 
 // =========================================================================
@@ -602,6 +575,7 @@ fn validator_blocks_contradictory_commits_and_mutates_nothing() {
             kind: String::new(),
             parent: String::new(),
             region_id: String::new(),
+            district_id: String::new(),
             description: String::new(),
             features: Vec::new(),
             visited: false,
@@ -641,6 +615,7 @@ fn validator_blocks_contradictory_commits_and_mutates_nothing() {
             kind: String::new(),
             parent: String::new(),
             region_id: String::new(),
+            district_id: String::new(),
             description: String::new(),
             features: Vec::new(),
             visited: false,
@@ -653,16 +628,18 @@ fn validator_blocks_contradictory_commits_and_mutates_nothing() {
         &mut canon,
         &propose(Action::CreateTransition {
             transition_id: blocked_tid.clone(),
+            passage_id: "vault_door".to_string(),
+            directionality: PassageDirectionality::OneWay,
             from_place: from,
             to_place: "vault".to_string(),
             destination_hint: String::new(),
             label: "Locked door".to_string(),
-            kind: String::new(),
+            kind: "door".to_string(),
             visible: Some(true),
             passable: Some(true),
             blocked_by: "heavy lock".to_string(),
-            time_cost: 0,
-            risk: String::new(),
+            time_cost: 1,
+            risk: "none".to_string(),
         }),
         1,
     )
@@ -681,6 +658,323 @@ fn validator_blocks_contradictory_commits_and_mutates_nothing() {
         canon, mid,
         "rejected blocked move must not mutate the canon"
     );
+}
+
+#[test]
+fn transition_configuration_requires_an_explicit_profile_before_travel() {
+    let mut canon = gen("configure-transition");
+    let from = canon.player_place_id.clone();
+    canon.insert_place(Place {
+        place_id: "archive".to_string(),
+        name: "Archive".to_string(),
+        kind: "room".to_string(),
+        provenance: Provenance::by("test", "configured destination", 0),
+        ..Default::default()
+    });
+    canon.insert_transition(Transition {
+        transition_id: "archive_shell".to_string(),
+        source_exit_id: "archive_shell".to_string(),
+        from_place: from,
+        destination_hint: "legacy hint".to_string(),
+        label: "Unconfigured exit".to_string(),
+        visible: true,
+        passable: true,
+        provenance: Provenance::by("test", "legacy shell", 0),
+        ..Default::default()
+    });
+
+    let before = canon.clone();
+    let rejection = engine::apply(
+        &mut canon,
+        &propose(Action::MovePlayer {
+            transition_id: "archive_shell".to_string(),
+        }),
+        1,
+    )
+    .expect_err("an unresolved shell must not materialise itself");
+    assert_eq!(rejection.code, "needs_transition_profile");
+    assert_eq!(canon, before);
+
+    let rejection = engine::apply(
+        &mut canon,
+        &propose(Action::ConfigureTransition {
+            transition_id: "archive_shell".to_string(),
+            passage_id: "archive_door".to_string(),
+            directionality: PassageDirectionality::OneWay,
+            to_place: "archive".to_string(),
+            label: "Through the archive door".to_string(),
+            kind: "door".to_string(),
+            time_cost: 3,
+            risk: "low: probably safe".to_string(),
+        }),
+        1,
+    )
+    .expect_err("travel risk must be an exact enum value");
+    assert_eq!(rejection.code, "invalid_transition_profile");
+    assert_eq!(canon, before);
+
+    let events = engine::apply(
+        &mut canon,
+        &propose(Action::ConfigureTransition {
+            transition_id: "archive_shell".to_string(),
+            passage_id: "archive_door".to_string(),
+            directionality: PassageDirectionality::OneWay,
+            to_place: "archive".to_string(),
+            label: "Through the archive door".to_string(),
+            kind: "door".to_string(),
+            time_cost: 3,
+            risk: "low".to_string(),
+        }),
+        1,
+    )
+    .expect("configure a complete transition");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "configure_transition");
+    let transition = canon.transition("archive_shell").expect("transition");
+    assert_eq!(transition.to_place, "archive");
+    assert_eq!(transition.passage_id, "archive_door");
+    assert_eq!(transition.directionality, PassageDirectionality::OneWay);
+    assert_eq!(transition.label, "Through the archive door");
+    assert_eq!(transition.kind, "door");
+    assert_eq!(transition.time_cost, 3);
+    assert_eq!(transition.risk, "low");
+    assert_eq!(transition.destination_hint, "legacy hint");
+
+    let before_clock = canon.clock_minutes;
+    engine::apply(
+        &mut canon,
+        &propose(Action::MovePlayer {
+            transition_id: "archive_shell".to_string(),
+        }),
+        2,
+    )
+    .expect("move through the configured transition");
+    assert_eq!(canon.player_place_id, "archive");
+    assert_eq!(canon.clock_minutes, before_clock + 3);
+}
+
+#[test]
+fn legacy_passage_identity_must_be_reauthored_before_movement() {
+    let mut canon = gen("legacy-passage-profile");
+    let from = canon.player_place_id.clone();
+    canon.insert_place(Place {
+        place_id: "legacy_destination".to_string(),
+        name: "Legacy destination".to_string(),
+        ..Default::default()
+    });
+    canon.insert_transition(Transition {
+        transition_id: "legacy_complete_route".to_string(),
+        from_place: from,
+        to_place: "legacy_destination".to_string(),
+        label: "Old route".to_string(),
+        kind: "path".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 4,
+        risk: "none".to_string(),
+        ..Default::default()
+    });
+
+    let before = canon.clone();
+    let rejection = engine::apply(
+        &mut canon,
+        &propose(Action::MovePlayer {
+            transition_id: "legacy_complete_route".to_string(),
+        }),
+        1,
+    )
+    .expect_err("legacy endpoints must not imply physical passage identity");
+
+    assert_eq!(rejection.code, "needs_transition_profile");
+    assert_eq!(canon, before);
+}
+
+#[test]
+fn one_way_transition_cannot_be_reused_from_its_destination_side() {
+    let mut canon = gen("one-way-fall");
+    let cave = canon.player_place_id.clone();
+    canon.insert_place(Place {
+        place_id: "chasm_floor".to_string(),
+        name: "Chasm floor".to_string(),
+        ..Default::default()
+    });
+    engine::apply(
+        &mut canon,
+        &propose(Action::CreateTransition {
+            transition_id: "fall_into_chasm".to_string(),
+            passage_id: "cave_chasm_fall".to_string(),
+            directionality: PassageDirectionality::OneWay,
+            from_place: cave,
+            to_place: "chasm_floor".to_string(),
+            destination_hint: String::new(),
+            label: "Fall into the chasm".to_string(),
+            kind: "drop".to_string(),
+            visible: Some(true),
+            passable: Some(true),
+            blocked_by: String::new(),
+            time_cost: 1,
+            risk: "none".to_string(),
+        }),
+        1,
+    )
+    .expect("author one-way fall");
+
+    engine::apply(
+        &mut canon,
+        &propose(Action::MovePlayer {
+            transition_id: "fall_into_chasm".to_string(),
+        }),
+        2,
+    )
+    .expect("fall works from the cave side");
+
+    let before_wrong_side = canon.clone();
+    let rejection = engine::apply(
+        &mut canon,
+        &propose(Action::MovePlayer {
+            transition_id: "fall_into_chasm".to_string(),
+        }),
+        3,
+    )
+    .expect_err("the same directed edge cannot be traversed backwards");
+    assert_eq!(rejection.code, "not_here");
+    assert_eq!(canon, before_wrong_side);
+}
+
+#[test]
+fn create_transition_rejects_missing_profile_and_dangling_endpoints() {
+    let mut canon = gen("strict-create-transition");
+    let from = canon.player_place_id.clone();
+    canon.insert_place(Place {
+        place_id: "courtyard".to_string(),
+        name: "Courtyard".to_string(),
+        kind: "site".to_string(),
+        provenance: Provenance::by("test", "strict destination", 0),
+        ..Default::default()
+    });
+
+    let missing_passage = Action::CreateTransition {
+        transition_id: "missing_passage".to_string(),
+        passage_id: String::new(),
+        directionality: PassageDirectionality::Unspecified,
+        from_place: from.clone(),
+        to_place: "courtyard".to_string(),
+        destination_hint: String::new(),
+        label: "To the courtyard".to_string(),
+        kind: "path".to_string(),
+        visible: Some(true),
+        passable: Some(true),
+        blocked_by: String::new(),
+        time_cost: 3,
+        risk: "none".to_string(),
+    };
+    let before = canon.clone();
+    let rejection = engine::apply(&mut canon, &propose(missing_passage), 1)
+        .expect_err("new transitions require explicit passage identity");
+    assert_eq!(rejection.code, "invalid_transition_passage");
+    assert_eq!(canon, before);
+
+    let incomplete = Action::CreateTransition {
+        transition_id: "to_courtyard".to_string(),
+        passage_id: "courtyard_path".to_string(),
+        directionality: PassageDirectionality::OneWay,
+        from_place: from.clone(),
+        to_place: "courtyard".to_string(),
+        destination_hint: String::new(),
+        label: "To the courtyard".to_string(),
+        kind: String::new(),
+        visible: Some(true),
+        passable: Some(true),
+        blocked_by: String::new(),
+        time_cost: 0,
+        risk: String::new(),
+    };
+    let before = canon.clone();
+    let rejection = engine::apply(&mut canon, &propose(incomplete), 1)
+        .expect_err("incomplete transition profile must be rejected");
+    assert_eq!(rejection.code, "invalid_transition_profile");
+    assert_eq!(canon, before);
+
+    canon.insert_transition(Transition {
+        transition_id: "legacy_route".to_string(),
+        source_exit_id: "legacy_route".to_string(),
+        from_place: from.clone(),
+        to_place: "courtyard".to_string(),
+        label: "Legacy route".to_string(),
+        kind: "path".to_string(),
+        visible: true,
+        passable: true,
+        time_cost: 5,
+        risk: "settled: old descriptive risk".to_string(),
+        provenance: Provenance::by("test", "legacy risk", 0),
+        ..Default::default()
+    });
+    let before_legacy_move = canon.clone();
+    let rejection = engine::apply(
+        &mut canon,
+        &propose(Action::MovePlayer {
+            transition_id: "legacy_route".to_string(),
+        }),
+        1,
+    )
+    .expect_err("legacy descriptive risk must be explicitly reconfigured");
+    assert_eq!(rejection.code, "needs_transition_profile");
+    assert_eq!(canon, before_legacy_move);
+
+    engine::apply(
+        &mut canon,
+        &propose(Action::CreateTransition {
+            transition_id: "courtyard_exit_hook".to_string(),
+            passage_id: "future_yard_exit".to_string(),
+            directionality: PassageDirectionality::OneWay,
+            from_place: from.clone(),
+            to_place: String::new(),
+            destination_hint: "A future yard".to_string(),
+            label: "Exit to the yard".to_string(),
+            kind: "door".to_string(),
+            visible: Some(true),
+            passable: Some(true),
+            blocked_by: String::new(),
+            time_cost: 1,
+            risk: "none".to_string(),
+        }),
+        1,
+    )
+    .expect("a fully profiled unexplored exit hook is valid canon");
+    let hook = canon.transition("courtyard_exit_hook").expect("exit hook");
+    assert!(hook.to_place.is_empty());
+    let before_hook_move = canon.clone();
+    let rejection = engine::apply(
+        &mut canon,
+        &propose(Action::MovePlayer {
+            transition_id: "courtyard_exit_hook".to_string(),
+        }),
+        1,
+    )
+    .expect_err("the location creator must resolve an exit hook before movement");
+    assert_eq!(rejection.code, "needs_transition_profile");
+    assert_eq!(canon, before_hook_move);
+
+    let before_missing_target = canon.clone();
+    let missing_target = Action::CreateTransition {
+        transition_id: "to_nowhere".to_string(),
+        passage_id: "nowhere_path".to_string(),
+        directionality: PassageDirectionality::OneWay,
+        from_place: from,
+        to_place: "nowhere".to_string(),
+        destination_hint: String::new(),
+        label: "To nowhere".to_string(),
+        kind: "path".to_string(),
+        visible: Some(true),
+        passable: Some(true),
+        blocked_by: String::new(),
+        time_cost: 5,
+        risk: "medium".to_string(),
+    };
+    let rejection = engine::apply(&mut canon, &propose(missing_target), 1)
+        .expect_err("transition target must already exist");
+    assert_eq!(rejection.code, "unknown_target");
+    assert_eq!(canon, before_missing_target);
 }
 
 // =========================================================================
@@ -813,29 +1107,9 @@ fn generation_is_deterministic_for_a_seed() {
 fn replay_of_a_fixed_action_sequence_is_identical() {
     let run = || {
         let mut canon = gen("replay-seed");
-        // A fixed sequence: move to road, enter the crypt (lazy expand), advance
-        // the clock.
+        // A fixed sequence: move to the road and advance the clock.
         let road_id = ids_place(&canon, "road");
         walk_to(&mut canon, &road_id);
-        let crypt_edge = canon
-            .exits_from(&road_id)
-            .into_iter()
-            .find(|t| {
-                canon
-                    .place(&t.to_place)
-                    .map(|p| p.has_flag("shell"))
-                    .unwrap_or(false)
-            })
-            .map(|t| t.transition_id.clone())
-            .unwrap();
-        engine::apply(
-            &mut canon,
-            &propose(Action::MovePlayer {
-                transition_id: crypt_edge,
-            }),
-            5,
-        )
-        .unwrap();
         engine::apply(
             &mut canon,
             &propose(Action::AdvanceClock { minutes: 120 }),
@@ -880,12 +1154,17 @@ fn advance_clock_does_not_double_advance() {
     );
 }
 
-/// A non-AdvanceClock action still advances by its `time_delta` exactly once.
+/// Movement time belongs to the transition profile. A proposal cannot override
+/// it with an unrelated `time_delta`.
 #[test]
-fn time_delta_advances_once_for_non_clock_actions() {
+fn move_player_uses_transition_time_instead_of_proposal_time_delta() {
     let mut canon = gen("clock2");
     let before = canon.clock_minutes;
     let tid = first_open_exit(&canon);
+    let expected_minutes = canon
+        .transition(&tid)
+        .expect("generated transition")
+        .time_cost;
     let proposed = ProposedAction {
         action: Action::MovePlayer { transition_id: tid },
         source: "gm".to_string(),
@@ -895,7 +1174,7 @@ fn time_delta_advances_once_for_non_clock_actions() {
         confidence: None,
     };
     engine::apply(&mut canon, &proposed, 1).unwrap();
-    assert_eq!(canon.clock_minutes, before + 15);
+    assert_eq!(canon.clock_minutes, before + expected_minutes);
 }
 
 /// The event log is append-only: resolving a scheduled event does NOT mutate the
@@ -1093,54 +1372,6 @@ fn schedule_event_validates_actor_refs() {
     )
     .unwrap_err();
     assert_eq!(err.code, "unknown_actor");
-}
-
-/// The generation budget is enforced: a tight `max_transitions_per_turn` caps the
-/// interior expansion's edge count.
-#[test]
-fn lazy_interior_respects_transition_budget() {
-    let mut canon = gen("budget1");
-    // Clamp the transition budget so at most one interior room (2 edges) is wired.
-    canon.gen_budget.max_transitions_per_turn = 2;
-    canon.gen_budget.max_rooms_per_turn = 8;
-
-    let road_id = ids_place(&canon, "road");
-    walk_to(&mut canon, &road_id);
-    let crypt_edge = canon
-        .exits_from(&road_id)
-        .into_iter()
-        .find(|t| {
-            canon
-                .place(&t.to_place)
-                .map(|p| p.has_flag("shell"))
-                .unwrap_or(false)
-        })
-        .map(|t| t.transition_id.clone())
-        .unwrap();
-    let crypt_id = canon.transition(&crypt_edge).unwrap().to_place.clone();
-    let transitions_before = canon.transitions.len();
-    engine::apply(
-        &mut canon,
-        &propose(Action::MovePlayer {
-            transition_id: crypt_edge,
-        }),
-        1,
-    )
-    .unwrap();
-    let interior_rooms = canon
-        .places
-        .values()
-        .filter(|p| p.parent == crypt_id)
-        .count();
-    // With a 2-edge budget only the first room (forward+back) is wired.
-    assert!(
-        interior_rooms <= 1,
-        "transition budget capped interior rooms"
-    );
-    assert!(
-        canon.transitions.len() - transitions_before <= 2,
-        "no more than max_transitions_per_turn edges were added"
-    );
 }
 
 // =========================================================================
