@@ -42,6 +42,8 @@ test("restores a legacy resume only for the exact persisted model-error tail", (
 });
 
 test("recognizes only a GM model-call failure", () => {
+  assert.equal(isTerminalTurnError(error(1, "Model call failed: timeout", "GM")), true);
+  assert.equal(isTerminalTurnError(error(1, "Model call failed: timeout")), true);
   assert.equal(isTerminalTurnError(error(1, "Ошибка вызова модели: timeout")), true);
   assert.equal(
     isTerminalTurnError(error(1, "Превышен лимит вызовов инструментов за ход: 12.")),
@@ -54,6 +56,23 @@ test("recognizes only a GM model-call failure", () => {
     false
   );
   assert.equal(isTerminalTurnError(error(1, "Ошибка вызова модели: timeout", "NPC")), false);
+  assert.equal(isTerminalTurnError(error(1, "Model call failed: timeout", "NPC")), false);
+});
+
+test("restores an English model-error tail emitted by current backends", () => {
+  const tail = [
+    player(1, "Look around"),
+    error(2, "Model call failed: provider unavailable", "GM"),
+    usage(3),
+  ];
+
+  assert.deepEqual(historicalFailedTurn(tail, "chat-1"), {
+    chatId: "chat-1",
+    text: "Look around",
+    requestId: "",
+    errorId: 2,
+    legacyResume: true,
+  });
 });
 
 test("rejects tails with activity between or after the three legacy rows", () => {

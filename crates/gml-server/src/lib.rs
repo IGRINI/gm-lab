@@ -92,8 +92,8 @@ impl UiLocale {
 }
 
 /// Pick the supported language with the highest Accept-Language quality.
-/// Returning `None` preserves the pre-localisation HTTP contract for clients
-/// that do not send the header; the browser always sends it.
+/// Returning `None` lets callers use the English baseline when the client does
+/// not send the header; browsers normally send it.
 fn request_ui_locale(headers: &HeaderMap) -> Option<UiLocale> {
     let raw = headers.get(header::ACCEPT_LANGUAGE)?.to_str().ok()?;
     raw.split(',')
@@ -853,10 +853,9 @@ fn json_response(code: StatusCode, value: &Value) -> Response {
 }
 
 /// Localize every top-level JSON error in one place. Handlers keep their
-/// stable/internal detail strings (and legacy tests without Accept-Language
-/// keep their old contract), while browser-facing `error` is always safe UI
-/// copy in the requested language. The raw detail remains explicit for the
-/// developer-only diagnostics path.
+/// stable/internal English detail strings, while browser-facing `error` is
+/// always safe UI copy in the requested language. The raw detail remains
+/// explicit for the developer-only diagnostics path.
 async fn localize_http_error_response(request: axum::extract::Request, next: Next) -> Response {
     let locale = request_ui_locale(request.headers());
     let mut response = next.run(request).await;
@@ -1760,7 +1759,7 @@ async fn get_index(State(state): State<AppState>, headers: HeaderMap) -> Respons
     let _ = active_chat(&state);
     serve_index(
         &state,
-        request_ui_locale(&headers).unwrap_or(UiLocale::Russian),
+        request_ui_locale(&headers).unwrap_or(UiLocale::English),
     )
 }
 
@@ -2697,7 +2696,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
             Err(_resp) => {
                 let _ = tx.send(json!({
                     "kind": "architect_error",
-                    "data": "не удалось сохранить черновик мира",
+                    "data": "Failed to save the world draft.",
                 }));
                 return;
             }
@@ -2723,7 +2722,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
             Err(e) => {
                 let _ = tx.send(json!({
                     "kind": "architect_error",
-                    "data": format!("не удалось загрузить переписку архитектора: {e}"),
+                    "data": format!("Failed to load the architect conversation: {e}"),
                     "world": world,
                     "worlds": worlds,
                     "world_id": persisted_world_id,
@@ -2764,7 +2763,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
         {
             let _ = tx.send(json!({
                 "kind": "architect_error",
-                "data": format!("не удалось сохранить переписку архитектора: {e}"),
+                "data": format!("Failed to save the architect conversation: {e}"),
                 "world": world,
                 "worlds": worlds,
                 "world_id": persisted_world_id,
@@ -2824,7 +2823,7 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                         Err(_resp) => {
                             let _ = tx.send(json!({
                                 "kind": "architect_error",
-                                "data": "не удалось сохранить мир",
+                                "data": "Failed to save the world.",
                                 "world": world,
                                 "worlds": worlds,
                                 "world_id": persisted_world_id,
@@ -2857,7 +2856,9 @@ async fn post_world_architect_chat(State(state): State<AppState>, body: Bytes) -
                     // conversation and the model would replay a stale history.
                     let _ = tx.send(json!({
                         "kind": "architect_error",
-                        "data": format!("ход выполнен, но переписка не сохранилась: {e}"),
+                        "data": format!(
+                            "The turn completed, but the architect conversation was not saved: {e}"
+                        ),
                         "world": world,
                         "worlds": worlds,
                         "world_id": persisted_world_id,
@@ -3073,7 +3074,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             Err(_resp) => {
                 let _ = tx.send(json!({
                     "kind": "architect_error",
-                    "data": "не удалось сохранить черновик истории",
+                    "data": "Failed to save the story draft.",
                 }));
                 return;
             }
@@ -3094,7 +3095,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             Err(e) => {
                 let _ = tx.send(json!({
                     "kind": "architect_error",
-                    "data": format!("не удалось загрузить переписку архитектора: {e}"),
+                    "data": format!("Failed to load the architect conversation: {e}"),
                     "story": story,
                     "stories": stories,
                     "story_id": persisted_story_id,
@@ -3133,7 +3134,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
         {
             let _ = tx.send(json!({
                 "kind": "architect_error",
-                "data": format!("не удалось сохранить переписку архитектора: {e}"),
+                "data": format!("Failed to save the architect conversation: {e}"),
                 "story": story,
                 "stories": stories,
                 "story_id": persisted_story_id,
@@ -3193,7 +3194,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                         Err(_resp) => {
                             let _ = tx.send(json!({
                                 "kind": "architect_error",
-                                "data": "не удалось сохранить историю",
+                                "data": "Failed to save the story.",
                                 "story": story,
                                 "stories": stories,
                                 "story_id": persisted_story_id,
@@ -3222,7 +3223,9 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                 {
                     let _ = tx.send(json!({
                         "kind": "architect_error",
-                        "data": format!("ход выполнен, но переписка не сохранилась: {e}"),
+                        "data": format!(
+                            "The turn completed, but the architect conversation was not saved: {e}"
+                        ),
                         "story": story,
                         "stories": stories,
                         "story_id": persisted_story_id,
@@ -3365,7 +3368,7 @@ fn resolve_story_architect_world(
                 "ok": false,
                 "code": "world_lore_required",
                 "error": format!(
-                    "у мира {world_id} пустая библия — заполните мир в студии, история строится над его каноном"
+                    "world {world_id} has no world lore; complete the world in the studio before creating a story from its canon"
                 ),
             }),
         ));
@@ -3900,7 +3903,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
             Err(_resp) => {
                 let _ = tx.send(json!({
                     "kind": "architect_error",
-                    "data": "не удалось сохранить черновик персонажа",
+                    "data": "Failed to save the character draft.",
                 }));
                 return;
             }
@@ -3920,7 +3923,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
             Err(e) => {
                 let _ = tx.send(json!({
                     "kind": "architect_error",
-                    "data": format!("не удалось загрузить переписку архитектора: {e}"),
+                    "data": format!("Failed to load the architect conversation: {e}"),
                     "character": character,
                     "characters": characters,
                     "character_id": persisted_id,
@@ -3959,7 +3962,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
         {
             let _ = tx.send(json!({
                 "kind": "architect_error",
-                "data": format!("не удалось сохранить переписку архитектора: {e}"),
+                "data": format!("Failed to save the architect conversation: {e}"),
                 "character": character,
                 "characters": characters,
                 "character_id": persisted_id,
@@ -4019,7 +4022,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                         Err(_resp) => {
                             let _ = tx.send(json!({
                                 "kind": "architect_error",
-                                "data": "не удалось сохранить персонажа",
+                                "data": "Failed to save the character.",
                                 "character": character,
                                 "characters": characters,
                                 "character_id": persisted_id,
@@ -4061,7 +4064,9 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
                 {
                     let _ = tx.send(json!({
                         "kind": "architect_error",
-                        "data": format!("ход выполнен, но переписка не сохранилась: {e}"),
+                        "data": format!(
+                            "The turn completed, but the architect conversation was not saved: {e}"
+                        ),
                         "character": character,
                         "characters": characters,
                         "character_id": persisted_id,
@@ -5426,10 +5431,10 @@ async fn post_debug_tokenize(State(state): State<AppState>, body: Bytes) -> Resp
         .to_string();
     let key = openai_key::load_key();
     if key.is_empty() {
-        return ok_json(&json!({"ok": false, "error": "Сначала сохрани OpenAI API-ключ."}));
+        return ok_json(&json!({"ok": false, "error": "Save your OpenAI API key first."}));
     }
     if text.is_empty() {
-        return ok_json(&json!({"ok": false, "error": "Пустой текст."}));
+        return ok_json(&json!({"ok": false, "error": "Text is empty."}));
     }
     let model_req = if model.is_empty() {
         "gpt-4o-mini".to_string()
@@ -5924,9 +5929,9 @@ fn build_story_world(
                         "authored_version": v_authored,
                         "live_version": world_version,
                         "message": format!(
-                            "История создавалась под версию мира v{v_authored}; \
-                             мир с тех пор обновлён до v{world_version} — сюжет \
-                             может расходиться с текущим каноном."
+                            "The story was created for world version v{v_authored}; \
+                             the world has since been updated to v{world_version} — \
+                             the plot may conflict with the current canon."
                         ),
                     }));
                 }
@@ -6003,11 +6008,11 @@ fn overlay_story_identity(world: &mut World, plot: &Value) {
 /// story architect (or the library).
 fn protagonist_required_response(procedural: bool) -> Response {
     let error = if procedural {
-        "Для процедурной кампании нужен персонаж: выберите пакет из библиотеки \
-         (создать его можно у архитектора истории — сохраните героя как пакет)."
+        "A procedural campaign requires a character: choose one from the library \
+         (you can create one with the story architect and save the hero as a package)."
     } else {
-        "В истории нет протагониста. Сгенерируйте героя у архитектора истории \
-         или выберите персонажа из библиотеки."
+        "This story has no protagonist. Generate one with the story architect \
+         or choose a character from the library."
     };
     json_response(
         StatusCode::BAD_REQUEST,
@@ -6346,9 +6351,9 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             launch_warnings.push(json!({
                 "code": "story_pc_override",
                 "character_id": character_id,
-                "message": "История написана под своего героя; выбранный персонаж \
-                            перекрывает его — сюжет, улики и NPC могут ссылаться на \
-                            исходного протагониста.",
+                "message": "This story was written for its own protagonist; the selected \
+                            character overrides them — the plot, clues, and NPCs may refer \
+                            to the original protagonist.",
             }));
         }
         // Warn-but-allow: the hero was authored FOR a different world than the
@@ -6361,8 +6366,8 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                     "character_id": character_id,
                     "character_world_id": base.id,
                     "world_id": launch_world.id,
-                    "message": "Персонаж создавался под другой мир — его предыстория \
-                                и имена могут не совпадать с этим сеттингом.",
+                    "message": "This character was created for another world — their \
+                                backstory and names may not match this setting.",
                 }));
                 true
             }
@@ -6380,8 +6385,8 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
                         "character_id": character_id,
                         "character_story_id": base.id,
                         "story_id": launch_story_id_for_warnings,
-                        "message": "Персонаж создавался под другую историю — его \
-                                    предыстория может не совпадать с этой завязкой.",
+                        "message": "This character was created for another story — their \
+                                    backstory may not match this premise.",
                     }));
                 }
             }
@@ -6542,7 +6547,7 @@ fn history_mutation_error(error: gml_persistence::StoreError) -> Response {
                 "code": "turn_not_rewindable",
                 "chat_id": chat_id,
                 "turn": turn,
-                "error": "Этот ход уже недоступен для редактирования",
+                "error": "This turn is no longer available for editing.",
             }),
         ),
         gml_persistence::StoreError::HistoryChanged { chat_id } => json_response(
@@ -6551,7 +6556,7 @@ fn history_mutation_error(error: gml_persistence::StoreError) -> Response {
                 "ok": false,
                 "code": "history_changed",
                 "chat_id": chat_id,
-                "error": "История изменилась во время генерации. Повторите действие.",
+                "error": "The story changed during generation. Try again.",
             }),
         ),
         other => json_response(
@@ -6966,8 +6971,7 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
 
 const MAX_TURN_REQUEST_ID_BYTES: usize = 128;
 const LEGACY_MODEL_ERROR_PREFIX: &str = "Ошибка вызова модели:";
-const LEGACY_RESUME_REJECTED: &str =
-    "Сохранённый ход нельзя безопасно повторить. Отправьте новое действие.";
+const LEGACY_RESUME_REJECTED: &str = "The saved turn cannot be retried safely. Send a new action.";
 
 #[derive(Clone, Debug)]
 struct TurnDone {
@@ -7268,7 +7272,7 @@ fn committed_turn_for_request(transcript: &[Value], request_id: &str) -> Option<
 fn send_turn_error(control: &TurnControl, message: String) {
     control.publish(gml_types::Event::new(
         "error",
-        Some("ГМ".to_string()),
+        Some("GM".to_string()),
         Value::String(message),
         None,
     ));
@@ -8029,7 +8033,7 @@ async fn execute_turn(
     if unexpected_player_event {
         send_turn_error(
             &control,
-            "Внутренняя ошибка восстановления хода: повтор игрока".to_string(),
+            "Internal turn recovery error: duplicate player event.".to_string(),
         );
         return TurnDone::failed(request_id, false);
     }
@@ -8076,7 +8080,7 @@ async fn execute_turn(
             !legacy_resume,
         ),
         Ok(Ok(Err(error))) => {
-            send_turn_error(&control, format!("Не удалось сохранить ход: {error}"));
+            send_turn_error(&control, format!("Failed to save the turn: {error}"));
             TurnDone::failed(request_id, true)
         }
         Err(error) => {
@@ -10359,7 +10363,7 @@ async fn post_transcribe(
     if body.is_empty() {
         return json_response(
             StatusCode::BAD_REQUEST,
-            &json!({"ok": false, "error": "пустое аудио"}),
+            &json!({"ok": false, "error": "empty audio"}),
         );
     }
     let content_type = headers
@@ -10384,7 +10388,7 @@ async fn post_transcribe(
     let Some(registry) = state.store.connector_registry() else {
         return json_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"ok": false, "error": "коннекторы моделей не инициализированы"}),
+            &json!({"ok": false, "error": "model connectors are not initialized"}),
         );
     };
     match registry
@@ -10483,7 +10487,7 @@ async fn post_tts(State(state): State<AppState>, body: Bytes) -> Response {
             Err(e) => {
                 return json_response(
                     StatusCode::SERVICE_UNAVAILABLE,
-                    &json!({"ok": false, "error": format!("TTS-сервис недоступен: {e}")}),
+                    &json!({"ok": false, "error": format!("TTS service is unavailable: {e}")}),
                 );
             }
         }
@@ -10498,7 +10502,7 @@ async fn post_tts(State(state): State<AppState>, body: Bytes) -> Response {
         }
         Err(e) => json_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            &json!({"ok": false, "error": format!("TTS-сервис недоступен: {e}")}),
+            &json!({"ok": false, "error": format!("TTS service is unavailable: {e}")}),
         ),
     }
 }
@@ -10830,7 +10834,7 @@ async fn fallback_handler(
         let _ = active_chat(&state);
         return serve_index(
             &state,
-            request_ui_locale(req.headers()).unwrap_or(UiLocale::Russian),
+            request_ui_locale(req.headers()).unwrap_or(UiLocale::English),
         );
     }
     not_found()
@@ -11193,7 +11197,7 @@ mod localization_tests {
     }
 
     #[tokio::test]
-    async fn missing_accept_language_preserves_legacy_error_contract() {
+    async fn missing_accept_language_preserves_raw_error_contract() {
         let app = Router::new()
             .route(
                 "/error",
@@ -11527,7 +11531,7 @@ mod chat_concurrency_tests {
             "request_id": request_id,
             "event": {
                 "kind": "player",
-                "agent": "Игрок",
+                "agent": "Player",
                 "data": "Проверка границы сохранения",
             },
         }));
@@ -11737,7 +11741,7 @@ mod dialog_visual_tests {
         );
         let mut event = Event::new(
             event_kind::SCENE_UPDATE,
-            Some("ГМ".to_string()),
+            Some("GM".to_string()),
             json!({
                 "scene_id": "scene-1",
                 "location_id": "place-1",

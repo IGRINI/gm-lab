@@ -34,6 +34,10 @@ pub const OAUTH_TIMEOUT_SECS: f64 = 300.0;
 /// `REFRESH_MARGIN_MS` — refresh when within 5 minutes of expiry.
 pub const REFRESH_MARGIN_MS: i64 = 5 * 60 * 1000;
 
+const STATUS_NOT_CONNECTED: &str = "Codex OAuth is not connected";
+const STATUS_CONNECTED: &str = "Codex OAuth is connected";
+const CONNECT_REQUIRED: &str = "Codex OAuth is not connected. Connect Codex in the app.";
+
 /// `REVOKE_ENDPOINT` — `{ISSUER}/oauth/revoke`.
 pub fn revoke_endpoint() -> String {
     format!("{ISSUER}/oauth/revoke")
@@ -228,8 +232,8 @@ pub fn delete_credential() -> Result<(), OAuthError> {
 
 /// `auth_status()` — non-secret authentication status for the UI.
 ///
-/// Returns `{authenticated, account_id, expires_at, message}` with the exact
-/// Russian/English message strings from the Python source.
+/// Returns `{authenticated, account_id, expires_at, message}` with an English
+/// baseline message. The browser callback is localized separately.
 pub fn auth_status() -> Map<String, Value> {
     match load_credential() {
         Err(exc) => status_map(
@@ -238,12 +242,7 @@ pub fn auth_status() -> Map<String, Value> {
             Value::Null,
             &format!("Codex OAuth credential is invalid: {exc}"),
         ),
-        Ok(None) => status_map(
-            false,
-            Value::Null,
-            Value::Null,
-            "Codex OAuth не авторизован",
-        ),
+        Ok(None) => status_map(false, Value::Null, Value::Null, STATUS_NOT_CONNECTED),
         Ok(Some(c)) => status_map(
             true,
             c.account_id
@@ -251,7 +250,7 @@ pub fn auth_status() -> Map<String, Value> {
                 .map(Value::String)
                 .unwrap_or(Value::Null),
             c.expires_at.map(Value::from).unwrap_or(Value::Null),
-            "Codex OAuth авторизован",
+            STATUS_CONNECTED,
         ),
     }
 }
@@ -279,9 +278,7 @@ pub async fn ensure_fresh_credential(
     http: &reqwest::Client,
     cfg: &Config,
 ) -> Result<CodexCredential, OAuthError> {
-    let credential = load_credential()?.ok_or_else(|| {
-        OAuthError::new("Codex OAuth не авторизован. Подключи Codex в интерфейсе.")
-    })?;
+    let credential = load_credential()?.ok_or_else(|| OAuthError::new(CONNECT_REQUIRED))?;
     if is_near_expiry(&credential) {
         if credential.refresh_token.trim().is_empty() {
             return Err(OAuthError::new(
@@ -1171,6 +1168,16 @@ mod tests {
         let en = callback_html(true, CallbackUiLocale::English);
         assert!(en.contains("Codex is connected. You can close this tab and return to TaleShift."));
         assert!(en.contains("<html lang=\"en\">"));
+    }
+
+    #[test]
+    fn baseline_oauth_messages_are_english() {
+        assert_eq!(STATUS_NOT_CONNECTED, "Codex OAuth is not connected");
+        assert_eq!(STATUS_CONNECTED, "Codex OAuth is connected");
+        assert_eq!(
+            CONNECT_REQUIRED,
+            "Codex OAuth is not connected. Connect Codex in the app."
+        );
     }
 
     #[test]

@@ -130,7 +130,7 @@ fn context_usage() -> Value {
     json!({
         "current": 12300,
         "world": 1800,
-        "next_compact": {"label": "ГМ", "used": 12800, "limit": 100000, "remaining": 87200},
+        "next_compact": {"label": "GM", "used": 12800, "limit": 100000, "remaining": 87200},
         "gm": {"active": 12300, "history": 12800, "summary": 900, "limit": 100000, "remaining": 87200},
         "npc": {"name": "Борин", "active": 5300, "history": 4100, "summary": 600, "limit": 64000, "remaining": 59900},
         "npcs": [
@@ -948,7 +948,7 @@ async fn post_turn(State(state): State<Shared>, body: Bytes) -> Response {
             frames.push_str(&format!(
                 "data: {}\n\n",
                 serde_json::to_string(
-                    &json!({"kind": "error", "agent": "ГМ", "data": error, "sid": null})
+                    &json!({"kind": "error", "agent": "GM", "data": error, "sid": null})
                 )
                 .unwrap_or_default()
             ));

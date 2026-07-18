@@ -603,11 +603,11 @@ fn seed_completed_turn_checkpoint(state: &AppState, text: &str) -> String {
     runtime.transcript.push(json!({
         "turn": 1,
         "request_id": "seeded-turn",
-        "event": {"kind": "player", "agent": "Игрок", "data": text, "sid": null}
+        "event": {"kind": "player", "agent": "Player", "data": text, "sid": null}
     }));
     runtime.transcript.push(json!({
         "turn": 1,
-        "event": {"kind": "gm", "agent": "ГМ", "data": "seeded answer", "sid": null}
+        "event": {"kind": "gm", "agent": "GM", "data": "seeded answer", "sid": null}
     }));
     state
         .store
@@ -627,7 +627,7 @@ async fn seed_legacy_failed_turn(state: &AppState, text: &str) -> String {
         .expect("load runtime to seed legacy failure");
     assert!(runtime.transcript.is_empty());
 
-    let events =
+    let mut events =
         gml_orchestrator::run_turn(&mut runtime.session, state.settings.as_ref(), text).await;
     assert_eq!(
         events
@@ -641,6 +641,12 @@ async fn seed_legacy_failed_turn(state: &AppState, text: &str) -> String {
         .data
         .as_str()
         .is_some_and(|message| message.starts_with("Ошибка вызова модели:")));
+
+    // Persist the pre-English baseline verbatim: the production resume path
+    // intentionally recognizes old Russian transcripts for compatibility.
+    events[0].agent = Some("Игрок".to_string());
+    events[1].agent = Some("ГМ".to_string());
+    events[1].data = Value::String("Ошибка вызова модели: legacy fixture".to_string());
 
     runtime.turn_count = runtime.session.turn;
     runtime.session.record_public("player", "speech", text, "");
@@ -1067,7 +1073,7 @@ async fn get_state_has_reference_keys() {
     // Spot-check deterministic values.
     assert_eq!(got["backend"], "mock");
     assert_eq!(got["story_id"], "procedural");
-    assert_eq!(got["story_title"], "Процедурный мир");
+    assert_eq!(got["story_title"], "Procedural World");
     // Procedural worlds now start with a zero-actor canon (worldgen Layer 6
     // removed): the roster is present but empty until NPCs are generated lazily.
     assert!(got["npcs"].is_array());
@@ -1307,7 +1313,7 @@ async fn search_finds_only_player_facing_chat_messages() {
                 "turn": 1,
                 "event": {
                     "kind": "player",
-                    "agent": "Игрок",
+                    "agent": "Player",
                     "data": "amber signal by the old bridge",
                     "sid": null,
                 },
@@ -1316,7 +1322,7 @@ async fn search_finds_only_player_facing_chat_messages() {
                 "turn": 1,
                 "event": {
                     "kind": "gm_thinking",
-                    "agent": "ГМ",
+                    "agent": "GM",
                     "data": "private-thought-sentinel",
                     "sid": "hidden",
                 },

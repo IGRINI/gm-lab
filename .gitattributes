@@ -1,13 +1,11 @@
-# Golden reference fixtures must stay byte-identical to the Python source.
-# Never apply EOL conversion — GM_SYSTEM byte parity depends on it.
-tests/reference/** -text
-tests/reference/prompts/*.txt -text
-
 # Embedded prompt templates are Markdown and must stay LF-stable for provider
 # cache prefixes and the byte-identity golden tests.
 crates/gml-prompts/prompts/**/*.prompt.md text eol=lf
 
 # Source files: normalize to LF in the repo.
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.env.example text eol=lf
 *.rs text eol=lf
 *.toml text eol=lf
 *.json text eol=lf
@@ -19,3 +17,9 @@ crates/gml-prompts/prompts/**/*.prompt.md text eol=lf
 *.py text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+
+# Golden reference fixtures must stay byte-identical to the Python source.
+# Keep these overrides after the generic extension rules: the last matching
+# attribute assignment wins.
+tests/reference/** -text !eol
+tests/reference/prompts/*.txt -text !eol

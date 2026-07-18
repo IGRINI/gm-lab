@@ -12,8 +12,23 @@ web/dist/
 .env
 .env.*
 !.env.example
+.npmrc
+.pypirc
+.netrc
+auth.json
+credentials*.json
+client_secret*.json
+service-account*.json
+service_account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
 __pycache__/
 *.py[cod]
+.venv/
 gm_lab_settings.json
 *.sqlite
 *.sqlite3
@@ -27,6 +42,12 @@ tts_cache/
 
 # Local image generation runtime (venv, ComfyUI checkout, model weights, generated PNGs).
 sidecar/image_runtime/
+*.safetensors
+*.onnx
+*.ckpt
+*.pt
+*.pth
+*.gguf
 
 # OS / editor
 .DS_Store
@@ -47,3 +68,4 @@ docs/LIVING_WORLD_*.md
 docs/LIVING_WORLD_*.html
 
 .codex/
+/.codegraph/

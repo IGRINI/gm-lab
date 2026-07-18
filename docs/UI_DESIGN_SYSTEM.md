@@ -1,66 +1,68 @@
-# TaleShift — дизайн-система веб-UI
+**English** | [Русский](ru/UI_DESIGN_SYSTEM.md)
 
-Стиль v4 «quiet dark workspace» (2026-07-15): **low-chroma dark desktop
-workbench**, он же Minimal Dark Productivity UI. Основа — плоские графитовые
-поверхности, тонкие границы, компактные контролы и один терракотовый акцент.
-Стекло используется только у действительно плавающих слоёв, а крупная
-editorial-подача — только у брифа, первого запуска и пустых состояний.
+# TaleShift Web UI Design System
 
-Токены и примитивы живут в `web/src/theme.css`; экранные файлы используют их,
-но не вводят собственную палитру.
+Style v4, "quiet dark workspace" (2026-07-15): a **low-chroma dark desktop
+workbench**, also known as Minimal Dark Productivity UI. Its foundation is flat
+graphite surfaces, subtle borders, compact controls, and one terracotta accent.
+Glass is reserved for genuinely floating layers, while large editorial presentation
+appears only in briefs, first-run experiences, and empty states.
 
-## Правила (нарушать нельзя)
+Tokens and primitives live in `web/src/theme.css`. Screen-level files consume them
+without introducing their own palettes.
 
-1. **Workbench, не набор островов.** Хедер и сайдбар — постоянный каркас с
-   тонкими границами. Карточки отделяются поверхностью и рамкой. Сильная тень
-   допустима только у модалок, меню и toast.
-2. **Активное состояние = поверхность + маркер.** Используем `--active-pill`
-   и тонкую линию `--brand`; сплошной `--brand` оставляем главному CTA.
-3. **Геометрия спокойная:** `--r-sm 8 / --r-md 10 / --r-lg 12 / --r-xl 16 /
-   --r-overlay 24 / --r-full`. Обычные кнопки не являются пилюлями; `r-full`
-   нужен только настоящим тегам, счётчикам и статусам.
-4. **Один гротеск** — Inter Variable для всего (`--font-book` тоже указывает
-   на Inter; серифов в UI нет). Размеры: 11 кикер / 12 подпись / 13 дефолт /
-   14 заголовок карточки / 16 заголовок секции / 19-22 титулы; крупные
-   заголовки — вес 650 + letter-spacing -0.01em.
-5. **Один ритм:** `4 / 8 / 12 / 16 / 20 / 24 / 32px`. Не добавляем случайные
-   промежуточные отступы без причины.
-6. **Ховер светлее** (surface-2 → surface-3), фокус — единое терракотовое
-   кольцо `:focus-visible`. Переходы 140/220мс `--ease`.
-7. **Сдержанное стекло:** `--glass-row / --glass / --glass-strong` разрешены
-   у композера, HUD, popover и modal. Сообщения и постоянные панели остаются
-   почти непрозрачными.
-8. **Никаких эмодзи как иконок** — только `components/Icon.jsx` (24×24,
-   stroke 1.8). Новую иконку добавлять в словарь, не инлайнить SVG по месту.
-9. Числа, меняющиеся на месте (HP, токены) — `tabular-nums`.
-10. Легаси-алиасы (`--bg/--bg2/--bg3/--line/--tx/--mut/--sub/--acc/--redo`)
-   работают, но в новом коде использовать семантические токены.
+## Rules (must not be broken)
 
-## Голоса транскрипта
+1. **A workbench, not a collection of islands.** The header and sidebar form a
+   persistent frame with subtle borders. Surface and border separate cards. Strong
+   shadows are reserved for modals, menus, and toasts.
+2. **Active state = surface + marker.** Use `--active-pill` and a thin `--brand`
+   line; reserve a solid `--brand` fill for the primary CTA.
+3. **Calm geometry:** `--r-sm 8 / --r-md 10 / --r-lg 12 / --r-xl 16 /
+   --r-overlay 24 / --r-full`. Ordinary buttons are not pills; use `r-full` only
+   for genuine tags, counters, and statuses.
+4. **One grotesque typeface:** Inter Variable everywhere (`--font-book` also
+   points to Inter; there are no serifs in the UI). Sizes: 11 kicker / 12 caption /
+   13 default / 14 card heading / 16 section heading / 19–22 titles. Large headings
+   use weight 650 and letter-spacing -0.01em.
+5. **One spacing rhythm:** `4 / 8 / 12 / 16 / 20 / 24 / 32px`. Do not add arbitrary
+   intermediate spacing without a reason.
+6. **Hover is lighter** (surface-2 → surface-3); focus uses one terracotta
+   `:focus-visible` ring. Transitions use 140/220ms with `--ease`.
+7. **Restrained glass:** `--glass-row / --glass / --glass-strong` are allowed for
+   the composer, HUD, popovers, and modals. Messages and persistent panels remain
+   almost opaque.
+8. **No emoji as icons.** Use only `components/Icon.jsx` (24×24, stroke 1.8). Add a
+   new icon to the dictionary instead of inlining an SVG at the call site.
+9. Values that update in place (HP, tokens) use `tabular-nums`.
+10. Legacy aliases (`--bg/--bg2/--bg3/--line/--tx/--mut/--sub/--acc/--redo`)
+    continue to work, but new code must use semantic tokens.
 
-- Наррация ГМ — чистый текст без карточки, тихий кикер «ГЕЙМ-МАСТЕР» (text-3).
-- Игрок — мягкий голубоватый пузырь справа без рамки (r-18, хвостик 6).
-- NPC — остров с тинтом цвета персонажа (color-mix 7% + surface-1, r-18),
-  имя цветом, без рубчиков.
-- Тул-карты — остров surface-1, цвет инструмента только в тайле-иконке (--tc).
-- Кости (3D-арт) не трогать — физический реквизит, золото уместно.
+## Transcript voices
 
-## Поиск
+- GM narration is plain text without a card, with a quiet "GAME MASTER" kicker in
+  text-3.
+- The player uses a soft bluish bubble on the right with no border (r-18, 6px tail).
+- An NPC uses an island tinted with the character color
+  (color-mix 7% + surface-1, r-18), a colored name, and no side notches.
+- Tool cards use a surface-1 island; tool color appears only in the icon tile (`--tc`).
+- Do not change the dice (3D art). They are physical props, so gold is appropriate.
 
-- Общий поиск открывается из хедера и по `Ctrl/Cmd+K`; палитра всегда живёт
-  на верхнем модальном слое, независимо от текущего экрана.
-- В библиотеке одна строка поиска: вкладка «Все» ищет по всей библиотеке,
-  остальные вкладки ограничивают поиск своим типом сущности.
-- Поиск игр и сообщений выполняется на сервере. В индекс попадает только
-  видимый игроку текст — скрытые рассуждения, аргументы инструментов и
-  служебное состояние не индексируются.
-- Ввод никогда не блокирует игру: запросы откладываются на короткий debounce,
-  устаревшие отменяются, а повторная загрузка сохраняет предыдущие результаты.
-- Скелетоны показываются только до первого ответа. При уточнении запроса
-  используется небольшой индикатор без мигания всего списка.
+## Search
 
-## Известные ограничения стенда
+- Global search opens from the header or with `Ctrl/Cmd+K`. The palette always
+  lives on the top modal layer, regardless of the current screen.
+- The library has one search field: the "All" tab searches the complete library,
+  while other tabs restrict search to their entity type.
+- Game and message search runs on the server. Only player-visible text enters the
+  index; hidden reasoning, tool arguments, and internal state are excluded.
+- Input must never block the game: requests use a short debounce, stale requests are
+  canceled, and a refresh retains previous results.
+- Show skeletons only before the first response. While refining a query, use a small
+  indicator without flashing the entire list.
 
-- Мок-превью (`--server` + `GM_BACKEND=mock`) отдаёт `/transcript` голым массивом;
-  App принимает обе формы. В скрытой вкладке (headless-панель) rAF заморожен —
-  live-лента не обновляется, это ограничение браузера, не бага UI.
+## Known test-environment limitations
+
+- Mock preview (`--server` + `GM_BACKEND=mock`) returns `/transcript` as a bare
+  array; App accepts both forms. In a hidden tab (headless panel), rAF is frozen, so
+  the live feed does not update. This is a browser limitation, not a UI bug.

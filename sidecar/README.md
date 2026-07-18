@@ -1,5 +1,7 @@
 # TaleShift inference sidecar
 
+English | [Русский](README.ru.md)
+
 `serve.py` is the local inference process used by the Rust application. It can
 host five optional components in one API:
 

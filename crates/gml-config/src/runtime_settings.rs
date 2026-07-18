@@ -1058,7 +1058,7 @@ mod tests {
         );
         assert_eq!(d.get("text_verbosity"), Some(&Value::from("default")));
         assert_eq!(d.get("tool_choice"), Some(&Value::from("auto")));
-        assert_eq!(d.get("response_language"), Some(&Value::from("ru")));
+        assert_eq!(d.get("response_language"), Some(&Value::from("en")));
         assert_eq!(d.get("stream_gm_content"), Some(&Value::from(true)));
         assert_eq!(d.get("parallel_tool_calls"), Some(&Value::from(true)));
         assert_eq!(d.get("gm_suggest_options"), Some(&Value::from(false)));

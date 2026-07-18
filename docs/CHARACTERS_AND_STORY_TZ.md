@@ -1,190 +1,212 @@
-# ТЗ: Персонажи-пакеты и сюжетный архитектор
+**English** | [Русский](ru/CHARACTERS_AND_STORY_TZ.md)
 
-Модель: Мир (библия) → Истории/сюжеты (много на мир) → Сейвы (много на историю).
-Персонажи (ГГ) — ортогональная сущность-пакет: выбираются при создании сейва,
-живут снапшотом внутри сейва, явно экспортируются обратно в библиотеку.
-Порядок фаз: К1 (персонажи) → К2 (качество карточки) → С1 (сюжетный архитектор).
+# Specification: Character Packages and the Story Architect
 
-## 0. Зафиксированные инварианты (проверено по коду и панелью)
+Model: World (bible) → Stories/plots (many per world) → Saves (many per story).
+Player characters are an orthogonal package entity: they are selected when a
+save is created, live as a snapshot inside the save, and are explicitly exported
+back into the library. Phase order: C1 (characters) → C2 (card quality) → S1
+(story architect).
 
-- `PlayerCharacter` уже существует (`gml-world/src/model.rs:114`, 26 полей) и уже
-  персистится в payload сейва (`player_character_to_payload`). Карточка целиком уходит
-  в промпт GM; NPC её не видят.
-- Дайс-движок карточку НЕ читает: модификаторы вбивает модель в нотацию — это
-  закреплённый промпт-контракт (`tools.rs:196-264`), менять его в этом ТЗ НЕЛЬЗЯ
-  (двойной счёт + кэш-префиксные фикстуры).
-- Процедурный путь запуска сегодня не имеет хука ГГ вообще (всегда дефолтный «Искатель»).
-- `StoryEnvelope` ПЕРЕСОБИРАЕТ story.json из фиксированного списка ключей
-  (`story_store.rs:566`) — незнакомые топ-ключи теряются при записи. Любое новое
-  состояние历 должно жить в явном round-trip объекте envelope.
-- Байт-идентичность старых сейвов: новые payload-ключи — только трейлинг + только
-  когда Some (паттерн world_ref, гейт `package_ref_tests`).
+## 0. Locked invariants (verified against the code and by the panel)
 
-## Фаза К1 — персонажи как пакеты
+- `PlayerCharacter` already exists (`gml-world/src/model.rs:114`, 26 fields) and
+  is already persisted in the save payload (`player_character_to_payload`). The
+  complete card is sent to the GM prompt; NPCs do not see it.
+- The dice engine does NOT read the card: the model encodes modifiers in notation.
+  This is a locked prompt contract (`tools.rs:196-264`) and MUST NOT be changed in
+  this specification (doing so would double-count modifiers and break cache-prefix
+  fixtures).
+- The current procedural launch path has no player-character hook at all (it always
+  uses the default "Seeker").
+- `StoryEnvelope` REBUILDS story.json from a fixed list of keys
+  (`story_store.rs:566`), so unknown top-level keys are lost on write. Any new state
+  must live in an explicit round-trip envelope object.
+- Byte identity of old saves: new payload keys must be trailing, and must be emitted
+  only when `Some` (follow the `world_ref` pattern and the `package_ref_tests` gate).
 
-### К1.1 CharacterStore (gml-persistence, рядом с WorldStore)
-- Форма — как StoryStore: in-memory кэш + `reload()` после импорта, write-Mutex,
-  общий рут `GM_PACKAGES_DIR`/`default_library_dir()`, каталог
-  `library/characters/<id>/character.json`. БЕЗ `ensure_defaults` и воскрешения:
-  удалённый персонаж остаётся удалённым.
-- Манифест: `{format:"gmlab.character/1", id, version:u64, title, preview,
-  created_at, updated_at, world_ref?, story_ref?, payload}`; `payload` —
-  непрозрачный round-trip объект (как у WorldEnvelope), внутри
-  `payload.player_character`.
-- `world_ref`/`story_ref` (2026-07: связность создания) — ОПЦИОНАЛЬНАЯ основа
-  героя `{id, version}` (`CharacterBaseRef`): мир и/или история, ПОД которые
-  персонаж создан. Пиннятся при create (архитектор/ручной save/save-protagonist/
-  save-character-from-chat), НЕ патчатся после, эмитятся только когда Some
-  (байт-идентичность старых пакетов). Провенанс-семантика как у `char_ref`
-  сейва: ссылка может «повиснуть» после удаления базового пакета — потребители
-  обязаны это переживать (студия скипает блок, запуск даёт warn-but-allow
-  `character_world_mismatch`). Архитектор персонажа получает от базы ТОЛЬКО
-  публичный канон (`## BASE WORLD` — whitelist `CHARACTER_WORLD_PUBLIC_FIELDS`,
-  `## BASE STORY` — whitelist title/description/story_brief/public_intro):
-  он говорит с ИГРОКОМ, GM-секреты в его контекст не допускаются. Процедурная
-  история основой быть НЕ может (гейт и в UI-пикерах, и в серверном резолвере —
-  400). Системный промпт — ДВА варианта с общим телом: standalone (про базы ни
-  слова — ноль токенов на неиспользуемую фичу) и based (generic grounding); вся
-  видо-специфика мира/истории живёт в самих блоках и оплачивается только при
-  наличии блока. Привязка фиксирована при создании → вариант промпта стабилен
-  в рамках диалога (кэш-префикс не рвётся).
-- Канонический сериализатор ГГ ОДИН: форма `player_character_to_payload`
-  (session payload) используется и для пакета. `player_character_export` —
-  UI/tool-проекция, для пакета НЕ применяется.
-- Методы: `list/get/create/delete` + ДВА апдейта:
-  - `update_metadata(patch)` — shallow-merge топ-уровня (title/preview), null-drop;
-  - `snapshot_character(pc)` — ПОЛНАЯ замена `payload.player_character` (не merge).
-  Оба бампают version (`saturating_add(1)`), атомарная запись temp+rename.
-- Атомарная запись/скан — локальная копия хелперов (третья); выделение общего
-  `pkgfs`-модуля — отдельный клинап-трек, не здесь.
+## Phase C1 — characters as packages
 
-### К1.2 Пакетная механика
-- share.rs: `CHARACTER_FORMAT="gmlab.character/1"`, `PackageKind::Character`,
-  ветка `detect_kind` по `character.json`, arm в `manifest_id`.
-- `import_character_into` (образец import_world_into: staging + swap_in + 409 без
-  overwrite) + СТРУКТУРНАЯ валидация ДО swap_in: format верный, `payload` — объект,
-  `payload.player_character` — объект, `title` непустой; иначе 400, в библиотеку не
-  попадает. Глубокая валидация статов — НЕ на импорте (ленивая коэрция на запуске,
-  как у миров). После импорта — `character_store.reload()`.
-- Эндпоинты: `GET/POST /characters`, `POST /characters/{id}` (metadata),
-  `POST /characters/{id}/delete`, `GET /characters/{id}/export` → `{id}.gmchar.zip`.
-- `AppState.character_store`.
+### C1.1 CharacterStore (gml-persistence, next to WorldStore)
+- Follow the StoryStore shape: in-memory cache + `reload()` after import, write
+  mutex, shared `GM_PACKAGES_DIR`/`default_library_dir()` root, and
+  `library/characters/<id>/character.json`. Do NOT add `ensure_defaults` or
+  resurrection behavior: a deleted character must remain deleted.
+- Manifest: `{format:"gmlab.character/1", id, version:u64, title, preview,
+  created_at, updated_at, world_ref?, story_ref?, payload}`; `payload` is an opaque
+  round-trip object (as in WorldEnvelope), containing `payload.player_character`.
+- `world_ref`/`story_ref` (2026-07: creation relationships) are the OPTIONAL base
+  `{id, version}` (`CharacterBaseRef`) for which the character was created: a world,
+  a story, or both. They are pinned on create (architect/manual save/
+  save-protagonist/save-character-from-chat), never patched later, and emitted only
+  when `Some` (preserving byte identity for old packages). Provenance semantics are
+  the same as the save's `char_ref`: the reference may dangle after deletion of the
+  base package, and consumers must tolerate that (the studio skips the block; launch
+  uses warn-but-allow `character_world_mismatch`). The character architect receives
+  ONLY public canon from the base (`## BASE WORLD` — the
+  `CHARACTER_WORLD_PUBLIC_FIELDS` whitelist; `## BASE STORY` — the title/
+  description/story_brief/public_intro whitelist): it talks to the PLAYER, so GM
+  secrets must never enter its context. A procedural story cannot be used as a base
+  (gate this in both UI pickers and the server resolver with 400). The system prompt
+  has TWO variants with a shared body: standalone (no mention of bases, so the
+  unused feature costs zero tokens) and based (generic grounding). All world/story
+  specifics live in the blocks themselves and are paid for only when the block is
+  present. The binding is fixed at creation, so the prompt variant remains stable
+  throughout the conversation and does not break the cache prefix.
+- There must be ONE canonical player-character serializer: the
+  `player_character_to_payload` form (session payload) is also used for the package.
+  `player_character_export` is a UI/tool projection and must NOT be used for the
+  package.
+- Methods: `list/get/create/delete` plus TWO update operations:
+  - `update_metadata(patch)` — shallow-merge the top level (title/preview), dropping
+    nulls;
+  - `snapshot_character(pc)` — FULL replacement of `payload.player_character`
+    (not a merge).
+  Both increment version with `saturating_add(1)` and use an atomic temp+rename write.
+- Keep a local third copy of the atomic write/scan helpers. Extracting a shared
+  `pkgfs` module is a separate cleanup track and is out of scope here.
 
-### К1.3 Запуск сейва с персонажем
-- `POST /chats`: опц. `character_id`. Несуществующий id → 400 (no-fallback).
-- Рефактор `post_create_chat`: все три ветки (brief / procedural / named story)
-  возвращают `(World, warnings)`; ЕДИНЫЙ хвост: оверлей персонажа → сборка session
-  один раз. Прецеденс: выбранный пакет > player_character из plot/seed (дефолта
-  НЕТ — protagonist-гейт отдаёт 400 `protagonist_required`).
-- Оверлей = `seed_player_character(payload.player_character)` — полная замена, БЕЗ
-  события и БЕЗ инкремента (события — только тул-путь). `card_revision` пакета
-  принимается как есть (edu-счётчик героя едет с ним; version пакета — отдельный
-  счётчик; UI показывает version).
-- Провенанс: `World.char_ref: Option<PackageRef>` (4-е ref-поле). Payload-ключ
-  `char_ref` в `world_to_payload` сразу после `world_ref_authored_version`,
-  только когда Some; парс в `world_from_payload`; тесты рядом с `package_ref_tests`
-  (roundtrip + absent-emits-no-key). НЕ в `player_character_to_payload`.
-- Варн `story_pc_override`: если задан `character_id` И plot/seed истории несёт
-  собственного `player_character` — предупреждение через `launch_warnings`
-  («история написана под своего героя; сюжет/улики/NPC могут ссылаться на него»).
-  Warn-but-allow, как world_version_drift.
-- Смена персонажа посреди сейва — НЕТ. Прогресс живёт в сейве.
+### C1.2 Package mechanics
+- share.rs: `CHARACTER_FORMAT="gmlab.character/1"`, `PackageKind::Character`, a
+  `detect_kind` branch for `character.json`, and an arm in `manifest_id`.
+- `import_character_into` should follow `import_world_into` (staging + swap_in + 409
+  without overwrite), with STRUCTURAL validation BEFORE swap_in: the format is
+  correct, `payload` is an object, `payload.player_character` is an object, and
+  `title` is non-empty. Otherwise return 400 and do not add anything to the library.
+  Do NOT deeply validate stats on import; use lazy coercion at launch as worlds do.
+  Call `character_store.reload()` after import.
+- Endpoints: `GET/POST /characters`, `POST /characters/{id}` (metadata),
+  `POST /characters/{id}/delete`, `GET /characters/{id}/export` →
+  `{id}.gmchar.zip`.
+- Add `AppState.character_store`.
 
-### К1.4 Экспорт прогресса в библиотеку
+### C1.3 Launching a save with a character
+- `POST /chats`: optional `character_id`. A nonexistent id returns 400
+  (no fallback).
+- Refactor `post_create_chat`: all three branches (brief / procedural / named story)
+  return `(World, warnings)`; a SINGLE shared tail applies the character overlay and
+  then builds the session once. Precedence: selected package > `player_character`
+  from plot/seed. There is NO default; the protagonist gate returns 400
+  `protagonist_required`.
+- Overlay = `seed_player_character(payload.player_character)`: full replacement,
+  with NO event and NO increment (events belong only to the tool path). Accept the
+  package's `card_revision` as-is (the hero's education counter travels with it;
+  package version is a separate counter; the UI displays version).
+- Provenance: `World.char_ref: Option<PackageRef>` (the fourth ref field). Add the
+  `char_ref` payload key in `world_to_payload` immediately after
+  `world_ref_authored_version`, only when `Some`; parse it in `world_from_payload`;
+  add tests next to `package_ref_tests` (round trip + absent emits no key). Do NOT
+  put it in `player_character_to_payload`.
+- Emit the `story_pc_override` warning when `character_id` is supplied AND the
+  story's plot/seed contains its own `player_character`: use `launch_warnings`
+  ("the story was written for its own protagonist; the plot/clues/NPCs may refer to
+  them"). This is warn-but-allow, like `world_version_drift`.
+- A save's character cannot be changed mid-run. Progress lives in the save.
+
+### C1.4 Exporting progress to the library
 - `POST /chats/{chat_id}/save-character`, body `{character_id?}`:
-  - без id → создать нового персонажа (title = имя ГГ) из текущего снапшота;
-  - с id → `snapshot_character` существующего (+version bump); несуществующий → 400
-    (фронт предлагает «создать нового»).
-- Чтение ГГ: ЕДИНООБРАЗНО через кэш — `ensure_cached` + `with_runtime` под
-  per-chat lock (голый `load_chat` для активного чата отдаёт устаревшую строку БД).
-- `card_revision` снапшота едет в пакет как есть.
-- Удаление персонажа НИКОГДА не трогает сейвы: `char_ref` может «висеть» — это
-  провенанс, снапшот самодостаточен. Никакой интеграции с purge/embedding-скоупами.
+  - without an id, create a new character from the current snapshot (title = player
+    character name);
+  - with an id, call `snapshot_character` on the existing character (+version bump);
+    a nonexistent id returns 400 (the frontend offers "create new").
+- Read the player character consistently through the cache: `ensure_cached` +
+  `with_runtime` under the per-chat lock. Bare `load_chat` returns a stale database
+  row for an active chat.
+- Carry the snapshot's `card_revision` into the package unchanged.
+- Deleting a character must NEVER affect saves: `char_ref` may dangle because it is
+  provenance, while the snapshot is self-contained. Do not integrate this with
+  purge or embedding scopes.
 
-### К1.5 UI (v1 — минимальный)
-- 4-я вкладка «Персонажи»: список (имя, версия, превью), переименовать, удалить,
-  ⬇ экспорт; импорт — общий (нотис-лейбл 3-way: Мир/История/Персонаж;
-  `onImportPackage` += refreshCharacters()).
-- Пикер персонажа в блоке нового чата (под стори-пикером), опциональный
-  (пусто = ГГ истории/дефолт), `createLocked` от него не зависит. Также в
-  `onPlayWorld`.
-- «Сохранить ГГ в библиотеку» — на ПОЛЬЗОВАТЕЛЬСКОЙ поверхности (WorldHud-блок
-  игрока), НЕ в DebugPanel (он за developerMode). Выбор «новый / обновить
-  исходного»; «исходный» активен только когда `char_ref` есть и резолвится —
-  для этого `char_ref {id, version} | null` добавляется в state-payload.
-- Создание персонажа v1 = save-back из чата или импорт. Полноформатный редактор
-  26 полей — СЛЕДУЮЩАЯ фаза (не строить сейчас); dev-редактор в DebugPanel
-  остаётся как есть.
-- Портреты (assets/) — потом; механика WorldStore.assets переносится аддитивно,
-  формат не меняется. Ключ `assets` в payload сейчас НЕ вводить.
+### C1.5 UI (minimal v1)
+- Add a fourth "Characters" tab: list (name, version, preview), rename, delete, and
+  ↓ export. Import remains shared, with a three-way notice label:
+  World/Story/Character; extend `onImportPackage` with `refreshCharacters()`.
+- Add an optional character picker below the story picker in the new-chat block
+  (empty = the story's/default player character); it must not affect `createLocked`.
+  Add it to `onPlayWorld` as well.
+- Place "Save player character to library" on the USER-facing surface (the player
+  block in WorldHud), NOT in DebugPanel (which is gated by `developerMode`). Offer
+  "new / update source"; enable "source" only when `char_ref` exists and resolves.
+  To support this, add `char_ref {id, version} | null` to the state payload.
+- Character creation in v1 is save-back from a chat or import. A full editor for all
+  26 fields belongs to the NEXT phase and must not be built now; the developer
+  editor in DebugPanel remains unchanged.
+- Portraits (`assets/`) come later. WorldStore asset mechanics can be added
+  incrementally without changing the format. Do NOT introduce an `assets` payload
+  key now.
 
-## Фаза К2 — качество карточки (порезано панелью до честного фикса)
+## Phase C2 — card quality (reduced by the panel to an honest fix)
 
-- НЕ ДЕЛАТЬ движковый лукап скилов в roll_dice (двойной счёт с нотацией,
-  противоречит промпт-контракту, ломает кэш-префикс). Отдельный будущий трек
-  «engine-authoritative checks» с полным переписыванием контракта.
-- К2.1 Нормализация: в `apply_player_character_fields` числовая коэрция значений
-  `abilities/skills/saving_throws/hp` (строки-числа → числа, NaN-мусор отброшен) —
-  делает существующий notation-путь надёжным. То же при сидинге.
-- К2.2 Инвентарь: дельта-опы `inventory_add/inventory_remove`,
-  `equipment_add/equipment_remove` в `update_player_character` (строки; remove =
-  trim-exact, удаляет ВСЕ вхождения). Порядок применения: full-rewrite → remove →
-  add; результат сравнивается с исходным и питает `changed` (revision/event
-  срабатывают штатно). Полная перезапись остаётся (совместимость).
-- Синхронизация с канон-предметами сцены (take/drop, player-as-actor) — будущий
-  трек, не здесь.
+- Do NOT add an engine skill lookup to `roll_dice`: it would double-count notation
+  modifiers, contradict the prompt contract, and break the cache prefix. A separate
+  future "engine-authoritative checks" track must rewrite the entire contract.
+- C2.1 Normalization: in `apply_player_character_fields`, numerically coerce values
+  in `abilities/skills/saving_throws/hp` (numeric strings → numbers; discard NaN
+  garbage). This makes the existing notation path reliable. Apply the same logic
+  during seeding.
+- C2.2 Inventory: add delta operations `inventory_add/inventory_remove` and
+  `equipment_add/equipment_remove` to `update_player_character` (strings; remove is
+  trim-exact and removes ALL occurrences). Apply them in this order: full rewrite →
+  remove → add. Compare the result with the original and feed it into `changed`, so
+  revision/event behavior remains standard. Full replacement remains for
+  compatibility.
+- Synchronization with canonical scene items (take/drop, player-as-actor) is a
+  future track and is out of scope here.
 
-## Фаза С1 — сюжетный архитектор
+## Phase S1 — story architect
 
-### С1.1 StoryStore: редактирование
-- `StoryEnvelope` получает: round-trip объект `meta` (эмитится только непустым —
-  байты builtin-пакетов не меняются) и `created_at/updated_at` (парс-с-дефолтом,
-  эмит только когда заданы). Архитекторские поля (`architect_messages`,
-  `architect_model_history`, `architect_cache_*`) живут В `meta`, НИКОГДА в
-  `seed` (утечёт в worldgen/байт-гейты) и не на топ-уровне (теряется).
-- `update_story(id, patch)`: title/description/seed(plot)/meta shallow-merge с
-  null-drop (образец merge_world_payload), version bump, обновление in-memory
-  кэша, новый вариант ошибки `StoryNotFound`.
-- `POST /stories/{id}` + `persist_story_payload` (draft-first: персист ДО вызова
-  модели, как у мира).
-- Архитектор работает ТОЛЬКО с authored-историями, привязанными к миру
-  (`world_ref`). Builtin-и (self-contained) не редактируются архитектором.
+### S1.1 StoryStore: editing
+- Extend `StoryEnvelope` with a round-trip `meta` object (emit it only when non-empty
+  so builtin-package bytes do not change) and `created_at/updated_at` (parse with a
+  default, emit only when set). Architect fields (`architect_messages`,
+  `architect_model_history`, `architect_cache_*`) live IN `meta`, NEVER in `seed`
+  (which would leak into worldgen/byte gates) or at the top level (where they would
+  be lost).
+- `update_story(id, patch)`: shallow-merge title/description/seed(plot)/meta while
+  dropping nulls; bump version; update the in-memory cache; add a new `StoryNotFound`
+  error variant.
+- Add `POST /stories/{id}` + `persist_story_payload` (draft-first: persist BEFORE
+  invoking the model, as for worlds).
+- The architect works ONLY with authored stories bound to a world (`world_ref`).
+  Builtins (self-contained) cannot be edited by the architect.
 
-### С1.2 Агент (gml-agents) — генерализация, не форк
-- Из `world_architect.rs` извлекается generic-луп
-  `architect_turn(system, tools, apply_tool, ...)` (HopSink/ArchitectStream/
-  нормализация вызовов/стats — уже generic); мир и сюжет — два тонких конфига.
-  Регресс-гейт: голдены/тесты мирового архитектора не меняются.
-- Новое: `STORY_ARCHITECT_SYSTEM` + тулы `draft_story_plot`/`edit_story_plot`.
-  Схема целится ТОЛЬКО в существующий рантайм-контракт authored-плота:
+### S1.2 Agent (gml-agents) — generalize, do not fork
+- Extract a generic `architect_turn(system, tools, apply_tool, ...)` loop from
+  `world_architect.rs` (`HopSink`/`ArchitectStream`/call normalization/stats are
+  already generic); world and story become two thin configurations. Regression
+  gate: world-architect goldens/tests must not change.
+- Add `STORY_ARCHITECT_SYSTEM` and the `draft_story_plot`/`edit_story_plot` tools.
+  The schema targets ONLY the existing authored-plot runtime contract:
   `title, description, story_brief, public_intro, hidden_truth,
   player_character{...}, scene{title,description,location_id,present_npcs,exits,
   items,constraints,tension}, npcs[], public_facts[], state_records[],
-  proper_nouns[], time`. НИКАКИХ acts/objectives/endings — рантайм их не читает
-  (будущий трек «plot progression engine»).
-- Контекст: полная ВНУТРЕННЯЯ WorldLore связанного мира (включая hidden_premise/
-  hidden_secrets — агент GM-доверенный) как стабильный system-блок под кэш
-  (cache_session_id/thread_id); image-поля лора не инжектятся.
-- ГГ в сюжете: архитектор может предложить `player_character` (авторский
-  протагонист); пикер при запуске его перекрывает (с варном К1.3).
+  proper_nouns[], time`. Do NOT add acts/objectives/endings; the runtime does not
+  read them (future "plot progression engine" track).
+- Context: the linked world's complete INTERNAL WorldLore (including
+  hidden_premise/hidden_secrets because this is a GM-trusted agent) as a stable
+  system block for caching (`cache_session_id/thread_id`); do not inject lore image
+  fields.
+- Player character in the story: the architect may propose `player_character` (an
+  authored protagonist); the launch picker overrides it with the C1.3 warning.
 
-### С1.3 SSE + фронт
-- `POST /story-architect/chat` — зеркало мирового (draft-first, события
-  architect_delta/tool/done/error; фронтовый streamArchitect переиспользуется).
-- Панель: НЕ форк — `WorldArchitectPanel` параметризуется config-пропом
-  (endpoint, тулы, дескрипторы полей формы, опц. read-only блок мира).
-- Точки входа: «+ История» продолжает открывать CreateStoryModal, но модал
-  становится PROCEDURAL-ONLY (authored-ветка из него удаляется); в модале ссылка
-  «✨ Открыть в архитекторе» — единственный путь к authored. В списке историй
-  «✎» открывает архитектора для существующей authored-истории.
+### S1.3 SSE + frontend
+- `POST /story-architect/chat` mirrors the world endpoint (draft-first;
+  architect_delta/tool/done/error events; reuse the frontend's `streamArchitect`).
+- Do NOT fork the panel: parameterize `WorldArchitectPanel` with a config prop
+  (endpoint, tools, form-field descriptors, optional read-only world block).
+- Entry points: "+ Story" continues to open CreateStoryModal, but the modal becomes
+  PROCEDURAL-ONLY (remove its authored branch). Its "✨ Open in architect" link is
+  the sole path to authored creation. In the story list, "✎" opens the architect
+  for an existing authored story.
 
-## Будущие треки (зафиксировано, не делать сейчас)
-- Plot progression engine (acts/objectives/reveals/endings + трекер на World +
-  инжект в GM-промпт).
-- Engine-authoritative checks (лукап статов движком + переписывание контракта
-  roll_dice).
-- Синхронизация инвентаря ГГ с канон-предметами (player as canon actor).
-- Полноформатный редактор персонажа во вкладке; портреты (assets/).
-- Дрифт версии ИСТОРИИ для существующих сейвов (story_ref.version vs live) —
-  по аналогии с world_version_drift, когда редактирование историй станет частым.
-- Дедуп пакетных сторов (pkgfs-модуль: атомарная запись/скан/abspath).
+## Future tracks (recorded; do not implement now)
+- Plot progression engine (acts/objectives/reveals/endings + tracker on World +
+  injection into the GM prompt).
+- Engine-authoritative checks (engine-side stat lookup + rewrite of the `roll_dice`
+  contract).
+- Synchronization of the player-character inventory with canonical items
+  (player as canonical actor).
+- Full character editor in the tab; portraits (`assets/`).
+- STORY version drift for existing saves (`story_ref.version` vs live), analogous
+  to `world_version_drift`, once story editing becomes common.
+- Deduplicate package stores (`pkgfs` module: atomic write/scan/abspath).

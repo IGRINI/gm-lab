@@ -7,7 +7,8 @@ pub const DEFAULT_DEVICE_CODE_URL: &str = "https://auth.x.ai/oauth2/device/code"
 pub const DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 pub const DEFAULT_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 pub const DEFAULT_MODEL_ID: &str = "grok-4.5";
-pub const DEFAULT_STT_LANGUAGE: &str = "ru";
+/// Empty by default so xAI detects the spoken language automatically.
+pub const DEFAULT_STT_LANGUAGE: &str = "";
 pub const DEFAULT_STT_MAX_AUDIO_BYTES: usize = 32 * 1024 * 1024;
 pub const MIN_RESPONSES_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -143,6 +144,11 @@ fn set_duration_seconds(target: &mut Duration, key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speech_to_text_defaults_to_language_detection() {
+        assert_eq!(SuperGrokConfig::new("auth.json").stt_language, "");
+    }
 
     #[test]
     fn responses_idle_timeout_never_drops_below_minimum() {

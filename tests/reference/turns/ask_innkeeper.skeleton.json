@@ -1,23 +1,23 @@
 [
   {
     "kind": "player",
-    "agent": "Игрок"
+    "agent": "Player"
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "meta",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "gm_tool_call",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "npc_start",
@@ -45,15 +45,15 @@
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "meta",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "gm_tool_call",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "gm_reject",
@@ -85,19 +85,19 @@
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "meta",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "gm_narration",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "error",
-    "agent": "ГМ"
+    "agent": "GM"
   },
   {
     "kind": "meta_total",

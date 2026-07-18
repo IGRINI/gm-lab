@@ -3,13 +3,16 @@
 use serde::{Deserialize, Serialize};
 
 /// Default language for newly generated user-visible model text.
-pub const DEFAULT_RESPONSE_LANGUAGE: &str = "ru";
+pub const DEFAULT_RESPONSE_LANGUAGE: &str = "en";
 
 /// Static content bundles currently shipped with the application.
 ///
-/// Russian remains the compatibility default. Any other valid response tag
-/// uses the English bundle as a neutral source for the model, whose final
-/// response-language instruction can still request another language.
+/// `Default` intentionally remains Russian because persisted worlds created
+/// before `content_locale` was added deserialize missing values through it.
+/// New worlds select their locale from [`DEFAULT_RESPONSE_LANGUAGE`] instead.
+/// Any non-Russian response tag uses the English bundle as a neutral source
+/// for the model, whose final response-language instruction can still request
+/// another language.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContentLocale {
     #[serde(rename = "en")]
@@ -116,7 +119,12 @@ mod tests {
         );
         assert_eq!(
             ContentLocale::from_language_tag("invalid_tag"),
-            ContentLocale::Russian
+            ContentLocale::English
         );
+    }
+
+    #[test]
+    fn legacy_missing_content_locale_still_defaults_to_russian() {
+        assert_eq!(ContentLocale::default(), ContentLocale::Russian);
     }
 }

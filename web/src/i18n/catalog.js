@@ -1,4 +1,4 @@
-export const DEFAULT_LANGUAGE = "ru";
+export const DEFAULT_LANGUAGE = "en";
 
 const LOCALE_PATH_RE = /(?:^|\/)locales\/([^/]+)\/([^/]+)\.json$/;
 const LANGUAGE_CODE_RE = /^[a-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/;

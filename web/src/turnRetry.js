@@ -1,10 +1,11 @@
-const MODEL_ERROR_PREFIX = "Ошибка вызова модели:";
+const GM_AGENTS = new Set(["GM", "ГМ"]);
+const MODEL_ERROR_PREFIXES = ["Model call failed:", "Ошибка вызова модели:"];
 const ZERO_USAGE_FIELDS = ["in", "out", "cached", "tokens", "peak_context"];
 
 export function isTerminalTurnError(message) {
-  if (message?.type !== "error" || message?.agent !== "ГМ") return false;
+  if (message?.type !== "error" || !GM_AGENTS.has(message?.agent)) return false;
   const text = typeof message.text === "string" ? message.text.trim() : "";
-  return text.startsWith(MODEL_ERROR_PREFIX);
+  return MODEL_ERROR_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
 function isEmptyFailedUsage(message) {

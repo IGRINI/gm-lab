@@ -1,13 +1,13 @@
 [
   {
     "kind": "player",
-    "agent": "Игрок",
+    "agent": "Player",
     "data": "Я осматриваю зал трактира и прислушиваюсь к разговорам.",
     "sid": null
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "Нужен "
@@ -16,7 +16,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "Борин "
@@ -25,7 +25,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "— "
@@ -34,7 +34,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "зову "
@@ -43,7 +43,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "ask_npc. "
@@ -52,15 +52,15 @@
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": "Нужен Борин — зову ask_npc.",
     "sid": "s1"
   },
   {
     "kind": "meta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
-      "label": "ГМ — решение",
+      "label": "GM — decision",
       "scope": "gm",
       "in": 760,
       "out": 120,
@@ -75,7 +75,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "Нужен "
@@ -84,7 +84,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "Борин "
@@ -93,7 +93,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "— "
@@ -102,7 +102,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "зову "
@@ -111,7 +111,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "ask_npc. "
@@ -120,13 +120,13 @@
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": "Нужен Борин — зову ask_npc.",
     "sid": "s2"
   },
   {
     "kind": "gm_tool_call",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "call_id": "mock0",
       "name": "ask_npc",
@@ -233,7 +233,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "Борин "
@@ -242,7 +242,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "рвётся "
@@ -251,7 +251,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "в "
@@ -260,7 +260,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "несуществующую "
@@ -269,7 +269,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "заднюю "
@@ -278,7 +278,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "дверь "
@@ -287,7 +287,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "— "
@@ -296,7 +296,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "возвращаю "
@@ -305,7 +305,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "на "
@@ -314,7 +314,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "переделку. "
@@ -323,15 +323,15 @@
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": "Борин рвётся в несуществующую заднюю дверь — возвращаю на переделку.",
     "sid": "s4"
   },
   {
     "kind": "meta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
-      "label": "ГМ — решение",
+      "label": "GM — decision",
       "scope": "gm",
       "in": 760,
       "out": 120,
@@ -346,7 +346,7 @@
   },
   {
     "kind": "gm_tool_call",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "call_id": "mock1",
       "name": "ask_npc",
@@ -458,7 +458,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "NPC "
@@ -467,7 +467,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "отыграл, "
@@ -476,7 +476,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "завершаю "
@@ -485,7 +485,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_thinking",
       "text": "сцену. "
@@ -494,7 +494,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "Борин "
@@ -503,7 +503,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "мнётся "
@@ -512,7 +512,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "за "
@@ -521,7 +521,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "стойкой, "
@@ -530,7 +530,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "так "
@@ -539,7 +539,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "и "
@@ -548,7 +548,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "не "
@@ -557,7 +557,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "сумев "
@@ -566,7 +566,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "улизнуть. "
@@ -575,7 +575,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "Зал "
@@ -584,7 +584,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "притих "
@@ -593,7 +593,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "и "
@@ -602,7 +602,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "смотрит "
@@ -611,7 +611,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "на "
@@ -620,7 +620,7 @@
   },
   {
     "kind": "delta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
       "channel": "gm_narration",
       "text": "вас. "
@@ -629,15 +629,15 @@
   },
   {
     "kind": "gm_thinking",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": "NPC отыграл, завершаю сцену.",
     "sid": "s6"
   },
   {
     "kind": "meta",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": {
-      "label": "ГМ — нарратив",
+      "label": "GM — narration",
       "scope": "gm",
       "in": 760,
       "out": 120,
@@ -652,13 +652,13 @@
   },
   {
     "kind": "gm_narration",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": "Борин мнётся за стойкой, так и не сумев улизнуть. Зал притих и смотрит на вас.",
     "sid": "s6"
   },
   {
     "kind": "error",
-    "agent": "ГМ",
+    "agent": "GM",
     "data": "Модель завершила ход без ask_player, хотя варианты игрока включены.",
     "sid": null
   },
@@ -668,7 +668,7 @@
     "data": {
       "calls": [
         {
-          "label": "ГМ — решение",
+          "label": "GM — decision",
           "scope": "gm",
           "in": 760,
           "out": 120,
@@ -680,31 +680,7 @@
           "load_secs": 0.0
         },
         {
-          "label": "ГМ — прелюдия",
-          "scope": "gm",
-          "in": 760,
-          "out": 120,
-          "secs": 0.73,
-          "cached": 0,
-          "tps": 188,
-          "prompt_secs": 0.08,
-          "eval_secs": 0.64,
-          "load_secs": 0.0
-        },
-        {
-          "label": "Борин",
-          "scope": "npc",
-          "in": 760,
-          "out": 120,
-          "secs": 0.73,
-          "cached": 0,
-          "tps": 188,
-          "prompt_secs": 0.08,
-          "eval_secs": 0.64,
-          "load_secs": 0.0
-        },
-        {
-          "label": "ГМ — решение",
+          "label": "GM — prelude",
           "scope": "gm",
           "in": 760,
           "out": 120,
@@ -728,7 +704,31 @@
           "load_secs": 0.0
         },
         {
-          "label": "ГМ — нарратив",
+          "label": "GM — decision",
+          "scope": "gm",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "Борин",
+          "scope": "npc",
+          "in": 760,
+          "out": 120,
+          "secs": 0.73,
+          "cached": 0,
+          "tps": 188,
+          "prompt_secs": 0.08,
+          "eval_secs": 0.64,
+          "load_secs": 0.0
+        },
+        {
+          "label": "GM — narration",
           "scope": "gm",
           "in": 760,
           "out": 120,

@@ -1,6 +1,7 @@
 // Thin wrappers around the TaleShift Rust backend (gml-server).
 
 import { runtimeText } from "./i18n/runtime.js";
+import { DEFAULT_LANGUAGE } from "./i18n/catalog.js";
 import {
   createServerMessageError,
   localizeServerMessage,
@@ -25,7 +26,7 @@ function sanitizeErrorEnvelope(data, response) {
   const detail = serverMessageDetail(data);
   const localized = safeServerText(
     data,
-    apiText("requestFailed", `Запрос не выполнен (HTTP ${response.status})`, {
+    apiText("requestFailed", `Request failed (HTTP ${response.status})`, {
       status: response.status,
     })
   );
@@ -40,8 +41,8 @@ function sanitizeErrorEnvelope(data, response) {
 }
 
 function activeUiLanguage() {
-  if (typeof document === "undefined") return "ru";
-  return String(document.documentElement?.lang || "ru").trim() || "ru";
+  if (typeof document === "undefined") return DEFAULT_LANGUAGE;
+  return String(document.documentElement?.lang || DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE;
 }
 
 // The interface language belongs to this browser, while response_language is
@@ -239,7 +240,7 @@ export const api = {
     if (!r.ok || !data.ok) {
       const err = new Error(safeServerText(
         data,
-        apiText("importFailed", `импорт не выполнен (${r.status})`, { status: r.status })
+        apiText("importFailed", `Import failed (${r.status})`, { status: r.status })
       ));
       err.status = r.status;
       // 409 is the backend's distinct id-collision-without-overwrite signal.
@@ -315,7 +316,7 @@ export const api = {
       }
       throw new Error(safeServerText(
         data,
-        apiText("exportFailed", `экспорт не выполнен (${r.status})`, { status: r.status })
+        apiText("exportFailed", `Export failed (${r.status})`, { status: r.status })
       ));
     }
     const blob = await r.blob();
@@ -365,7 +366,7 @@ export async function transcribeAudio(blob) {
   if (!resp.ok || !data.ok) {
     throw new Error(safeServerText(
       data,
-      apiText("transcriptionFailed", `Ошибка распознавания (${resp.status})`, {
+      apiText("transcriptionFailed", `Transcription failed (${resp.status})`, {
         status: resp.status,
       })
     ));
@@ -513,7 +514,7 @@ function parseSseData(frame) {
   try {
     return JSON.parse(data);
   } catch {
-    throw new Error(apiText("invalidTurnEvent", "Сервер прислал повреждённое событие хода"));
+    throw new Error(apiText("invalidTurnEvent", "The server sent a damaged turn event"));
   }
 }
 
@@ -521,7 +522,7 @@ export function createTurnRequestId() {
   const cryptoApi = globalThis.crypto;
   if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
   if (typeof cryptoApi?.getRandomValues !== "function") {
-    throw new Error(apiText("requestIdFailed", "Не удалось создать идентификатор хода"));
+    throw new Error(apiText("requestIdFailed", "Could not create a turn identifier"));
   }
   const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -542,7 +543,7 @@ export async function streamTurn(
   { signal, legacyResume = false, chatId = "", history = null } = {}
 ) {
   if (!requestId || typeof onEvent !== "function") {
-    throw turnStreamError(apiText("invalidTurnRequest", "Некорректный запрос хода"), false);
+    throw turnStreamError(apiText("invalidTurnRequest", "Invalid turn request"), false);
   }
   const body = { text, request_id: requestId };
   if (legacyResume === true) body.legacy_resume = true;
@@ -565,7 +566,7 @@ export async function streamTurn(
   if (!resp.ok) {
     const body = await resp.text();
     throw turnStreamError(
-      responseErrorMessage(resp, body, apiText("turnFailed", "ход не выполнен")),
+      responseErrorMessage(resp, body, apiText("turnFailed", "The turn failed")),
       retryableTurnStatus(resp.status)
     );
   }
@@ -579,7 +580,7 @@ export async function streamTurn(
 // `code === "turn_not_running"`.
 export async function attachTurn(chatId, requestId, onEvent, { signal } = {}) {
   if (!requestId || typeof onEvent !== "function") {
-    throw turnStreamError(apiText("invalidTurnRequest", "Некорректный запрос хода"), false);
+    throw turnStreamError(apiText("invalidTurnRequest", "Invalid turn request"), false);
   }
   const query = String(chatId || "").trim()
     ? `?chat_id=${encodeURIComponent(String(chatId).trim())}`
@@ -598,14 +599,14 @@ export async function attachTurn(chatId, requestId, onEvent, { signal } = {}) {
     }
     if (code === "turn_not_running") {
       const error = turnStreamError(
-        apiText("turnNotRunning", "Ход уже не выполняется на сервере"),
+        apiText("turnNotRunning", "The turn is no longer running on the server"),
         false
       );
       error.code = code;
       throw error;
     }
     throw turnStreamError(
-      responseErrorMessage(resp, body, apiText("turnFailed", "ход не выполнен")),
+      responseErrorMessage(resp, body, apiText("turnFailed", "The turn failed")),
       retryableTurnStatus(resp.status)
     );
   }
@@ -616,7 +617,7 @@ export async function attachTurn(chatId, requestId, onEvent, { signal } = {}) {
 // forwards events, validates and returns the single terminal `done` frame.
 async function readTurnStream(resp, requestId, onEvent) {
   if (!resp.body) {
-    throw new Error(apiText("turnStreamMissing", "Сервер не открыл поток хода"));
+    throw new Error(apiText("turnStreamMissing", "The server did not open the turn stream"));
   }
 
   const reader = resp.body.getReader();
@@ -628,7 +629,7 @@ async function readTurnStream(resp, requestId, onEvent) {
     const ev = parseSseData(frame);
     if (!ev) return;
     if (terminal) {
-      throw new Error(apiText("eventAfterTurn", "Сервер прислал событие после завершения хода"));
+      throw new Error(apiText("eventAfterTurn", "The server sent an event after the turn had finished"));
     }
     if (ev.kind === "done") {
       if (
@@ -636,10 +637,10 @@ async function readTurnStream(resp, requestId, onEvent) {
         typeof ev.retryable !== "boolean" ||
         typeof ev.replayed !== "boolean"
       ) {
-        throw new Error(apiText("turnResultUnconfirmed", "Сервер не подтвердил результат хода"));
+        throw new Error(apiText("turnResultUnconfirmed", "The server did not confirm the turn result"));
       }
       if (!ev.request_id || String(ev.request_id) !== requestId) {
-        throw new Error(apiText("wrongTurnConfirmed", "Сервер подтвердил другой ход"));
+        throw new Error(apiText("wrongTurnConfirmed", "The server confirmed another turn"));
       }
       terminal = ev;
       return;
@@ -662,7 +663,7 @@ async function readTurnStream(resp, requestId, onEvent) {
   if (buf.trim()) acceptFrame(buf);
   if (!terminal) {
     throw new Error(
-      apiText("connectionClosedBeforeTurn", "Соединение закрылось до подтверждения хода")
+      apiText("connectionClosedBeforeTurn", "The connection closed before the turn was confirmed")
     );
   }
   return terminal;

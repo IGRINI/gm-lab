@@ -1,6 +1,7 @@
 import { Fragment, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "../i18n/index.js";
+import { DEFAULT_LANGUAGE } from "../i18n/catalog.js";
 import Tooltip from "./Tooltip.jsx";
 import ImageThumbnail, { ZoomableImage } from "./ImagePreview.jsx";
 import { EntityRegistryContext, canonicalKind, resolveEntity } from "../entityContext.js";
@@ -101,7 +102,7 @@ function EntityRef({ token, registry, keyPrefix }) {
 const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
 
 function interfaceLocale() {
-  return i18n.resolvedLanguage || i18n.language || "ru";
+  return i18n.resolvedLanguage || i18n.language || DEFAULT_LANGUAGE;
 }
 
 function isWordChar(ch) {

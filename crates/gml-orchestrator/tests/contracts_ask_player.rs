@@ -6,7 +6,7 @@
 //!     ask_player; the GM's second request sees the PLAYER OPTIONS tool message;
 //!     exactly one tool message carrying the next-step instruction
 //!     (Python AskPlayerToolClient ≈ 2193-2322),
-//!   - missing ask_player with options enabled -> "без ask_player" error, no
+//!   - missing ask_player with options enabled -> "without ask_player" error, no
 //!     player_options, no ask_player gm_tool_call (Python MissingAskPlayerClient),
 //!   - missing-narration fallback: a bare ask_player call (no prelude content)
 //!     still emits a prelude before player_options (Python
@@ -24,7 +24,7 @@ use gml_llm::backend::{
 };
 use gml_mock::{mock_stats, MockClient};
 use gml_orchestrator::{run_tool_collect, run_turn, Session};
-use gml_types::{Event, ParsedCall};
+use gml_types::{ContentLocale, Event, ParsedCall};
 
 fn tokio_block_on<F: std::future::Future>(fut: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -413,29 +413,38 @@ fn run_turn_ask_player_engine_handled() {
 
 #[test]
 fn run_turn_missing_ask_player_errors() {
-    // GM ends the turn with final narration, never calling ask_player.
-    let client = Arc::new(ScriptedGm::new(
-        vec![Move::Final(
-            "Ты оставляешь себе секунду на выбор следующего шага.".to_string(),
-        )],
-        None,
-    ));
-    let mut s = Session::new(client);
-    let settings = settings_options_on();
-    let events = tokio_block_on(run_turn(&mut s, &settings, "Жду."));
+    for (locale, expected_error) in [
+        (
+            ContentLocale::Russian,
+            "Модель завершила ход без ask_player, хотя варианты игрока включены.",
+        ),
+        (
+            ContentLocale::English,
+            "The model ended the turn without ask_player even though player options are enabled.",
+        ),
+    ] {
+        // GM ends the turn with final narration, never calling ask_player.
+        let client = Arc::new(ScriptedGm::new(
+            vec![Move::Final(
+                "Ты оставляешь себе секунду на выбор следующего шага.".to_string(),
+            )],
+            None,
+        ));
+        let mut session = Session::new(client);
+        session.world.world_canon.content_locale = locale;
+        let settings = settings_options_on();
+        let events = tokio_block_on(run_turn(&mut session, &settings, "Жду."));
 
-    // No player_options payloads, no ask_player gm_tool_call.
-    assert!(!events.iter().any(|e| e.kind == "player_options"));
-    assert!(!has_ask_player_tool_event(&events));
-    // An error event mentions the missing ask_player ("без ask_player").
-    assert!(
-        events.iter().any(|e| e.kind == "error"
-            && e.data
-                .as_str()
-                .map(|s| s.contains("без ask_player"))
-                .unwrap_or(false)),
-        "expected a 'без ask_player' error event"
-    );
+        // No player_options payloads, no ask_player gm_tool_call.
+        assert!(!events.iter().any(|event| event.kind == "player_options"));
+        assert!(!has_ask_player_tool_event(&events));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == "error" && event.data.as_str() == Some(expected_error)),
+            "expected localized missing-ask_player error for {locale:?}"
+        );
+    }
 }
 
 // =========================================================================

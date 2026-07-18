@@ -178,7 +178,7 @@ pub async fn resume_turn_into(
     if let Err(message) = validate_resume_preconditions(session, player_text, player_event_index) {
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(message.clone()),
             None,
         ));
@@ -231,8 +231,12 @@ fn validate_resume_preconditions(
     player_event_index: usize,
 ) -> Result<(), String> {
     let invalid = || {
-        "Нельзя безопасно продолжить сохранённый ход: состояние хода не совпадает с действием игрока."
-            .to_string()
+        content_text(
+            session.world.world_canon.content_locale,
+            "Нельзя безопасно продолжить сохранённый ход: состояние хода не совпадает с действием игрока.",
+            "Cannot safely resume the saved turn: the turn state does not match the player's action.",
+        )
+        .to_string()
     };
 
     if session.turn <= 0
@@ -332,7 +336,7 @@ async fn drive(
                 .push(gml_agents::gm_user_message(player_text));
             sink.emit(ev(
                 event_kind::PLAYER,
-                Some("Игрок"),
+                Some("Player"),
                 Value::String(player_text.to_string()),
                 None,
             ));
@@ -384,10 +388,17 @@ async fn drive(
         } = match stream_result {
             Ok(out) => out,
             Err(e) => {
-                let message = format!("Ошибка вызова модели: {e}");
+                let message = format!(
+                    "{}: {e}",
+                    content_text(
+                        session.world.world_canon.content_locale,
+                        "Ошибка вызова модели",
+                        "Model call failed",
+                    )
+                );
                 sink.emit(ev(
                     event_kind::ERROR,
-                    Some("ГМ"),
+                    Some("GM"),
                     Value::String(message.clone()),
                     None,
                 ));
@@ -401,19 +412,19 @@ async fn drive(
         if !thinking.trim().is_empty() {
             sink.emit(ev(
                 event_kind::GM_THINKING,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(thinking.trim().to_string()),
                 Some(&sid),
             ));
         }
         let label = if calls.is_empty() {
-            "ГМ — нарратив"
+            "GM — narration"
         } else {
-            "ГМ — решение"
+            "GM — decision"
         };
         let m = meta(label, &stats, "gm");
         metas.push(m.clone());
-        sink.emit(ev(event_kind::META, Some("ГМ"), m, Some(&sid)));
+        sink.emit(ev(event_kind::META, Some("GM"), m, Some(&sid)));
 
         if calls.is_empty() {
             let final_text = content.trim().to_string();
@@ -422,14 +433,14 @@ async fn drive(
                 if !content_deltas.is_empty() && !stream_gm_content {
                     sink.emit(ev(
                         event_kind::DELTA,
-                        Some("ГМ"),
+                        Some("GM"),
                         json!({"channel": "gm_narration", "text": final_text}),
                         Some(&sid),
                     ));
                 }
                 sink.emit(ev(
                     event_kind::GM_NARRATION,
-                    Some("ГМ"),
+                    Some("GM"),
                     Value::String(final_text.clone()),
                     Some(&sid),
                 ));
@@ -474,14 +485,14 @@ async fn drive(
                 if !content_deltas.is_empty() && !stream_gm_content {
                     sink.emit(ev(
                         event_kind::DELTA,
-                        Some("ГМ"),
+                        Some("GM"),
                         json!({"channel": "gm_narration", "text": prelude_text}),
                         Some(&sid),
                     ));
                 }
                 sink.emit(ev(
                     event_kind::GM_NARRATION,
-                    Some("ГМ"),
+                    Some("GM"),
                     Value::String(prelude_text.clone()),
                     Some(&sid),
                 ));
@@ -498,7 +509,7 @@ async fn drive(
             if show_tool_event {
                 tool_sink.emit(ev(
                     event_kind::GM_TOOL_CALL,
-                    Some("ГМ"),
+                    Some("GM"),
                     json!({"call_id": call.id, "name": name, "arguments": args}),
                     None,
                 ));
@@ -549,10 +560,17 @@ async fn drive(
     }
 
     if fell_through {
-        let message = format!("Превышен лимит вызовов инструментов за ход: {max_tool_hops}.");
+        let message = format!(
+            "{}: {max_tool_hops}.",
+            content_text(
+                session.world.world_canon.content_locale,
+                "Превышен лимит вызовов инструментов за ход",
+                "Tool call limit exceeded for this turn",
+            )
+        );
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(message.clone()),
             None,
         ));
@@ -561,11 +579,15 @@ async fn drive(
             retryable: true,
         };
     } else if include_player_options_tool && !player_options_shown {
-        let message =
-            "Модель завершила ход без ask_player, хотя варианты игрока включены.".to_string();
+        let message = content_text(
+            session.world.world_canon.content_locale,
+            "Модель завершила ход без ask_player, хотя варианты игрока включены.",
+            "The model ended the turn without ask_player even though player options are enabled.",
+        )
+        .to_string();
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(message.clone()),
             None,
         ));
@@ -602,14 +624,14 @@ impl DeltaSink for GmDeltaCollector<'_> {
         if ch == channel::THINKING {
             self.sink.emit(ev(
                 event_kind::DELTA,
-                Some("ГМ"),
+                Some("GM"),
                 json!({"channel": "gm_thinking", "text": text}),
                 Some(self.sid),
             ));
         } else if self.stream_gm_content {
             self.sink.emit(ev(
                 event_kind::DELTA,
-                Some("ГМ"),
+                Some("GM"),
                 json!({"channel": "gm_narration", "text": text}),
                 Some(self.sid),
             ));
@@ -677,10 +699,18 @@ async fn generate_pre_tool_prelude(
     } = match stream_result {
         Ok(out) => out,
         Err(e) => {
+            let message = format!(
+                "{}: {e}",
+                content_text(
+                    session.world.world_canon.content_locale,
+                    "Ошибка прелюдии перед инструментом",
+                    "Tool prelude failed",
+                )
+            );
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
-                Value::String(format!("Ошибка прелюдии перед инструментом: {e}")),
+                Some("GM"),
+                Value::String(message),
                 None,
             ));
             return String::new();
@@ -689,17 +719,17 @@ async fn generate_pre_tool_prelude(
     if !thinking.trim().is_empty() {
         sink.emit(ev(
             event_kind::GM_THINKING,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(thinking.trim().to_string()),
             Some(&sid),
         ));
     }
-    metas.push(meta("ГМ — прелюдия", &stats, "gm"));
+    metas.push(meta("GM — prelude", &stats, "gm"));
     let final_text = content.trim().to_string();
     if !final_text.is_empty() {
         sink.emit(ev(
             event_kind::GM_NARRATION,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(final_text.clone()),
             Some(&sid),
         ));
@@ -718,14 +748,14 @@ impl DeltaSink for PreludeDeltaCollector<'_> {
         if ch == channel::THINKING {
             self.sink.emit(ev(
                 event_kind::DELTA,
-                Some("ГМ"),
+                Some("GM"),
                 json!({"channel": "gm_thinking", "text": text}),
                 Some(self.sid),
             ));
         } else if self.stream_gm_content {
             self.sink.emit(ev(
                 event_kind::DELTA,
-                Some("ГМ"),
+                Some("GM"),
                 json!({"channel": "gm_narration", "text": text}),
                 Some(self.sid),
             ));
@@ -968,7 +998,7 @@ fn movement_blocked_by_travel_to(
     };
     sink.emit(ev(
         event_kind::ERROR,
-        Some("ГМ"),
+        Some("GM"),
         Value::String(message.to_string()),
         None,
     ));
@@ -1154,6 +1184,7 @@ fn situation_includes_room_witnesses(situation: &str) -> bool {
 }
 
 fn run_tool_search(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    let content_locale = session.world.world_canon.content_locale;
     let query = arg_str(args, "query");
     let max_results = args
         .get("max_results")
@@ -1176,7 +1207,7 @@ fn run_tool_search(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
         .to_string()];
     if let Some(Value::Array(matches)) = payload.get("matches") {
         if !matches.is_empty() {
-            lines.push("Найдено:".to_string());
+            lines.push(content_text(content_locale, "Найдено:", "Found:").to_string());
             for row in matches {
                 let n = row.get("name").and_then(Value::as_str).unwrap_or("");
                 let d = row.get("description").and_then(Value::as_str).unwrap_or("");
@@ -1190,7 +1221,11 @@ fn run_tool_search(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
-            lines.push(format!("Не найдено: {}", names.join(", ")));
+            lines.push(format!(
+                "{} {}",
+                content_text(content_locale, "Не найдено:", "Not found:"),
+                names.join(", ")
+            ));
         }
     }
     let text = lines
@@ -1200,7 +1235,7 @@ fn run_tool_search(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
         .join("\n");
     sink.emit(ev(
         event_kind::TOOL_SEARCH,
-        Some("ГМ"),
+        Some("GM"),
         Value::String(text),
         None,
     ));
@@ -1213,6 +1248,7 @@ fn run_tool_search(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
 }
 
 fn run_load_tool_schema(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecutionResult {
+    let content_locale = session.world.world_canon.content_locale;
     let name = arg_str(args, "name");
     let include_player_options = session.loaded_gm_tools.contains("ask_player");
     let payload = gml_agents::load_gm_tool_schema(
@@ -1239,16 +1275,22 @@ fn run_load_tool_schema(session: &mut Session, args: &Value, sink: &Sink) -> Too
             .unwrap_or(loaded_schema);
         session.mark_tool_loaded(canonical);
     }
-    let mut lines = vec![format!("Статус: {status}")];
+    let mut lines = vec![format!(
+        "{} {status}",
+        content_text(content_locale, "Статус:", "Status:")
+    )];
     if !loaded_schema.is_empty() {
-        lines.push(format!("Схема: {loaded_schema}"));
+        lines.push(format!(
+            "{} {loaded_schema}",
+            content_text(content_locale, "Схема:", "Schema:")
+        ));
     }
     if !message.is_empty() {
         lines.push(message.to_string());
     }
     sink.emit(ev(
         event_kind::TOOL_SEARCH,
-        Some("ГМ"),
+        Some("GM"),
         Value::String(lines.join("\n")),
         None,
     ));
@@ -1348,7 +1390,7 @@ fn run_ask_player(args: &Value, sink: &Sink) -> ToolExecutionResult {
     if !error.is_empty() {
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(error.clone()),
             None,
         ));
@@ -1366,7 +1408,7 @@ fn run_ask_player(args: &Value, sink: &Sink) -> ToolExecutionResult {
     }
     sink.emit(ev(
         event_kind::PLAYER_OPTIONS,
-        Some("ГМ"),
+        Some("GM"),
         payload.clone(),
         None,
     ));
@@ -1401,7 +1443,7 @@ fn run_roll_dice(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    sink.emit(ev(event_kind::DICE, Some("ГМ"), payload.clone(), None));
+    sink.emit(ev(event_kind::DICE, Some("GM"), payload.clone(), None));
     session.record_public("gm", "dice", "", &detail);
     tool_result(
         &detail,
@@ -1433,7 +1475,7 @@ fn run_get_world_fact(session: &mut Session, args: &Value, sink: &Sink) -> ToolE
     event_payload.insert("query".to_string(), Value::String(query.clone()));
     sink.emit(ev(
         event_kind::WORLD_FACT,
-        Some("ГМ"),
+        Some("GM"),
         Value::Object(event_payload),
         None,
     ));
@@ -1451,7 +1493,7 @@ fn run_get_memory(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecu
         if !err.is_empty() {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(err.to_string()),
                 None,
             ));
@@ -1459,7 +1501,7 @@ fn run_get_memory(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecu
     } else {
         sink.emit(ev(
             event_kind::WORLD_QUERY,
-            Some("ГМ"),
+            Some("GM"),
             payload.clone(),
             None,
         ));
@@ -1478,7 +1520,7 @@ fn run_note_memory(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
         if !err.is_empty() {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(err.to_string()),
                 None,
             ));
@@ -1486,7 +1528,7 @@ fn run_note_memory(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
     }
     sink.emit(ev(
         event_kind::WORLD_STATE_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         payload.clone(),
         None,
     ));
@@ -1504,7 +1546,7 @@ fn run_consolidate_memory(session: &mut Session, args: &Value, sink: &Sink) -> T
         if !err.is_empty() {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(err.to_string()),
                 None,
             ));
@@ -1512,7 +1554,7 @@ fn run_consolidate_memory(session: &mut Session, args: &Value, sink: &Sink) -> T
     }
     sink.emit(ev(
         event_kind::WORLD_STATE_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         payload.clone(),
         None,
     ));
@@ -1538,13 +1580,13 @@ fn run_get_npc_profile(session: &mut Session, args: &Value, sink: &Sink) -> Tool
         args.get("fields").unwrap_or(&Value::Null),
     ) {
         Ok(p) => {
-            sink.emit(ev(event_kind::NPC_PROFILE, Some("ГМ"), p.clone(), None));
+            sink.emit(ev(event_kind::NPC_PROFILE, Some("GM"), p.clone(), None));
             p
         }
         Err(e) => {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(e.clone()),
                 None,
             ));
@@ -1586,12 +1628,12 @@ fn apply_advance_time(session: &mut Session, minutes: &Value, reason: &str, sink
                     "reason": p.get("reason").cloned().unwrap_or(json!("")),
                 }));
             }
-            sink.emit(ev(event_kind::TIME, Some("ГМ"), p.clone(), None));
+            sink.emit(ev(event_kind::TIME, Some("GM"), p.clone(), None));
             p
         }
         Err(e) => {
             let p = json!({"ok": false, "error": e});
-            sink.emit(ev(event_kind::ERROR, Some("ГМ"), Value::String(e), None));
+            sink.emit(ev(event_kind::ERROR, Some("GM"), Value::String(e), None));
             p
         }
     }
@@ -1649,7 +1691,7 @@ fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         .update_player_character(&Value::Object(fields), &reason);
     sink.emit(ev(
         event_kind::PLAYER_CHARACTER_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         update_payload.clone(),
         None,
     ));
@@ -1760,7 +1802,7 @@ fn run_read_state(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecu
         );
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.clone()),
             None,
         ));
@@ -1851,7 +1893,7 @@ fn run_update_character(
             } else {
                 event_kind::CHARACTER_UPDATE
             };
-            sink.emit(ev(kind, Some("ГМ"), payload.clone(), None));
+            sink.emit(ev(kind, Some("GM"), payload.clone(), None));
             tool_result(
                 &json_compact(&payload),
                 Some(&model_character_update_text(&payload)),
@@ -1862,7 +1904,7 @@ fn run_update_character(
         Err(error) => {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(error.clone()),
                 None,
             ));
@@ -1897,7 +1939,7 @@ fn run_set_npc_whereabouts(
             let player_payload = player_facing_payload(&session.world, &payload);
             sink.emit(ev(
                 event_kind::NPC_WHEREABOUTS,
-                Some("ГМ"),
+                Some("GM"),
                 player_payload,
                 None,
             ));
@@ -1911,7 +1953,7 @@ fn run_set_npc_whereabouts(
         Err(e) => {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(e.clone()),
                 None,
             ));
@@ -1940,7 +1982,7 @@ fn run_move_npc(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecuti
             let player_payload = player_facing_payload(&session.world, &payload);
             sink.emit(ev(
                 event_kind::SCENE_UPDATE,
-                Some("ГМ"),
+                Some("GM"),
                 player_payload,
                 None,
             ));
@@ -1954,7 +1996,7 @@ fn run_move_npc(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecuti
         Err(e) => {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(e.clone()),
                 None,
             ));
@@ -1993,7 +2035,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         let msg = "set_scene requires an existing current location; use generate_location.";
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.to_string()),
             None,
         ));
@@ -2011,7 +2053,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         let msg = "set_scene requires an existing current location; use generate_location.";
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.to_string()),
             None,
         ));
@@ -2032,7 +2074,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
             );
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(msg.clone()),
                 None,
             ));
@@ -2048,7 +2090,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         let msg = "set_scene only updates the current location; use generate_location for a new location.";
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.to_string()),
             None,
         ));
@@ -2154,7 +2196,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
                 let msg = format!("set_scene rejected: {}", rejection.reason);
                 sink.emit(ev(
                     event_kind::ERROR,
-                    Some("ГМ"),
+                    Some("GM"),
                     Value::String(msg.clone()),
                     None,
                 ));
@@ -2233,7 +2275,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         if !hint.is_empty() {
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(hint.to_string()),
                 None,
             ));
@@ -2251,7 +2293,7 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     }
     sink.emit(ev(
         event_kind::SCENE_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         payload.clone(),
         None,
     ));
@@ -2382,7 +2424,7 @@ fn sync_canon_move_time(
         let after_time = session.world.time_export();
         sink.emit(ev(
             event_kind::TIME,
-            Some("ГМ"),
+            Some("GM"),
             json!({
                 "ok": true,
                 "elapsed_minutes": elapsed_minutes,
@@ -2681,7 +2723,7 @@ fn reject_travel_to(
     let message = message.into();
     sink.emit(ev(
         event_kind::ERROR,
-        Some("ГМ"),
+        Some("GM"),
         Value::String(message.clone()),
         None,
     ));
@@ -2946,7 +2988,7 @@ async fn run_travel_to(session: &mut Session, args: &Value, sink: &Sink) -> Trav
     });
     sink.emit(ev(
         event_kind::SCENE_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         session.world.scene_export(),
         None,
     ));
@@ -2990,7 +3032,7 @@ fn reject_dynamic_passage_tool(
     let message = message.into();
     sink.emit(ev(
         event_kind::ERROR,
-        Some("ГМ"),
+        Some("GM"),
         Value::String(message.clone()),
         None,
     ));
@@ -3066,7 +3108,7 @@ fn run_relocate_player(session: &mut Session, args: &Value, sink: &Sink) -> Tool
     });
     sink.emit(ev(
         event_kind::SCENE_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         session.world.scene_export(),
         None,
     ));
@@ -3354,7 +3396,7 @@ fn run_set_passage_state(session: &mut Session, args: &Value, sink: &Sink) -> To
     });
     sink.emit(ev(
         event_kind::SCENE_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         session.world.scene_export(),
         None,
     ));
@@ -3377,7 +3419,7 @@ async fn run_move_player(session: &mut Session, args: &Value, sink: &Sink) -> To
 from the player's current place.";
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.to_string()),
             None,
         ));
@@ -3508,7 +3550,7 @@ from the player's current place.";
             });
             sink.emit(ev(
                 event_kind::SCENE_UPDATE,
-                Some("ГМ"),
+                Some("GM"),
                 session.world.scene_export(),
                 None,
             ));
@@ -3534,7 +3576,7 @@ from the player's current place.";
             let msg = format!("move rejected: {} ({})", rejection.reason, rejection.code);
             sink.emit(ev(
                 event_kind::ERROR,
-                Some("ГМ"),
+                Some("GM"),
                 Value::String(msg.clone()),
                 None,
             ));
@@ -3590,7 +3632,7 @@ fn run_cast_spell(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecu
         Ok(payload) => {
             sink.emit(ev(
                 event_kind::PLAYER_CHARACTER_UPDATE,
-                Some("ГМ"),
+                Some("GM"),
                 payload.clone(),
                 None,
             ));
@@ -3608,7 +3650,7 @@ fn run_cast_spell(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecu
                 .and_then(Value::as_str)
                 .unwrap_or("cast rejected");
             let msg = format!("cast_spell rejected: {message} ({code})");
-            sink.emit(ev(event_kind::ERROR, Some("ГМ"), Value::String(msg), None));
+            sink.emit(ev(event_kind::ERROR, Some("GM"), Value::String(msg), None));
             let mut extra: Vec<(&str, Value)> = Vec::new();
             for key in ["name", "known_spells", "level"] {
                 if let Some(value) = rejection.get(key) {
@@ -3631,13 +3673,13 @@ fn item_move_success(
 ) -> ToolExecutionResult {
     sink.emit(ev(
         event_kind::PLAYER_CHARACTER_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         payload.clone(),
         None,
     ));
     sink.emit(ev(
         event_kind::SCENE_UPDATE,
-        Some("ГМ"),
+        Some("GM"),
         session.world.scene_export(),
         None,
     ));
@@ -3661,7 +3703,7 @@ fn item_move_rejection(tool: &str, rejection: &Value, sink: &Sink) -> ToolExecut
     let msg = format!("{tool} rejected: {message} ({code})");
     sink.emit(ev(
         event_kind::ERROR,
-        Some("ГМ"),
+        Some("GM"),
         Value::String(msg.clone()),
         None,
     ));
@@ -3704,7 +3746,7 @@ fn run_world_debug(session: &mut Session, args: &Value, sink: &Sink) -> ToolExec
 
     sink.emit(ev(
         event_kind::WORLD_DEBUG,
-        Some("ГМ"),
+        Some("GM"),
         json!({"world_debug": true, "causal_log": causal}),
         None,
     ));
@@ -3903,7 +3945,7 @@ async fn run_generate_location(
         let msg = "generate_location requires non-empty `purpose` and `request`.";
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.to_string()),
             None,
         ));
@@ -3928,7 +3970,7 @@ async fn run_generate_location(
         let msg = format!("generate_location purpose is not supported: {purpose}");
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.clone()),
             None,
         ));
@@ -5040,7 +5082,7 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
         let msg = "generate_npc requires non-empty `request` and `role`.";
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.to_string()),
             None,
         ));
@@ -5064,7 +5106,7 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
             format!("generate_npc budget exhausted this turn ({committed_this_turn}/{max_npcs}).");
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.clone()),
             None,
         ));
@@ -5617,7 +5659,7 @@ async fn run_ask_npc_tool(
 `npc_id` and a neutral third-person situation.";
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.to_string()),
             None,
         ));
@@ -5875,7 +5917,7 @@ async fn ask_npc(
     let resolved = match session.world.resolve(npc_id) {
         Ok(id) => id,
         Err(e) => {
-            sink.emit(ev(event_kind::ERROR, Some("ГМ"), Value::String(e), None));
+            sink.emit(ev(event_kind::ERROR, Some("GM"), Value::String(e), None));
             return tool_error(
                 "ask_npc",
                 &format!(
@@ -5903,7 +5945,7 @@ only absence, travel/search, or generic scene response."
         }
         sink.emit(ev(
             event_kind::ERROR,
-            Some("ГМ"),
+            Some("GM"),
             Value::String(msg.clone()),
             None,
         ));
@@ -6019,10 +6061,18 @@ only absence, travel/search, or generic scene response."
             if correction.is_some() {
                 session.pending.remove(&resolved);
             }
+            let visible_error = format!(
+                "{}: {e}",
+                content_text(
+                    session.world.world_canon.content_locale,
+                    "Ошибка NPC",
+                    "NPC generation failed",
+                )
+            );
             sink.emit(ev(
                 event_kind::ERROR,
                 Some(&npc_name),
-                Value::String(format!("Ошибка NPC: {e}")),
+                Value::String(visible_error),
                 None,
             ));
             let label = session.world.npc_player_label(&resolved, "player");
@@ -6219,7 +6269,8 @@ mod tests {
 
     use super::{
         coerce_set_scene_items, is_travel_metadata_effect, run_tool,
-        situation_includes_room_witnesses, Session, Sink, TurnToolState,
+        situation_includes_room_witnesses, validate_resume_preconditions, Session, Sink,
+        TurnToolState,
     };
 
     #[test]
@@ -6233,6 +6284,28 @@ mod tests {
         assert!(situation_includes_room_witnesses(
             "Игрок громко говорит при всех, чтобы весь зал услышал."
         ));
+    }
+
+    #[test]
+    fn resume_validation_error_follows_persisted_content_locale() {
+        for (locale, expected) in [
+            (
+                ContentLocale::Russian,
+                "Нельзя безопасно продолжить сохранённый ход: состояние хода не совпадает с действием игрока.",
+            ),
+            (
+                ContentLocale::English,
+                "Cannot safely resume the saved turn: the turn state does not match the player's action.",
+            ),
+        ] {
+            let client: Arc<dyn Backend> = Arc::new(MockClient::new());
+            let mut session = Session::new(client);
+            session.world.world_canon.content_locale = locale;
+
+            let error = validate_resume_preconditions(&session, "action", 0)
+                .expect_err("an untouched session cannot resume a turn");
+            assert_eq!(error, expected);
+        }
     }
 
     #[test]

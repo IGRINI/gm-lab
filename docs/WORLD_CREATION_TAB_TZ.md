@@ -1,207 +1,261 @@
-# TZ: вкладка создания миров
+**English** | [Русский](ru/WORLD_CREATION_TAB_TZ.md)
 
-## Статус
+# Specification: World Creation Tab
 
-- [x] Зафиксировать продуктовую модель вкладки.
-- [x] Отделить мир от истории и стартовой сцены.
-- [x] Зафиксировать, что старые поля вкладки создания миров удаляются, а не поддерживаются как legacy.
-- [x] Переделать фронт вкладки создания миров под отдельную сущность `World`.
-- [x] Переделать backend-контракт архитектора мира под чистый world bible.
-- [x] Сохранять черновик мира сразу после первого сообщения архитектору.
-- [x] Сохранять историю чата архитектора, model-history и cache id внутри `World`.
-- [x] Добавить/обновить тесты на новый контракт.
-- [x] Проверить сборку и основные регрессии.
+## Status
 
-## Главная идея
+- [x] Define the tab's product model.
+- [x] Separate a world from its stories and opening scene.
+- [x] Establish that old world-creation fields are removed rather than retained as
+  legacy fields.
+- [x] Rebuild the world-creation frontend around a standalone `World` entity.
+- [x] Replace the world architect's backend contract with a pure world bible.
+- [x] Persist a world draft immediately after the first message to the architect.
+- [x] Store architect chat history, model history, and cache id inside `World`.
+- [x] Add/update tests for the new contract.
+- [x] Verify the build and primary regressions.
 
-Вкладка создания миров создает не историю и не чат. Она создает переиспользуемый мир: набор правил, лора, ограничений и скрытых истин, на которые потом будут опираться GM, генератор локаций и будущий шаг создания истории.
+## Core idea
 
-Мир должен жить отдельно от игровых сессий. Один и тот же мир можно будет использовать для разных историй:
+The world-creation tab does not create a story or a chat. It creates a reusable
+world: a set of rules, lore, constraints, and hidden truths that the GM, location
+generator, and a future story-creation step can build on.
+
+A world must exist independently of game sessions. The same world can support
+multiple stories:
 
 ```text
-Мир: Порог Второго Неба
-  -> История A: деревня у живой дороги
-  -> История B: интриги в столице
-  -> История C: экспедиция к храму долгов
+World: Threshold of the Second Sky
+  -> Story A: village by the living road
+  -> Story B: intrigue in the capital
+  -> Story C: expedition to the temple of debts
 ```
 
-Сейчас истории независимые. События одной истории не меняют базовый мир и не влияют на другие истории. Общий таймлайн мира звучит правильно, но это будущий слой, не часть этой задачи.
+Stories are currently independent. Events in one story do not change the base
+world or affect other stories. A shared world timeline is a sensible future layer,
+but it is not part of this task.
 
-## Что удаляем из вкладки создания миров
+## Remove from the world-creation tab
 
-Удалить из смысла и интерфейса вкладки:
+Remove these concepts and controls from the tab:
 
-- `scale` как "деревня / город / форпост / регион";
-- `storyBrief` как стартовую ситуацию игрока;
-- `publicIntro` как завязку конкретной истории;
-- кнопку и смысл "создать мир и чат";
-- пресеты, которые сразу описывают стартовую сцену или стартовый квест;
-- любые подсказки, которые говорят, где игрок начинает и что от него хотят.
+- `scale` as "village / city / outpost / region";
+- `storyBrief` as the player's opening situation;
+- `publicIntro` as the hook for a specific story;
+- the "create world and chat" action and meaning;
+- presets that immediately define an opening scene or opening quest;
+- any prompts that say where the player starts or what is expected of them.
 
-Причина: это относится к созданию истории, а не мира. Если оставить такие поля в мире, модель начнет путать reusable world bible с конкретной кампанией.
+Reason: these belong to story creation, not world creation. Keeping them in the
+world would make the model confuse a reusable world bible with a specific campaign.
 
-## Что остается во вкладке
+## Keep in the tab
 
-Вкладка должна собирать world bible. Пользователь может сделать это двумя способами:
+The tab builds a world bible. Users can do this in two ways:
 
-1. Вручную заполнить поля.
-2. Поговорить с архитектором мира, который помогает заполнить или улучшить поля.
+1. Fill in fields manually.
+2. Talk to the world architect, which helps fill in or improve the fields.
 
-Архитектор мира не является обязательным. Ручной ввод должен быть полноценным путем, без скрытой зависимости от AI.
+The world architect is optional. Manual entry must be a complete path with no hidden
+dependency on AI.
 
-## Поведение архитектора
+## Architect behavior
 
-Архитектор мира должен быть умным редактором, а не анкетой.
+The world architect must be an intelligent editor, not a questionnaire.
 
-Он должен:
+It must:
 
-- понимать свободный текст пользователя;
-- задавать направляющие вопросы только когда это реально важно;
-- не задавать длинную простыню вопросов, если пользователь попросил "реши сам";
-- самостоятельно принимать разумные решения, если пользователь дал право;
-- предлагать структурный world bible;
-- не писать стартовую сцену, стартовый квест, роль игрока или "что от игрока хотят";
-- не смешивать скрытые GM-истины с публичным описанием мира.
-- открытые вопросы задавать прямо в сообщении пользователю, а не складывать в отдельное поле мира.
+- understand free-form user text;
+- ask guiding questions only when genuinely important;
+- avoid a long questionnaire when the user says "decide for me";
+- make reasonable decisions independently when the user grants permission;
+- propose a structured world bible;
+- not write an opening scene, opening quest, player role, or "what is expected of
+  the player";
+- not mix hidden GM truths with the public world description;
+- ask open questions directly in its message to the user instead of placing them in
+  a separate world field.
 
-Пример правильного поведения:
+Example of correct behavior:
 
-Пользователь: "Хочу темный иссекай про клятвы и богов-должников, детали реши сам".
+User: "I want a dark isekai about oaths and debtor gods. Decide the details for me."
 
-Архитектор: "Беру большой континент, десятки миллионов жителей, несколько культур, магию через клятвы, богов как кредиторов душ, живые дороги и запрет бесплатного воскрешения. Собрал черновик, ниже можно поправить".
+Architect: "I'll use a large continent, tens of millions of inhabitants, several
+cultures, oath-based magic, gods as creditors of souls, living roads, and a ban on
+free resurrection. I've assembled a draft; you can adjust it below."
 
-Пример неправильного поведения:
+Example of incorrect behavior:
 
-Архитектор: "Где игрок просыпается? Кто дал ему квест? В какой деревне начинается история?"
+Architect: "Where does the player wake up? Who gives them a quest? Which village
+does the story begin in?"
 
-Это вопросы для следующего шага создания истории, не для мира.
+Those questions belong to the next story-creation step, not to the world.
 
-## Ручной ввод
+## Manual entry
 
-Все поля мира должны быть редактируемыми вручную.
+Every world field must be manually editable.
 
-Требования:
+Requirements:
 
-- пользователь может создать мир вообще без архитектора;
-- архитектор не должен быть единственным источником валидного JSON;
-- пользователь может изменить любое поле после ответа архитектора;
-- сохранение мира должно брать текущее состояние полей, а не "последний ответ модели";
-- если архитектор возвращает обновления, они применяются к полям, но пользователь после этого может править их руками.
+- a user can create a world without the architect;
+- the architect must not be the only source of valid JSON;
+- the user can change any field after the architect responds;
+- save must use the current field state, not the "model's latest response";
+- architect updates are applied to the fields, but the user can edit them afterward.
 
-На этом этапе не требуется сложная система защиты ручных правок от перетирания моделью. Но UI не должен создавать ощущение, что поля только preview. Это настоящая форма редактирования мира.
+This phase does not require a complex system that protects manual edits from model
+overwrites. The UI must, however, make clear that fields are not merely a preview;
+they are the actual world-editing form.
 
-## Поля мира
+## World fields
 
-Минимально нужные поля для вкладки:
+Minimum fields required by the tab:
 
-- `title`: название мира.
-- `genre`: жанр или смесь жанров.
-- `tone`: общий тон мира.
-- `world_size`: размер сеттинга как описание, не как ограничение игры. Примеры: один замок в большом магическом мире, город-государство, континент, планета, сектор галактики, галактика.
-- `population`: примерное население или порядок населения.
-- `peoples`: разумные расы, народы, виды, культуры.
-- `geography`: крупная география, регионы, страны, планеты, опасные зоны.
-- `power_centers`: государства, фракции, власти, ордена, корпорации, дома.
-- `reality_laws`: законы реальности: магия, технологии, боги, смерть, время, связь, путешествия, ограничения.
-- `religions_ideologies`: религии, культы, идеологии, догматы, табу.
-- `history`: история мира: происхождение, крупные сломы, недавние причины текущего состояния.
-- `economy_resources`: экономика, ресурсы, дефициты, торговля, транспорт, деньги.
-- `daily_life`: быт, страхи, праздники, наказания, образование, еда, обычаи.
-- `creatures_threats`: существа, монстры, аномалии, угрозы, что может существовать и почему.
-- `hidden_truths`: скрытые истины для GM, которые не должны прямо утекать игроку.
-- `location_generation_rules`: правила для генератора локаций и сцен: что уместно, что неуместно, какие мотивы повторяются, как мир проявляется в комнатах/городах/дорогах.
-- `prohibited_elements`: что нельзя добавлять без особой причины.
-Поля могут быть строками или списками в UI, но смысл должен сохраняться. Главное - не возвращать `storyBrief`, стартовую сцену или "масштаб стартовой площадки" как часть мира.
+- `title`: world name.
+- `genre`: genre or genre blend.
+- `tone`: the world's overall tone.
+- `world_size`: the setting's extent as a description, not a gameplay limit.
+  Examples: one castle in a large magical world, a city-state, a continent, a
+  planet, a galactic sector, or a galaxy.
+- `population`: approximate population or order of magnitude.
+- `peoples`: sentient races, peoples, species, and cultures.
+- `geography`: large-scale geography, regions, countries, planets, and dangerous
+  zones.
+- `power_centers`: states, factions, authorities, orders, corporations, and houses.
+- `reality_laws`: rules of reality covering magic, technology, gods, death, time,
+  communication, travel, and constraints.
+- `religions_ideologies`: religions, cults, ideologies, dogmas, and taboos.
+- `history`: world history, including origins, major ruptures, and recent causes of
+  the current state.
+- `economy_resources`: economy, resources, scarcity, trade, transport, and money.
+- `daily_life`: daily customs, fears, holidays, punishments, education, food, and
+  traditions.
+- `creatures_threats`: creatures, monsters, anomalies, threats, what can exist, and
+  why.
+- `hidden_truths`: GM-only truths that must not leak directly to the player.
+- `location_generation_rules`: rules for generating locations and scenes: what fits,
+  what does not, recurring motifs, and how the world appears in rooms, cities, and
+  roads.
+- `prohibited_elements`: content that must not be added without a special reason.
 
-## Размер мира против стартового фокуса
+Fields may be strings or lists in the UI, but their meaning must remain intact. Most
+importantly, do not bring back `storyBrief`, an opening scene, or an "opening-area
+scale" as part of the world.
 
-Поля `world_size` и `population` нужны не для ограничения игрока, а для понимания размаха сеттинга.
+## World size versus opening focus
 
-Примеры:
+The `world_size` and `population` fields describe the setting's scope, not a limit
+on the player.
 
-- Hogwarts-like: игра может часто происходить в школе, но мир не равен школе. Нужно описать магическое общество вокруг, правила магии, институции, запреты, население и устройство школы как важного места мира.
-- Game of Thrones-like: один крупный континент, дома, религии, армии, наследование, города, дороги, экономика.
-- Star Wars-like: много планет, видов, фракций, технологий, маршрутов и локальных культур.
+Examples:
 
-Нельзя хранить поле "игровой фокус: школа" как канон мира. Если игрок уйдет из школы, мир должен нормально расширяться наружу. Вместо этого надо хранить: что существует в мире и насколько широкий он по устройству.
+- Hogwarts-like: the game may often take place at a school, but the world is not the
+  school. Describe the wider magical society, rules of magic, institutions,
+  prohibitions, population, and the school as an important place within the world.
+- Game of Thrones-like: one large continent, houses, religions, armies, inheritance,
+  cities, roads, and economy.
+- Star Wars-like: many planets, species, factions, technologies, routes, and local
+  cultures.
 
-## Что получает генератор локаций
+Do not store "gameplay focus: school" as world canon. If the player leaves the
+school, the world must expand naturally. Store what exists in the world and how
+broadly it is structured instead.
 
-Генератор локаций должен получать world bible как рамку консистентности.
+## What the location generator receives
 
-Он должен понимать:
+The location generator receives the world bible as its consistency frame.
 
-- какие существа и народы допустимы;
-- какие технологии/магия допустимы;
-- какие фракции и религии могут проявиться;
-- какие ограничения нельзя нарушать;
-- какие мотивы мира должны проявляться в комнатах, поселениях, дорогах, данжах;
-- какие элементы запрещены без особой причины.
+It must understand:
 
-Пример: если в мире магия работает через клятвы, генератор не должен внезапно создать обычную "ману из воздуха", если это не объяснено исключением.
+- which creatures and peoples are allowed;
+- which technologies and forms of magic are allowed;
+- which factions and religions may appear;
+- which constraints must not be broken;
+- which world motifs should appear in rooms, settlements, roads, and dungeons;
+- which elements are prohibited without a special reason.
 
-## Что получает GM
+Example: if magic in the world works through oaths, the generator must not suddenly
+create ordinary "mana from thin air" unless an exception explains it.
 
-GM получает world bible как источник правил мира. На его основе он позже может создавать конкретную историю.
+## What the GM receives
 
-GM не должен считать, что world bible уже содержит стартовую кампанию. В следующем шаге история будет создана отдельно.
+The GM receives the world bible as the source of world rules. It can later use those
+rules to create a specific story.
 
-## Backend-контракт вкладки
+The GM must not assume the world bible already contains an opening campaign. The
+story is created separately in the next step.
 
-Новый контракт вкладки должен быть чистым:
+## Tab backend contract
 
-- вход архитектора: сообщение пользователя, model-history, текущий черновик мира, stable cache id;
-- выход архитектора: ответ для UI, обновленный world draft, model-history messages для хвостового append, id сохраненного мира;
-- сохранение мира: отдельное действие "создать/сохранить мир", без запуска игрового чата;
-- старые поля вкладки мира (`scale`, `storyBrief`, story-style `publicIntro`) удалить из вкладки.
+The new tab contract must be clean:
 
-Реализованное решение:
+- architect input: user message, model history, current world draft, stable cache id;
+- architect output: UI response, updated world draft, model-history messages for
+  tail append, and the saved world id;
+- world persistence: a separate "create/save world" action that does not launch a
+  game chat;
+- remove the old world-tab fields (`scale`, `storyBrief`, story-style `publicIntro`).
 
-- список миров читается отдельно от списка чатов;
-- сохранение мира не возвращает `state`, `transcript` и `chat`;
-- первый запрос к архитектору без `world_id` сразу создает `World` в статусе `draft`, еще до вызова модели;
-- если модель упала, черновик мира все равно остается в списке с первым сообщением пользователя;
-- последующие запросы архитектору отправляются с `world_id` и обновляют тот же мир;
-- `World` хранит `architect_messages` для UI, `architect_model_history` для хвостового append и `architect_cache_session_id` / `architect_cache_thread_id` для стабильного cache identity;
-- ручное "Сохранить мир" обновляет существующий черновик и ставит `status: ready`, а не создает дубль;
-- открытие списка миров не создает активный чат;
-- удаление мира не трогает текущую игровую сессию;
-- `/worlds` отклоняет поля истории: `scale`, `seed`, `story_id`, `story_brief`, `public_intro`, `activate`.
+Implemented solution:
 
-На уровне остальной игры старые игровые пути не трогать в этой задаче, если они не относятся к вкладке создания мира.
+- the world list is read separately from the chat list;
+- saving a world does not return `state`, `transcript`, or `chat`;
+- the first architect request without `world_id` creates a `World` with `draft`
+  status before invoking the model;
+- if the model fails, the world draft remains in the list with the user's first
+  message;
+- subsequent architect requests include `world_id` and update the same world;
+- `World` stores `architect_messages` for the UI,
+  `architect_model_history` for tail append, and
+  `architect_cache_session_id` / `architect_cache_thread_id` for stable cache
+  identity;
+- manual "Save world" updates the existing draft and sets `status: ready` instead
+  of creating a duplicate;
+- opening the world list does not create an active chat;
+- deleting a world does not affect the current game session;
+- `/worlds` rejects story fields: `scale`, `seed`, `story_id`, `story_brief`,
+  `public_intro`, `activate`.
 
-## UI-контракт
+Do not change older gameplay paths elsewhere in the application as part of this task
+unless they directly relate to the world-creation tab.
 
-Вкладка должна визуально оставаться в текущей новой компоновке:
+## UI contract
 
-- слева чат с архитектором;
-- справа редактируемая форма мира;
-- кнопка внизу: "Сохранить мир" или "Создать мир";
-- список миров слева в общей навигации остается списком миров, не чатов.
-- строка мира в списке открывает этот мир в студии и восстанавливает его поля, историю архитектора и cache id;
-- кнопка "+ Создать мир" открывает пустой новый черновик.
+The tab must retain the current visual layout:
 
-Нельзя ломать текущий layout, который уже был обновлен: main pane должен оставаться полноценной студией создания мира, а не маленьким блоком в сайдбаре.
+- architect chat on the left;
+- editable world form on the right;
+- bottom action: "Save world" or "Create world";
+- the world list in shared left navigation remains a list of worlds, not chats;
+- selecting a world in the list opens it in the studio and restores its fields,
+  architect history, and cache id;
+- "+ Create world" opens a blank new draft.
+
+Do not break the updated layout: the main pane must remain a complete world-creation
+studio, not a small block in the sidebar.
 
 ## Acceptance criteria
 
-- Вкладка создания миров больше не содержит `scale`, `storyBrief` и стартовую завязку истории как обязательные поля мира.
-- Кнопка создания мира не запускает игровой чат.
-- Пользователь может вручную заполнить поля и сохранить мир без архитектора.
-- Первое сообщение архитектору создает persistent draft world.
-- История чата архитектора восстанавливается при выборе мира из списка.
-- Сохранение готового мира не теряет историю архитектора и cache identity.
-- Архитектор отвечает про world bible, а не про стартовую сцену.
-- Запросы архитектора остаются cache-stable: стабильная голова, стабильный cache id, хвост только дописывается.
-- Backend принимает и возвращает чистый draft мира.
-- Тесты покрывают отсутствие legacy-полей в контракте архитектора.
-- Сборка фронта проходит.
-- Rust tests/clippy проходят для затронутых пакетов.
+- The world-creation tab no longer contains `scale`, `storyBrief`, or an opening
+  story hook as required world fields.
+- Creating a world does not launch a game chat.
+- A user can fill fields manually and save a world without the architect.
+- The first architect message creates a persistent draft world.
+- Architect chat history is restored when a world is selected from the list.
+- Saving a ready world preserves architect history and cache identity.
+- The architect discusses the world bible, not an opening scene.
+- Architect requests remain cache-stable: stable head, stable cache id, append-only
+  tail.
+- The backend accepts and returns a clean world draft.
+- Tests cover the absence of legacy fields from the architect contract.
+- The frontend build passes.
+- Rust tests/clippy pass for affected packages.
 
-## Что не делаем сейчас
+## Out of scope for now
 
-- Создание истории из мира.
-- Выбор мира при создании истории.
-- Общий таймлайн мира между историями.
-- Миграцию старых процедурных чатов в миры.
-- Глубокий редактор массивов/таблиц для каждого поля, если простой textarea уже позволяет вручную заполнить мир.
+- Creating a story from a world.
+- Selecting a world when creating a story.
+- A shared world timeline across stories.
+- Migrating old procedural chats into worlds.
+- A deep array/table editor for every field when a simple textarea already supports
+  manual input.

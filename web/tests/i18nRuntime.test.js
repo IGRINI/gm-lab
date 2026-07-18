@@ -5,8 +5,8 @@ import { installRuntimeTranslator, runtimeText } from "../src/i18n/runtime.js";
 
 test("runtime translations are safe before the browser catalog is initialized", () => {
   assert.equal(
-    runtimeText("app:api.turnFailed", { defaultValue: "ход не выполнен" }),
-    "ход не выполнен"
+    runtimeText("app:api.turnFailed", { defaultValue: "The turn failed" }),
+    "The turn failed"
   );
 });
 

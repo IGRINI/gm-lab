@@ -40,7 +40,9 @@ pub use world_store::{WorldStore, ASSETS_DIR as ASSETS_DIR_NAME};
 /// `SCHEMA_VERSION = 1` — hard-checked on load (no migrations exist).
 pub const SCHEMA_VERSION: i64 = 1;
 /// `DEFAULT_CHAT_TITLE`.
-pub const DEFAULT_CHAT_TITLE: &str = "Новый чат";
+pub const DEFAULT_CHAT_TITLE: &str = "New Chat";
+const DEFAULT_WORLD_TITLE: &str = "New World";
+const DEFAULT_BRANCH_SUFFIX: &str = "branch";
 /// Number of completed player turns that remain available for exact rewind.
 pub const MAX_REWIND_TURNS: usize = 10;
 
@@ -1125,7 +1127,10 @@ impl DialogStore {
                     let requested_title =
                         clean_metadata_text(title.as_deref().unwrap_or_default(), 80);
                     let branch_title = if requested_title.is_empty() {
-                        clean_metadata_text(&format!("{source_title} — ветка"), 80)
+                        clean_metadata_text(
+                            &format!("{source_title} — {DEFAULT_BRANCH_SUFFIX}"),
+                            80,
+                        )
                     } else {
                         requested_title
                     };
@@ -1500,7 +1505,7 @@ impl DialogStore {
         let chat_id = new_chat_id(&tx, guest_id)?;
         let requested_title = clean_metadata_text(title.unwrap_or_default(), 80);
         let branch_title = if requested_title.is_empty() {
-            clean_metadata_text(&format!("{source_title} — ветка"), 80)
+            clean_metadata_text(&format!("{source_title} — {DEFAULT_BRANCH_SUFFIX}"), 80)
         } else {
             requested_title
         };
@@ -2094,7 +2099,7 @@ pub(crate) fn world_row_response(
     out.insert(
         "title".to_string(),
         json!(if title.is_empty() {
-            "Новый мир"
+            DEFAULT_WORLD_TITLE
         } else {
             title
         }),
@@ -2118,7 +2123,7 @@ pub(crate) fn world_title_from_payload(payload: &Value) -> String {
         .unwrap_or_default();
     let title = clean_metadata_text(title, 100);
     if title.is_empty() {
-        "Новый мир".to_string()
+        DEFAULT_WORLD_TITLE.to_string()
     } else {
         title
     }

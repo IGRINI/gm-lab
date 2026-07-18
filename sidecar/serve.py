@@ -15,7 +15,7 @@ Per-model config from env (the Rust app passes these from gml-config):
   EMBEDDER_MODEL   (default Qwen/Qwen3-Embedding-0.6B)   EMBEDDER_QUANT = bf16 | nf4   EMBEDDER_ENABLED=1
   RERANKER_MODEL   (default jinaai/jina-reranker-v3)     RERANKER_QUANT = bf16 | nf4   RERANKER_ENABLED=1
   STT_ENABLED=1    STT_MODEL (managed local Whisper snapshot)
-  TTS_ENABLED=1    TTS_MODEL_ID (override) TTS_HOME (refs + qwen17b_base dir) TTS_LANG (default Russian)
+  TTS_ENABLED=1    TTS_MODEL_ID (override) TTS_HOME (refs + qwen17b_base dir) TTS_LANG (default English)
   IMAGE_ENABLED=1  IMAGE_RUNTIME_ROOT (default ./image_runtime) IMAGE_OUTPUT_DIR
   USE_FLASH=auto  JINA_COMPILE=1  JINA_MAX_DOC_LEN=2048  JINA_MAX_QUERY_LEN=512
   RERANK_TOP_N         default # of results /rerank returns when the request omits top_n (0/empty = all)
@@ -208,7 +208,10 @@ IMAGE_PRESETS = {
 }
 
 TTS_HOME = Path(os.environ.get("TTS_HOME", str(_DEFAULT_TTS_HOME)))
-TTS_LANG = os.environ.get("TTS_LANG", "Russian")
+TTS_LANG = os.environ.get("TTS_LANG", "English")
+TTS_WARMUP_TEXT = os.environ.get("TTS_WARMUP_TEXT") or (
+    "Тест." if TTS_LANG.strip().lower() in {"ru", "ru-ru", "russian"} else "Test."
+)
 # Setup installs the complete 1.7B model here. Runtime downloads are disabled
 # by default so enabling a UI toggle never starts an unplanned network transfer.
 _LOCAL_17B = TTS_HOME / "qwen17b_base"
@@ -421,7 +424,7 @@ def _load_tts():
     # Prime each voice's reference-prompt cache (and surface missing refs early).
     for name, cfg in VOICES.items():
         try:
-            m.generate_voice_clone(text="Тест.", language=TTS_LANG,
+            m.generate_voice_clone(text=TTS_WARMUP_TEXT, language=TTS_LANG,
                                    ref_audio=cfg["ref_audio"], ref_text=cfg["ref_text"],
                                    xvec_only=cfg["xvec_only"], max_new_tokens=8, **SAMPLING)
             print(f"[sidecar] voice '{name}' warm", flush=True)

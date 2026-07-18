@@ -25,8 +25,9 @@ use gml_config::Config;
 
 /// Default transcription model (`GM_CODEX_TRANSCRIBE_MODEL`).
 pub const DEFAULT_MODEL: &str = "gpt-4o-mini-transcribe";
-/// Default language hint (`GM_CODEX_TRANSCRIBE_LANGUAGE`); empty disables it.
-pub const DEFAULT_LANGUAGE: &str = "ru";
+/// Default language hint (`GM_CODEX_TRANSCRIBE_LANGUAGE`). Empty lets the
+/// provider detect the spoken language automatically.
+pub const DEFAULT_LANGUAGE: &str = "";
 /// Default request timeout in seconds (`GM_CODEX_TRANSCRIBE_TIMEOUT`).
 pub const DEFAULT_TIMEOUT_SECS: f64 = 120.0;
 
@@ -40,7 +41,7 @@ pub enum TranscribeError {
     #[error("{0}")]
     Auth(String),
     /// Cloudflare returned a challenge (`cf-mitigated` header present).
-    #[error("Cloudflare заблокировал транскрипцию (challenge) — TLS-обход не прошёл")]
+    #[error("Cloudflare blocked the transcription request (challenge)")]
     Cloudflare {
         /// HTTP status of the challenge response.
         status: u16,
@@ -101,11 +102,9 @@ pub fn transcribe_model() -> String {
     env_or("GM_CODEX_TRANSCRIBE_MODEL", DEFAULT_MODEL)
 }
 
-/// The language hint (`GM_CODEX_TRANSCRIBE_LANGUAGE` or default `ru`); empty
-/// disables the hint.
+/// The language hint (`GM_CODEX_TRANSCRIBE_LANGUAGE`); absent or empty lets
+/// the provider detect the spoken language automatically.
 pub fn transcribe_language() -> String {
-    // Python: os.environ.get(..., "ru") — only the default is "ru"; an
-    // explicitly-set empty string disables the hint.
     std::env::var("GM_CODEX_TRANSCRIBE_LANGUAGE").unwrap_or_else(|_| DEFAULT_LANGUAGE.to_string())
 }
 
@@ -329,6 +328,7 @@ mod tests {
     // The transcribe URL reads a process-global env var; these three tests
     // mutate it, so serialize them under one mutex to avoid cross-test races.
     static URL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static LANGUAGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn transcribe_url_strips_codex_suffix() {
@@ -360,6 +360,17 @@ mod tests {
         let c = cfg_with_base("https://chatgpt.com/backend-api/codex");
         assert_eq!(transcribe_url(&c), "https://override/t");
         std::env::remove_var("GM_CODEX_TRANSCRIBE_URL");
+    }
+
+    #[test]
+    fn transcription_language_auto_detects_unless_explicitly_configured() {
+        let _g = LANGUAGE_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("GM_CODEX_TRANSCRIBE_LANGUAGE");
+        assert_eq!(transcribe_language(), "");
+
+        std::env::set_var("GM_CODEX_TRANSCRIBE_LANGUAGE", "ru");
+        assert_eq!(transcribe_language(), "ru");
+        std::env::remove_var("GM_CODEX_TRANSCRIBE_LANGUAGE");
     }
 
     #[test]
@@ -436,6 +447,14 @@ mod tests {
         );
         assert_eq!(TranscribeError::EmptyAudio.status(), None);
         assert_eq!(TranscribeError::Unavailable.status(), None);
+    }
+
+    #[test]
+    fn cloudflare_error_message_is_english() {
+        assert_eq!(
+            TranscribeError::Cloudflare { status: 403 }.to_string(),
+            "Cloudflare blocked the transcription request (challenge)"
+        );
     }
 
     #[tokio::test]

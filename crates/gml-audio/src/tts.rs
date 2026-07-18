@@ -43,9 +43,8 @@ pub enum TtsError {
     /// Empty `text` — the Python handler returns 400 "empty text".
     #[error("empty text")]
     EmptyText,
-    /// The sidecar is unreachable / errored. Maps to HTTP 503
-    /// ("TTS-сервис недоступен").
-    #[error("TTS-сервис недоступен: {0}")]
+    /// The sidecar is unreachable / errored. Maps to HTTP 503.
+    #[error("TTS service unavailable: {0}")]
     Unavailable(String),
     /// A local I/O failure (cache read/write, ffmpeg piping).
     #[error("tts io error: {0}")]
@@ -589,6 +588,14 @@ mod tests {
             &["-c:a", "libmp3lame", "-b:a", "56k", "-ac", "1", "-f", "mp3"]
         );
         assert!(TtsFormat::Wav.ffmpeg_encode_args().is_none());
+    }
+
+    #[test]
+    fn unavailable_error_message_is_english() {
+        assert_eq!(
+            TtsError::Unavailable("connection refused".to_string()).to_string(),
+            "TTS service unavailable: connection refused"
+        );
     }
 
     #[test]

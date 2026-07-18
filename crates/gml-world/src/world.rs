@@ -48,9 +48,18 @@ fn gender_label_ru(value: &str) -> Option<&'static str> {
     }
 }
 
-/// `WHEREABOUTS_STATUS_LABELS` — key -> player-facing RU label, in insertion
-/// order (present, known, likely, rumored, unknown, left_scene).
+/// `WHEREABOUTS_STATUS_LABELS` — key -> player-facing English fallback label,
+/// in insertion order (present, known, likely, rumored, unknown, left_scene).
 pub const WHEREABOUTS_STATUS_LABELS: [(&str, &str); 6] = [
+    ("present", "in the current scene"),
+    ("known", "known"),
+    ("likely", "likely"),
+    ("rumored", "rumored"),
+    ("unknown", "unknown"),
+    ("left_scene", "left the scene"),
+];
+
+const WHEREABOUTS_STATUS_LABELS_RU: [(&str, &str); 6] = [
     ("present", "в текущей сцене"),
     ("known", "известно"),
     ("likely", "вероятно"),
@@ -83,16 +92,36 @@ fn whereabouts_status_label_for_locale(
     locale: ContentLocale,
 ) -> Option<&'static str> {
     if locale.is_russian() {
-        return whereabouts_status_label(status);
+        return WHEREABOUTS_STATUS_LABELS_RU
+            .iter()
+            .find(|(key, _)| *key == status)
+            .map(|(_, value)| *value);
     }
-    match status {
-        "present" => Some("in the current scene"),
-        "known" => Some("known"),
-        "likely" => Some("likely"),
-        "rumored" => Some("rumored"),
-        "unknown" => Some("unknown"),
-        "left_scene" => Some("left"),
-        _ => None,
+    whereabouts_status_label(status)
+}
+
+#[cfg(test)]
+mod whereabouts_status_label_tests {
+    use super::*;
+
+    #[test]
+    fn fallback_labels_follow_the_content_locale() {
+        assert_eq!(
+            whereabouts_status_label_for_locale("present", ContentLocale::English),
+            Some("in the current scene")
+        );
+        assert_eq!(
+            whereabouts_status_label_for_locale("present", ContentLocale::Russian),
+            Some("в текущей сцене")
+        );
+        assert_eq!(
+            whereabouts_status_label_for_locale("left_scene", ContentLocale::English),
+            Some("left the scene")
+        );
+        assert_eq!(
+            whereabouts_status_label_for_locale("left_scene", ContentLocale::Russian),
+            Some("ушёл")
+        );
     }
 }
 

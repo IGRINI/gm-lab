@@ -162,7 +162,7 @@ const EMPTY_RUN_USAGE = {
 const EMPTY_CONTEXT_USAGE = {
   current: 0,
   world: 0,
-  next_compact: { label: "ГМ", used: 0, limit: 0, remaining: 0 },
+  next_compact: { label: "GM", used: 0, limit: 0, remaining: 0 },
   gm: { active: 0, history: 0, summary: 0, limit: 0, remaining: 0 },
   npc: { name: "", active: 0, history: 0, summary: 0, limit: 0, remaining: 0 },
   npcs: [],
@@ -844,7 +844,7 @@ export default function App() {
         store.dispatch(ev);
         if (ev.kind === "error") {
           streamError = {
-            agent: textValue(ev.agent) || "ГМ",
+            agent: textValue(ev.agent) || "GM",
             text: textValue(ev.data) || appText("errors.turnFailed"),
           };
         }
@@ -960,7 +960,7 @@ export default function App() {
           restoreAttemptUi();
           restoreLiveStateCheckpoint(activeTurn.stateCheckpoint);
           const errorRow = streamError || {
-            agent: "ГМ",
+            agent: "GM",
             text: userErrorText(e, appText("errors.turnFailed")),
           };
           if (e?.code === "turn_not_running") {
@@ -1022,7 +1022,7 @@ export default function App() {
           restoreAttemptUi();
           restoreLiveStateCheckpoint(activeTurn.stateCheckpoint);
           const errorRow = streamError || {
-            agent: "ГМ",
+            agent: "GM",
             text: textValue(terminal.error) || appText("errors.turnFailed"),
           };
           if (!legacyResume && !playerEventSeen && textValue(failedAttempt.text))
@@ -1070,14 +1070,14 @@ export default function App() {
             restoreAttemptUi();
             if (legacyResume) {
               store.rollbackTurn();
-        notify(userErrorText(error, appText("errors.turnCommittedTranscriptRefresh")));
+              notify(userErrorText(error, appText("errors.turnCommittedTranscriptRefresh")));
             } else {
               if (!playerEventSeen && textValue(failedAttempt.text))
                 store.pushLocal({ type: "player", text: failedAttempt.text });
               store.pushLocal({
                 type: "error",
-                agent: "ГМ",
-          text: userErrorText(error, appText("errors.turnCommittedTranscriptRefresh")),
+                agent: "GM",
+                text: userErrorText(error, appText("errors.turnCommittedTranscriptRefresh")),
               });
             }
             // Retain the current checkpoint. Repeating the same id is safe and
@@ -1357,7 +1357,7 @@ export default function App() {
         if (!committed) {
           const errorText = textValue(result?.error) || appText("errors.historyMutationFailed");
           store.beginTurn();
-          store.pushLocal({ type: "error", agent: "ГМ", text: errorText });
+          store.pushLocal({ type: "error", agent: "GM", text: errorText });
           if (result?.retryable !== false && result?.request_id) {
             setFailedTurn({
               chatId: activeChatId,
@@ -2266,7 +2266,7 @@ export default function App() {
         consecutiveStatusFailures += 1;
       }
     }
-    const error = new Error("Операция отменена");
+    const error = new Error("Operation cancelled");
     error.name = "AbortError";
     throw error;
   }, [updateConnectorAuth]);

@@ -547,7 +547,7 @@ pub fn context_usage(session: &mut Session) -> Value {
 
     let mut candidates: Vec<Value> = vec![json!({
         "scope": "gm",
-        "label": "ГМ",
+        "label": "GM",
         "used": gm_history,
         "limit": gm_limit,
         "remaining": gm_remaining,

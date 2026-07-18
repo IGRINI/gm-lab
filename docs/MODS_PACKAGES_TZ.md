@@ -1,61 +1,111 @@
-# TZ: миры и истории как переносимые пакеты («моды»)
+**English** | [Русский](ru/MODS_PACKAGES_TZ.md)
 
-## Статус
+# Specification: Worlds and Stories as Portable Packages ("Mods")
 
-- [x] Зафиксировать модель пакетов и раскладку на диске. *(ТЗ ниже.)*
-- [x] Перевести миры с таблицы `worlds` на файловые пакеты (источник истины — папки). *(Фаза 1: WorldStore в gml-persistence, `library/worlds/<id>/world.json`, миграция из SQLite, контракт `/worlds` byte-identical, workspace green.)*
-- [x] Копировать картинки внутрь пакета мира и отдавать их статик-роутом независимо от `image_enabled`. *(Фаза 2: ingest при сохранении в `assets/`, роут `/world-assets/{id}/{file}` без гейта, read-time rewrite относительный→servable, no-fallback 502, тесты зелёные.)*
-- [x] Перевести истории с `include_str!(catalog.json)` на рантайм-скан пакетов; 3 встроенные истории едут дефолтными пакетами. *(Фаза 3: StoryStore в gml-stories, `library/stories/<id>/story.json`, дефолты материализуются из embedded catalog.json (больше не живой путь чтения), порядок `/stories` сохранён через builtin-order, drop-in работает, workspace green. Глобального `DEFAULT_STORE` больше нет: каждый вызывающий строит `StoryStore` явно (сервер — через `AppState`, тесты — над `tempfile::tempdir()`), поэтому голый `cargo test` никогда не материализует дефолты в реальный `library`.)*
-- [x] Связать историю с миром (`world_ref`) + поддержать «запечённый» self-contained вариант. *(Фаза 4 backend: StoryStore хранит/отдаёт `kind`+`world_ref`; `POST /stories` создаёт историю, привязанную к миру (валидация существования world_id, no-fallback); self-contained встроенные истории остаются `from_seed`.)*
-- [x] Дописать запуск сохранённого мира/истории в игровую сессию. *(Фаза 4 backend: `/chats` принимает `world_id` (играть сохранённый мир процедурно, world_id > inline world_lore); запуск истории — procedural=worldgen(lore)+оверлей, authored=`World::compose_authored` (worldgen(lore) + наложение плота: PC/hidden_truth/scene/npcs/facts, авторская сцена апсертится в канон через set_scene); провенанс `world_ref`/`story_ref` пишется в payload сейва (трейлинг-ключи, byte-identical для старых сейвов). Фронт (web/) — следующий шаг.)*
-- [x] Миграция существующих миров из SQLite в папки без потери данных. *(Фаза 1: WorldStore::migrate_from_sqlite — единственный читатель старой таблицы, идемпотентно при старте.)*
-- [x] Обновить тесты/контракты под новый формат. *(Фазы 1–4: WorldStore/StoryStore unit-тесты, обновлённый contract.rs (37), golden `/stories` через builtin-order, golden payload roundtrip зелёный.)*
-- [x] Фаза 5 — UX шаринга: открыть папку библиотеки, экспорт пакета в zip (+«запечь мир»), импорт zip. *(zip-крейт deflate-only; `POST /library/reveal`, `GET /worlds|stories/{id}/export` (story `?bake=1` запекает мир под `world/`), `POST /library/import?overwrite=1` со staging+atomic swap (zip-slip guard, no-fallback); фронт: кнопки экспорт/импорт/открыть-папку; тесты зелёные.)*
+## Status
 
-Продолжает `docs/WORLD_CREATION_TAB_TZ.md` (раздел «Что не делаем сейчас»: создание истории из мира, выбор мира при создании истории). Здесь это вводится в скоуп вместе с переносом хранения на файлы.
+- [x] Define the package model and on-disk layout. *(Specified below.)*
+- [x] Move worlds from the `worlds` table to file packages (folders are the source
+  of truth). *(Phase 1: WorldStore in gml-persistence,
+  `library/worlds/<id>/world.json`, migration from SQLite, byte-identical `/worlds`
+  contract, workspace green.)*
+- [x] Copy images into the world package and serve them through a static route
+  independently of `image_enabled`. *(Phase 2: ingest into `assets/` on save,
+  ungated `/world-assets/{id}/{file}` route, read-time relative→servable rewrite,
+  no-fallback 502, tests green.)*
+- [x] Replace story loading via `include_str!(catalog.json)` with runtime package
+  scanning; the three built-in stories ship as default packages. *(Phase 3:
+  StoryStore in gml-stories, `library/stories/<id>/story.json`; defaults materialize
+  from embedded catalog.json, which is no longer a live read path; builtin-order
+  preserves `/stories` ordering; drop-in packages work; workspace green. There is
+  no global `DEFAULT_STORE`: every caller constructs `StoryStore` explicitly (the
+  server through `AppState`, tests over `tempfile::tempdir()`), so bare `cargo test`
+  never materializes defaults in the real `library`.)*
+- [x] Link stories to worlds (`world_ref`) and support a baked self-contained form.
+  *(Phase 4 backend: StoryStore stores/returns `kind`+`world_ref`; `POST /stories`
+  creates a story linked to a world, validates that world_id exists, and has no
+  fallback; self-contained built-in stories remain `from_seed`.)*
+- [x] Complete launch of saved worlds/stories into a game session. *(Phase 4
+  backend: `/chats` accepts `world_id` to play a saved world procedurally, with
+  world_id taking precedence over inline world_lore; story launch uses
+  procedural=worldgen(lore)+overlay or authored=`World::compose_authored`
+  (worldgen(lore) plus plot overlay: PC/hidden_truth/scene/NPCs/facts; the authored
+  scene is upserted into canon via set_scene). Save payload provenance records
+  `world_ref`/`story_ref` as trailing keys, preserving byte identity for old saves.
+  Frontend (`web/`) is the next step.)*
+- [x] Migrate existing worlds from SQLite into folders without data loss. *(Phase 1:
+  `WorldStore::migrate_from_sqlite` is the sole reader of the old table and runs
+  idempotently at startup.)*
+- [x] Update tests/contracts for the new format. *(Phases 1–4: WorldStore/StoryStore
+  unit tests, updated contract.rs (37), golden `/stories` through builtin-order,
+  golden payload round trip green.)*
+- [x] Phase 5 — sharing UX: reveal the library folder, export a package to zip
+  (including "bake world"), and import zip. *(Deflate-only zip crate;
+  `POST /library/reveal`, `GET /worlds|stories/{id}/export` (story `?bake=1` bakes
+  the world under `world/`), `POST /library/import?overwrite=1` with staging+atomic
+  swap, zip-slip guard, and no fallback; frontend buttons for export/import/open
+  folder; tests green.)*
 
-## Главная идея
+This continues `docs/WORLD_CREATION_TAB_TZ.md` (the "Out of scope for now" section:
+creating a story from a world and selecting a world when creating a story). Those
+items enter scope here together with the storage migration to files.
 
-Мир и история должны быть **переносимыми артефактами**, которые можно отдать другому человеку, как мод для игры (Minecraft / Project Zomboid). Папку кинул — оно подхватилось.
+## Core idea
 
-Три типа артефактов:
+A world and a story must be **portable artifacts** that can be shared with another
+person like a game mod (Minecraft / Project Zomboid). Drop in a folder and the app
+discovers it.
 
-| Тип | Аналог | Что внутри | Где живёт | Шарится |
+Three artifact types:
+
+| Type | Analogy | Contents | Storage | Shareable |
 |---|---|---|---|---|
-| **World** (мир) | мод / датапак | world bible (`WorldLore`) + картинки | файловый пакет | да |
-| **Story** (история) | сценарий-мод, зависит от мира | плот-оверлей (роль игрока, hidden_truth, стартовая сцена) + `world_ref` + свои картинки | файловый пакет | да, вместе с миром |
-| **Save** (прохождение) | сейв | живой `WorldCanon` + транскрипт + состояние | SQLite (`dialog_chats`) | опционально (экспорт позже) |
+| **World** | mod / data pack | world bible (`WorldLore`) + images | file package | yes |
+| **Story** | scenario mod that depends on a world | plot overlay (player role, hidden_truth, opening scene) + `world_ref` + its own images | file package | yes, together with the world |
+| **Save** (playthrough) | save game | live `WorldCanon` + transcript + state | SQLite (`dialog_chats`) | optionally (export later) |
 
-Принцип разделения «мод против сейва» (как в играх): **миры и истории — это контент (моды)**, который шарят; **прохождение — это личный сейв**, который остаётся в БД ради надёжных частых записей хода.
+The mod-versus-save separation follows games: **worlds and stories are shareable
+content (mods)**, while **a playthrough is a personal save** kept in the database
+for reliable, frequent turn writes.
 
-## Зафиксированные решения
+## Locked decisions
 
-1. **Расположение**: библиотека внутри текущей папки данных приложения — `<data_dir>/library/`, где `data_dir` = `directories::ProjectDirs("gm-lab").data_dir()` (на Windows `%APPDATA%\Roaming\gm-lab\data`). Портативный режим «рядом с .exe» — НЕ сейчас (отдельная задача; инвариант README «ничего рядом с бинарём» пока не трогаем). Переопределение пути — env `GM_PACKAGES_DIR`, по аналогии с `GM_DIALOG_DB`/`GM_RAG_CACHE_PATH`.
-2. **Источник истины**: для миров и историй — файловые пакеты (папки), сканируются при старте. Для прохождений — SQLite остаётся как есть.
-3. **Связь история↔мир**: по умолчанию ссылка `world_ref` (нужны обе папки, как зависимость мода). При экспорте — опция «запечь мир внутрь» для самодостаточного бандла. Это же позволяет 3 текущие самодостаточные истории ехать как пакеты с запечённым миром.
+1. **Location**: the library lives inside the current application data directory at
+   `<data_dir>/library/`, where `data_dir` =
+   `directories::ProjectDirs("gm-lab").data_dir()` (on Windows,
+   `%APPDATA%\Roaming\gm-lab\data`). Portable mode beside the `.exe` is out of
+   scope (a separate task; do not change the README invariant that nothing is kept
+   beside the binary). Override the path with `GM_PACKAGES_DIR`, analogous to
+   `GM_DIALOG_DB`/`GM_RAG_CACHE_PATH`.
+2. **Source of truth**: file packages (folders) scanned at startup for worlds and
+   stories. SQLite remains unchanged for playthroughs.
+3. **Story↔world relationship**: default to a `world_ref` dependency (both folders
+   are required, as with a mod dependency). Export offers a "bake world inside"
+   option for a self-contained bundle. This also lets the three current
+   self-contained stories ship as packages with a baked world.
 
-## Раскладка на диске
+## On-disk layout
 
 ```
-%APPDATA%\Roaming\gm-lab\data\          ← существующий data_dir (тут уже лежит gm_lab_dialogs.sqlite3, .tls)
-├─ gm_lab_dialogs.sqlite3               ← БЕЗ изменений: чаты/сейвы + guest_dialog_state
-├─ gm_lab_embeddings.sqlite3            ← БЕЗ изменений (глобальный RAG-кэш; пер-мировый — будущее)
-└─ library/                             ← НОВОЕ; override: GM_PACKAGES_DIR
+%APPDATA%\Roaming\gm-lab\data\          ← existing data_dir (already contains gm_lab_dialogs.sqlite3 and .tls)
+├─ gm_lab_dialogs.sqlite3               ← UNCHANGED: chats/saves + guest_dialog_state
+├─ gm_lab_embeddings.sqlite3            ← UNCHANGED (global RAG cache; per-world is future work)
+└─ library/                             ← NEW; override: GM_PACKAGES_DIR
    ├─ worlds/
-   │  └─ <world_id>/                    ← имя папки = world_id (urlsafe, стабилен)
-   │     ├─ world.json                  ← манифест + world bible
-   │     ├─ architect.json              ← история чата архитектора + cache id (для доредактирования)
+   │  └─ <world_id>/                    ← folder name = world_id (URL-safe and stable)
+   │     ├─ world.json                  ← manifest + world bible
+   │     ├─ architect.json              ← architect chat history + cache id (for later editing)
    │     └─ assets/
-   │        ├─ cover.png                ← бывш. world_image_url
-   │        └─ map.png                  ← бывш. world_map_url
+   │        ├─ cover.png                ← formerly world_image_url
+   │        └─ map.png                  ← formerly world_map_url
    └─ stories/
       └─ <story_id>/
-         ├─ story.json                  ← манифест: world_ref + плот-оверлей
+         ├─ story.json                  ← manifest: world_ref + plot overlay
          ├─ assets/ …
-         └─ world/                      ← ОПЦИОНАЛЬНО: запечённая копия мира (self-contained вариант)
+         └─ world/                      ← OPTIONAL: bundled world copy (self-contained variant)
 ```
 
-## Форматы файлов
+## File formats
 
 ### `world.json`
 ```json
@@ -64,19 +114,24 @@
   "id": "porog-vtorogo-neba",
   "version": 3,
   "status": "ready",
-  "title": "Порог Второго Неба",
-  "genre": "тёмный иссекай",
+  "title": "Threshold of the Second Sky",
+  "genre": "dark isekai",
   "tone": "…",
   "world_size": "…",
   "population": "…",
-  "lore": { "…весь WorldLore из crates/gml-world/src/canon/lore.rs…" },
+  "lore": { "…complete WorldLore from crates/gml-world/src/canon/lore.rs…" },
   "assets": { "cover": "assets/cover.png", "map": "assets/map.png" },
   "created_at": "…", "updated_at": "…"
 }
 ```
-- `lore` — ровно структура `WorldLore`. Поля `world_image_url`/`world_map_url` теперь хранят **относительный путь внутри пакета** (`assets/cover.png`), а не volatile `/image-files/<run_id>/…`.
-- `version` (int) растёт на каждое сохранение — для `world_ref` историй и для «мир обновился».
-- `architect.json` вынесен отдельно (большой, нужен только в студии): `architect_messages`, `architect_model_history`, `architect_cache_session_id/thread_id`.
+- `lore` is exactly the `WorldLore` structure. The `world_image_url`/
+  `world_map_url` fields now store a **relative path inside the package**
+  (`assets/cover.png`) instead of a volatile `/image-files/<run_id>/…` path.
+- `version` (integer) increments on every save and supports story `world_ref` values
+  and "world updated" detection.
+- `architect.json` is separate because it is large and needed only in the studio:
+  `architect_messages`, `architect_model_history`,
+  `architect_cache_session_id/thread_id`.
 
 ### `story.json`
 ```json
@@ -87,73 +142,113 @@
   "kind": "authored",
   "world_ref": { "id": "porog-vtorogo-neba", "version": ">=3" },
   "world_embedded": false,
-  "title": "Деревня у живой дороги",
+  "title": "Village by the Living Road",
   "plot": {
     "player_character": { "…" },
     "hidden_truth": "…",
-    "scene": { "…старт…" },
+    "scene": { "…opening…" },
     "story_brief": "…",
     "public_intro": "…",
     "proper_nouns": [], "public_facts": [], "npcs": [], "state_records": [], "time": 480
   }
 }
 ```
-- `kind`: `"authored"` (рукописный плот) | `"procedural"` (генерится из мира на лету; тогда `plot` минимален).
-- `world_embedded: true` + папка `world/` → self-contained бандл (опция «запечь мир»).
-- `plot` — это поля авторского сида из текущего `catalog.json` **минус** world-bible часть (она приходит из мира по `world_ref`). Для самодостаточных легаси-историй world-bible едет в `world/` (запечён).
+- `kind`: `"authored"` (handwritten plot) | `"procedural"` (generated from the
+  world at runtime, with a minimal `plot`).
+- `world_embedded: true` plus a `world/` folder forms a self-contained bundle (the
+  "bake world" option).
+- `plot` contains the authored seed fields from the current `catalog.json` **minus**
+  the world-bible portion, which comes from the world through `world_ref`. For
+  self-contained legacy stories, the world bible ships baked under `world/`.
 
-## Соответствие текущему коду (ложится 1:1)
+## Mapping to the current code (1:1)
 
-- `world.json.lore` ← `WorldLore` (`crates/gml-world/src/canon/lore.rs`), без изменения структуры.
-- `story.json.plot` ← поля сида из `crates/gml-stories/src/catalog.json` (`player_character`, `hidden_truth`, `scene`, …).
-- Процедурный запуск уже умеет «мир + оверлей»: `World::from_worldgen_with_lore` + наложение `story_*` из тела запроса (`crates/gml-server/src/lib.rs:1583`). Запуск истории = `load(world.json.lore)` + наложение `story.json.plot`.
-- Контракт `/worlds` (payload-форма) сохраняется → фронт не меняется на фазе 1.
+- `world.json.lore` ← `WorldLore` (`crates/gml-world/src/canon/lore.rs`), with no
+  structural changes.
+- `story.json.plot` ← seed fields from `crates/gml-stories/src/catalog.json`
+  (`player_character`, `hidden_truth`, `scene`, …).
+- Procedural launch already supports "world + overlay":
+  `World::from_worldgen_with_lore` plus `story_*` values from the request body
+  (`crates/gml-server/src/lib.rs:1583`). Story launch means loading
+  `world.json.lore` and applying `story.json.plot`.
+- Preserve the `/worlds` payload contract, so the frontend does not change in
+  Phase 1.
 
-## План по фазам
+## Phase plan
 
-### Фаза 1 — миры как пакеты (без смены API и фронта)
-- Ввести абстракцию `WorldStore` (trait) с **файловой** реализацией: scan `library/worlds/`, load/save `world.json` (+ `architect.json`), атомарная запись (temp + rename).
-- Переключить хендлеры `/worlds` (`post_create_world`/`post_update_world`/`list_worlds`/`delete_world`, `crates/gml-server/src/lib.rs`) с таблицы `worlds` на `WorldStore`. Форма payload — прежняя.
-- **Миграция**: одноразовый импортер читает строки таблицы `worlds` из `gm_lab_dialogs.sqlite3` и пишет их пакетами в `library/worlds/`. Таблицу `worlds` после этого можно пометить deprecated (не удалять сразу).
-- Снять guest-скоупинг с миров (это шарящийся контент, не per-guest); сейвы guest-скоуп сохраняют.
+### Phase 1 — worlds as packages (no API or frontend change)
+- Introduce a `WorldStore` abstraction (trait) with a **file-backed** implementation:
+  scan `library/worlds/`, load/save `world.json` (+ `architect.json`), and write
+  atomically with temp + rename.
+- Move `/worlds` handlers (`post_create_world`/`post_update_world`/`list_worlds`/
+  `delete_world` in `crates/gml-server/src/lib.rs`) from the `worlds` table to
+  `WorldStore`. Keep the existing payload shape.
+- **Migration**: a one-time importer reads rows from the `worlds` table in
+  `gm_lab_dialogs.sqlite3` and writes packages under `library/worlds/`. The
+  `worlds` table may then be marked deprecated, but must not be deleted immediately.
+- Remove guest scoping from worlds (they are shareable content, not per-guest);
+  retain guest scoping for saves.
 
-### Фаза 2 — картинки внутри пакета (чинит эфемерность)
-- На сохранении мира / приёме сгенерированной картинки: сервер тянет байты из сайдкара (`/image-files/<run_id>/<file>`) и пишет в `library/worlds/<id>/assets/`, переписывает url в лоре на относительный путь.
-- Новый статик-роут `GET /world-assets/<world_id>/<file>` (и `/story-assets/<id>/<file>`), отдаёт из папки пакета, **не зависит от** `image_enabled` и от живости сайдкара.
-- Фронт: `<img src>` переключается на новый роут (`ImagePreview.jsx`, `WorldArchitectPanel.jsx`).
+### Phase 2 — images inside packages (fixes ephemerality)
+- When saving a world or receiving a generated image, the server fetches bytes from
+  the sidecar (`/image-files/<run_id>/<file>`), writes them under
+  `library/worlds/<id>/assets/`, and rewrites the lore URL to a relative path.
+- Add static routes `GET /world-assets/<world_id>/<file>` and
+  `/story-assets/<id>/<file>` that serve package files independently of
+  `image_enabled` and sidecar liveness.
+- Frontend: switch `<img src>` to the new route (`ImagePreview.jsx`,
+  `WorldArchitectPanel.jsx`).
 
-### Фаза 3 — истории как пакеты
-- Заменить `include_str!(catalog.json)` на рантайм-скан `library/stories/` в `crates/gml-stories`.
-- 3 встроенные истории шипятся как дефолтные пакеты: при первом старте, если `library/stories/` пуст — распаковать их (с запечённым `world/`, т.к. они самодостаточны).
-- Обновить байт-точные тесты каталога (`gml-stories/src/lib.rs` count==3 / id-set / byte-length) под новый источник.
+### Phase 3 — stories as packages
+- Replace `include_str!(catalog.json)` with runtime scanning of `library/stories/`
+  in `crates/gml-stories`.
+- Ship the three built-in stories as default packages. On first startup, when
+  `library/stories/` is empty, unpack them with a baked `world/` because they are
+  self-contained.
+- Update byte-exact catalog tests (`gml-stories/src/lib.rs` count==3 / id-set /
+  byte-length) for the new source.
 
-### Фаза 4 — запуск контента в игру (слой из «будущего» в WORLD_CREATION_TAB_TZ)
-- «Играть мир» (процедурно): из пакета мира → `world_lore` → существующий процедурный путь `/chats`.
-- «Играть историю»: `story.json.plot` + резолв `world_ref` (или запечённый `world/`) → собрать `World` (`from_seed`/`from_worldgen` + оверлей).
-- Выбор мира при создании авторской истории (UI следующего шага, отложенный в прошлом ТЗ).
-- В payload сейва писать `world_ref`/`story_ref` — чтобы прохождение было воспроизводимо и связано с пакетом.
+### Phase 4 — launch content into the game (pulling a deferred layer from WORLD_CREATION_TAB_TZ)
+- "Play world" procedurally: world package → `world_lore` → existing `/chats`
+  procedural path.
+- "Play story": resolve `world_ref` (or a baked `world/`), combine it with
+  `story.json.plot`, then build `World` using `from_seed`/`from_worldgen` + overlay.
+- Select a world when creating an authored story (UI is a later step, previously
+  deferred by the earlier specification).
+- Write `world_ref`/`story_ref` into the save payload so the playthrough remains
+  reproducible and linked to its package.
 
-### Фаза 5 — UX шаринга
-- Кнопка «Открыть папку библиотеки».
-- Экспорт пакета в zip; для истории — чекбокс «запечь мир внутрь» (`world_embedded`).
-- Импорт: бросить папку/zip в `library/` → подхват при следующем скане (или watcher).
+### Phase 5 — sharing UX
+- "Open library folder" button.
+- Export a package to zip; for stories, provide a "bake world inside" checkbox
+  (`world_embedded`).
+- Import: drop a folder/zip into `library/` and discover it on the next scan (or via
+  a watcher).
 
 ## Acceptance criteria
 
-- Миры хранятся как папки в `library/worlds/`, читаются/пишутся как файлы; таблица `worlds` больше не источник истины.
-- Существующие миры из SQLite мигрированы в папки без потери полей, истории архитектора и cache id.
-- Картинки мира лежат внутри пакета и открываются даже при выключенной генерации картинок и при выключенном сайдкаре.
-- Истории читаются из `library/stories/` в рантайме; новую историю можно добавить, бросив папку, без перекомпиляции.
-- История ссылается на мир по `world_ref`; при экспорте можно получить самодостаточный бандл с запечённым миром.
-- Можно запустить сохранённый мир (процедурно) и сохранённую историю в игровую сессию.
-- Прохождения остаются в `gm_lab_dialogs.sqlite3`; частые записи хода не деградируют.
-- Контракт `/worlds` и фронт не сломаны на фазе 1.
-- Rust tests/clippy и сборка фронта проходят для затронутых пакетов.
+- Worlds are stored as folders under `library/worlds/`, read/written as files, and
+  the `worlds` table is no longer the source of truth.
+- Existing SQLite worlds migrate to folders without losing fields, architect chat
+  history, or cache id.
+- World images live inside the package and open even when image generation and the
+  sidecar are disabled.
+- Stories are loaded from `library/stories/` at runtime; a new story can be added by
+  dropping in a folder, without recompilation.
+- A story references its world through `world_ref`; export can produce a
+  self-contained bundle with a baked world.
+- A saved world can launch procedurally, and a saved story can launch into a game
+  session.
+- Playthroughs remain in `gm_lab_dialogs.sqlite3`; frequent turn writes do not
+  regress.
+- The `/worlds` contract and frontend remain intact in Phase 1.
+- Rust tests/clippy and the frontend build pass for affected packages.
 
-## Что НЕ делаем сейчас
+## Out of scope for now
 
-- Портативный режим «рядом с .exe» и выбор произвольной папки-библиотеки (отдельная задача; сейчас фиксируем AppData).
-- Пер-мировый RAG-индекс (сейчас `gm_lab_embeddings.sqlite3` глобальный).
-- Экспорт прохождений (сейвов) в папки как первичный формат.
-- Общий таймлайн мира между историями (как и в прошлом ТЗ).
-- Файловый watcher горячей перезагрузки (достаточно скана при старте + ручного refresh).
+- Portable mode beside the `.exe` and arbitrary library-folder selection (separate
+  task; AppData remains fixed for now).
+- Per-world RAG index (the current `gm_lab_embeddings.sqlite3` is global).
+- Exporting playthroughs (saves) to folders as their primary format.
+- A shared world timeline across stories (as in the previous specification).
+- File watcher for hot reload (startup scan + manual refresh is sufficient).

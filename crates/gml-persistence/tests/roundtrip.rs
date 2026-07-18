@@ -202,6 +202,48 @@ fn empty_store_default_chat_uses_requested_content_locale() {
     assert_eq!(locale, ContentLocale::English);
 }
 
+#[test]
+fn new_records_use_english_defaults_without_translating_authored_titles() {
+    let (dialog_store, _dialog_dir) = temp_store();
+    let default_chat_id = dialog_store
+        .create_chat("default-title-guest", None, None, 0, None, None, true)
+        .expect("create chat with default title");
+    let russian_chat_id = dialog_store
+        .create_chat(
+            "default-title-guest",
+            None,
+            None,
+            0,
+            Some("Новый чат"),
+            None,
+            false,
+        )
+        .expect("create chat with authored Russian title");
+    let chats = dialog_store
+        .list_chats("default-title-guest")
+        .expect("list persisted chats");
+    let default_chat = chats
+        .iter()
+        .find(|chat| chat["id"].as_str() == Some(default_chat_id.as_str()))
+        .expect("persisted default chat");
+    let russian_chat = chats
+        .iter()
+        .find(|chat| chat["id"].as_str() == Some(russian_chat_id.as_str()))
+        .expect("persisted Russian chat");
+    assert_eq!(default_chat["title"], json!("New Chat"));
+    assert_eq!(russian_chat["title"], json!("Новый чат"));
+
+    let (world_store, _world_dir) = temp_world_store();
+    let default_world = world_store
+        .create_world(json!({}))
+        .expect("create world with default title");
+    let russian_world = world_store
+        .create_world(json!({"title": "Новый мир"}))
+        .expect("create world with authored Russian title");
+    assert_eq!(default_world["title"], json!("New World"));
+    assert_eq!(russian_world["title"], json!("Новый мир"));
+}
+
 fn commit_test_turn(store: &DialogStore, guest: &str, chat_id: &str, turn: i64) -> String {
     let mut runtime = store.load_chat(guest, chat_id).expect("load before turn");
     let pre_turn_payload = runtime.payload_json();
@@ -377,7 +419,7 @@ fn rewind_and_branch_restore_exact_state_and_keep_only_ten_turns() {
     );
     assert_eq!(branch.turn_count, 3);
     assert_eq!(branch.rewindable_turns, vec![3]);
-    assert_eq!(branch.title, "Original — ветка");
+    assert_eq!(branch.title, "Original — branch");
     assert_ne!(branch.session.client_session_id, "source-conversation");
     assert_ne!(branch.session.client_thread_id, "source-cache-scope");
     assert_ne!(
@@ -519,9 +561,7 @@ fn staged_history_is_invisible_until_success_and_commits_atomically() {
             guest,
             &source_chat_id,
             1,
-            HistoryTurnKind::Branch {
-                title: Some("Committed branch".to_string()),
-            },
+            HistoryTurnKind::Branch { title: None },
         )
         .expect("prepare successful branch");
     let branch_id = finish_prepared_history_turn(
@@ -546,7 +586,7 @@ fn staged_history_is_invisible_until_success_and_commits_atomically() {
     );
     let branch = store.load_chat(guest, &branch_id).unwrap();
     assert_eq!(branch.turn_count, 1);
-    assert_eq!(branch.title, "Committed branch");
+    assert_eq!(branch.title, "Source — branch");
     assert_eq!(branch.rewindable_turns, vec![1]);
     let branch_receipt = store
         .history_turn_receipt(guest, &source_chat_id, "branch-first-turn")

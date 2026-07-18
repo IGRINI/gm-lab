@@ -118,6 +118,9 @@ function metaText(d, t) {
   });
 }
 const META_LABEL_KEYS = new Map([
+  ["GM — narration", "narration"],
+  ["GM — decision", "decision"],
+  ["GM — prelude", "prelude"],
   ["ГМ — нарратив", "narration"],
   ["ГМ — решение", "decision"],
   ["ГМ — прелюдия", "prelude"],

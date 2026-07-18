@@ -26,10 +26,10 @@ test("locale folders build an ordered catalog with matching keys", async () => {
   const catalog = buildLocaleCatalog(await readLocaleModules());
 
   const languageCodes = catalog.languages.map((locale) => locale.code);
-  assert.equal(languageCodes[0], "ru");
-  assert.ok(languageCodes.includes("en"));
+  assert.equal(languageCodes[0], "en");
+  assert.ok(languageCodes.includes("ru"));
   assert.equal(new Set(languageCodes).size, languageCodes.length);
-  assert.deepEqual(catalog.namespaces, Object.keys(catalog.resources.ru).sort());
+  assert.deepEqual(catalog.namespaces, Object.keys(catalog.resources.en).sort());
   assert.ok(catalog.namespaces.includes("common"));
   assert.ok(catalog.namespaces.includes("server"));
   assert.ok(catalog.namespaces.includes("settings"));
@@ -38,10 +38,10 @@ test("locale folders build an ordered catalog with matching keys", async () => {
 
 test("locale parity reports a missing translation key", () => {
   const modules = {
-    "../locales/ru/meta.json": { code: "ru", name: "Русский", dir: "ltr" },
-    "../locales/ru/common.json": { action: { save: "Сохранить" } },
     "../locales/en/meta.json": { code: "en", name: "English", dir: "ltr" },
-    "../locales/en/common.json": { action: {} },
+    "../locales/en/common.json": { action: { save: "Save" } },
+    "../locales/ru/meta.json": { code: "ru", name: "Русский", dir: "ltr" },
+    "../locales/ru/common.json": { action: {} },
   };
 
   assert.throws(
@@ -70,12 +70,10 @@ test("locale folders must use valid BCP-47 language tags", () => {
 
 test("locale parity accepts and validates language-specific plural forms", () => {
   const modules = {
-    "../locales/ru/meta.json": { code: "ru", name: "Русский", dir: "ltr" },
-    "../locales/ru/common.json": {
-      turns_one: "{{count}} ход",
-      turns_few: "{{count}} хода",
-      turns_many: "{{count}} ходов",
-      turns_other: "{{count}} хода",
+    "../locales/en/meta.json": { code: "en", name: "English", dir: "ltr" },
+    "../locales/en/common.json": {
+      turns_one: "{{count}} turn",
+      turns_other: "{{count}} turns",
     },
     "../locales/ar/meta.json": { code: "ar", name: "العربية", dir: "rtl" },
     "../locales/ar/common.json": {
