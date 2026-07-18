@@ -1,7 +1,46 @@
 //! Language-tag helpers shared by settings, prompts and model adapters.
 
+use serde::{Deserialize, Serialize};
+
 /// Default language for newly generated user-visible model text.
 pub const DEFAULT_RESPONSE_LANGUAGE: &str = "ru";
+
+/// Static content bundles currently shipped with the application.
+///
+/// Russian remains the compatibility default. Any other valid response tag
+/// uses the English bundle as a neutral source for the model, whose final
+/// response-language instruction can still request another language.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContentLocale {
+    #[serde(rename = "en")]
+    English,
+    #[default]
+    #[serde(rename = "ru")]
+    Russian,
+}
+
+impl ContentLocale {
+    pub fn from_language_tag(value: &str) -> Self {
+        let normalized =
+            normalize_language_tag(value).unwrap_or_else(|| DEFAULT_RESPONSE_LANGUAGE.to_string());
+        if normalized.split('-').next() == Some("ru") {
+            Self::Russian
+        } else {
+            Self::English
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Russian => "ru",
+        }
+    }
+
+    pub const fn is_russian(self) -> bool {
+        matches!(self, Self::Russian)
+    }
+}
 
 /// Normalize the safe BCP-47 subset accepted from runtime settings.
 ///
@@ -59,5 +98,25 @@ mod tests {
         ] {
             assert_eq!(normalize_language_tag(value), None, "{value:?}");
         }
+    }
+
+    #[test]
+    fn maps_response_tags_to_static_content_bundles() {
+        assert_eq!(
+            ContentLocale::from_language_tag("ru-RU"),
+            ContentLocale::Russian
+        );
+        assert_eq!(
+            ContentLocale::from_language_tag("en-US"),
+            ContentLocale::English
+        );
+        assert_eq!(
+            ContentLocale::from_language_tag("de"),
+            ContentLocale::English
+        );
+        assert_eq!(
+            ContentLocale::from_language_tag("invalid_tag"),
+            ContentLocale::Russian
+        );
     }
 }

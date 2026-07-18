@@ -30,22 +30,13 @@ test("location graph availability requires at least one node", () => {
 });
 
 test("map selection creates only a player intent for the GM", () => {
-  assert.equal(
-    locationTravelIntent({ id: "market", title: " Рынок " }),
-    "Я хочу перейти в [[loc:market|Рынок]]."
-  );
-  assert.equal(
-    locationTravelIntent({ id: "market", name: "Рынок" }),
-    "Я хочу перейти в [[loc:market|Рынок]]."
-  );
+  assert.equal(locationTravelIntent({ id: "market", title: " Рынок " }), "");
+  assert.equal(locationTravelIntent({ id: "market", name: "Рынок" }), "");
   assert.equal(
     locationTravelIntent({ title: "Market" }, (destination) => `I want to go to “${destination}”.`),
     "I want to go to “Market”."
   );
-  assert.equal(
-    locationTravelIntent({ id: "bad]id", title: "Рынок" }),
-    "Я хочу перейти в Рынок."
-  );
+  assert.equal(locationTravelIntent({ id: "bad]id", title: "Рынок" }), "");
   assert.equal(locationTravelIntent({ id: "market" }), "");
 });
 

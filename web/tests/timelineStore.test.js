@@ -204,3 +204,171 @@ test("scene updates preserve the location snapshot and image for the timeline ca
   assert.equal(message.image_url, "/image-files/run/location.png");
   assert.deepEqual(message.scene, scene);
 });
+
+test("generic tool results attach by exact call id and parse their JSON payload", () => {
+  const store = createTimeline();
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      sid: "call-1",
+      data: { call_id: "call-1", name: "take_item", arguments: { name: "Верёвка" } },
+    },
+    {
+      kind: "tool_result",
+      sid: "call-1",
+      data: {
+        call_id: "call-1",
+        name: "take_item",
+        result: '{"ok":true,"status":"taken","name":"Верёвка"}',
+      },
+    },
+  ]);
+
+  const [message] = store.getSnapshot();
+  assert.equal(message.callId, "call-1");
+  assert.deepEqual(message.result, { ok: true, status: "taken", name: "Верёвка" });
+});
+
+test("same-name calls cannot steal one another's results", () => {
+  const store = createTimeline();
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      data: { call_id: "first", name: "drop_item", arguments: { name: "Факел" } },
+    },
+    {
+      kind: "gm_tool_call",
+      data: { call_id: "second", name: "drop_item", arguments: { name: "Верёвка" } },
+    },
+    {
+      kind: "tool_result",
+      data: { call_id: "first", name: "drop_item", result: { ok: true, name: "Факел" } },
+    },
+    {
+      kind: "tool_result",
+      data: { call_id: "second", name: "drop_item", result: { ok: true, name: "Верёвка" } },
+    },
+  ]);
+
+  const messages = store.getSnapshot();
+  assert.equal(messages[0].result.name, "Факел");
+  assert.equal(messages[1].result.name, "Верёвка");
+});
+
+test("a rich special result wins over the generic fallback without a duplicate row", () => {
+  const store = createTimeline();
+  const richRoll = { notation: "1d20", faces: [17], total: 17, grade: "success" };
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      data: { call_id: "roll-1", name: "roll_dice", arguments: { notation: "1d20" } },
+    },
+    { kind: "dice", sid: "roll-1", data: richRoll },
+    {
+      kind: "tool_result",
+      data: { call_id: "roll-1", name: "roll_dice", result: "rolled: 17" },
+    },
+  ]);
+
+  const messages = store.getSnapshot();
+  assert.equal(messages.length, 1);
+  assert.deepEqual(messages[0].result, richRoll);
+});
+
+test("multiple special results for one call merge into a composite action result", () => {
+  const store = createTimeline();
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      data: { call_id: "rest-1", name: "long_rest", arguments: {} },
+    },
+    {
+      kind: "player_character_update",
+      sid: "rest-1",
+      data: {
+        changes: [{ field: "hp", before: { current: 3, max: 10 }, after: { current: 10, max: 10 } }],
+      },
+    },
+    {
+      kind: "time",
+      sid: "rest-1",
+      data: { elapsed_minutes: 480, current: { time_of_day: "Утро" } },
+    },
+  ]);
+
+  const [message] = store.getSnapshot();
+  assert.equal(message.name, "long_rest");
+  assert.equal(message.result.elapsed_minutes, 480);
+  assert.equal(message.result.changes[0].field, "hp");
+});
+
+test("an event with an unknown call id never falls back to a same-name pending call", () => {
+  const store = createTimeline();
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      data: { call_id: "actual", name: "drop_item", arguments: { name: "Факел" } },
+    },
+    {
+      kind: "tool_result",
+      data: { call_id: "other", name: "drop_item", result: { ok: true } },
+    },
+  ]);
+
+  const messages = store.getSnapshot();
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].result, undefined);
+  assert.equal(messages[1].callId, "other");
+});
+
+test("legacy events without call ids still use the nearest pending name", () => {
+  const store = createTimeline();
+  store.dispatchMany([
+    { kind: "gm_tool_call", data: { name: "advance_time", arguments: { minutes: 5 } } },
+    { kind: "tool_result", agent: "advance_time", data: '{"ok":true,"elapsed_minutes":5}' },
+  ]);
+  const [message] = store.getSnapshot();
+  assert.equal(message.result.elapsed_minutes, 5);
+});
+
+test("state_sync never creates a timeline row", () => {
+  const store = createTimeline();
+  store.dispatch({
+    kind: "state_sync",
+    data: { seq: 1, call_id: "call-1", state: { time: { time_of_day: "Утро" } } },
+  });
+  assert.deepEqual(store.getSnapshot(), []);
+});
+
+test("a loaded player tool is shown as its real action and keeps exact result identity", () => {
+  const store = createTimeline();
+  store.dispatchMany([
+    {
+      kind: "gm_tool_call",
+      sid: "loaded-1",
+      data: {
+        call_id: "loaded-1",
+        name: "invoke_loaded_tool",
+        arguments: {
+          name: "take_item",
+          arguments: { item: "Верёвка" },
+        },
+      },
+    },
+    {
+      kind: "tool_result",
+      sid: "loaded-1",
+      data: {
+        call_id: "loaded-1",
+        name: "invoke_loaded_tool",
+        result: { ok: true, name: "Верёвка" },
+      },
+    },
+  ]);
+
+  const [message] = store.getSnapshot();
+  assert.equal(message.name, "take_item");
+  assert.deepEqual(message.args, { item: "Верёвка" });
+  assert.equal(message.invokedVia, "invoke_loaded_tool");
+  assert.equal(message.result.name, "Верёвка");
+});

@@ -7,6 +7,35 @@
 // are skipped. Flushes are coalesced with rAF so a burst of tokens produces at
 // most one render per frame.
 
+export function normalizeToolSearchEventData(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+
+  const normalized = { legacy: true, matches: [], missing: [], already_loaded: [] };
+  if (typeof value !== "string") return normalized;
+
+  for (const rawLine of value.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    let match = line.match(/^-\s+([^:]+):/);
+    if (match) {
+      normalized.matches.push({ name: match[1].trim() });
+      continue;
+    }
+    match = line.match(/^(?:Не найдено|Not found):\s*(.+)$/i);
+    if (match) {
+      normalized.missing.push(...match[1].split(",").map((item) => item.trim()).filter(Boolean));
+      continue;
+    }
+    match = line.match(/^(?:Статус|Status):\s*(\S+)/i);
+    if (match) {
+      normalized.status = match[1];
+      continue;
+    }
+    match = line.match(/^(?:Схема|Schema):\s*(.+)$/i);
+    if (match) normalized.loaded_schema = match[1].trim();
+  }
+  return normalized;
+}
+
 export function createTimeline() {
   let arr = [];
   let pub = arr; // published snapshot for useSyncExternalStore
@@ -49,26 +78,102 @@ export function createTimeline() {
     arr[idx] = { ...arr[idx], ...patch };
   };
 
-  // A tool's result arrives as a separate event right after its gm_tool_call.
-  // Attach it to that pending tool row so call + result render as ONE card.
-  // Scans from the end for the nearest matching tool call still awaiting a result.
-  const attachResult = (toolName, payload, extra) => {
+  const resultPriority = (source) => source === "special" ? 2 : source === "generic" ? 1 : 0;
+  const attachAt = (index, payload, extra, source) => {
+    const current = arr[index];
+    if (
+      current.result !== undefined &&
+      current.resultSource === "special" &&
+      source === "special" &&
+      current.result && typeof current.result === "object" && !Array.isArray(current.result) &&
+      payload && typeof payload === "object" && !Array.isArray(payload)
+    ) {
+      arr[index] = {
+        ...current,
+        result: { ...current.result, ...payload },
+        ...(extra || null),
+      };
+      return true;
+    }
+    if (
+      current.result !== undefined &&
+      resultPriority(current.resultSource) >= resultPriority(source)
+    ) {
+      return true;
+    }
+    arr[index] = { ...current, result: payload, resultSource: source, ...(extra || null) };
+    return true;
+  };
+  // Current streams carry the model's exact call id on the call, its generic
+  // result and every special result event. This is the only safe association
+  // when a model emits the same tool more than once in one batch.
+  const attachResultByCallId = (callId, payload, extra, source) => {
     for (let i = arr.length - 1; i >= 0; i--) {
-      const m = arr[i];
-      if (m.type === "tool" && m.name === toolName && m.result === undefined) {
-        arr[i] = { ...m, result: payload, ...(extra || null) };
-        return true;
+      const message = arr[i];
+      if (message.type === "tool" && message.callId === callId) {
+        return attachAt(i, payload, extra, source);
       }
     }
     return false;
   };
-  // Attach to the matching call, or fall back to a standalone result card.
-  const toolResult = (toolName, payload, aliases = []) => {
-    if (attachResult(toolName, payload)) return;
-    for (const alias of aliases) {
-      if (attachResult(alias, payload)) return;
+  // Transcripts produced before call ids existed can only be matched by the
+  // nearest pending tool name. Never use this fallback for a current event that
+  // supplied a call id: a mismatched id must not mutate an unrelated row.
+  const attachLegacyResult = (toolName, payload, extra, source) => {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const m = arr[i];
+      if (m.type === "tool" && m.name === toolName && (m.result === undefined || m.resultSource === "legacy")) {
+        return attachAt(i, payload, extra, source);
+      }
     }
-    push({ type: "tool_result", name: toolName, payload });
+    return false;
+  };
+  const toolResult = (
+    toolName,
+    payload,
+    { callId = "", aliases = [], extra = null, source = "special" } = {}
+  ) => {
+    if (callId) {
+      if (attachResultByCallId(callId, payload, extra, source)) return;
+    } else {
+      if (attachLegacyResult(toolName, payload, extra, source)) return;
+      for (const alias of aliases) {
+        if (attachLegacyResult(alias, payload, extra, source)) return;
+      }
+    }
+    push({ type: "tool_result", name: toolName, payload, callId: callId || undefined });
+  };
+
+  const callIdOf = (ev, data = ev?.data) => {
+    const value = data?.call_id ?? ev?.call_id ?? ev?.sid;
+    return value == null ? "" : String(value).trim();
+  };
+
+  const resultPayload = (raw) => {
+    if (typeof raw !== "string") return raw ?? {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return { text: raw };
+    }
+  };
+
+  const visibleToolCall = (data) => {
+    const name = String(data?.name || "").trim();
+    const args = data?.arguments && typeof data.arguments === "object"
+      ? data.arguments
+      : {};
+    if (name !== "invoke_loaded_tool") return { name, args, invokedVia: undefined };
+
+    const invokedName = String(args?.name || "").trim();
+    const invokedArgs = args?.arguments && typeof args.arguments === "object"
+      ? args.arguments
+      : {};
+    return {
+      name: invokedName || name,
+      args: invokedArgs,
+      invokedVia: invokedName ? name : undefined,
+    };
   };
 
   function applyEvent(ev) {
@@ -76,6 +181,7 @@ export function createTimeline() {
     const a = ev.agent;
     const d = ev.data;
     const sid = ev.sid;
+    const callId = callIdOf(ev, d);
 
     if (k === "player") {
       push({
@@ -101,9 +207,17 @@ export function createTimeline() {
           });
       }
     } else if (k === "gm_tool_call") {
-      if (d?.name === "ask_player") return;
+      const tool = visibleToolCall(d);
+      if (tool.name === "ask_player") return;
       // result stays undefined until the tool's outcome event arrives and attaches.
-      push({ type: "tool", name: d.name, args: d.arguments, result: undefined });
+      push({
+        type: "tool",
+        callId: callId || undefined,
+        name: tool.name,
+        args: tool.args,
+        invokedVia: tool.invokedVia,
+        result: undefined,
+      });
     } else if (k === "gm_thinking") {
       if (d && d.trim()) {
         const i = ensureIdx(sid, "gm_think", () => ({ type: "gm_think", sid, text: "" }));
@@ -111,27 +225,36 @@ export function createTimeline() {
       }
     } else if (k === "world_fact") {
       // New backend streams a structured payload; old transcripts streamed a string.
-      if (d && typeof d === "object") toolResult("get_world_fact", d);
+      if (d && typeof d === "object") toolResult("get_world_fact", d, { callId });
       else push({ type: "fact", text: d });
     } else if (k === "world_state_update") {
-      toolResult("update_world_state", d);
+      toolResult("update_world_state", d, { callId });
     } else if (k === "world_query") {
-      toolResult("query_world_state", d);
+      toolResult("query_world_state", d, { callId });
     } else if (k === "npc_profile") {
-      toolResult("get_npc_profile", d);
+      toolResult("get_npc_profile", d, { callId });
     } else if (k === "time") {
-      toolResult("advance_time", d);
+      toolResult("advance_time", d, { callId });
     } else if (k === "character_update") {
       // The generic event/tool pair supersedes the player-only one. The alias
       // keeps a restored legacy call attachable if its result was saved under
       // the new event kind.
-      toolResult("update_character", d, ["update_player_character"]);
+      toolResult("update_character", d, {
+        callId,
+        aliases: ["update_player_character"],
+      });
     } else if (k === "player_character_update") {
       // Old transcripts retain their original card name, while a mixed-version
       // history can still attach the result to the generic call.
-      toolResult("update_player_character", d, ["update_character"]);
+      toolResult("update_player_character", d, {
+        callId,
+        aliases: ["update_character"],
+      });
     } else if (k === "tool_search") {
-      toolResult("tool_search", { text: d });
+      toolResult("tool_search", normalizeToolSearchEventData(d), {
+        callId,
+        source: d && typeof d === "object" ? "special" : "legacy",
+      });
     } else if (k === "scene_update") {
       if (d?.title || d?.scene_id) {
         push({
@@ -165,12 +288,22 @@ export function createTimeline() {
       // can animate real dice; old transcripts streamed just the detail string.
       if (d && typeof d === "object") {
         // resultLive=true only for a live roll, so restored history snaps instead of re-tumbling.
-        if (!attachResult("roll_dice", d, { resultLive: live })) {
-          push({ type: "dice_roll", roll: d, resultLive: live });
-        }
+        toolResult("roll_dice", d, {
+          callId,
+          extra: { resultLive: live },
+        });
       } else push({ type: "dice", text: d });
     } else if (k === "tool_result") {
-      /* internal, not rendered */
+      const envelope = d && typeof d === "object" && !Array.isArray(d) ? d : null;
+      const toolName = String(envelope?.name || a || "").trim();
+      const genericCallId = callIdOf(ev, envelope || d);
+      const rawResult = envelope && Object.hasOwn(envelope, "result") ? envelope.result : d;
+      toolResult(toolName, resultPayload(rawResult), {
+        callId: genericCallId,
+        source: "generic",
+      });
+    } else if (k === "state_sync") {
+      /* transient UI state; never a timeline row */
     } else if (k === "npc_start") {
       ensureIdx(sid, "npc", () => ({
         type: "npc",

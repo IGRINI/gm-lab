@@ -1,4 +1,4 @@
-"""Capture golden fixtures from the reference Python GM-Lab implementation.
+"""Capture golden fixtures from the reference Python TaleShift implementation.
 
 Run from the Python project dir (E:\\gemma\\gm-lab) with that dir on sys.path.
 Writes byte-exact reference fixtures into ../gm-lab-rs/tests/reference/ so the Rust

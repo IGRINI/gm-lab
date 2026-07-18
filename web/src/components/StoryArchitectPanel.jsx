@@ -5,6 +5,8 @@ import { api } from "../api.js";
 import Spoiler from "./Spoiler.jsx";
 import useConnectorModelBinding from "../useConnectorModelBinding.js";
 import { bindingReady } from "../connectorCatalog.js";
+import { DEFAULT_LANGUAGE } from "../i18n/catalog.js";
+import { createServerMessageError, localizeServerMessage } from "../serverMessages.js";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
@@ -44,8 +46,8 @@ const DEFAULT_STORY_DRAFT = {
   time: null,
 };
 
-function defaultArchitectMessages(t) {
-  return [{ role: "assistant", content: t("story.architect.intro"), uiFallback: true }];
+function defaultArchitectMessages(intro) {
+  return [{ role: "assistant", content: intro, uiFallback: true }];
 }
 
 // The list sections rendered as read-only JSON summaries in v1 (complex nested
@@ -101,9 +103,9 @@ function storyDraftFromSaved(story) {
 // Restore the visible conversation from the server's architect block
 // (`GET /stories/{id}/draft` → `{architect: {messages}}`). The chat lives in the
 // package's architect.json now — never inside the story row.
-function architectMessagesFromChat(architect, t) {
+function architectMessagesFromChat(architect, intro) {
   const messages = asArray(architect?.messages).map(normalizeVisibleMessage).filter(Boolean);
-  return messages.length > 0 ? messages : defaultArchitectMessages(t);
+  return messages.length > 0 ? messages : defaultArchitectMessages(intro);
 }
 
 // The plot object POSTed as `draft` to the story architect (snake_case, matching
@@ -264,17 +266,20 @@ export default function StoryArchitectPanel({
   onArchitectAttach,
   onPlayStory,
   onSaveProtagonist,
+  responseLanguage = DEFAULT_LANGUAGE,
   className = "",
 }) {
   const { t } = useTranslation("studio");
+  const architectLanguage = String(responseLanguage || "").trim() || DEFAULT_LANGUAGE;
+  const architectIntro = t("story.architect.intro", { lng: architectLanguage });
   // Seed the form from the catalog row's scalars only (title/description); the
   // GM-only seed comes from the draft fetch below (the `story` prop is the
   // minimal catalog row, §С1.3). The model history and prompt-cache ids are
   // SERVER-side now (the package's architect.json) — the panel holds only the
   // visible conversation.
   const [storyDraft, setStoryDraft] = useState(() => storyDraftFromSaved(story));
-  const [messages, setMessages] = useState(() => architectMessagesFromChat(null, t));
-  useLocalizedFallbackMessage(setMessages, t("story.architect.intro"));
+  const [messages, setMessages] = useState(() => architectMessagesFromChat(null, architectIntro));
+  useLocalizedFallbackMessage(setMessages, architectIntro);
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
@@ -331,7 +336,7 @@ export default function StoryArchitectPanel({
     // Reset synchronously to the catalog row's scalars (title/description) so the
     // form never flashes a stale story while the draft fetch is in flight.
     setStoryDraft(storyDraftFromSaved(story));
-    setMessages(architectMessagesFromChat(null, t));
+    setMessages(architectMessagesFromChat(null, architectIntro));
     setCurrentStoryId(id || "");
     clearLive();
     setInput("");
@@ -351,10 +356,10 @@ export default function StoryArchitectPanel({
       .then((data) => {
         if (cancelled || loadedStoryIdRef.current !== id) return;
         if (!data?.ok || !data.story) {
-          throw new Error(data?.error || t("story.errors.loadDraft"));
+          throw createServerMessageError(data);
         }
         setStoryDraft(storyDraftFromSaved(data.story));
-        const restored = architectMessagesFromChat(data.architect, t);
+        const restored = architectMessagesFromChat(data.architect, architectIntro);
         setMessages(restored);
         resetModelBinding(data.architect?.model_binding);
         // The server keeps generating after a closed tab; if a turn is still
@@ -365,7 +370,7 @@ export default function StoryArchitectPanel({
         if (cancelled || loadedStoryIdRef.current !== id) return;
         setBindingLoading(false);
         setBindingLoadFailed(true);
-        setArchitectError(error?.message || t("story.errors.loadDraft"));
+        setArchitectError(localizeServerMessage(error, t, { fallbackCode: "architect_load_failed" }));
       });
     return () => {
       cancelled = true;
@@ -443,7 +448,7 @@ export default function StoryArchitectPanel({
     clearLive();
     setMessages(visibleMessages);
     let adopted = false;
-    let failure = "";
+    let failure = null;
     let attachResult;
     lockConnector();
     try {
@@ -489,7 +494,7 @@ export default function StoryArchitectPanel({
               setStoryDraft((current) => mergeStoryDraft(current, args));
             }
           } else if (ev.kind === "architect_error") {
-            failure = textValue(ev.data) || t("architect.errors.noResponse");
+            failure = ev;
             if (ev.model_binding) resetModelBinding(ev.model_binding);
             // The story is created BEFORE the model call; error events carry
             // the persisted story_id as a sibling of `data`. Pin it so a retry
@@ -530,10 +535,10 @@ export default function StoryArchitectPanel({
           }
         }
       );
-      if (failure) throw new Error(failure);
+      if (failure !== null) throw createServerMessageError(failure);
       setRetryText("");
     } catch (error) {
-      const message = error?.message || t("architect.errors.callFailed");
+      const message = localizeServerMessage(error, t, { fallbackCode: "architect_turn_failed" });
       setArchitectError(message);
       // A re-attached turn never saw the original send; seed the retry with
       // the last persisted user message instead of the (empty) attach text.
@@ -575,7 +580,7 @@ export default function StoryArchitectPanel({
         const data = await api.storyDraft(id);
         if (data?.ok && data.story && loadedStoryIdRef.current === id) {
           setStoryDraft(storyDraftFromSaved(data.story));
-          setMessages(architectMessagesFromChat(data.architect, t));
+          setMessages(architectMessagesFromChat(data.architect, architectIntro));
         }
       } catch {
         // keep the restored view; the user can reload the panel

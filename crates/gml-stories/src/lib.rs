@@ -1,5 +1,5 @@
 //! gml-stories — faithful port of `gm-lab/stories.py`, the story/scenario
-//! catalog for GM-Lab.
+//! catalog for TaleShift.
 //!
 //! Story data is the StoryStore/package model: each story is a filesystem
 //! package read at runtime, not a compiled-in table. There is no game logic
@@ -28,6 +28,8 @@
 //! [`StoryStore::story_metadata`], [`StoryStore::list_stories`]) — each returns
 //! an OWNED, deep [`Value`] clone, so every session gets an independent world
 //! with no shared mutable state.
+//! Response-language callers use the parallel `*_for_locale` methods; the
+//! original methods deliberately preserve the Russian compatibility behavior.
 //!
 //! ## Stories are filesystem packages (Phase 3 of `docs/MODS_PACKAGES_TZ.md`)
 //!
@@ -53,6 +55,12 @@ pub const DEFAULT_STORY_ID: &str = "turnvale-murder";
 /// materialize the three built-in default packages on first run. All live story
 /// reads go through scanned packages.
 pub(crate) const CATALOG_JSON: &str = include_str!("catalog.json");
+
+/// English projection of every built-in story. It mirrors [`CATALOG_JSON`]
+/// structurally and is used only for pristine version-1 built-ins selected by
+/// [`gml_types::ContentLocale::English`]. Russian remains the materialized
+/// compatibility package on disk.
+pub(crate) const CATALOG_EN_JSON: &str = include_str!("catalog.en.json");
 
 /// Raised when a story id is not present in the library (Python `KeyError`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,5 +292,106 @@ mod tests {
         // The store seed Value itself is untouched by either session.
         let fresh = store.seed(DEFAULT_STORY_ID).expect("fresh seed");
         assert_eq!(fresh, seed_b);
+    }
+
+    #[test]
+    fn english_catalog_matches_russian_structure_and_protocol_values() {
+        let russian: Value = serde_json::from_str(CATALOG_JSON).expect("Russian catalog JSON");
+        let english: Value = serde_json::from_str(CATALOG_EN_JSON).expect("English catalog JSON");
+        assert_localized_shape(&russian, &english, "$");
+        assert_no_cyrillic(&english, "$");
+    }
+
+    #[test]
+    fn localized_api_keeps_legacy_russian_and_builds_every_english_story() {
+        let (_dir, store) = temp_store();
+
+        assert_eq!(
+            store
+                .story_metadata(DEFAULT_STORY_ID)
+                .expect("Russian metadata")["title"],
+            "Убийство в Тёрнвейле"
+        );
+        assert_eq!(
+            store
+                .story_metadata_for_locale(DEFAULT_STORY_ID, gml_types::ContentLocale::English)
+                .expect("English metadata")["title"],
+            "Murder in Turnvale"
+        );
+        assert_eq!(
+            store
+                .list_stories_for_locale(gml_types::ContentLocale::English)
+                .len(),
+            store.list_stories().len()
+        );
+
+        for id in store.story_ids() {
+            let seed = store
+                .seed_for_locale(&id, gml_types::ContentLocale::English)
+                .expect("English seed");
+            let world = World::from_seed_with_dice_seed(&seed, 1);
+            assert!(
+                !contains_cyrillic(&world.story_title),
+                "{id}: English title"
+            );
+        }
+    }
+
+    fn assert_localized_shape(russian: &Value, english: &Value, path: &str) {
+        match (russian, english) {
+            (Value::Object(ru), Value::Object(en)) => {
+                let ru_keys: Vec<&String> = ru.keys().collect();
+                let en_keys: Vec<&String> = en.keys().collect();
+                assert_eq!(ru_keys, en_keys, "object keys/order differ at {path}");
+                for key in ru.keys() {
+                    assert_localized_shape(&ru[key], &en[key], &format!("{path}.{key}"));
+                }
+            }
+            (Value::Array(ru), Value::Array(en)) => {
+                assert_eq!(ru.len(), en.len(), "array length differs at {path}");
+                for (index, (ru_item, en_item)) in ru.iter().zip(en).enumerate() {
+                    assert_localized_shape(ru_item, en_item, &format!("{path}[{index}]"));
+                }
+            }
+            (Value::String(ru), Value::String(en)) => {
+                // ASCII leaves are ids, enum/protocol values, references, color
+                // values, existing aliases, or already language-neutral data.
+                // Translators must preserve every one exactly.
+                if !contains_cyrillic(ru) {
+                    assert_eq!(ru, en, "non-localized string changed at {path}");
+                }
+            }
+            (Value::Null, Value::Null)
+            | (Value::Bool(_), Value::Bool(_))
+            | (Value::Number(_), Value::Number(_)) => {
+                assert_eq!(russian, english, "scalar changed at {path}");
+            }
+            _ => panic!("JSON type differs at {path}: ru={russian:?}, en={english:?}"),
+        }
+    }
+
+    fn assert_no_cyrillic(value: &Value, path: &str) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    assert_no_cyrillic(child, &format!("{path}.{key}"));
+                }
+            }
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    assert_no_cyrillic(child, &format!("{path}[{index}]"));
+                }
+            }
+            Value::String(text) => assert!(
+                !contains_cyrillic(text),
+                "English catalog contains Cyrillic at {path}: {text:?}"
+            ),
+            _ => {}
+        }
+    }
+
+    fn contains_cyrillic(text: &str) -> bool {
+        text.chars()
+            .any(|ch| ('\u{0400}'..='\u{052f}').contains(&ch))
     }
 }

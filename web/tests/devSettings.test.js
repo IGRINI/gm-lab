@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toolMode } from "../src/devSettings.js";
+import { isMessageVisible, toolMode } from "../src/devSettings.js";
 
 const playerVisibility = { toolCalls: false, memoryOps: false };
 
@@ -28,4 +28,18 @@ test("developer tool calls show NPC updates", () => {
     toolMode("update_character", { toolCalls: true, memoryOps: true }, { args: { target: "npc" } }),
     "full"
   );
+});
+
+test("curated player actions are visible while their result is pending", () => {
+  const message = { type: "tool", name: "travel_to", args: {}, result: undefined };
+  assert.equal(toolMode(message.name, playerVisibility, message), "player");
+  assert.equal(isMessageVisible(message, playerVisibility), true);
+});
+
+test("generator and NPC-internal tools remain hidden from players", () => {
+  for (const name of ["generate_location", "generate_npc", "move_npc", "ask_npc"]) {
+    const message = { type: "tool", name, args: {}, result: undefined };
+    assert.equal(toolMode(name, playerVisibility, message), "hidden");
+    assert.equal(isMessageVisible(message, playerVisibility), false);
+  }
 });

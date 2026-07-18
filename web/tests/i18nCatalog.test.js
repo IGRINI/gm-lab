@@ -31,6 +31,7 @@ test("locale folders build an ordered catalog with matching keys", async () => {
   assert.equal(new Set(languageCodes).size, languageCodes.length);
   assert.deepEqual(catalog.namespaces, Object.keys(catalog.resources.ru).sort());
   assert.ok(catalog.namespaces.includes("common"));
+  assert.ok(catalog.namespaces.includes("server"));
   assert.ok(catalog.namespaces.includes("settings"));
   assert.equal(assertLocaleParity(catalog), true);
 });

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">TaleShift application icon</title>
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="#181818" />
+  <rect x="128" y="128" width="768" height="768" rx="176" fill="#d97757" />
+  <g
+    transform="translate(260 260) scale(21)"
+    fill="none"
+    stroke="#191919"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M12 2.5l8.5 5v9l-8.5 5-8.5-5v-9l8.5-5Z" />
+    <path d="M12 6.8L16.6 14H7.4L12 6.8Z" />
+    <path d="M12 2.5v4.3M3.5 7.5L7.4 14M20.5 7.5L16.6 14M12 21.5l-4.6-7.5M12 21.5l4.6-7.5" />
+  </g>
+</svg>

@@ -9,8 +9,6 @@ import { AutoTextarea, textValue } from "./architectShared.jsx";
 // и чистые конвертеры «строки ⇄ значение листа»; куда складывать результат
 // (живой sheet-стейт против payload на момент сохранения) решает панель-хозяин.
 
-// D&D ability keys arrive from the model in English — localize the six core ones.
-export const ABILITY_SHORT = { STR: "СИЛ", DEX: "ЛОВ", CON: "ТЕЛ", INT: "ИНТ", WIS: "МДР", CHA: "ХАР" };
 // The fixed order the six abilities render in (extra keys are preserved but not
 // shown — the editor only exposes the core six inputs).
 export const ABILITY_ORDER = ["STR", "DEX", "CON", "INT", "WIS", "CHA"];

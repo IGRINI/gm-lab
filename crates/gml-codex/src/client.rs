@@ -1,10 +1,10 @@
 //! `CodexClient` — the ChatGPT Codex Responses API adapter implementing the
 //! [`gml_llm::Backend`] trait.
 //!
-//! Faithful port of `codex_client.CodexClient`. Translates GM-Lab's
+//! Faithful port of `codex_client.CodexClient`. Translates TaleShift's
 //! chat-completions-like interface into the ChatGPT Codex Responses endpoint
 //! (`POST {CODEX_BASE_URL}/responses`), normalizes the SSE stream, tool calls,
-//! model listing, and token usage back to GM-Lab's shapes.
+//! model listing, and token usage back to TaleShift's shapes.
 //!
 //! HTTP: uses `reqwest` (plain TLS, header-spoofing only — the Codex Responses
 //! backend does NOT use JA3 impersonation today; see PORT_PLAN §1.3 / §3.2).
@@ -194,7 +194,7 @@ impl CodexClient {
         payload.insert("stream".into(), Value::Bool(true));
         payload.insert("include".into(), Value::Array(Vec::new()));
         let mut client_metadata = Map::new();
-        client_metadata.insert("application".into(), Value::String("gm-lab".into()));
+        client_metadata.insert("application".into(), Value::String("taleshift".into()));
         client_metadata.insert("provider".into(), Value::String("codex-oauth".into()));
         payload.insert("client_metadata".into(), Value::Object(client_metadata));
 
@@ -1019,7 +1019,10 @@ mod tests {
         assert_eq!(p.get("tool_choice").unwrap(), "none");
         assert_eq!(p.get("parallel_tool_calls").unwrap(), &Value::Bool(false));
         // client_metadata
-        assert_eq!(p.pointer("/client_metadata/application").unwrap(), "gm-lab");
+        assert_eq!(
+            p.pointer("/client_metadata/application").unwrap(),
+            "taleshift"
+        );
         assert_eq!(
             p.pointer("/client_metadata/provider").unwrap(),
             "codex-oauth"

@@ -17,6 +17,7 @@ use gml_persistence::{
     DialogRuntime, DialogStore, DialogVisualAsset, HistoryTurnKind, HistoryTurnReceiptKind,
     PreparedHistoryTurn, StoreError, TurnCheckpoint, WorldStore, MAX_REWIND_TURNS, SCHEMA_VERSION,
 };
+use gml_types::ContentLocale;
 use gml_world::World;
 
 fn factory() -> ClientFactory {
@@ -182,6 +183,23 @@ fn temp_store() -> (DialogStore, tempfile::TempDir) {
     let store = DialogStore::new(db.to_string_lossy().into_owned(), factory(), Arc::new(cfg))
         .expect("create store");
     (store, dir)
+}
+
+#[test]
+fn empty_store_default_chat_uses_requested_content_locale() {
+    let (store, _dir) = temp_store();
+    let guest = "english-default-chat";
+    let chat_id = store
+        .get_active_for_locale(guest, ContentLocale::English)
+        .expect("create localized active chat");
+    let locale = store
+        .with_runtime(guest, &chat_id, |runtime| {
+            runtime.session.world.world_canon.content_locale
+        })
+        .expect("read localized active chat")
+        .expect("localized active chat exists");
+
+    assert_eq!(locale, ContentLocale::English);
 }
 
 fn commit_test_turn(store: &DialogStore, guest: &str, chat_id: &str, turn: i64) -> String {

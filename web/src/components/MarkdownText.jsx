@@ -4,6 +4,7 @@ import i18n from "../i18n/index.js";
 import Tooltip from "./Tooltip.jsx";
 import ImageThumbnail, { ZoomableImage } from "./ImagePreview.jsx";
 import { EntityRegistryContext, canonicalKind, resolveEntity } from "../entityContext.js";
+import { localizeEntityMetaRow, localizeEntitySubtitle } from "../entityTooltipLocale.js";
 
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 const SAFE_ABSOLUTE_RE = /^(https?:|mailto:)/i;
@@ -40,9 +41,9 @@ function EntityTooltip({ entity, kind, id, label }) {
   const typeLabelKey = ENTITY_KIND_LABEL_KEYS[kind];
   const typeLabel = typeLabelKey ? t(typeLabelKey) : kind || t("markdown.entityFallback");
   const title = entity?.title || entity?.name || label || id;
-  const subtitle = entity?.subtitle || typeLabel;
+  const subtitle = localizeEntitySubtitle(t, entity, typeLabel);
   const description = entity?.description || entity?.text || "";
-  const meta = Array.isArray(entity?.meta) ? entity.meta : [];
+  const meta = Array.isArray(entity?.meta) ? entity.meta.map((row) => localizeEntityMetaRow(t, row)) : [];
   const portraitUrl = entity?.portrait_url || "";
   return (
     <div className="entity-tip">

@@ -144,6 +144,8 @@ fn cast_cantrip_spends_no_slot() {
     );
     // A cantrip is still a cast: card_revision bumps.
     assert_eq!(w.player_character.card_revision, before_rev + 1);
+    assert_eq!(out["updated"], json!([]));
+    assert_eq!(out["changes"], json!([]));
 }
 
 #[test]
@@ -157,6 +159,14 @@ fn cast_leveled_spell_decrements_the_slot_written_as_number() {
     assert_eq!(w.player_character.spell_slots.get("1"), Some(&json!(2)));
     // slots_remaining echoes the flat map post-decrement.
     assert_eq!(out["slots_remaining"]["1"], json!(2));
+    assert_eq!(out["updated"], json!(["spell_slots", "concentration"]));
+    assert_eq!(out["changes"][0]["field"], "spell_slots");
+    assert_eq!(out["changes"][0]["before"]["1"], json!(3));
+    assert_eq!(out["changes"][0]["after"]["1"], json!(2));
+    assert_eq!(out["changes"][1]["field"], "concentration");
+    assert_eq!(out["changes"][1]["before"], "");
+    assert_eq!(out["changes"][1]["after"], "Огненная хватка");
+    assert!(out["player_character"].get("gm_notes").is_none());
 }
 
 #[test]

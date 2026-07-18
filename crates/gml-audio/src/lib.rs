@@ -7,9 +7,9 @@
 //!   (`/speak`, `/speak_stream`), and ffmpeg transcode. Ported verbatim from
 //!   the TTS helpers + `/tts` handler in `gm-lab/server.py`. The disk cache is
 //!   readable offline (a cache hit needs no sidecar).
-//! - [`sidecar`] — a cross-platform manager that spawns the faster-qwen3-tts
-//!   Python sidecar once (guarded by a `OnceCell`), polls a health endpoint
-//!   until ready, exposes readiness, and kills the process tree on shutdown.
+//! - [`sidecar`] — a cross-platform manager that spawns the unified local
+//!   inference process (RAG, Whisper STT, TTS and images) once, polls a health
+//!   endpoint until ready, exposes readiness, and kills the process tree on shutdown.
 //!   New design (no Python reference) — see PORT_PLAN §3.2 / risk #7.
 //! - [`stt`] — port of `gm-lab/codex_transcribe.py`: multipart POST to the
 //!   ChatGPT `/backend-api/transcribe` endpoint behind a Chrome TLS/JA3
@@ -27,7 +27,10 @@ pub mod sidecar;
 pub mod stt;
 pub mod tts;
 
-pub use sidecar::{Sidecar, SidecarConfig, SidecarError, SidecarState};
+pub use sidecar::{
+    default_inference_home, installed_inference_features, InferenceFeatures, Sidecar,
+    SidecarConfig, SidecarError, SidecarState,
+};
 pub use stt::{transcribe, TranscribeError};
 pub use tts::{
     cache_lookup, cache_path, cache_store, compress_audio, npc_voice, pcm_to_wav, tts_format,

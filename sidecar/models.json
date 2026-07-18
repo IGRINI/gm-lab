@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "id": "embedder",
+      "kind": "hf_snapshot",
+      "profiles": ["Rag", "Voice", "Images", "Full"],
+      "repo": "Qwen/Qwen3-Embedding-0.6B",
+      "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+      "destination": "models/embedder",
+      "license": "Apache-2.0",
+      "estimated_bytes": 1207489041,
+      "files": [
+        "1_Pooling/config.json",
+        "config.json",
+        "config_sentence_transformers.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "modules.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "checksums": {
+        "model.safetensors": "0437e45c94563b09e13cb7a64478fc406947a93cb34a7e05870fc8dcd48e23fd"
+      }
+    },
+    {
+      "id": "reranker",
+      "kind": "hf_snapshot",
+      "profiles": ["Rag", "Voice", "Images", "Full"],
+      "repo": "jinaai/jina-reranker-v3",
+      "revision": "10fb694fc21f7a710a563ff1eb977a460f3868e4",
+      "destination": "models/reranker",
+      "license": "CC-BY-NC-4.0",
+      "license_url": "https://huggingface.co/jinaai/jina-reranker-v3",
+      "restricted": true,
+      "estimated_bytes": 1209611914,
+      "files": [
+        "added_tokens.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "modeling.py",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "checksums": {
+        "model.safetensors": "200d852626fd18ce3f3a97c55b689f1f842031f1488055b4cdcfa274924b8f3d",
+        "modeling.py": "d185cdb8ce9b0593f150b5fa1ffc839f2dde1d2c25c7b2524030d77e543b65a7"
+      }
+    },
+    {
+      "id": "stt-model",
+      "kind": "hf_snapshot",
+      "profiles": ["Voice", "Full"],
+      "repo": "openai/whisper-small",
+      "revision": "973afd24965f72e36ca33b3055d56a652f456b4d",
+      "destination": "models/stt",
+      "license": "Apache-2.0",
+      "estimated_bytes": 971367937,
+      "files": [
+        "added_tokens.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "normalizer.json",
+        "preprocessor_config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "checksums": {
+        "added_tokens.json": "9715fd2243b6f06a5858b5e32950d2853f73dd5bc201aafcf76f5082a2d8acd1",
+        "config.json": "e6a2b489da1b5aed65a8eb8d1e7466fa867ad5643a8bc138ba708bd56b2875c4",
+        "generation_config.json": "71565b8ef50d0bf7a1193ed4bbed195b94e70c18894d81bba2f1233dcec3ab53",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "model.safetensors": "1d7734884874f1a1513ed9aa760a4f8e97aaa02fd6d93a3a85d27b2ae9ca596b",
+        "normalizer.json": "bf1c507dc8724ca9cf9903640dacfb69dae2f00edee4f21ceba106a7392f26dd",
+        "preprocessor_config.json": "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666",
+        "special_tokens_map.json": "e67ae3a0aaa99abcd9f187138e12db1f65c16a14761c50ef10eef2c174a7a691",
+        "tokenizer.json": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "tokenizer_config.json": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce",
+        "vocab.json": "8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9"
+      }
+    },
+    {
+      "id": "tts-model",
+      "kind": "hf_snapshot",
+      "profiles": ["Voice", "Full"],
+      "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+      "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+      "destination": "tts/qwen17b_base",
+      "license": "Apache-2.0",
+      "estimated_bytes": 4544229700,
+      "files": [
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "speech_tokenizer/config.json",
+        "speech_tokenizer/configuration.json",
+        "speech_tokenizer/model.safetensors",
+        "speech_tokenizer/preprocessor_config.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "checksums": {
+        "model.safetensors": "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c",
+        "speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+      }
+    },
+    {
+      "id": "tts-gm-voice",
+      "kind": "http_file",
+      "profiles": ["Voice", "Full"],
+      "url": "https://raw.githubusercontent.com/andimarafioti/faster-qwen3-tts/7cdef7e40195108b51a808f2ce5c7d5f3e235a79/ref_audio_2.wav",
+      "destination": "tts/ref_audio_2.wav",
+      "license": "MIT repository; voice rights not separately documented",
+      "estimated_bytes": 2097230,
+      "sha256": "fa64b4d96fc2b211b7df5ff68d26ea39b998b46632f18e071a60313813c2a1b5"
+    },
+    {
+      "id": "tts-male-voice",
+      "kind": "http_file",
+      "profiles": ["Voice", "Full"],
+      "url": "https://raw.githubusercontent.com/andimarafioti/faster-qwen3-tts/7cdef7e40195108b51a808f2ce5c7d5f3e235a79/ref_audio.wav",
+      "destination": "tts/ref_audio.wav",
+      "license": "MIT repository; voice rights not separately documented",
+      "estimated_bytes": 159092,
+      "sha256": "c8f3be0d4e32aa3ab4bbc859bb5c2ae176d2170853661edc65c94f232ecca232"
+    },
+    {
+      "id": "tts-female-voice",
+      "kind": "http_file",
+      "profiles": ["Voice", "Full"],
+      "url": "https://raw.githubusercontent.com/andimarafioti/faster-qwen3-tts/7cdef7e40195108b51a808f2ce5c7d5f3e235a79/ref_audio_3.wav",
+      "destination": "tts/ref_audio_3.wav",
+      "license": "MIT repository; voice rights not separately documented",
+      "estimated_bytes": 1867854,
+      "sha256": "ac8814b50fc1abb7379a7d74ec5081223d69dec73a2c11534c09bfdb00f5666a"
+    },
+    {
+      "id": "image-diffusion",
+      "kind": "hf_file",
+      "profiles": ["Images", "Full"],
+      "repo": "black-forest-labs/FLUX.2-klein-4b-nvfp4",
+      "revision": "1db2b2f776c24b76f1122e5f69ab1949fc620068",
+      "source": "flux-2-klein-4b-nvfp4.safetensors",
+      "destination": "image/ComfyUI/models/diffusion_models/flux-2-klein-4b-nvfp4.safetensors",
+      "license": "Apache-2.0",
+      "hardware": "NVIDIA Blackwell (compute capability 10.x or newer)",
+      "estimated_bytes": 2460413488,
+      "sha256": "d8c5007b6a3bbbdfd38538bbcef5101a55dfde81894f58d2e3c8701cdef3542b"
+    },
+    {
+      "id": "image-text-encoder",
+      "kind": "hf_file",
+      "profiles": ["Images", "Full"],
+      "repo": "Comfy-Org/vae-text-encorder-for-flux-klein-4b",
+      "revision": "a9e4ca87c16db4c4e1a16406a9ddb300ab0ae246",
+      "source": "split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors",
+      "destination": "image/ComfyUI/models/text_encoders/qwen_3_4b_fp4_flux2.safetensors",
+      "license": "NOASSERTION",
+      "license_url": "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b",
+      "restricted": true,
+      "hardware": "NVIDIA Blackwell (compute capability 10.x or newer)",
+      "estimated_bytes": 3848213998,
+      "sha256": "3eab03a77adb0ee5304a4e677d5c10ac22f9049c1d7c894adca4f8bb39206ca8"
+    },
+    {
+      "id": "image-vae",
+      "kind": "hf_file",
+      "profiles": ["Images", "Full"],
+      "repo": "Comfy-Org/vae-text-encorder-for-flux-klein-4b",
+      "revision": "a9e4ca87c16db4c4e1a16406a9ddb300ab0ae246",
+      "source": "split_files/vae/flux2-vae.safetensors",
+      "destination": "image/ComfyUI/models/vae/flux2-vae.safetensors",
+      "license": "NOASSERTION",
+      "license_url": "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b",
+      "restricted": true,
+      "hardware": "NVIDIA Blackwell (compute capability 10.x or newer)",
+      "estimated_bytes": 336211292,
+      "sha256": "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3"
+    }
+  ]
+}

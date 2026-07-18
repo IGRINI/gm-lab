@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use gml_persistence::{ChatSearchQuery, ChatSearchScope, ChatSearchSort};
+use gml_types::ContentLocale;
 
-use crate::{chat_scope_id, json_response, AppState};
+use crate::{chat_scope_id, json_response, response_content_locale, AppState};
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
@@ -353,13 +354,14 @@ fn library_items(state: &AppState, request: &ParsedSearch) -> Result<Vec<SearchI
         return Ok(Vec::new());
     }
 
+    let locale = response_content_locale(state);
     let worlds = state
         .world_store
         .list_worlds()
         .map_err(|error| error.to_string())?;
     let stories = {
         let store = state.story_store.lock().expect("story store lock poisoned");
-        store.list_stories()
+        store.list_stories_for_locale(locale)
     };
     let characters = {
         let store = state
@@ -386,21 +388,23 @@ fn library_items(state: &AppState, request: &ParsedSearch) -> Result<Vec<SearchI
     let mut items = Vec::new();
     if request.includes(ItemType::World) {
         for world in &worlds {
-            if let Some(item) = world_item(world, request) {
+            if let Some(item) = world_item(world, request, locale) {
                 items.push(item);
             }
         }
     }
     if request.includes(ItemType::Story) {
         for story in &stories {
-            if let Some(item) = story_item(story, &world_titles, request) {
+            if let Some(item) = story_item(story, &world_titles, request, locale) {
                 items.push(item);
             }
         }
     }
     if request.includes(ItemType::Character) {
         for character in &characters {
-            if let Some(item) = character_item(character, &world_titles, &story_titles, request) {
+            if let Some(item) =
+                character_item(character, &world_titles, &story_titles, request, locale)
+            {
                 items.push(item);
             }
         }
@@ -408,9 +412,12 @@ fn library_items(state: &AppState, request: &ParsedSearch) -> Result<Vec<SearchI
     Ok(items)
 }
 
-fn world_item(world: &Value, request: &ParsedSearch) -> Option<SearchItem> {
+fn world_item(world: &Value, request: &ParsedSearch, locale: ContentLocale) -> Option<SearchItem> {
     let id = value_string(world, "id")?;
-    let title = value_string(world, "title").unwrap_or_else(|| "Новый мир".to_string());
+    let title = value_string(world, "title").unwrap_or_else(|| match locale {
+        ContentLocale::Russian => "Новый мир".to_string(),
+        ContentLocale::English => "New World".to_string(),
+    });
     let subtitle = value_string(world, "preview").unwrap_or_default();
     if !filter_matches(request.world_id.as_deref(), Some(&id))
         || request.story_id.is_some()
@@ -473,12 +480,16 @@ fn story_item(
     story: &serde_json::Map<String, Value>,
     world_titles: &HashMap<String, String>,
     request: &ParsedSearch,
+    locale: ContentLocale,
 ) -> Option<SearchItem> {
     let id = story.get("id")?.as_str()?.to_string();
     let title = story
         .get("title")
         .and_then(Value::as_str)
-        .unwrap_or("Новая история")
+        .unwrap_or(match locale {
+            ContentLocale::Russian => "Новая история",
+            ContentLocale::English => "New Story",
+        })
         .to_string();
     let description = story
         .get("description")
@@ -559,9 +570,13 @@ fn character_item(
     world_titles: &HashMap<String, String>,
     story_titles: &HashMap<String, String>,
     request: &ParsedSearch,
+    locale: ContentLocale,
 ) -> Option<SearchItem> {
     let id = value_string(character, "id")?;
-    let title = value_string(character, "title").unwrap_or_else(|| "Персонаж".to_string());
+    let title = value_string(character, "title").unwrap_or_else(|| match locale {
+        ContentLocale::Russian => "Персонаж".to_string(),
+        ContentLocale::English => "Character".to_string(),
+    });
     let preview = value_string(character, "preview").unwrap_or_default();
     let world_id = nested_id(character.get("world_ref"));
     let story_id = nested_id(character.get("story_ref"));
@@ -1053,8 +1068,14 @@ mod tests {
             }
         });
 
-        let item = character_item(&character, &HashMap::new(), &HashMap::new(), &request)
-            .expect("current appearance must be searchable");
+        let item = character_item(
+            &character,
+            &HashMap::new(),
+            &HashMap::new(),
+            &request,
+            ContentLocale::Russian,
+        )
+        .expect("current appearance must be searchable");
         assert!(item.matched_fields.iter().any(|field| field == "character"));
     }
 }

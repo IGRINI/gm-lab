@@ -3,6 +3,7 @@
 //! produce (npcs as list OR dict, items under visible_objects/objects/items,
 //! exits under visible_exits/exits, title under several keys).
 
+use gml_types::ContentLocale;
 use serde_json::{json, Map, Value};
 
 use crate::helpers::{as_list, as_str, get_str, safe_id};
@@ -10,6 +11,11 @@ use crate::helpers::{as_list, as_str, get_str, safe_id};
 /// Returns the seed unchanged when it already matches the strict shape; else
 /// rebuilds it from the looser fields. Always returns a JSON object map.
 pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
+    normalize_seed_for_locale(seed, ContentLocale::Russian)
+}
+
+/// [`normalize_seed`] using localized fallbacks for incomplete model output.
+pub fn normalize_seed_for_locale(seed: &Value, locale: ContentLocale) -> Map<String, Value> {
     let seed_map = match seed {
         Value::Object(m) => m.clone(),
         _ => return Map::new(),
@@ -110,7 +116,14 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
                 if !d.is_empty() {
                     d
                 } else {
-                    format!("{name} присутствует в стартовой сцене.")
+                    format!(
+                        "{name} {}",
+                        localized(
+                            locale,
+                            "присутствует в стартовой сцене.",
+                            "is present in the opening scene."
+                        )
+                    )
                 }
             }
         };
@@ -119,21 +132,46 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
             if !k.is_empty() {
                 k
             } else if !public_facts.is_empty() {
-                format!("Публичные факты сцены: {}", public_facts.join("; "))
+                format!(
+                    "{}: {}",
+                    localized(locale, "Публичные факты сцены", "Public scene facts"),
+                    public_facts.join("; ")
+                )
             } else {
-                "Только то, что очевидно в текущей сцене.".to_string()
+                localized(
+                    locale,
+                    "Только то, что очевидно в текущей сцене.",
+                    "Only what is evident in the current scene.",
+                )
+                .to_string()
             }
         };
         npcs.push(json!({
             "id": safe_npc_id,
             "name": name,
-            "role": nonempty(get_str(&raw, "role"), "персонаж сцены"),
+            "role": nonempty(
+                get_str(&raw, "role"),
+                localized(locale, "персонаж сцены", "scene character"),
+            ),
             "pronouns": pronouns,
             "persona": persona,
-            "voice": nonempty(get_str(&raw, "voice"), "Естественно, кратко, в образе."),
-            "goals": nonempty(get_str(&raw, "goals"), "Реагировать правдоподобно и защищать свои интересы."),
+            "voice": nonempty(
+                get_str(&raw, "voice"),
+                localized(locale, "Естественно, кратко, в образе.", "Natural, concise, and in character."),
+            ),
+            "goals": nonempty(
+                get_str(&raw, "goals"),
+                localized(
+                    locale,
+                    "Реагировать правдоподобно и защищать свои интересы.",
+                    "React believably and protect their own interests.",
+                ),
+            ),
             "knowledge": knowledge,
-            "secret": nonempty(get_str(&raw, "secret"), "Личная тайна не задана."),
+            "secret": nonempty(
+                get_str(&raw, "secret"),
+                localized(locale, "Личная тайна не задана.", "No personal secret is specified."),
+            ),
         }));
         let presence_location = {
             let l = get_str(&raw, "location");
@@ -144,7 +182,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
                 if !p.is_empty() {
                     p
                 } else {
-                    "в сцене".to_string()
+                    localized(locale, "в сцене", "in the scene").to_string()
                 }
             }
         };
@@ -189,7 +227,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
                 let name = first_nonempty_str(
                     m,
                     &["name", "display_name", "description", "id"],
-                    &format!("предмет {idx}"),
+                    &format!("{} {idx}", localized(locale, "предмет", "item")),
                 );
                 let details = {
                     let d = get_str(m, "details");
@@ -202,7 +240,10 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
                 items.push(json!({
                     "id": safe_id(&get_str(m, "id"), &format!("item_{idx}")),
                     "name": name,
-                    "location": nonempty(get_str(m, "location"), "в сцене"),
+                    "location": nonempty(
+                        get_str(m, "location"),
+                        localized(locale, "в сцене", "in the scene"),
+                    ),
                     "visible": m.get("visible").map(crate::seed::as_bool).unwrap_or(true),
                     "portable": m.get("portable").map(crate::seed::as_bool).unwrap_or(false),
                     "details": details,
@@ -214,7 +255,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
                     items.push(json!({
                         "id": safe_id(&name, &format!("item_{idx}")),
                         "name": name,
-                        "location": "в сцене",
+                        "location": localized(locale, "в сцене", "in the scene"),
                         "visible": true,
                         "portable": false,
                     }));
@@ -233,7 +274,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
                 let name = first_nonempty_str(
                     m,
                     &["name", "display_name", "description", "id"],
-                    &format!("выход {idx}"),
+                    &format!("{} {idx}", localized(locale, "выход", "exit")),
                 );
                 let destination = first_nonempty_str(
                     m,
@@ -272,7 +313,7 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
     let title = first_nonempty_str(
         &src,
         &["location_name", "scene_title", "title", "name"],
-        "Стартовая сцена",
+        localized(locale, "Стартовая сцена", "Opening Scene"),
     );
     let description = {
         let candidates = [
@@ -283,8 +324,12 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
         ];
         let chosen = candidates.into_iter().find(|s| !s.is_empty());
         chosen.unwrap_or_else(|| {
-            "Новая сцена готова. Игрок видит место, людей рядом и ближайший источник конфликта."
-                .to_string()
+            localized(
+                locale,
+                "Новая сцена готова. Игрок видит место, людей рядом и ближайший источник конфликта.",
+                "A new scene is ready. The player can see the place, nearby people, and the nearest source of conflict.",
+            )
+            .to_string()
         })
     };
 
@@ -315,8 +360,16 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
             c
         } else {
             vec![
-                json!("Здесь существуют только перечисленные видимые предметы, видимые выходы и присутствующие именованные персонажи."),
-                json!("Игрок может спрашивать о чём угодно, но неописанные факты остаются неизвестными, пока не будут установлены."),
+                json!(localized(
+                    locale,
+                    "Здесь существуют только перечисленные видимые предметы, видимые выходы и присутствующие именованные персонажи.",
+                    "Only the listed visible items, visible exits, and named characters present exist here.",
+                )),
+                json!(localized(
+                    locale,
+                    "Игрок может спрашивать о чём угодно, но неописанные факты остаются неизвестными, пока не будут установлены.",
+                    "The player may ask about anything, but undescribed facts remain unknown until established.",
+                )),
             ]
         }
     };
@@ -412,6 +465,17 @@ pub fn normalize_seed(seed: &Value) -> Map<String, Value> {
         out.insert("player_character".to_string(), pc.clone());
     }
     out
+}
+
+const fn localized(
+    locale: ContentLocale,
+    russian: &'static str,
+    english: &'static str,
+) -> &'static str {
+    match locale {
+        ContentLocale::Russian => russian,
+        ContentLocale::English => english,
+    }
 }
 
 /// `bool(raw.get(key, default))` for visible/portable in seed normalization.

@@ -7,7 +7,12 @@ import Tooltip from "./Tooltip.jsx";
 import { ToolResultBody } from "./ToolResultCard.jsx";
 import { DiceBody, gradeAccent } from "./DiceRoll.jsx";
 import { NpcRosterContext } from "../npcContext.js";
-import { StatusLabelsContext } from "../statusContext.js";
+import { localizeStatusLabel, StatusLabelsContext } from "../statusContext.js";
+import {
+  characterChangeFieldLabel,
+  formatCharacterChangeValue,
+  normalizeCharacterChanges,
+} from "../characterChanges.js";
 
 // Per-tool accent: references the centralized CSS palette tokens (styles.css :root)
 // so the cards never carry raw hex that can drift from the theme.
@@ -49,9 +54,8 @@ const WS_OP = {
   delete: "redo",
 };
 
-// Status LABELS come from the backend via StatusLabelsContext (single source).
-// Tone (badge style) and help (tooltip copy) are presentation-only and keyed by
-// the same status enum — defined once here, not duplicated across the app.
+// Status keys come from the backend; labels and help follow the active UI locale.
+// Tone is presentation-only and keyed by the same stable enum.
 const STATUS_TONE = { known: "ok", likely: "warn", rumored: "muted", unknown: "muted" };
 
 // Tooltip body for a bible-section chip: header + the actual entries.
@@ -279,7 +283,7 @@ function toolView(name, args, statusLabels, t) {
           <>
             <div className="tc-chips">
               <Badge tone={STATUS_TONE[args.status] || "muted"} tip={t(`status.help.${args.status}`, { defaultValue: t("status.help.default") })}>
-                {statusLabels[args.status] || args.status || t("status.unknown")}
+                {localizeStatusLabel(t, args.status, statusLabels)}
               </Badge>
               {nonEmpty(place) && <Badge tip={t("tools.whereabouts.placeHelp")}>{place}</Badge>}
             </div>
@@ -766,17 +770,114 @@ function PlayerTimeCard({ payload }) {
   );
 }
 
+function PlayerChangeList({ payload, t, allowUpdatedFallback = true }) {
+  const p = payload || {};
+  const changes = normalizeCharacterChanges(p);
+  const updated = Array.isArray(p.updated) ? p.updated : [];
+  if (!changes.length && (!allowUpdatedFallback || !updated.length)) return null;
+  return changes.length > 0 ? (
+    <span className="play-change-list">
+      {changes.map((change, changeIndex) => {
+        const added = change.added.map((value) => formatCharacterChangeValue(value, t));
+        const removed = change.removed.map((value) => formatCharacterChangeValue(value, t));
+        const hasListDelta = added.length > 0 || removed.length > 0;
+        return (
+          <span className="play-change" key={`${change.field}-${changeIndex}`}>
+            <span className="play-change-field">
+              {characterChangeFieldLabel(change.field, t)}
+            </span>
+            {added.map((value, index) => (
+              <span className="play-change-value is-added" key={`add-${index}-${value}`}>
+                <span aria-hidden="true">+</span> {value}
+              </span>
+            ))}
+            {removed.map((value, index) => (
+              <span className="play-change-value is-removed" key={`remove-${index}-${value}`}>
+                <span aria-hidden="true">−</span> {value}
+              </span>
+            ))}
+            {!hasListDelta && (
+              <span className="play-change-value is-changed">
+                <span>{formatCharacterChangeValue(change.before, t)}</span>
+                <span className="play-change-arrow" aria-hidden="true">→</span>
+                <span>{formatCharacterChangeValue(change.after, t)}</span>
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </span>
+  ) : (
+    <span className="play-sub">
+      {updated.map((field) => characterChangeFieldLabel(field, t)).join(", ")}
+    </span>
+  );
+}
+
 // Compact, player-facing character-sheet update.
 function PlayerSheetCard({ payload }) {
   const { t } = useTranslation("developer");
-  const p = payload || {};
-  const updated = Array.isArray(p.updated) ? p.updated : [];
   return (
     <div className="play-card sheet" style={{ "--tc": "var(--player)" }}>
       <span className="play-ico" aria-hidden="true"><Icon name="shield" size={16} /></span>
       <span className="play-main">
         <b>{t("playerCards.sheetUpdated")}</b>
-        {updated.length > 0 && <span className="play-sub">{updated.join(", ")}</span>}
+        <PlayerChangeList payload={payload} t={t} />
+      </span>
+    </div>
+  );
+}
+
+const PLAYER_ACTION_ICONS = {
+  roll_dice: "d20",
+  advance_time: "clock",
+  long_rest: "clock",
+  update_character: "shield",
+  update_player_character: "shield",
+  take_item: "plus",
+  drop_item: "minus",
+  cast_spell: "sparkles",
+  set_scene: "pin",
+  move_player: "walk",
+  travel_to: "map",
+  relocate_player: "map",
+  create_passage: "branch",
+  set_passage_state: "branch",
+};
+
+function playerActionDetail(name, args, result) {
+  if (name === "take_item" || name === "drop_item") return result?.name || args?.name || "";
+  if (name === "cast_spell") return result?.spell || result?.name || args?.name || "";
+  if (name === "travel_to" || name === "move_player" || name === "relocate_player") {
+    return result?.title || result?.destination_name || "";
+  }
+  if (name === "create_passage") return result?.label || "";
+  return "";
+}
+
+function PlayerActionCard({ name, args, result, hasResult }) {
+  const { t } = useTranslation("developer");
+  const failed = hasResult && (result?.ok === false || !!result?.error);
+  const phase = !hasResult ? "pending" : failed ? "failed" : "completed";
+  const detail = playerActionDetail(name, args, result);
+  const defaultTitle = t(`playerCards.actionState.${phase}`);
+  const title = t(`playerCards.actions.${name}.${phase}`, { defaultValue: defaultTitle });
+  return (
+    <div
+      className={`play-card action is-${phase}`}
+      style={{ "--tc": failed ? "var(--md-del)" : "var(--player)" }}
+      aria-live="polite"
+    >
+      <span className="play-ico" aria-hidden="true">
+        <Icon
+          name={!hasResult ? (PLAYER_ACTION_ICONS[name] || "dots") : failed ? "x" : "check"}
+          size={16}
+        />
+      </span>
+      <span className="play-main">
+        <b>{title}</b>
+        {detail && <span className="play-sub">{detail}</span>}
+        {hasResult && <PlayerChangeList payload={result} t={t} allowUpdatedFallback={false} />}
       </span>
     </div>
   );
@@ -797,20 +898,23 @@ export default function ToolCard({ name, args = {}, result, resultLive, rollId, 
   const accent = isDice ? gradeAccent(result.grade) : view.accent;
 
   if (mode === "player") {
-    if (!hasResult) return null;
-    if (name === "roll_dice") {
+    if (name === "roll_dice" && hasResult) {
       return (
         <div className="tool-card play-dice" style={{ "--tc": gradeAccent(result.grade) }}>
           <DiceBody roll={result} animate={resultLive} rollId={rollId} />
         </div>
       );
     }
-    if (name === "advance_time") return <PlayerTimeCard payload={result} />;
-    if (name === "update_player_character") return <PlayerSheetCard payload={result} />;
-    if (name === "update_character" && (result?.target || args?.target || "player") === "player") {
+    if (name === "advance_time" && hasResult) return <PlayerTimeCard payload={result} />;
+    if (name === "update_player_character" && hasResult) return <PlayerSheetCard payload={result} />;
+    if (
+      name === "update_character" &&
+      hasResult &&
+      (result?.target || args?.target || "player") === "player"
+    ) {
       return <PlayerSheetCard payload={result} />;
     }
-    return null;
+    return <PlayerActionCard name={name} args={args} result={result} hasResult={hasResult} />;
   }
 
   // 'full'   — developer view: rich body + raw JSON spoilers + raw tool name.

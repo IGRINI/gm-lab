@@ -14,6 +14,7 @@
 
 use serde_json::{json, Value};
 
+use gml_types::ContentLocale;
 use gml_world::{PassageDirectionality, World, GENERATOR_VERSION};
 
 /// A self-contained seed: a tavern hall with two NPCs, one item, and three
@@ -517,4 +518,108 @@ fn from_worldgen_is_deterministic() {
         a.scene, b.scene,
         "derived scenes are identical for the same seed"
     );
+}
+
+#[test]
+fn locale_changes_worldgen_text_without_changing_identity_or_mechanics() {
+    use gml_world::canon::{generate_for_locale, WorldSpec};
+
+    let spec = WorldSpec::from_seed("locale-parity");
+    let russian = generate_for_locale(&spec, ContentLocale::Russian);
+    let english = generate_for_locale(&spec, ContentLocale::English);
+
+    assert_eq!(
+        russian.regions.keys().collect::<Vec<_>>(),
+        english.regions.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        russian.settlements.keys().collect::<Vec<_>>(),
+        english.settlements.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        russian.places.keys().collect::<Vec<_>>(),
+        english.places.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        russian.transitions.keys().collect::<Vec<_>>(),
+        english.transitions.keys().collect::<Vec<_>>()
+    );
+    for (id, left) in &russian.transitions {
+        let right = &english.transitions[id];
+        assert_eq!(left.from_place, right.from_place);
+        assert_eq!(left.to_place, right.to_place);
+        assert_eq!(left.kind, right.kind);
+        assert_eq!(left.time_cost, right.time_cost);
+        assert_eq!(left.risk, right.risk);
+        assert_eq!(left.directionality, right.directionality);
+    }
+    for (id, left) in &russian.regions {
+        assert_eq!(left.danger_level, english.regions[id].danger_level);
+    }
+    assert_eq!(russian.player_place_id, english.player_place_id);
+    assert_eq!(
+        russian.event_log.events.len(),
+        english.event_log.events.len()
+    );
+    for (left, right) in russian
+        .event_log
+        .events
+        .iter()
+        .zip(&english.event_log.events)
+    {
+        assert_eq!(left.event_id, right.event_id);
+        assert_eq!(left.kind, right.kind);
+        assert_eq!(left.time_minutes, right.time_minutes);
+        assert_eq!(left.place_id, right.place_id);
+        assert_eq!(left.scope, right.scope);
+    }
+
+    let english_json = serde_json::to_string(&english).unwrap();
+    assert!(!english_json
+        .chars()
+        .any(|ch| matches!(ch, 'А'..='я' | 'Ё' | 'ё')));
+    assert_ne!(
+        russian.regions.values().next().unwrap().name,
+        english.regions.values().next().unwrap().name
+    );
+}
+
+#[test]
+fn content_locale_round_trips_and_old_canon_defaults_to_russian() {
+    let old: gml_world::WorldCanon = serde_json::from_value(json!({
+        "world_seed": "legacy"
+    }))
+    .unwrap();
+    assert_eq!(old.content_locale, ContentLocale::Russian);
+
+    let mut english = gml_world::WorldCanon::default();
+    english.content_locale = ContentLocale::English;
+    let value = serde_json::to_value(&english).unwrap();
+    assert_eq!(value["content_locale"], "en");
+    let restored: gml_world::WorldCanon = serde_json::from_value(value).unwrap();
+    assert_eq!(restored.content_locale, ContentLocale::English);
+}
+
+#[test]
+fn english_worldgen_localizes_default_character_and_scene() {
+    use gml_world::canon::WorldSpec;
+
+    let world = World::from_worldgen_with_dice_seed_for_locale(
+        &WorldSpec::from_seed("english-world"),
+        7,
+        ContentLocale::English,
+    );
+    assert_eq!(world.world_canon.content_locale, ContentLocale::English);
+    assert_eq!(world.player_character.name, "Seeker");
+    let visible = format!(
+        "{} {} {} {} {}",
+        world.story_title,
+        world.story_brief,
+        world.public,
+        world.scene.title,
+        world.scene.description
+    );
+    assert!(!visible
+        .chars()
+        .any(|ch| matches!(ch, 'А'..='я' | 'Ё' | 'ё')));
 }

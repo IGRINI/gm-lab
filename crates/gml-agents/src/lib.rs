@@ -1,4 +1,4 @@
-//! gml-agents — the model-boundary layer for GM-Lab.
+//! gml-agents — the model-boundary layer for TaleShift.
 //!
 //! Faithful port of `gm-lab/agents.py` (subsystem map "Model roles & tool
 //! definitions"). Assembles the GM request messages (cache-prefix discipline,

@@ -53,7 +53,10 @@ impl SuperGrokConfig {
             stt_timeout: Duration::from_secs(120),
             image_timeout: Duration::from_secs(180),
             responses_idle_timeout: MIN_RESPONSES_IDLE_TIMEOUT,
-            user_agent: format!("gm-lab/{} (SuperGrok connector)", env!("CARGO_PKG_VERSION")),
+            user_agent: format!(
+                "taleshift/{} (SuperGrok connector)",
+                env!("CARGO_PKG_VERSION")
+            ),
             oauth_timeout: Duration::from_secs(20),
             refresh_margin: Duration::from_secs(120),
         }

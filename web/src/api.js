@@ -1,14 +1,62 @@
-// Thin wrappers around the GM-Lab Rust backend (gml-server).
+// Thin wrappers around the TaleShift Rust backend (gml-server).
 
 import { runtimeText } from "./i18n/runtime.js";
+import {
+  createServerMessageError,
+  localizeServerMessage,
+  serverMessageDetail,
+} from "./serverMessages.js";
 
 function apiText(key, defaultValue, options = {}) {
   return runtimeText(`app:api.${key}`, { defaultValue, ...options });
 }
 
+function safeServerText(payload, fallbackText, fallbackCode = "generic") {
+  return localizeServerMessage(
+    payload,
+    (key, options) => runtimeText(key, options),
+    { fallbackCode, fallbackText }
+  );
+}
+
+function sanitizeErrorEnvelope(data, response) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  if (response.ok && data.ok !== false) return data;
+  const detail = serverMessageDetail(data);
+  const localized = safeServerText(
+    data,
+    apiText("requestFailed", `Запрос не выполнен (HTTP ${response.status})`, {
+      status: response.status,
+    })
+  );
+  const safe = { ...data, error: localized };
+  if (detail) {
+    Object.defineProperty(safe, "serverDetail", {
+      value: detail,
+      enumerable: false,
+    });
+  }
+  return safe;
+}
+
+function activeUiLanguage() {
+  if (typeof document === "undefined") return "ru";
+  return String(document.documentElement?.lang || "ru").trim() || "ru";
+}
+
+// The interface language belongs to this browser, while response_language is
+// a separate server setting for generated game text. Send the browser choice
+// with every request so HTTP/SSE errors can be localized independently.
+export function uiFetch(input, init = {}) {
+  const headers = new Headers(init.headers || undefined);
+  headers.set("Accept-Language", activeUiLanguage());
+  return fetch(input, { ...init, headers });
+}
+
 async function getJSON(url, opts) {
-  const r = await fetch(url, opts);
-  return r.json();
+  const r = await uiFetch(url, opts);
+  const data = await r.json();
+  return sanitizeErrorEnvelope(data, r);
 }
 
 function _post(url, body, opts = {}) {
@@ -177,7 +225,7 @@ export const api = {
   // `.collision = true` so the caller can offer an overwrite confirm.
   async importPackage(file, overwrite) {
     const url = `/library/import${overwrite ? "?overwrite=1" : ""}`;
-    const r = await fetch(url, {
+    const r = await uiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/zip" },
       body: file,
@@ -189,9 +237,10 @@ export const api = {
       /* fall through to the generic error below */
     }
     if (!r.ok || !data.ok) {
-      const err = new Error(
-        data.error || apiText("importFailed", `импорт не выполнен (${r.status})`, { status: r.status })
-      );
+      const err = new Error(safeServerText(
+        data,
+        apiText("importFailed", `импорт не выполнен (${r.status})`, { status: r.status })
+      ));
       err.status = r.status;
       // 409 is the backend's distinct id-collision-without-overwrite signal.
       err.collision = r.status === 409;
@@ -241,11 +290,11 @@ export const api = {
   rumor: (body) => _post("/debug/rumor", body),
 
   async export() {
-    const r = await fetch("/export");
+    const r = await uiFetch("/export");
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "gm-lab-export.json";
+    a.download = "taleshift-export.json";
     a.click();
     URL.revokeObjectURL(a.href);
   },
@@ -256,7 +305,7 @@ export const api = {
   // The download filename comes from Content-Disposition when present, else the
   // supplied fallback. Throws on network/error so the caller can show it inline.
   async downloadExport(url, fallbackName) {
-    const r = await fetch(url);
+    const r = await uiFetch(url);
     if (!r.ok) {
       let data = {};
       try {
@@ -264,9 +313,10 @@ export const api = {
       } catch {
         /* fall through to the generic error below */
       }
-      throw new Error(
-        data.error || apiText("exportFailed", `экспорт не выполнен (${r.status})`, { status: r.status })
-      );
+      throw new Error(safeServerText(
+        data,
+        apiText("exportFailed", `экспорт не выполнен (${r.status})`, { status: r.status })
+      ));
     }
     const blob = await r.blob();
     const name = filenameFromContentDisposition(r.headers.get("Content-Disposition")) || fallbackName;
@@ -301,7 +351,7 @@ function filenameFromContentDisposition(header) {
 // Send a recorded audio blob to the backend for speech-to-text (Codex OAuth).
 // Resolves to the transcribed text; throws on failure so the caller can retry.
 export async function transcribeAudio(blob) {
-  const resp = await fetch("/transcribe", {
+  const resp = await uiFetch("/transcribe", {
     method: "POST",
     headers: { "Content-Type": blob.type || "audio/webm" },
     body: blob,
@@ -313,11 +363,12 @@ export async function transcribeAudio(blob) {
     /* fall through to the generic error below */
   }
   if (!resp.ok || !data.ok) {
-    throw new Error(
-      data.error || apiText("transcriptionFailed", `Ошибка распознавания (${resp.status})`, {
+    throw new Error(safeServerText(
+      data,
+      apiText("transcriptionFailed", `Ошибка распознавания (${resp.status})`, {
         status: resp.status,
       })
-    );
+    ));
   }
   return String(data.text || "");
 }
@@ -336,23 +387,20 @@ export async function transcribeAudio(blob) {
 // the read loop would drain it silently and the turn would no-op with no error
 // shown — surface it as a throw instead (the panels' catch renders it).
 async function streamArchitectAt(endpoint, body, onEvent) {
-  const resp = await fetch(endpoint, {
+  const resp = await uiFetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
   });
   if (!resp.ok) {
-    let message = "";
+    let payload = null;
     try {
-      const data = await resp.json();
-      message = typeof data?.error === "string" ? data.error : "";
+      payload = await resp.json();
     } catch {
       // non-JSON error body — fall through to the status line
     }
-    throw new Error(
-      message || apiText("architectUnavailable", `архитектор недоступен (HTTP ${resp.status})`, {
-        status: resp.status,
-      })
+    throw createServerMessageError(
+      payload || { code: "architect_turn_failed", status: resp.status }
     );
   }
   await readArchitectStream(resp, onEvent);
@@ -385,22 +433,19 @@ async function readArchitectStream(resp, onEvent) {
 // vocabulary as the live stream. Returns true when a turn was attached,
 // false when nothing is running (the stored architect state is the truth).
 export async function attachArchitect(kind, id, onEvent) {
-  const resp = await fetch(
+  const resp = await uiFetch(
     `/architect/stream?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`
   );
   if (resp.status === 404) return false;
   if (!resp.ok) {
-    let message = "";
+    let payload = null;
     try {
-      const data = await resp.json();
-      message = typeof data?.error === "string" ? data.error : "";
+      payload = await resp.json();
     } catch {
       // non-JSON error body — fall through to the status line
     }
-    throw new Error(
-      message || apiText("architectUnavailable", `архитектор недоступен (HTTP ${resp.status})`, {
-        status: resp.status,
-      })
+    throw createServerMessageError(
+      payload || { code: "architect_turn_failed", status: resp.status }
     );
   }
   await readArchitectStream(resp, onEvent);
@@ -429,14 +474,13 @@ export function streamCharacterArchitect(body, onEvent) {
 }
 
 function responseErrorMessage(response, body, fallback) {
-  let message = "";
+  let payload = body;
   try {
-    const data = JSON.parse(body);
-    if (typeof data?.error === "string") message = data.error.trim();
+    payload = JSON.parse(body);
   } catch {
-    message = body.trim();
+    payload = body;
   }
-  return message || `${fallback} (HTTP ${response.status})`;
+  return safeServerText(payload, `${fallback} (HTTP ${response.status})`);
 }
 
 function turnStreamError(message, retryable = true) {
@@ -512,7 +556,7 @@ export async function streamTurn(
         : {}),
     };
   }
-  const resp = await fetch("/turn", {
+  const resp = await uiFetch("/turn", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -540,7 +584,7 @@ export async function attachTurn(chatId, requestId, onEvent, { signal } = {}) {
   const query = String(chatId || "").trim()
     ? `?chat_id=${encodeURIComponent(String(chatId).trim())}`
     : "";
-  const resp = await fetch(
+  const resp = await uiFetch(
     `/turn/${encodeURIComponent(requestId)}/stream${query}`,
     { signal }
   );

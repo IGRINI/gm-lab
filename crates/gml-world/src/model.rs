@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-use gml_types::NpcBeat;
+use gml_types::{ContentLocale, NpcBeat};
 
 fn default_true() -> bool {
     true
@@ -199,8 +199,8 @@ pub struct PlayerCharacter {
     pub card_revision: i64,
 }
 
-impl Default for PlayerCharacter {
-    fn default() -> Self {
+impl PlayerCharacter {
+    pub fn for_locale(locale: ContentLocale) -> Self {
         let mut abilities = Map::new();
         for (k, v) in [
             ("STR", 10),
@@ -224,14 +224,37 @@ impl Default for PlayerCharacter {
         let mut hp = Map::new();
         hp.insert("current".to_string(), Value::from(9));
         hp.insert("max".to_string(), Value::from(9));
+        let (name, class_role, background, age, physical_type, senses, languages, inventory) =
+            match locale {
+                ContentLocale::Russian => (
+                    "Искатель",
+                    "сыщик-авантюрист",
+                    "странствующий расследователь",
+                    "Взрослый персонаж; точный возраст не задан.",
+                    "обычный гуманоид среднего размера",
+                    "обычное зрение",
+                    "Общий",
+                    ["дорожная одежда", "кинжал", "фонарь", "записная книжка"],
+                ),
+                ContentLocale::English => (
+                    "Seeker",
+                    "adventuring investigator",
+                    "wandering investigator",
+                    "Adult character; exact age is unspecified.",
+                    "ordinary Medium humanoid",
+                    "normal vision",
+                    "Common",
+                    ["traveler's clothes", "dagger", "lantern", "notebook"],
+                ),
+            };
         PlayerCharacter {
-            name: "Искатель".to_string(),
+            name: name.to_string(),
             pronouns: "OTHER".to_string(),
-            class_role: "сыщик-авантюрист".to_string(),
+            class_role: class_role.to_string(),
             level: Some(1),
-            background: "странствующий расследователь".to_string(),
-            age: "Взрослый персонаж; точный возраст не задан.".to_string(),
-            physical_type: "обычный гуманоид среднего размера".to_string(),
+            background: background.to_string(),
+            age: age.to_string(),
+            physical_type: physical_type.to_string(),
             distinctive_features: String::new(),
             current_appearance: String::new(),
             life_status: "alive".to_string(),
@@ -247,14 +270,9 @@ impl Default for PlayerCharacter {
             ac: Value::from(12),
             hp,
             speed: "30 ft".to_string(),
-            senses: "обычное зрение".to_string(),
-            languages: "Общий".to_string(),
-            inventory: vec![
-                "дорожная одежда".to_string(),
-                "кинжал".to_string(),
-                "фонарь".to_string(),
-                "записная книжка".to_string(),
-            ],
+            senses: senses.to_string(),
+            languages: languages.to_string(),
+            inventory: inventory.into_iter().map(str::to_string).collect(),
             equipment: Vec::new(),
             features: Vec::new(),
             spells: Vec::new(),
@@ -263,6 +281,12 @@ impl Default for PlayerCharacter {
             concentration: String::new(),
             card_revision: 0,
         }
+    }
+}
+
+impl Default for PlayerCharacter {
+    fn default() -> Self {
+        Self::for_locale(ContentLocale::Russian)
     }
 }
 

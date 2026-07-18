@@ -90,7 +90,7 @@ function uniqueId(preferred, used, prefix) {
  * Converts both the backend location_graph contract and older UI-shaped data
  * into a small, presentation-independent graph model.
  */
-export function normalizeLocationGraph(value) {
+export function normalizeLocationGraph(value, labels = {}) {
   const source = unwrapGraph(value);
   const rawNodes = asArray(source.nodes ?? source.locations);
   const allNodesById = new Map();
@@ -143,22 +143,28 @@ export function normalizeLocationGraph(value) {
     const rawDestinationText = typeof rawEdge.destination === "string" ? rawEdge.destination : "";
     const fallbackEdgeId = `edge:${fromId}:${requestedToId || sourceIndex + 1}`;
     const id = uniqueId(asId(rawEdge) || fallbackEdgeId, usedEdgeIds, fallbackEdgeId);
-    const label = firstText(
+    const explicitLabel = firstText(
       rawEdge.label,
       rawEdge.name,
       placeholder.name,
       placeholder.title,
       rawDestinationText,
-      destinationNode?.title,
-      "Выход"
+      destinationNode?.title
     );
+    const label = firstText(explicitLabel, labels.exitLabel);
 
     let exit = null;
     if (!isResolved) {
       const placeholderId = asId(placeholder) || `exit:${id}`;
       exit = {
         id: placeholderId,
-        title: firstText(placeholder.name, placeholder.title, label, "Неизведанный выход"),
+        title: firstText(
+          placeholder.name,
+          placeholder.title,
+          explicitLabel,
+          labels.unexploredExitLabel,
+          label
+        ),
         description: firstText(placeholder.hint, placeholder.description, rawEdge.hint),
         destinationId: requestedToId,
       };

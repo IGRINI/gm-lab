@@ -18,77 +18,10 @@ import {
   accumulateUsage,
   debugFromDone,
 } from "./architectShared.jsx";
-
-const WORLD_PRESETS = [
-  {
-    id: "machine",
-    labelKey: "machine.label",
-    descriptionKey: "machine.description",
-    values: {
-      title: "Пепельный Узел",
-      genre: "postapocalyptic machine world",
-      tone: "bleak",
-      worldSize: "Один большой регион вокруг цепочки старых машинных узлов; за его пределами мир шире, но связь и дороги ненадежны.",
-      population: "Сотни тысяч выживших, разбитых на общины, караванные союзы и технокульты.",
-      publicPremise: "Люди живут вокруг старых узлов воды, энергии и ремонта. Машины не исчезли: одни служат, другие охраняют протоколы, которые никто уже не понимает.",
-      worldLore: {
-        world_laws: [
-          "старые машины следуют протоколам, а не морали",
-          "вода, энергия, детали и доступ к узлам важнее монет",
-        ],
-        inhabitants: ["выжившие общины", "технокульты", "караванщики", "автономные дроны"],
-        regions: ["сеть узлов в пепельной зоне", "сухие трассы между поселениями", "закрытые машинные сектора"],
-        power_centers: ["советы водных общин", "ремонтные братства", "узловые культы"],
-        location_rules: ["каждая локация должна показывать цену воды, энергии, деталей, доступа или сигнала"],
-        prohibited_elements: ["классическая магия без объяснения как сбой, культ или чужеродный артефакт"],
-      },
-    },
-  },
-  {
-    id: "isekai",
-    labelKey: "isekai.label",
-    descriptionKey: "isekai.description",
-    values: {
-      title: "Порог Второго Неба",
-      genre: "fantasy isekai",
-      tone: "tense hopeful",
-      worldSize: "Континент с несколькими королевствами, духами дорог и местными святилищами; игра может начинаться где угодно внутри него.",
-      population: "Десятки миллионов людей, духовных родов, призванных чужаков и малых народов.",
-      publicPremise: "Имя, клятва и долг имеют силу закона и магии. Призванные чужаки появляются редко, но почти всегда становятся частью старого договора.",
-      worldLore: {
-        dogmas: ["имя и клятва имеют юридическую и мистическую силу", "духи мест помнят долги лучше людей"],
-        world_laws: ["магия требует имени, цены или признанного права", "дальняя дорога меняет слухи и баланс сил"],
-        inhabitants: ["родовые дома", "духи мест", "призванные чужаки", "гильдии рунников"],
-        regions: ["Семь земель под Осколочной Луной", "живые дороги", "пороговые святилища"],
-        religions: ["культ дорожных духов", "официальная вера клятв"],
-        gods: ["Старшие Духи Порогов"],
-        location_rules: ["каждая новая локация должна иметь связь с долгом, властью, дорогой или духом места"],
-        prohibited_elements: ["бесплатное воскрешение", "магия без имени, цены или договора"],
-      },
-    },
-  },
-  {
-    id: "frontier",
-    labelKey: "frontier.label",
-    descriptionKey: "frontier.description",
-    values: {
-      title: "Край Старых Дорог",
-      genre: "frontier fantasy",
-      tone: "tense",
-      worldSize: "Один обжитой континент с королевствами, пограничными трактами, старыми местами и дальними землями за картой.",
-      population: "Несколько миллионов жителей: города-государства, деревни, кочевые семьи, дорожные ордена и старые народы.",
-      publicPremise: "Дороги важнее стен: слухи, караваны, старые договоры и опасные места связывают поселения сильнее любой короны.",
-      worldLore: {
-        conflicts: ["корона пытается подчинить дороги", "старые места снова просыпаются", "пограничные поселения спорят за пошлины"],
-        regions: ["королевские тракты", "старые леса", "пограничные города", "забытые святилища"],
-        power_centers: ["дорожные ордена", "городские советы", "караванные дома", "пограничная стража"],
-        economy: ["пошлины", "караваны", "долги за охрану", "право прохода"],
-        location_rules: ["каждая дорога должна иметь характер, цену, риск и тех, кто о ней знает"],
-        prohibited_elements: ["случайные данжи без связи с дорогами, долгами или старым правом"],
-      },
-    },
-  },
-];
+import { DEFAULT_LANGUAGE } from "../i18n/catalog.js";
+import { availableLanguages } from "../i18n/localeCatalog.js";
+import { createServerMessageError, localizeServerMessage } from "../serverMessages.js";
+import { localizedWorldPresetValues, WORLD_PRESETS } from "./worldPresets.js";
 
 const DEFAULT_WORLD_DRAFT = {
   title: "",
@@ -150,15 +83,15 @@ function cleanWorldDraft(draft) {
   };
 }
 
-function worldDraftFromSaved(world) {
-  if (!world || typeof world !== "object") return { ...DEFAULT_WORLD_DRAFT };
+function worldDraftFromSaved(world, defaults, defaultTitles) {
+  if (!world || typeof world !== "object") return { ...defaults };
   const isDraft = textValue(world.status) === "draft";
   const savedTitle = textValue(world.title);
-  const title = isDraft && savedTitle === "Новый мир" ? "" : savedTitle;
+  const title = isDraft && defaultTitles.has(savedTitle) ? "" : savedTitle;
   return {
     title: title || textValue(world.world_lore?.name),
-    genre: textValue(world.genre) || DEFAULT_WORLD_DRAFT.genre,
-    tone: textValue(world.tone) || DEFAULT_WORLD_DRAFT.tone,
+    genre: textValue(world.genre) || defaults.genre,
+    tone: textValue(world.tone) || defaults.tone,
     worldSize: textValue(world.world_size),
     population: textValue(world.population),
     publicPremise: textValue(world.public_premise) || textValue(world.world_lore?.public_premise),
@@ -169,12 +102,12 @@ function worldDraftFromSaved(world) {
 // Restore the visible conversation from the server's architect block
 // (`GET /worlds/{id}/architect` → `{architect: {messages}}`). The chat lives in
 // the package's architect.json now — never inside the world row.
-function architectMessagesFromChat(architect, t) {
+function architectMessagesFromChat(architect, intro) {
   const raw = Array.isArray(architect?.messages) ? architect.messages : [];
   const messages = raw.map(normalizeVisibleMessage).filter(Boolean);
   return messages.length > 0
     ? messages
-    : [{ role: "assistant", content: t("world.architect.intro"), uiFallback: true }];
+    : [{ role: "assistant", content: intro, uiFallback: true }];
 }
 
 function mergeArchitectDraft(current, draft) {
@@ -305,14 +238,28 @@ export default function WorldArchitectPanel({
   onGenerateImage,
   onPlayWorld,
   onCreateStory,
+  responseLanguage = DEFAULT_LANGUAGE,
   className = "",
 }) {
   const { t } = useTranslation("studio");
+  const presetLanguage = String(responseLanguage || "").trim() || DEFAULT_LANGUAGE;
+  const architectIntro = t("world.architect.intro", { lng: presetLanguage });
+  const worldDraftDefaults = useMemo(() => ({
+    ...DEFAULT_WORLD_DRAFT,
+    genre: t("world.defaults.genre", { lng: presetLanguage }),
+    tone: t("world.defaults.tone", { lng: presetLanguage }),
+  }), [presetLanguage, t]);
+  const defaultWorldTitles = useMemo(() => new Set(
+    availableLanguages.map(({ code }) => t("world.defaults.title", { lng: code }))
+  ), [t]);
   // The model history and prompt-cache ids are SERVER-side (the package's
   // architect.json); the panel holds only the visible conversation.
-  const [worldDraft, setWorldDraft] = useState(() => worldDraftFromSaved(world));
-  const [messages, setMessages] = useState(() => architectMessagesFromChat(null, t));
-  useLocalizedFallbackMessage(setMessages, t("world.architect.intro"));
+  const [worldDraft, setWorldDraft] = useState(
+    () => worldDraftFromSaved(world, worldDraftDefaults, defaultWorldTitles)
+  );
+  const previousWorldDraftDefaultsRef = useRef(worldDraftDefaults);
+  const [messages, setMessages] = useState(() => architectMessagesFromChat(null, architectIntro));
+  useLocalizedFallbackMessage(setMessages, architectIntro);
   const [input, setInput] = useState("");
   const [architectBusy, setArchitectBusy] = useState(false);
   const [architectError, setArchitectError] = useState("");
@@ -333,6 +280,22 @@ export default function WorldArchitectPanel({
   // from the SSE stream in production order. Mirrors the main chat's live view.
   const { liveSegments, liveSegmentsRef, appendLiveDelta, pushLiveTool, clearLive } =
     useLiveSegments();
+
+  useEffect(() => {
+    const previous = previousWorldDraftDefaultsRef.current;
+    previousWorldDraftDefaultsRef.current = worldDraftDefaults;
+    if (
+      previous.genre === worldDraftDefaults.genre
+      && previous.tone === worldDraftDefaults.tone
+    ) return;
+    setWorldDraft((current) => {
+      const genre = current.genre === previous.genre ? worldDraftDefaults.genre : current.genre;
+      const tone = current.tone === previous.tone ? worldDraftDefaults.tone : current.tone;
+      return genre === current.genre && tone === current.tone
+        ? current
+        : { ...current, genre, tone };
+    });
+  }, [worldDraftDefaults]);
   // Start as `null` (not the mount id) so the load effect ALWAYS runs on mount —
   // for an existing world that means fetching its architect conversation on open.
   const loadedWorldIdRef = useRef(null);
@@ -382,9 +345,9 @@ export default function WorldArchitectPanel({
     // reloading it would wipe the live conversation.
     if (id === loadedWorldIdRef.current) return undefined;
     loadedWorldIdRef.current = id;
-    const nextDraft = worldDraftFromSaved(world);
+    const nextDraft = worldDraftFromSaved(world, worldDraftDefaults, defaultWorldTitles);
     setWorldDraft(nextDraft);
-    setMessages(architectMessagesFromChat(null, t));
+    setMessages(architectMessagesFromChat(null, architectIntro));
     clearLive();
     setInput("");
     setArchitectError("");
@@ -411,9 +374,9 @@ export default function WorldArchitectPanel({
       .then((data) => {
         if (cancelled || loadedWorldIdRef.current !== id) return;
         if (!data?.ok) {
-          throw new Error(data?.error || t("world.errors.loadArchitect"));
+          throw createServerMessageError(data);
         }
-        const restored = architectMessagesFromChat(data.architect, t);
+        const restored = architectMessagesFromChat(data.architect, architectIntro);
         setMessages(restored);
         resetModelBinding(data.architect?.model_binding);
         // The server keeps generating after a closed tab; if a turn is still
@@ -424,7 +387,7 @@ export default function WorldArchitectPanel({
         if (cancelled || loadedWorldIdRef.current !== id) return;
         setBindingLoading(false);
         setBindingLoadFailed(true);
-        setArchitectError(error?.message || t("world.errors.loadArchitect"));
+        setArchitectError(localizeServerMessage(error, t, { fallbackCode: "architect_load_failed" }));
       });
     return () => {
       cancelled = true;
@@ -465,7 +428,11 @@ export default function WorldArchitectPanel({
   };
 
   const applyPreset = (preset) => {
-    setWorldDraft((current) => applyPresetValues(current, preset));
+    const localizedPreset = {
+      ...preset,
+      values: localizedWorldPresetValues(preset, t, presetLanguage),
+    };
+    setWorldDraft((current) => applyPresetValues(current, localizedPreset));
   };
 
   const updateWorldLore = useCallback((field, value) => {
@@ -621,7 +588,7 @@ export default function WorldArchitectPanel({
     clearLive();
     setMessages(visibleMessages);
     let adopted = false;
-    let failure = "";
+    let failure = null;
     let attachResult;
     lockConnector();
     try {
@@ -663,7 +630,7 @@ export default function WorldArchitectPanel({
               setWorldDraft((current) => mergeArchitectDraft(current, args));
             }
           } else if (ev.kind === "architect_error") {
-            failure = textValue(ev.data) || t("architect.errors.noResponse");
+            failure = ev;
             if (ev.model_binding) resetModelBinding(ev.model_binding);
           } else if (ev.kind === "architect_done") {
             adopted = true;
@@ -690,10 +657,10 @@ export default function WorldArchitectPanel({
           }
         }
       );
-      if (failure) throw new Error(failure);
+      if (failure !== null) throw createServerMessageError(failure);
       setRetryText("");
     } catch (error) {
-      const message = error?.message || t("architect.errors.callFailed");
+      const message = localizeServerMessage(error, t, { fallbackCode: "architect_turn_failed" });
       setArchitectError(message);
       // A re-attached turn never saw the original send; seed the retry with
       // the last persisted user message instead of the (empty) attach text.
@@ -735,7 +702,7 @@ export default function WorldArchitectPanel({
       try {
         const data = await api.worldArchitect(id);
         if (data?.ok && loadedWorldIdRef.current === id) {
-          setMessages(architectMessagesFromChat(data.architect, t));
+          setMessages(architectMessagesFromChat(data.architect, architectIntro));
         }
       } catch {
         // keep the restored view; the user can reload the panel
@@ -836,8 +803,8 @@ export default function WorldArchitectPanel({
                     onClick={() => applyPreset(preset)}
                     disabled={locked}
                   >
-                    <b>{t(`world.presets.${preset.labelKey}`)}</b>
-                    <span>{t(`world.presets.${preset.descriptionKey}`)}</span>
+                    <b>{t(`world.presets.${preset.id}.label`)}</b>
+                    <span>{t(`world.presets.${preset.id}.description`)}</span>
                   </button>
                 ))}
               </div>

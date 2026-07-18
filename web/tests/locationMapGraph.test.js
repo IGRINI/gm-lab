@@ -126,6 +126,31 @@ test("accepts wrapped and legacy graph aliases", () => {
   assert.equal(graph.edges[0].exit.destinationId, "2");
 });
 
+test("uses caller-provided localized labels for presentation fallbacks", () => {
+  const source = {
+    nodes: [{ id: "room", name: "Room" }],
+    edges: [{ id: "unknown", from: "room", to: null }],
+  };
+
+  const english = normalizeLocationGraph(source, {
+    exitLabel: "Exit",
+    unexploredExitLabel: "Unexplored exit",
+  });
+  assert.equal(english.edges[0].label, "Exit");
+  assert.equal(english.edges[0].exit.title, "Unexplored exit");
+
+  const russian = normalizeLocationGraph(source, {
+    exitLabel: "Выход",
+    unexploredExitLabel: "Неизведанный выход",
+  });
+  assert.equal(russian.edges[0].label, "Выход");
+  assert.equal(russian.edges[0].exit.title, "Неизведанный выход");
+
+  const presentationIndependent = normalizeLocationGraph(source);
+  assert.equal(presentationIndependent.edges[0].label, "");
+  assert.equal(presentationIndependent.edges[0].exit.title, "");
+});
+
 test("creates a deterministic rooted layout and a separate placeholder node", () => {
   const first = createLocationMapLayout(backendGraph);
   const second = createLocationMapLayout(backendGraph);

@@ -1,4 +1,4 @@
-//! gml-world — authoritative, code-side model of game-world truth for GM-Lab.
+//! gml-world — authoritative, code-side model of game-world truth for TaleShift.
 //!
 //! Faithful port of `gm-lab/world.py` (PORT_PLAN.md §4.4–§4.6, subsystem map
 //! "World state model"). Holds the deterministic-seeded dice RNG, the NPC
@@ -16,6 +16,7 @@ pub mod canon;
 pub mod dice;
 pub mod helpers;
 pub mod model;
+mod public_state;
 pub mod rng;
 pub mod seed;
 pub mod state_record;
@@ -33,6 +34,7 @@ pub use model::{
     FactRecord, Npc, NpcWhereabouts, PlaceSceneContext, PlayerCharacter, Presence, Rumor,
     SceneExit, SceneItem, SceneState, SpellEntry, StateRecord, WorldEvent, WorldFact, WorldTime,
 };
+pub use public_state::player_location_graph;
 pub use rng::{MersenneTwister, RngState};
 pub use state_record::{state_record_hash, RagDocument};
 pub use world::{

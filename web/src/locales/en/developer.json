@@ -23,6 +23,14 @@
   },
   "status": {
     "unknown": "unknown",
+    "labels": {
+      "present": "in the current scene",
+      "known": "known",
+      "likely": "likely",
+      "rumored": "rumored",
+      "unknown": "unknown",
+      "left_scene": "left"
+    },
     "help": {
       "default": "Confidence status for the character's whereabouts.",
       "known": "The location is established as a working fact of the current story.",
@@ -172,7 +180,63 @@
   },
   "playerCards": {
     "timeElapsed": "{{value}} passed",
-    "sheetUpdated": "Character sheet updated"
+    "sheetUpdated": "Character sheet updated",
+    "actionState": {
+      "pending": "Action in progress…",
+      "completed": "Action completed",
+      "failed": "Action failed"
+    },
+    "changeValues": { "yes": "yes", "no": "no" },
+    "changeFields": {
+      "name": "Name",
+      "pronouns": "Pronouns",
+      "class_role": "Class / role",
+      "background": "Background",
+      "age": "Age",
+      "physical_type": "Physical type",
+      "inventory": "Inventory",
+      "equipment": "Equipment",
+      "hp": "Hit points",
+      "hp_current": "Current hit points",
+      "hp_max": "Maximum hit points",
+      "condition": "Condition",
+      "current_appearance": "Appearance",
+      "life_status": "Life status",
+      "life_status_note": "Life status note",
+      "personality": "Personality",
+      "values": "Values",
+      "spell_slots": "Spell slots",
+      "spell_slots_max": "Maximum spell slots",
+      "concentration": "Concentration",
+      "distinctive_features": "Distinctive features",
+      "features": "Features",
+      "abilities": "Abilities",
+      "skills": "Skills",
+      "saving_throws": "Saving throws",
+      "passive_perception": "Passive perception",
+      "ac": "Armor class",
+      "level": "Level",
+      "speed": "Speed",
+      "senses": "Senses",
+      "languages": "Languages",
+      "spells": "Spells"
+    },
+    "actions": {
+      "roll_dice": { "pending": "Rolling dice…", "completed": "Dice rolled", "failed": "Roll failed" },
+      "advance_time": { "pending": "Time is passing…", "completed": "Time advanced", "failed": "Time did not advance" },
+      "long_rest": { "pending": "The character is resting…", "completed": "Rest completed", "failed": "Rest failed" },
+      "update_character": { "pending": "Updating character sheet…", "completed": "Character sheet updated", "failed": "Character sheet was not updated" },
+      "update_player_character": { "pending": "Updating character sheet…", "completed": "Character sheet updated", "failed": "Character sheet was not updated" },
+      "take_item": { "pending": "Taking an item…", "completed": "Item added to inventory", "failed": "Could not take the item" },
+      "drop_item": { "pending": "Leaving an item…", "completed": "Item left behind", "failed": "Could not leave the item" },
+      "cast_spell": { "pending": "Casting a spell…", "completed": "Spell cast", "failed": "Spell failed" },
+      "set_scene": { "pending": "The surroundings are changing…", "completed": "The surroundings changed", "failed": "The surroundings did not change" },
+      "move_player": { "pending": "Moving to the next location…", "completed": "Move completed", "failed": "Move failed" },
+      "travel_to": { "pending": "Travelling to the location…", "completed": "Journey completed", "failed": "Could not reach the location" },
+      "relocate_player": { "pending": "Moving the character…", "completed": "Relocation completed", "failed": "Relocation failed" },
+      "create_passage": { "pending": "Creating a new passage…", "completed": "New passage created", "failed": "Could not create the passage" },
+      "set_passage_state": { "pending": "Changing the passage…", "completed": "Passage changed", "failed": "Could not change the passage" }
+    }
   },
   "factStatus": {
     "known": "known", "likely": "likely", "rumored": "rumor", "confirmed": "confirmed", "unknown": "unknown"
@@ -184,7 +248,7 @@
     "recordId": "record id: {{id}}",
     "noNew": "nothing new", "nothingFound": "nothing found", "found": "found: {{count}}",
     "alreadyDelivered": "already delivered: {{count}}", "saved": "saved: {{count}}", "rejected": "rejected: {{count}}",
-    "notSaved": "Not saved", "writeError": "write error", "revision": "revision {{value}}", "noFields": "no fields",
+    "notSaved": "Not saved", "writeError": "Could not save the world-memory entry", "profileError": "Could not load the NPC profile", "timeError": "Could not advance world time", "characterError": "Could not update the character", "revision": "revision {{value}}", "noFields": "no fields",
     "fallbackTitle": "Result",
     "worldFact": { "title": "World memory — response" },
     "worldQuery": { "title": "World memory — results" },
@@ -193,7 +257,11 @@
     "worldTime": { "title": "World time" },
     "playerSheet": { "title": "Character sheet — updated" },
     "character": { "playerTitle": "Character sheet — updated", "npcTitle": "Character profile — updated — " },
-    "toolSearch": { "title": "GM tools" },
+    "toolSearch": {
+      "title": "GM tools", "schemaTitle": "GM tool schema", "matches": "Found tools", "schema": "Loaded schema",
+      "available": "Already available", "missing": "Not found", "alreadyLoaded": "already available: {{count}}", "completed": "search completed",
+      "statuses": { "loaded_schema": "schema loaded", "already_loaded": "schema already loaded", "missing": "tool not found", "invalid": "invalid tool name", "unknown": "operation completed" }
+    },
     "sources": {
       "label": "Sources", "kind": "type: {{value}}", "status": "status: {{value}}",
       "source": "source: {{value}}", "relevance": "relevance: {{value}}"
@@ -207,18 +275,19 @@
       "advance_time": "The new world-clock state after advancing time.",
       "update_character": "Which player or NPC fields changed.",
       "update_player_character": "Which character-sheet fields changed.",
-      "tool_search": "Which hidden tools the GM loaded."
+      "tool_search": "Which hidden tools the GM loaded.",
+      "load_tool_schema": "Whether the requested hidden-tool schema was loaded."
     }
   },
   "debug": {
     "common": {
       "add": "Add", "apply": "Apply", "cancel": "Cancel", "close": "Close", "disable": "Disable",
-      "edit": "edit", "empty": "empty for now", "enable": "Enable", "none": "none", "off": "off", "save": "Save"
+      "edit": "edit", "empty": "empty for now", "enable": "Enable", "none": "none", "off": "off", "save": "Save", "yes": "yes", "no": "no"
     },
     "badges": { "gm": "GM", "gmOnly": "GM only", "sheet": "sheet" },
     "errors": {
       "load": "debug data could not be loaded", "apply": "could not apply the change",
-      "jsonArray": "{{label}}: expected a JSON array", "integer": "{{label}}: expected an integer"
+      "jsonArray": "{{label}}: expected a valid JSON array", "integer": "{{label}}: expected an integer", "invalidValue": "Check the entered values"
     },
     "factKinds": { "public": "Public", "truth": "Hidden truth", "rumor": "Rumor", "fact": "fact" },
     "rolls": {
@@ -268,7 +337,7 @@
       "background": "Background", "life": "Life", "condition": "Condition", "gmNotes": "GM notes",
       "inventory": "Inventory", "equipment": "Equipment", "specialFeatures": "Features",
       "featureDescription": "What it does (optional)", "concentration": "Concentration", "turns": "turns", "model": "model",
-      "backend": "backend", "where": "where"
+      "backend": "backend", "where": "where", "id": "ID", "entityIdNpc": "NPC entity ID", "locationId": "Location ID"
     },
     "npcEditor": {
       "secretWarning": "Changing the secret is risky: old NPC memory may conflict with the new profile. Reset NPC memory manually if needed.",
@@ -291,7 +360,7 @@
     },
     "playerCard": {
       "notLoaded": "player profile is not loaded", "defaultName": "Player character", "sheet": "character sheet",
-      "equipmentFeatures": "Equipment and features", "spells": "Spells", "slots": "slots"
+      "equipmentFeatures": "Equipment and features", "spells": "Spells", "slots": "slots", "revision": "revision {{value}}"
     },
     "events": { "turn": "turn {{value}}", "witnesses": "witnesses: {{value}}" },
     "runtime": {
@@ -300,7 +369,8 @@
       "context": "Context", "modelSettings": "Model settings", "modelSettingsHelp": "Read only. Settings are changed in the header and apply from the next turn.",
       "gmReasoning": "GM reasoning", "npcReasoning": "NPC reasoning", "compactReasoning": "Compact reasoning",
       "verbosity": "verbosity", "toolChoice": "tool choice", "gmStream": "GM stream", "parallelTools": "parallel tools",
-      "suggestOptions": "suggest options", "toolHopLimit": "tool-hop limit", "unlimited": "unlimited", "tokenLimit": "token limit"
+      "suggestOptions": "suggest options", "toolHopLimit": "tool-hop limit", "unlimited": "unlimited", "tokenLimit": "token limit",
+      "promptCacheKey": "Prompt cache key", "threadId": "Thread ID", "store": "Store responses"
     },
     "tabs": {
       "overview": "Overview", "story": "Story", "scene": "Scene", "player": "Player", "npcs": "Characters",
@@ -312,6 +382,7 @@
       "sections": "Debug sections", "loading": "loading…", "notOpened": "the panel has not been opened yet", "storyFallback": "Story",
       "backendModel": "backend · model", "characters": "characters", "time": "time", "startBrief": "Initial player brief",
       "editStory": "Edit story and canon", "objective": "GM objective", "objectiveHelp": "A developer note that is not sent directly to the model.",
+      "objectiveText": "Guide the player toward uncovering the story's hidden truth through actions, clues, witnesses, and consequences, without revealing secrets unless the fiction supports it.",
       "briefHelp": "This text appears in the chat's top card and does not affect the GM cached prefix.",
       "publicIntroHelp": "Part of the cached prefix. Editing it rebuilds the prefix once.",
       "hiddenTruthHelp": "Not part of the prefix. Reaches the GM through query_world_state with scope=gm.", "hiddenEvents": "Hidden GM events",

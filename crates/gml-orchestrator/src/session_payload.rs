@@ -25,6 +25,7 @@ use gml_world::{
 use gml_world::{MersenneTwister, RngState};
 
 use crate::compact::usage_from_payload;
+use crate::content_locale::text as content_text;
 use crate::session::{ClientFactory, NpcClientState, PendingDraft, Session};
 
 // =========================================================================
@@ -899,6 +900,7 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
     mt.setstate(&rng_state)
         .map_err(|e| format!("unsupported world payload: rng_state invalid: {e}"))?;
     let mut world = World::empty_with_rng(mt);
+    let content_locale = saved_content_locale(&data);
 
     world.story_id = s(&data, "story_id");
     world.story_title = s(&data, "story_title");
@@ -929,8 +931,9 @@ fn world_from_payload(v: Option<&Value>) -> Result<World, String> {
         world.story_brief = world.public.clone();
     }
     world.canon = s(&data, "canon");
-    world.time = time_from_payload(data.get("time"));
-    world.player_character = player_character_from_payload(data.get("player_character"));
+    world.time = time_from_payload(data.get("time"), content_locale);
+    world.player_character =
+        player_character_from_payload_for_locale(data.get("player_character"), content_locale);
     world.extra_proper_nouns = str_list(data.get("extra_proper_nouns"));
 
     if !matches!(data.get("scene"), Some(Value::Object(_))) {
@@ -1094,7 +1097,15 @@ fn time_to_payload(t: &WorldTime) -> Value {
     })
 }
 
-fn time_from_payload(v: Option<&Value>) -> WorldTime {
+fn saved_content_locale(data: &Map<String, Value>) -> gml_types::ContentLocale {
+    data.get("world_canon")
+        .and_then(Value::as_object)
+        .and_then(|canon| canon.get("content_locale"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn time_from_payload(v: Option<&Value>, content_locale: gml_types::ContentLocale) -> WorldTime {
     let m = json_dict(v);
     WorldTime {
         calendar_name: s(&m, "calendar_name"),
@@ -1102,7 +1113,7 @@ fn time_from_payload(v: Option<&Value>) -> WorldTime {
         current_date_label: {
             let c = s(&m, "current_date_label");
             if c.is_empty() {
-                "День 1".to_string()
+                content_text(content_locale, "День 1", "Day 1").to_string()
             } else {
                 c
             }
@@ -1256,12 +1267,22 @@ fn player_character_to_payload(pc: &PlayerCharacter) -> Value {
 }
 
 fn player_character_from_payload(v: Option<&Value>) -> PlayerCharacter {
+    player_character_from_payload_for_locale(v, gml_types::ContentLocale::Russian)
+}
+
+fn player_character_from_payload_for_locale(
+    v: Option<&Value>,
+    content_locale: gml_types::ContentLocale,
+) -> PlayerCharacter {
     let m = match v {
         Some(Value::Object(m)) => m.clone(),
-        _ => return PlayerCharacter::default(),
+        _ => return PlayerCharacter::for_locale(content_locale),
     };
     PlayerCharacter {
-        name: nonempty(s(&m, "name"), "Искатель"),
+        name: nonempty(
+            s(&m, "name"),
+            content_text(content_locale, "Искатель", "Seeker"),
+        ),
         pronouns: nonempty(s(&m, "pronouns"), "OTHER"),
         class_role: s(&m, "class_role"),
         level: int_or_none(m.get("level")),
@@ -1331,6 +1352,15 @@ pub fn player_character_payload(pc: &PlayerCharacter) -> Value {
 /// fields fall back to the default hero). Public for the same seam.
 pub fn player_character_from_value(v: Option<&Value>) -> PlayerCharacter {
     player_character_from_payload(v)
+}
+
+/// Locale-aware inverse of [`player_character_payload`] for content creation
+/// paths that must not inherit the legacy Russian fallback hero.
+pub fn player_character_from_value_for_locale(
+    v: Option<&Value>,
+    content_locale: gml_types::ContentLocale,
+) -> PlayerCharacter {
+    player_character_from_payload_for_locale(v, content_locale)
 }
 
 fn scene_to_payload(scene: &SceneState) -> Value {
@@ -1603,6 +1633,7 @@ fn first_nonempty(m: &Map<String, Value>, keys: &[&str]) -> String {
 #[cfg(test)]
 mod package_ref_tests {
     use super::*;
+    use gml_types::ContentLocale;
     use gml_world::{
         canon::{
             action::{Action, ProposedAction},
@@ -1615,6 +1646,54 @@ mod package_ref_tests {
     /// fact_records so the payload round-trips through `world_from_payload`).
     fn worldgen_world() -> World {
         World::from_worldgen_with_dice_seed(&WorldSpec::from_seed("20260622"), 20260622)
+    }
+
+    #[test]
+    fn restore_fallback_content_uses_the_persisted_canon_locale() {
+        for (locale, expected_day, expected_name) in [
+            (ContentLocale::Russian, "День 1", "Искатель"),
+            (ContentLocale::English, "Day 1", "Seeker"),
+        ] {
+            let mut world = worldgen_world();
+            world.world_canon.content_locale = locale;
+            let mut payload = world_to_payload(&world);
+            payload["time"]["current_date_label"] = json!("");
+            payload
+                .as_object_mut()
+                .expect("world payload object")
+                .remove("player_character");
+
+            let restored = world_from_payload(Some(&payload)).expect("restore localized world");
+
+            assert_eq!(restored.world_canon.content_locale, locale);
+            assert_eq!(restored.time.current_date_label, expected_day);
+            assert_eq!(restored.player_character.name, expected_name);
+        }
+    }
+
+    #[test]
+    fn restore_fallback_content_keeps_russian_for_legacy_canon() {
+        let world = worldgen_world();
+        let mut payload = world_to_payload(&world);
+        payload["world_canon"]
+            .as_object_mut()
+            .expect("canon object")
+            .remove("content_locale");
+        payload["time"]["current_date_label"] = json!("");
+        payload["player_character"]["name"] = json!("");
+
+        let restored = world_from_payload(Some(&payload)).expect("restore legacy world");
+
+        assert_eq!(restored.world_canon.content_locale, ContentLocale::Russian);
+        assert_eq!(restored.time.current_date_label, "День 1");
+        assert_eq!(restored.player_character.name, "Искатель");
+    }
+
+    #[test]
+    fn public_player_character_seam_uses_requested_content_locale() {
+        let restored =
+            player_character_from_value_for_locale(Some(&json!({})), ContentLocale::English);
+        assert_eq!(restored.name, "Seeker");
     }
 
     /// `Some` world_ref / story_ref => the payload carries `{id, version}` and a

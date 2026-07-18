@@ -54,9 +54,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use gml_types::ContentLocale;
 use serde_json::{json, Map, Value};
 
-use crate::{UnknownStory, CATALOG_JSON, DEFAULT_STORY_ID};
+use crate::{UnknownStory, CATALOG_EN_JSON, CATALOG_JSON, DEFAULT_STORY_ID};
 
 /// A reference from a story package to the WORLD package it is bound to
 /// (`docs/MODS_PACKAGES_TZ.md`). `version` is the world `version` the story was
@@ -126,6 +127,8 @@ pub struct StoryStore {
     root: PathBuf,
     /// Parsed, scanned story envelopes in catalog/discovery order.
     stories: Vec<StoryEnvelope>,
+    /// Immutable RU/EN projections for pristine version-1 built-ins.
+    builtin_catalogs: BuiltinCatalogs,
     write_lock: Mutex<()>,
 }
 
@@ -138,9 +141,11 @@ impl StoryStore {
     /// [`StoryStoreError::Io`] rather than being silently dropped or replaced.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self, StoryStoreError> {
         let root = abspath(root.into());
+        let builtin_catalogs = BuiltinCatalogs::load()?;
         let mut store = StoryStore {
             root,
             stories: Vec::new(),
+            builtin_catalogs,
             write_lock: Mutex::new(()),
         };
         std::fs::create_dir_all(store.stories_dir())
@@ -229,11 +234,35 @@ impl StoryStore {
         Ok(env.metadata())
     }
 
+    /// Locale-aware PLAYER-facing metadata. English content is projected only
+    /// for an untouched version-1 built-in package. User-created stories and
+    /// any package whose stored envelope differs from the shipped Russian
+    /// default are returned verbatim, so localization can never hide edits.
+    pub fn story_metadata_for_locale(
+        &self,
+        story_id: &str,
+        locale: ContentLocale,
+    ) -> Result<Map<String, Value>, UnknownStory> {
+        let env = self
+            .find(story_id)
+            .ok_or_else(|| UnknownStory(story_id.to_string()))?;
+        Ok(self.builtin_catalogs.project(env, locale).metadata())
+    }
+
     /// `list_stories() -> list[{id, title, description, story_brief, kind,
     /// world_ref?}]` — discovery order. Each element has the same PLAYER-facing
     /// shape as [`Self::story_metadata`] (NO `seed`, NO `architect_*`).
     pub fn list_stories(&self) -> Vec<Map<String, Value>> {
         self.stories.iter().map(|s| s.metadata()).collect()
+    }
+
+    /// Locale-aware story catalog in discovery order. See
+    /// [`Self::story_metadata_for_locale`] for the pristine-builtin rule.
+    pub fn list_stories_for_locale(&self, locale: ContentLocale) -> Vec<Map<String, Value>> {
+        self.stories
+            .iter()
+            .map(|env| self.builtin_catalogs.project(env, locale).metadata())
+            .collect()
     }
 
     /// Read the story's architect-chat state (`architect.json` in the package
@@ -351,9 +380,29 @@ impl StoryStore {
         Ok(env.seed_value())
     }
 
+    /// Locale-aware owned story seed. English content is substituted only for
+    /// a pristine version-1 built-in; all other packages retain their exact
+    /// on-disk content.
+    pub fn seed_for_locale(
+        &self,
+        story_id: &str,
+        locale: ContentLocale,
+    ) -> Result<Value, UnknownStory> {
+        let env = self
+            .find(story_id)
+            .ok_or_else(|| UnknownStory(story_id.to_string()))?;
+        Ok(self.builtin_catalogs.project(env, locale).seed_value())
+    }
+
     /// `default_story_seed() -> dict` — `seed(DEFAULT_STORY_ID)`.
     pub fn default_seed(&self) -> Value {
         self.seed(DEFAULT_STORY_ID)
+            .expect("DEFAULT_STORY_ID must be present in the story library")
+    }
+
+    /// Locale-aware equivalent of [`Self::default_seed`].
+    pub fn default_seed_for_locale(&self, locale: ContentLocale) -> Value {
+        self.seed_for_locale(DEFAULT_STORY_ID, locale)
             .expect("DEFAULT_STORY_ID must be present in the story library")
     }
 
@@ -392,6 +441,15 @@ impl StoryStore {
     /// resolved world bible; for self-contained stories it is the full seed.
     pub fn plot(&self, story_id: &str) -> Result<Value, UnknownStory> {
         self.seed(story_id)
+    }
+
+    /// Locale-aware equivalent of [`Self::plot`].
+    pub fn plot_for_locale(
+        &self,
+        story_id: &str,
+        locale: ContentLocale,
+    ) -> Result<Value, UnknownStory> {
+        self.seed_for_locale(story_id, locale)
     }
 
     /// The story's package `version`. Returns [`UnknownStory`] for an unknown id.
@@ -656,8 +714,7 @@ impl StoryStore {
     /// a user-edited default is never clobbered.
     fn ensure_defaults(&self) -> Result<(), StoryStoreError> {
         let _guard = self.write_lock.lock().expect("story write lock poisoned");
-        let defaults = embedded_default_envelopes()?;
-        for env in &defaults {
+        for env in &self.builtin_catalogs.russian {
             if self.story_file(&env.id).is_file() {
                 continue;
             }
@@ -688,7 +745,12 @@ impl StoryStore {
         }
         // Deterministic discovery order: built-in defaults first (in embedded
         // catalog order), then any user-added (drop-in) stories alphabetically.
-        let builtin_order = builtin_id_order();
+        let builtin_order: Vec<&str> = self
+            .builtin_catalogs
+            .russian
+            .iter()
+            .map(|env| env.id.as_str())
+            .collect();
         names.sort_by(|a, b| {
             let ia = builtin_order.iter().position(|x| x == a);
             let ib = builtin_order.iter().position(|x| x == b);
@@ -768,6 +830,20 @@ struct StoryEnvelope {
 }
 
 impl StoryEnvelope {
+    /// Content identity for deciding whether a built-in may use a localized
+    /// projection. Architect-chat metadata and lifecycle timestamps are not
+    /// story content and therefore do not disable localization.
+    fn content_eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.version == other.version
+            && self.kind == other.kind
+            && self.world_embedded == other.world_embedded
+            && self.world_ref == other.world_ref
+            && self.title == other.title
+            && self.description == other.description
+            && self.seed == other.seed
+    }
+
     /// Build an envelope from a parsed `story.json`, using `id` (the folder name)
     /// as the authoritative id.
     fn from_value(id: &str, value: Value) -> Result<Self, StoryStoreError> {
@@ -1079,33 +1155,66 @@ fn seed_pc_public(seed: &Value) -> Option<Map<String, Value>> {
     }
 }
 
-/// The id order of the embedded built-in catalog. Defines the default story
-/// discovery order so the `/stories` list stays stable regardless of how the
-/// filesystem enumerates the package directories.
-fn builtin_id_order() -> Vec<String> {
-    embedded_default_envelopes()
-        .map(|envs| envs.into_iter().map(|e| e.id).collect())
-        .unwrap_or_default()
+/// Immutable built-in bundles. Russian is the compatibility source used for
+/// materialization; English is an in-memory projection and is never written
+/// over a user's package.
+struct BuiltinCatalogs {
+    russian: Vec<StoryEnvelope>,
+    english: Vec<StoryEnvelope>,
 }
 
-/// Parse the embedded `catalog.json` into default story envelopes. This is the
-/// ONLY consumer of the embedded catalog — it exists solely to materialize the
-/// built-in default packages on first run.
-fn embedded_default_envelopes() -> Result<Vec<StoryEnvelope>, StoryStoreError> {
-    let parsed: Value = serde_json::from_str(CATALOG_JSON)
-        .map_err(|e| StoryStoreError::Io(format!("embedded catalog.json invalid: {e}")))?;
+impl BuiltinCatalogs {
+    fn load() -> Result<Self, StoryStoreError> {
+        let russian = parse_embedded_catalog(CATALOG_JSON, "catalog.json")?;
+        let english = parse_embedded_catalog(CATALOG_EN_JSON, "catalog.en.json")?;
+        let russian_ids: Vec<&str> = russian.iter().map(|env| env.id.as_str()).collect();
+        let english_ids: Vec<&str> = english.iter().map(|env| env.id.as_str()).collect();
+        if russian_ids != english_ids {
+            return Err(StoryStoreError::Io(format!(
+                "embedded catalog ids/order differ: ru={russian_ids:?}, en={english_ids:?}"
+            )));
+        }
+        Ok(Self { russian, english })
+    }
+
+    /// Return the translated counterpart only when `env` is byte-shape and
+    /// content equivalent to the shipped Russian version-1 package. Comparing
+    /// all story content protects manual edits even when an external editor
+    /// forgot to bump `version`; chat metadata and timestamps are ignored.
+    fn project<'a>(&'a self, env: &'a StoryEnvelope, locale: ContentLocale) -> &'a StoryEnvelope {
+        if locale != ContentLocale::English || env.version != 1 {
+            return env;
+        }
+        let Some(index) = self
+            .russian
+            .iter()
+            .position(|builtin| builtin.id == env.id && builtin.content_eq(env))
+        else {
+            return env;
+        };
+        &self.english[index]
+    }
+}
+
+/// Parse one embedded locale catalog into built-in story envelopes.
+fn parse_embedded_catalog(
+    raw: &str,
+    filename: &str,
+) -> Result<Vec<StoryEnvelope>, StoryStoreError> {
+    let parsed: Value = serde_json::from_str(raw)
+        .map_err(|e| StoryStoreError::Io(format!("embedded {filename} invalid: {e}")))?;
     let items = match parsed {
         Value::Array(items) => items,
         _ => {
-            return Err(StoryStoreError::Io(
-                "embedded catalog.json must be a JSON array".to_string(),
-            ))
+            return Err(StoryStoreError::Io(format!(
+                "embedded {filename} must be a JSON array"
+            )))
         }
     };
     let mut out = Vec::with_capacity(items.len());
     for entry in items {
         let obj = entry.as_object().ok_or_else(|| {
-            StoryStoreError::Io("embedded catalog entry must be an object".to_string())
+            StoryStoreError::Io(format!("embedded {filename} entry must be an object"))
         })?;
         let id = obj
             .get("id")
@@ -1901,6 +2010,70 @@ mod tests {
         let meta = store.story_metadata(&id).expect("metadata");
         assert!(!meta.contains_key("seed"));
         assert!(!meta.contains_key("architect_messages"));
+    }
+
+    #[test]
+    fn english_projection_never_masks_changed_or_user_created_packages() {
+        let (_dir, mut store) = temp_store();
+        let path = store.story_file(DEFAULT_STORY_ID);
+        let mut package: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read built-in package"))
+                .expect("parse built-in package");
+        package["meta"] = json!({"architect_cache_session_id": "legacy-session"});
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&package).expect("serialize package with metadata"),
+        )
+        .expect("write package metadata");
+        store.reload().expect("reload package metadata");
+        assert_eq!(
+            store
+                .story_metadata_for_locale(DEFAULT_STORY_ID, ContentLocale::English)
+                .expect("metadata-only localized package")["title"],
+            "Murder in Turnvale"
+        );
+
+        package["title"] = json!("Авторская редакция");
+        package["seed"]["title"] = json!("Авторская редакция");
+        // Deliberately leave version=1: the full-envelope comparison must still
+        // recognize this as edited and refuse to replace it with shipped EN.
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&package).expect("serialize package"),
+        )
+        .expect("write edited package");
+        store.reload().expect("reload edited built-in");
+
+        let edited = store
+            .story_metadata_for_locale(DEFAULT_STORY_ID, ContentLocale::English)
+            .expect("edited metadata");
+        assert_eq!(edited["title"], "Авторская редакция");
+        assert_eq!(
+            store
+                .seed_for_locale(DEFAULT_STORY_ID, ContentLocale::English)
+                .expect("edited seed")["title"],
+            "Авторская редакция"
+        );
+
+        let created = store
+            .create_bound_story(
+                "Пользовательская история",
+                "Не подменять",
+                "authored",
+                StoryWorldRef {
+                    id: "world-1".to_string(),
+                    version: 1,
+                },
+                json!({"story_brief": "Авторский текст"}),
+            )
+            .expect("create custom story");
+        let id = created["id"].as_str().expect("created id");
+        assert_eq!(
+            store
+                .story_metadata_for_locale(id, ContentLocale::English)
+                .expect("custom metadata")["title"],
+            "Пользовательская история"
+        );
     }
 
     #[test]

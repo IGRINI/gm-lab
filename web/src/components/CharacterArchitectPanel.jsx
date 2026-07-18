@@ -6,6 +6,8 @@ import { ZoomableImage } from "./ImagePreview.jsx";
 import WorldDetailModal from "./WorldDetailModal.jsx";
 import useConnectorModelBinding from "../useConnectorModelBinding.js";
 import { bindingReady } from "../connectorCatalog.js";
+import { DEFAULT_LANGUAGE } from "../i18n/catalog.js";
+import { createServerMessageError, localizeServerMessage } from "../serverMessages.js";
 import {
   EMPTY_ARCHITECT_USAGE,
   textValue,
@@ -75,21 +77,22 @@ function defaultArchitectMessages(t, {
   storyId = "",
   worldTitle = "",
   storyTitle = "",
+  language = DEFAULT_LANGUAGE,
 } = {}) {
   // Prefer whichever base is actually AVAILABLE (a dangling story must not
   // hide a live world); only when every recorded base is gone say so.
   const closing =
     storyId && storyTitle
-      ? t("character.architect.closing.story", { story: storyTitle })
+      ? t("character.architect.closing.story", { story: storyTitle, lng: language })
       : worldId && worldTitle
-        ? t("character.architect.closing.world", { world: worldTitle })
+        ? t("character.architect.closing.world", { world: worldTitle, lng: language })
         : worldId || storyId
-          ? t("character.architect.closing.missing")
-          : t("character.architect.closing.standalone");
+          ? t("character.architect.closing.missing", { lng: language })
+          : t("character.architect.closing.standalone", { lng: language });
   return [
     {
       role: "assistant",
-      content: t("character.architect.intro", { closing }),
+      content: t("character.architect.intro", { closing, lng: language }),
       uiFallback: true,
     },
   ];
@@ -224,14 +227,25 @@ export default function CharacterArchitectPanel({
   onPlayCharacter,
   onCharacterPersisted,
   notify,
+  responseLanguage = DEFAULT_LANGUAGE,
   className = "",
 }) {
   const { t } = useTranslation("studio");
+  const architectLanguage = String(responseLanguage || "").trim() || DEFAULT_LANGUAGE;
   // The full sheet (the `.gmchar` payload's player_character). Seeded from the
   // catalog row's `payload` (the /characters list carries it); the conversation
   // comes from the architect fetch below. Model history + cache ids are SERVER-
   // side (the dialogs SQLite) — the panel holds only the visible chat.
-  const greeting = defaultArchitectMessages(t, { worldId, storyId, worldTitle, storyTitle });
+  const greeting = useMemo(
+    () => defaultArchitectMessages(t, {
+      worldId,
+      storyId,
+      worldTitle,
+      storyTitle,
+      language: architectLanguage,
+    }),
+    [architectLanguage, storyId, storyTitle, t, worldId, worldTitle]
+  );
   const [sheet, setSheet] = useState(() => characterSheetFromSaved(character));
   const [messages, setMessages] = useState(() => characterMessagesFromChat(null, greeting));
   useLocalizedFallbackMessage(setMessages, greeting[0].content);
@@ -410,7 +424,7 @@ export default function CharacterArchitectPanel({
       .then((data) => {
         if (cancelled || loadedCharacterIdRef.current !== id) return;
         if (!data?.ok) {
-          throw new Error(data?.error || t("character.errors.loadChat"));
+          throw createServerMessageError(data);
         }
         const restored = characterMessagesFromChat(data.architect, greeting);
         setMessages(restored);
@@ -423,7 +437,7 @@ export default function CharacterArchitectPanel({
         if (cancelled || loadedCharacterIdRef.current !== id) return;
         setBindingLoading(false);
         setBindingLoadFailed(true);
-        setArchitectError(error?.message || t("character.errors.loadChat"));
+        setArchitectError(localizeServerMessage(error, t, { fallbackCode: "architect_load_failed" }));
       });
     return () => {
       cancelled = true;
@@ -497,7 +511,7 @@ export default function CharacterArchitectPanel({
     clearLive();
     setMessages(visibleMessages);
     let adopted = false;
-    let failure = "";
+    let failure = null;
     let attachResult;
     lockConnector();
     try {
@@ -549,7 +563,7 @@ export default function CharacterArchitectPanel({
               setSheet((current) => mergeCharacterSheet(current, args));
             }
           } else if (ev.kind === "architect_error") {
-            failure = textValue(ev.data) || t("architect.errors.noResponse");
+            failure = ev;
             if (ev.model_binding) resetModelBinding(ev.model_binding);
             // The server creates the package (and saves the user message into
             // its conversation) BEFORE the model call, and its error events
@@ -595,10 +609,10 @@ export default function CharacterArchitectPanel({
           }
         }
       );
-      if (failure) throw new Error(failure);
+      if (failure !== null) throw createServerMessageError(failure);
       setRetryText("");
     } catch (error) {
-      const message = error?.message || t("architect.errors.callFailed");
+      const message = localizeServerMessage(error, t, { fallbackCode: "architect_turn_failed" });
       setArchitectError(message);
       // A re-attached turn never saw the original send; seed the retry with
       // the last persisted user message instead of the (empty) attach text.
@@ -672,7 +686,7 @@ export default function CharacterArchitectPanel({
       let character;
       if (currentCharacterId) {
         const data = await api.saveCharacterDraft(currentCharacterId, payload);
-        if (!data?.ok) throw new Error(data?.error || t("character.errors.saveSheet"));
+        if (!data?.ok) throw createServerMessageError(data);
         character = data.character;
       } else {
         const title = textValue(payload.name) || t("character.defaultTitle");
@@ -684,7 +698,7 @@ export default function CharacterArchitectPanel({
           ...(worldId ? { world_id: worldId } : {}),
           ...(storyId ? { story_id: storyId } : {}),
         });
-        if (!data?.ok) throw new Error(data?.error || t("character.errors.createCharacter"));
+        if (!data?.ok) throw createServerMessageError(data);
         character = data.character;
         const newId = textValue(character?.id);
         if (newId) {
@@ -699,7 +713,9 @@ export default function CharacterArchitectPanel({
       adoptSheet(savedPc);
       onCharacterPersisted?.(character);
     } catch (error) {
-      const message = error?.message || t("character.errors.saveSheet");
+      const message = localizeServerMessage(error, t, {
+        fallbackCode: "architect_character_save_failed",
+      });
       setSaveError(message);
       notify?.(message);
     } finally {

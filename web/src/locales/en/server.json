@@ -1,0 +1,25 @@
+{
+  "messages": {
+    "generic": "The action could not be completed.",
+    "model_call_failed": "The model did not return a response.",
+    "architect_load_failed": "The architect data could not be loaded.",
+    "architect_turn_failed": "The architect could not complete the request.",
+    "architect_draft_save_failed": "The architect draft could not be saved.",
+    "architect_history_load_failed": "The architect conversation could not be loaded.",
+    "architect_history_save_failed": "The architect conversation could not be saved.",
+    "architect_world_save_failed": "The world could not be saved.",
+    "architect_story_save_failed": "The story could not be saved.",
+    "architect_character_save_failed": "The character could not be saved.",
+    "architect_not_running": "The architect turn is no longer running.",
+    "world_lore_required": "Create the world description first.",
+    "world_version_drift": "The story was created for world version v{{authored_version}}, but v{{live_version}} is now in use. Some details may no longer match.",
+    "protagonist_required": "A protagonist is required. Create one or choose a character from the library.",
+    "story_pc_override": "The story was written for a different protagonist. The selected character may not match the plot, clues, or NPCs.",
+    "character_world_mismatch": "The character was created for a different world. Their backstory and names may not match this setting.",
+    "character_story_mismatch": "The character was created for a different story. Their backstory may not match this premise.",
+    "turn_not_running": "The turn is no longer running on the server.",
+    "empty_text": "Enter some text.",
+    "api_key_required": "This model requires an API key.",
+    "tts_unavailable": "Text-to-speech is currently unavailable."
+  }
+}

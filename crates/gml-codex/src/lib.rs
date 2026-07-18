@@ -22,7 +22,7 @@
 //!
 //! The Codex Responses backend uses plain TLS (`reqwest`) with header spoofing
 //! only — it does NOT use JA3/curl_cffi impersonation today (the only
-//! impersonation case in GM-Lab is STT in `gml-audio`). If Codex later adds JA3
+//! impersonation case in TaleShift is STT in `gml-audio`). If Codex later adds JA3
 //! checks, switch this crate to an impersonating client (PORT_PLAN §1.3).
 
 pub mod client;

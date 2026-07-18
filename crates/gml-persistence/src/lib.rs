@@ -22,6 +22,7 @@ use serde_json::{json, Map, Value};
 use gml_config::Config;
 use gml_llm::{Backend, ConnectorId, ConnectorRegistry, ModelBinding};
 use gml_orchestrator::{ClientFactory, CompactionThresholds, Session};
+use gml_types::ContentLocale;
 
 pub mod character_store;
 pub mod chat_search;
@@ -597,6 +598,16 @@ impl DialogStore {
     /// `get_active(guest_id)` — resolve/self-heal the active chat, creating one
     /// if none exist. Ensures the resolved runtime is cached and returns its id.
     pub fn get_active(&self, guest_id: &str) -> Result<String, StoreError> {
+        self.get_active_for_locale(guest_id, ContentLocale::Russian)
+    }
+
+    /// Resolve/self-heal the active chat, using `content_locale` only when a
+    /// brand-new fallback chat must be created.
+    pub fn get_active_for_locale(
+        &self,
+        guest_id: &str,
+        content_locale: ContentLocale,
+    ) -> Result<String, StoreError> {
         let _active_guard = self
             .active_state_lock
             .lock()
@@ -619,7 +630,20 @@ impl DialogStore {
         drop(con);
         // The active-state lock is already held, so create without activating
         // through the public path and install the pointer ourselves.
-        let chat_id = self.create_chat(guest_id, None, None, 0, None, None, false)?;
+        let binding = self.default_binding.clone();
+        let (client, factory, binding) = self.client_bundle(&binding)?;
+        let session =
+            Session::new_bound_for_locale(client, factory, binding.clone(), content_locale);
+        let chat_id = self.create_chat_with_binding(
+            guest_id,
+            Some(session),
+            None,
+            0,
+            None,
+            None,
+            false,
+            Some(binding),
+        )?;
         let con = self.connect()?;
         set_active_chat(&con, guest_id, &chat_id)?;
         con.commit_implicit()?;

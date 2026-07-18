@@ -15,6 +15,7 @@ import {
   getLocationMapFitCamera,
   getLocationMapFocusCamera,
   LOCATION_MAP_MIN_SCALE,
+  normalizeLocationGraph,
 } from "./locationMapGraph.js";
 import "../styles-location-map.css";
 
@@ -336,7 +337,7 @@ function EdgeTooltip({ edge, nodesById, exitsById, t, id, position }) {
     ? nodesById.get(direction.toId)?.title ?? direction.toId
     : exitsById.get(direction.exit?.id)?.title ?? direction.exit?.title ?? direction.label;
   const title = edge.bidirectional
-    ? t("locationMap.edgeBidirectional", { defaultValue: "Переход в обе стороны" })
+    ? t("locationMap.edgeBidirectional")
     : edge.label;
 
   return (
@@ -364,36 +365,33 @@ function EdgeTooltip({ edge, nodesById, exitsById, t, id, position }) {
             <dl>
               {direction.timeCost > 0 ? (
                 <div>
-                  <dt>{t("locationMap.edgeTime", { defaultValue: "Время" })}</dt>
-                  <dd>{t("locationMap.edgeMinutes", {
-                    count: direction.timeCost,
-                    defaultValue: "{{count}} мин.",
-                  })}</dd>
+                  <dt>{t("locationMap.edgeTime")}</dt>
+                  <dd>{t("locationMap.edgeMinutes", { count: direction.timeCost })}</dd>
                 </div>
               ) : null}
               {direction.kind ? (
                 <div>
-                  <dt>{t("locationMap.edgeKind", { defaultValue: "Тип" })}</dt>
+                  <dt>{t("locationMap.edgeKind")}</dt>
                   <dd>{direction.kind}</dd>
                 </div>
               ) : null}
               {direction.risk ? (
                 <div>
-                  <dt>{t("locationMap.edgeRisk", { defaultValue: "Риск" })}</dt>
+                  <dt>{t("locationMap.edgeRisk")}</dt>
                   <dd>{t(`locationMap.risk_${direction.risk}`, { defaultValue: direction.risk })}</dd>
                 </div>
               ) : null}
               {direction.blockedBy ? (
                 <div>
-                  <dt>{t("locationMap.edgeBlockedBy", { defaultValue: "Преграда" })}</dt>
+                  <dt>{t("locationMap.edgeBlockedBy")}</dt>
                   <dd>{direction.blockedBy}</dd>
                 </div>
               ) : null}
             </dl>
             <span className={direction.passable ? "is-passable" : "is-blocked"}>
               {direction.passable
-                ? t("locationMap.edgeAvailable", { defaultValue: "Переход доступен" })
-                : t("locationMap.edgeUnavailable", { defaultValue: "Переход недоступен" })}
+                ? t("locationMap.edgeAvailable")
+                : t("locationMap.edgeUnavailable")}
             </span>
           </section>
         );
@@ -421,7 +419,16 @@ export default function LocationMapOverlay({
   const { t } = useTranslation("game");
   const isTransition = mode === "transition";
   const reducedMotion = usePrefersReducedMotion();
-  const layout = useMemo(() => createLocationMapLayout(graph), [graph]);
+  const exitFallbackLabel = t("locationMap.exitFallback");
+  const unexploredLabel = t("locationMap.unexploredExit");
+  const normalizedGraph = useMemo(
+    () => normalizeLocationGraph(graph, {
+      exitLabel: exitFallbackLabel,
+      unexploredExitLabel: unexploredLabel,
+    }),
+    [exitFallbackLabel, graph, unexploredLabel]
+  );
+  const layout = useMemo(() => createLocationMapLayout(normalizedGraph), [normalizedGraph]);
   const nodesById = useMemo(
     () => new Map(layout.nodes.map((node) => [node.id, node])),
     [layout.nodes]
@@ -496,7 +503,6 @@ export default function LocationMapOverlay({
 
   const edgeAriaLabel = useCallback((edge) => edgeDirections(edge)
     .map((direction) => t("locationMap.connection", {
-      defaultValue: "{{from}} — {{label}} — {{to}}",
       from: nodesById.get(direction.fromId)?.title ?? direction.fromId,
       label: direction.label,
       to: direction.toId
@@ -851,12 +857,11 @@ export default function LocationMapOverlay({
     : staticAnchor;
 
   const title = isTransition
-    ? t("locationMap.transitionTitle", { defaultValue: "Переход между локациями" })
-    : t("locationMap.title", { defaultValue: "Карта локаций" });
-  const currentMarkerLabel = t("locationMap.currentMarker", { defaultValue: "Вы здесь" });
-  const unexploredLabel = t("locationMap.unexploredExit", { defaultValue: "Неизведанный выход" });
-  const travelLabel = t("locationMap.travelTo", { defaultValue: "Хочу сюда" });
-  const travelBusyLabel = t("locationMap.travelBusy", { defaultValue: "Отправляю запрос…" });
+    ? t("locationMap.transitionTitle")
+    : t("locationMap.title");
+  const currentMarkerLabel = t("locationMap.currentMarker");
+  const travelLabel = t("locationMap.travelTo");
+  const travelBusyLabel = t("locationMap.travelBusy");
   const overlayClassName = [
     "location-map-overlay",
     isTransition ? "is-transition" : "is-map",
@@ -878,9 +883,9 @@ export default function LocationMapOverlay({
           <span className="location-map-kicker"><Icon name={isTransition ? "walk" : "map"} size={15} />{title}</span>
           {isTransition && fromNode && toNode ? (
             <div className="location-map-route-title" aria-live="polite">
-              <span><small>{t("locationMap.fromLabel", { defaultValue: "Откуда" })}</small>{fromNode.title}</span>
+              <span><small>{t("locationMap.fromLabel")}</small>{fromNode.title}</span>
               <Icon name="arrow-right" size={18} />
-              <span><small>{t("locationMap.toLabel", { defaultValue: "Куда" })}</small>{toNode.title}</span>
+              <span><small>{t("locationMap.toLabel")}</small>{toNode.title}</span>
             </div>
           ) : null}
         </div>
@@ -890,7 +895,7 @@ export default function LocationMapOverlay({
             type="button"
             className="location-map-close"
             onClick={onClose}
-            aria-label={t("locationMap.closeAria", { defaultValue: "Закрыть карту" })}
+            aria-label={t("locationMap.closeAria")}
           >
             <Icon name="x" size={19} />
           </button>
@@ -899,12 +904,11 @@ export default function LocationMapOverlay({
 
       {accessibleConnections.length ? (
         <div className="location-map-sr-only">
-          <h2>{t("locationMap.connectionsTitle", { defaultValue: "Связи локаций" })}</h2>
+          <h2>{t("locationMap.connectionsTitle")}</h2>
           <ul>
             {accessibleConnections.map((connection) => (
               <li key={connection.id}>
                 {t("locationMap.connection", {
-                  defaultValue: "{{from}} — {{label}} — {{to}}",
                   from: connection.from,
                   label: connection.label,
                   to: connection.to,
@@ -978,7 +982,6 @@ export default function LocationMapOverlay({
                 routeTo={isTransition && node.id === toNode?.id}
                 onSelect={!isTransition ? selectLocation : null}
                 selectAriaLabel={t("locationMap.openLocationAria", {
-                  defaultValue: "Открыть карточку локации «{{title}}»",
                   title: node.title,
                 })}
                 currentLabel={!isTransition && node.id === layout.currentLocationId
@@ -993,7 +996,6 @@ export default function LocationMapOverlay({
                 travelLabel={travelLabel}
                 busyLabel={travelBusyLabel}
                 travelAriaLabel={t("locationMap.travelToAria", {
-                  defaultValue: "Попросить ГМ перейти в «{{title}}»",
                   title: node.title,
                 })}
               />
@@ -1016,8 +1018,8 @@ export default function LocationMapOverlay({
         ) : (
           <div className="location-map-empty" role="status">
             <Icon name="map" size={34} />
-            <strong>{t("locationMap.emptyTitle", { defaultValue: "Карта пока пуста" })}</strong>
-            <span>{t("locationMap.emptyDescription", { defaultValue: "Открытые локации появятся здесь по мере путешествия." })}</span>
+            <strong>{t("locationMap.emptyTitle")}</strong>
+            <span>{t("locationMap.emptyDescription")}</span>
           </div>
         )}
         {!isTransition && activeEdge && edgeTooltipPosition ? (
@@ -1035,19 +1037,19 @@ export default function LocationMapOverlay({
       {!isTransition && layout.nodes.length ? (
         <nav
           className="location-map-controls"
-          aria-label={t("locationMap.controlsHint", { defaultValue: "Управление картой" })}
+          aria-label={t("locationMap.controlsHint")}
         >
-          <button type="button" onClick={() => zoomAt(1.2)} aria-label={t("locationMap.zoomInAria", { defaultValue: "Приблизить" })}>
+          <button type="button" onClick={() => zoomAt(1.2)} aria-label={t("locationMap.zoomInAria")}>
             <Icon name="plus" size={17} />
           </button>
-          <button type="button" onClick={() => zoomAt(1 / 1.2)} aria-label={t("locationMap.zoomOutAria", { defaultValue: "Отдалить" })}>
+          <button type="button" onClick={() => zoomAt(1 / 1.2)} aria-label={t("locationMap.zoomOutAria")}>
             <Icon name="minus" size={17} />
           </button>
           <span aria-hidden="true" />
-          <button type="button" onClick={focusCurrent} aria-label={t("locationMap.focusCurrentAria", { defaultValue: "Показать текущую локацию" })}>
+          <button type="button" onClick={focusCurrent} aria-label={t("locationMap.focusCurrentAria")}>
             <Icon name="target" size={17} />
           </button>
-          <button type="button" onClick={fitMap} aria-label={t("locationMap.fitAria", { defaultValue: "Показать всю карту" })}>
+          <button type="button" onClick={fitMap} aria-label={t("locationMap.fitAria")}>
             <Icon name="map" size={17} />
           </button>
         </nav>

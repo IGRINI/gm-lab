@@ -58,10 +58,13 @@ pub use rumor::{
 pub use transition::{PassageDirectionality, Transition};
 pub use travel::{roll_travel_situation, TravelRisk, TravelRoll, TravelSituation};
 pub use validator::{Rejection, Validator};
-pub use worldgen::{generate, generate_with_lore, WorldSpec};
+pub use worldgen::{
+    generate, generate_for_locale, generate_with_lore, generate_with_lore_for_locale, WorldSpec,
+};
 
 use std::collections::BTreeMap;
 
+use gml_types::ContentLocale;
 use serde::{Deserialize, Serialize};
 
 use crate::model::SceneState;
@@ -160,6 +163,10 @@ pub struct WorldCanon {
     /// Generator version that produced this canon.
     #[serde(default)]
     pub generator_version: String,
+    /// Locale of deterministic and engine-authored game text. Persisted so a
+    /// resumed campaign cannot silently switch language with global settings.
+    #[serde(default)]
+    pub content_locale: ContentLocale,
     /// High-level world premise and generation guardrails.
     #[serde(default, skip_serializing_if = "WorldLore::is_empty")]
     pub world_lore: WorldLore,

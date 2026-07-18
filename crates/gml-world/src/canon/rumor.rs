@@ -159,6 +159,12 @@ pub fn memory_unit_for_rumor(rumor: &Rumor, canon: &WorldCanon) -> MemoryUnit {
         }
     }
 
+    let summary_label = if canon.content_locale.is_russian() {
+        "Слух"
+    } else {
+        "Rumor"
+    };
+
     MemoryUnit {
         memory_id: memory_id_for_rumor(rumor),
         tier: MemoryTier::Raw,
@@ -168,7 +174,7 @@ pub fn memory_unit_for_rumor(rumor: &Rumor, canon: &WorldCanon) -> MemoryUnit {
             rumor.origin_scope.clone()
         },
         visibility_scopes: rumor.known_in.iter().cloned().collect(),
-        summary: format!("Слух: {}", rumor.text),
+        summary: format!("{summary_label}: {}", rumor.text),
         details: details.join("\n"),
         place_ids,
         actor_ids,
@@ -199,6 +205,8 @@ fn is_route_like(transition: &Transition) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gml_types::ContentLocale;
+    use std::collections::BTreeSet;
 
     #[test]
     fn route_classification_uses_only_the_structured_kind() {
@@ -215,5 +223,36 @@ mod tests {
 
         transition.kind = "Road".to_string();
         assert!(!is_route_like(&transition));
+    }
+
+    #[test]
+    fn rumor_memory_summary_follows_content_locale() {
+        let rumor = Rumor {
+            rumor_id: "whisper".to_string(),
+            seq: 1,
+            turn: 1,
+            speaker: "guide".to_string(),
+            text: "the bridge is closed".to_string(),
+            witnesses: BTreeSet::new(),
+            origin_scope: "public".to_string(),
+            known_in: BTreeSet::new(),
+            carriers: BTreeSet::new(),
+            strength: 1,
+            distortion: 0,
+            created_minutes: 0,
+            last_spread_minutes: 0,
+            confirmed: false,
+        };
+
+        for (locale, expected) in [
+            (ContentLocale::Russian, "Слух: the bridge is closed"),
+            (ContentLocale::English, "Rumor: the bridge is closed"),
+        ] {
+            let canon = WorldCanon {
+                content_locale: locale,
+                ..Default::default()
+            };
+            assert_eq!(memory_unit_for_rumor(&rumor, &canon).summary, expected);
+        }
     }
 }

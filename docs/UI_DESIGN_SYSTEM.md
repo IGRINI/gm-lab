@@ -1,4 +1,4 @@
-# GM-Lab — дизайн-система веб-UI
+# TaleShift — дизайн-система веб-UI
 
 Стиль v4 «quiet dark workspace» (2026-07-15): **low-chroma dark desktop
 workbench**, он же Minimal Dark Productivity UI. Основа — плоские графитовые

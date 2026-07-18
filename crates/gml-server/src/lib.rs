@@ -1,4 +1,4 @@
-//! gml-server — the GM-Lab HTTP/SSE server (axum).
+//! gml-server — the TaleShift HTTP/SSE server (axum).
 //!
 //! Port of `gm-lab/server.py` (PORT_PLAN §3 cross-platform, §5 HTTP/SSE
 //! contract, §6 persistence). The exact SSE frame format
@@ -25,6 +25,7 @@ use std::sync::{Arc, Weak};
 use axum::body::Body;
 use axum::extract::{Path as AxPath, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -46,6 +47,7 @@ use gml_persistence::{
     HistoryTurnKind, HistoryTurnReceiptKind, TurnCheckpoint, WorldStore, CHARACTER_ASSETS_DIR,
 };
 use gml_stories::{StoryStore, StoryStoreError, StoryWorldRef};
+use gml_types::ContentLocale;
 use gml_world::{PackageRef, World, WorldLore, WorldSpec};
 
 /// Reserved `story_id` that routes campaign creation through the living-world
@@ -63,6 +65,78 @@ pub fn chat_scope_id() -> String {
     match std::env::var("GM_CHAT_SCOPE_ID") {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => "shared".to_string(),
+    }
+}
+
+fn response_content_locale(state: &AppState) -> ContentLocale {
+    ContentLocale::from_language_tag(&state.settings.response_language(None))
+}
+
+/// Presentation language requested by the HTTP client. This is deliberately
+/// separate from [`ContentLocale`]: `Accept-Language` controls server-owned UI
+/// copy and errors, while the runtime response language controls authored game
+/// content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UiLocale {
+    English,
+    Russian,
+}
+
+impl UiLocale {
+    fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Russian => "ru",
+        }
+    }
+}
+
+/// Pick the supported language with the highest Accept-Language quality.
+/// Returning `None` preserves the pre-localisation HTTP contract for clients
+/// that do not send the header; the browser always sends it.
+fn request_ui_locale(headers: &HeaderMap) -> Option<UiLocale> {
+    let raw = headers.get(header::ACCEPT_LANGUAGE)?.to_str().ok()?;
+    raw.split(',')
+        .enumerate()
+        .filter_map(|(position, item)| {
+            let mut parts = item.trim().split(';');
+            let tag = parts.next()?.trim();
+            let language = tag.split('-').next()?.trim();
+            let locale = if language.eq_ignore_ascii_case("en") {
+                UiLocale::English
+            } else if language.eq_ignore_ascii_case("ru") {
+                UiLocale::Russian
+            } else {
+                return None;
+            };
+            let quality = parts
+                .find_map(|part| {
+                    let (name, value) = part.trim().split_once('=')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("q")
+                        .then(|| value.trim().parse::<f32>().ok())
+                        .flatten()
+                })
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0);
+            (quality > 0.0).then_some((quality, std::cmp::Reverse(position), locale))
+        })
+        .max_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        })
+        .map(|(_, _, locale)| locale)
+}
+
+fn content_fallback(
+    locale: ContentLocale,
+    russian: &'static str,
+    english: &'static str,
+) -> &'static str {
+    match locale {
+        ContentLocale::Russian => russian,
+        ContentLocale::English => english,
     }
 }
 
@@ -737,6 +811,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/debug/tokenize", post(post_debug_tokenize))
         // /index* -> index.html; everything else -> 404 {error:"not found"}.
         .fallback(fallback_handler)
+        .layer(axum::middleware::from_fn(localize_http_error_response))
         .with_state(state)
 }
 
@@ -748,13 +823,330 @@ pub fn build_router(state: AppState) -> Router {
 /// and Python-identical compact-but-non-ASCII body (serde_json default).
 fn json_response(code: StatusCode, value: &Value) -> Response {
     let body = serde_json::to_vec(value).unwrap_or_default();
+    let can_localize = body.len() <= 4 * 1024 * 1024;
     let mut resp = Response::new(Body::from(body));
     *resp.status_mut() = code;
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json; charset=utf-8"),
     );
+    if can_localize
+        && value.get("error").is_some_and(Value::is_string)
+        && (!code.is_success() || value.get("ok") == Some(&Value::Bool(false)))
+    {
+        resp.headers_mut().insert(
+            HeaderName::from_static("x-gml-localize-error"),
+            HeaderValue::from_static("1"),
+        );
+    }
+    if can_localize
+        && ["chat", "chats", "world", "worlds", "items"]
+            .iter()
+            .any(|key| value.get(*key).is_some())
+    {
+        resp.headers_mut().insert(
+            HeaderName::from_static("x-gml-localize-presentation"),
+            HeaderValue::from_static("1"),
+        );
+    }
     resp
+}
+
+/// Localize every top-level JSON error in one place. Handlers keep their
+/// stable/internal detail strings (and legacy tests without Accept-Language
+/// keep their old contract), while browser-facing `error` is always safe UI
+/// copy in the requested language. The raw detail remains explicit for the
+/// developer-only diagnostics path.
+async fn localize_http_error_response(request: axum::extract::Request, next: Next) -> Response {
+    let locale = request_ui_locale(request.headers());
+    let mut response = next.run(request).await;
+    let localize_error = response
+        .headers_mut()
+        .remove(HeaderName::from_static("x-gml-localize-error"))
+        .is_some();
+    let localize_presentation = response
+        .headers_mut()
+        .remove(HeaderName::from_static("x-gml-localize-presentation"))
+        .is_some();
+    let Some(locale) = locale.filter(|_| localize_error || localize_presentation) else {
+        return response;
+    };
+
+    let status = response.status();
+    let (mut parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => return localized_response_body(parts, status, locale, None),
+    };
+    let mut value = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(value) => value,
+        Err(_) => return Response::from_parts(parts, Body::from(bytes)),
+    };
+    if localize_error {
+        localize_error_value(&mut value, status, locale);
+    }
+    if localize_presentation {
+        localize_presentation_value(&mut value, locale);
+    }
+    parts.headers.insert(
+        header::CONTENT_LANGUAGE,
+        HeaderValue::from_static(locale.code()),
+    );
+    parts
+        .headers
+        .insert(header::VARY, HeaderValue::from_static("Accept-Language"));
+    let body = serde_json::to_vec(&value).unwrap_or_default();
+    Response::from_parts(parts, Body::from(body))
+}
+
+fn localized_response_body(
+    mut parts: axum::http::response::Parts,
+    status: StatusCode,
+    locale: UiLocale,
+    detail: Option<&str>,
+) -> Response {
+    let mut value = json!({
+        "ok": false,
+        "error": localized_http_error(locale, None, "", status),
+    });
+    if let Some(detail) = detail {
+        value["detail"] = Value::String(detail.to_string());
+    }
+    parts.headers.insert(
+        header::CONTENT_LANGUAGE,
+        HeaderValue::from_static(locale.code()),
+    );
+    parts
+        .headers
+        .insert(header::VARY, HeaderValue::from_static("Accept-Language"));
+    Response::from_parts(
+        parts,
+        Body::from(serde_json::to_vec(&value).unwrap_or_default()),
+    )
+}
+
+fn localize_error_value(value: &mut Value, status: StatusCode, locale: UiLocale) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let Some(raw) = object
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let code = object.get("code").and_then(Value::as_str);
+    let localized = localized_http_error(locale, code, &raw, status);
+    if !raw.is_empty() && raw != localized && !object.contains_key("detail") {
+        object.insert("detail".to_string(), Value::String(raw));
+    }
+    object.insert("error".to_string(), Value::String(localized));
+}
+
+fn localize_presentation_value(value: &mut Value, locale: UiLocale) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if let Some(chats) = object.get_mut("chats").and_then(Value::as_array_mut) {
+        for chat in chats {
+            localize_chat_title(chat, locale);
+        }
+    }
+    if let Some(chat) = object.get_mut("chat") {
+        localize_chat_title(chat, locale);
+    }
+    if let Some(worlds) = object.get_mut("worlds").and_then(Value::as_array_mut) {
+        for world in worlds {
+            localize_world_title(world, locale);
+        }
+    }
+    if let Some(world) = object.get_mut("world") {
+        localize_world_title(world, locale);
+    }
+    if let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) == Some("chat") {
+                localize_chat_title(item, locale);
+            }
+        }
+    }
+}
+
+fn localize_chat_title(chat: &mut Value, locale: UiLocale) {
+    let Some(title) = chat
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let (source_default, target_default, source_suffix, target_suffix) = match locale {
+        UiLocale::English => ("Новый чат", "New Chat", " — ветка", " — branch"),
+        UiLocale::Russian => ("New Chat", "Новый чат", " — branch", " — ветка"),
+    };
+    let localized = if title == source_default {
+        target_default.to_string()
+    } else if let Some(base) = title.strip_suffix(source_suffix) {
+        let base = if base == source_default {
+            target_default
+        } else {
+            base
+        };
+        format!("{base}{target_suffix}")
+    } else {
+        return;
+    };
+    chat["title"] = Value::String(localized);
+}
+
+fn localize_world_title(world: &mut Value, locale: UiLocale) {
+    let Some(title) = world.get("title").and_then(Value::as_str) else {
+        return;
+    };
+    let localized = match (locale, title) {
+        (UiLocale::English, "Новый мир") => Some("New World"),
+        (UiLocale::Russian, "New World") => Some("Новый мир"),
+        _ => None,
+    };
+    if let Some(localized) = localized {
+        world["title"] = Value::String(localized.to_string());
+    }
+}
+
+fn localized_http_error(
+    locale: UiLocale,
+    code: Option<&str>,
+    raw: &str,
+    status: StatusCode,
+) -> String {
+    let code = code.unwrap_or_default().to_ascii_lowercase();
+    let raw_lower = raw.to_lowercase();
+    let contains = |english: &str, russian: &str| {
+        raw_lower.contains(english) || (!russian.is_empty() && raw_lower.contains(russian))
+    };
+    let pair = if code == "model_call_failed" || contains("model call", "ошибка вызова модели")
+    {
+        (
+            "Не удалось получить ответ от модели.",
+            "The model did not return a response.",
+        )
+    } else if code == "architect_not_running"
+        || contains(
+            "architect turn is not running",
+            "ход архитектора уже не выполняется",
+        )
+        || contains("no architect turn is running", "")
+    {
+        (
+            "Ход архитектора уже не выполняется.",
+            "The architect turn is no longer running.",
+        )
+    } else if code.starts_with("architect_") || contains("architect", "архитектор") {
+        (
+            "Архитектор не смог выполнить запрос.",
+            "The architect could not complete the request.",
+        )
+    } else if code == "world_lore_required"
+        || contains("world lore", "библи")
+        || contains("world_lore", "лор мира")
+    {
+        (
+            "Сначала создайте описание мира.",
+            "Create the world description first.",
+        )
+    } else if code == "protagonist_required"
+        || contains("no protagonist", "нет протагониста")
+        || contains("protagonist to save", "нужен персонаж")
+    {
+        (
+            "Для запуска нужен главный герой. Создайте его или выберите персонажа из библиотеки.",
+            "A protagonist is required. Create one or choose a character from the library.",
+        )
+    } else if code == "turn_not_running"
+        || contains("turn is not running", "ход уже не выполняется")
+        || contains("request is not running", "")
+    {
+        (
+            "Ход уже не выполняется на сервере.",
+            "The turn is no longer running on the server.",
+        )
+    } else if code == "api_key_required"
+        || contains("api key", "api-ключ")
+        || contains("api-key", "api ключ")
+    {
+        (
+            "Для этой модели нужен API-ключ.",
+            "This model requires an API key.",
+        )
+    } else if code == "tts_unavailable" || contains("tts", "озвуч") {
+        (
+            "Озвучивание сейчас недоступно.",
+            "Text-to-speech is currently unavailable.",
+        )
+    } else if contains("empty audio", "пустое аудио") {
+        (
+            "Запишите аудио перед отправкой.",
+            "Record some audio before sending it.",
+        )
+    } else if code == "empty_text" || contains("empty text", "пустой текст") {
+        ("Введите текст.", "Enter some text.")
+    } else if contains("message is required", "") {
+        ("Введите сообщение.", "Enter a message.")
+    } else if contains("title is required", "") {
+        ("Укажите название.", "Enter a title.")
+    } else if contains("model is required", "") {
+        ("Выберите модель.", "Select a model.")
+    } else if contains("world_id is required", "") {
+        ("Выберите мир.", "Select a world.")
+    } else if code == "chat_not_found"
+        || contains("not found", "не найден")
+        || contains("no such", "нет такого")
+        || contains("unknown ", "неизвест")
+    {
+        (
+            "Запрошенный объект не найден.",
+            "The requested item was not found.",
+        )
+    } else if status == StatusCode::CONFLICT
+        || contains("already in progress", "уже недоступен")
+        || contains("changed during", "изменилась во время")
+        || contains("being deleted", "")
+    {
+        (
+            "Данные изменились. Обновите экран и повторите действие.",
+            "The data changed. Refresh the page and try again.",
+        )
+    } else if status == StatusCode::BAD_REQUEST
+        || status == StatusCode::UNPROCESSABLE_ENTITY
+        || contains("invalid", "некоррект")
+        || contains("required", "обязател")
+        || contains("must be", "должен")
+    {
+        ("Проверьте введённые данные.", "Check the entered data.")
+    } else if status == StatusCode::SERVICE_UNAVAILABLE
+        || status == StatusCode::BAD_GATEWAY
+        || status == StatusCode::GATEWAY_TIMEOUT
+        || contains("unavailable", "недоступ")
+        || contains("not initialized", "не инициализирован")
+    {
+        (
+            "Сервис временно недоступен.",
+            "The service is temporarily unavailable.",
+        )
+    } else if status.is_server_error() {
+        ("Внутренняя ошибка сервера.", "Internal server error.")
+    } else {
+        (
+            "Не удалось выполнить действие.",
+            "The action could not be completed.",
+        )
+    };
+    match locale {
+        UiLocale::Russian => pair.0,
+        UiLocale::English => pair.1,
+    }
+    .to_string()
 }
 
 fn ok_json(value: &Value) -> Response {
@@ -1253,12 +1645,15 @@ fn value_has_text(value: &Value) -> bool {
 #[allow(clippy::result_large_err)]
 fn active_chat(state: &AppState) -> Result<String, Response> {
     let scope = chat_scope_id();
-    state.store.get_active(&scope).map_err(|e| {
-        json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &json!({"ok": false, "error": e.to_string()}),
-        )
-    })
+    state
+        .store
+        .get_active_for_locale(&scope, response_content_locale(state))
+        .map_err(|e| {
+            json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &json!({"ok": false, "error": e.to_string()}),
+            )
+        })
 }
 
 /// Run `f` against the active chat runtime under its per-chat lock, on a
@@ -1360,16 +1755,19 @@ fn ensure_client(runtime: &mut DialogRuntime, _state: &AppState) {
 // GET handlers
 // =========================================================================
 
-async fn get_index(State(state): State<AppState>) -> Response {
+async fn get_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
     // Ensure an active chat exists (`self._dialog()` side-effect).
     let _ = active_chat(&state);
-    serve_index(&state)
+    serve_index(
+        &state,
+        request_ui_locale(&headers).unwrap_or(UiLocale::Russian),
+    )
 }
 
-fn serve_index(state: &AppState) -> Response {
+fn serve_index(state: &AppState, locale: UiLocale) -> Response {
     let body = match state.index_html.as_ref() {
-        Some(path) => std::fs::read(path).unwrap_or_else(|_| placeholder_html().into_bytes()),
-        None => placeholder_html().into_bytes(),
+        Some(path) => std::fs::read(path).unwrap_or_else(|_| placeholder_html(locale).into_bytes()),
+        None => placeholder_html(locale).into_bytes(),
     };
     let mut resp = Response::new(Body::from(body));
     resp.headers_mut().insert(
@@ -1380,17 +1778,35 @@ fn serve_index(state: &AppState) -> Response {
         header::CACHE_CONTROL,
         HeaderValue::from_static("no-store, must-revalidate"),
     );
+    resp.headers_mut().insert(
+        header::CONTENT_LANGUAGE,
+        HeaderValue::from_static(locale.code()),
+    );
+    resp.headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Accept-Language"));
     resp
 }
 
-fn placeholder_html() -> String {
-    "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">\
-<title>GM-Lab</title></head><body style=\"font-family:system-ui;padding:2rem\">\
-<h1>GM-Lab</h1><p>Фронтенд не собран. Соберите его:</p>\
+fn placeholder_html(locale: UiLocale) -> String {
+    let (intro, outro) = match locale {
+        UiLocale::Russian => (
+            "Фронтенд не собран. Соберите его:",
+            "После сборки <code>web/dist/index.html</code> появится, и сервер начнёт отдавать его.",
+        ),
+        UiLocale::English => (
+            "The frontend has not been built. Build it with:",
+            "After the build, <code>web/dist/index.html</code> will appear and the server will serve it.",
+        ),
+    };
+    format!(
+        "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\">\
+<title>TaleShift</title></head><body style=\"font-family:system-ui;padding:2rem\">\
+<h1>TaleShift</h1><p>{intro}</p>\
 <pre>cd web &amp;&amp; npm install &amp;&amp; npm run build</pre>\
-<p>После сборки <code>web/dist/index.html</code> появится и эта страница его отдаст.</p>\
-</body></html>"
-        .to_string()
+<p>{outro}</p>\
+</body></html>",
+        locale.code()
+    )
 }
 
 async fn get_state(State(state): State<AppState>) -> Response {
@@ -1424,21 +1840,28 @@ async fn get_transcript(State(state): State<AppState>) -> Response {
 async fn get_stories(State(state): State<AppState>) -> Response {
     // Surface the living-world generator as a selectable "story" so the UI can
     // offer a brief-less procedural campaign (locked decision #4).
+    let locale = response_content_locale(&state);
     let mut stories = {
         let store = state.story_store.lock().expect("story store lock poisoned");
-        store.list_stories()
+        store.list_stories_for_locale(locale)
     };
     let mut procedural = Map::new();
     procedural.insert("id".into(), json!(PROCEDURAL_STORY_ID));
-    procedural.insert("title".into(), json!("Процедурный мир"));
-    procedural.insert(
-        "description".into(),
-        json!("Сгенерированный живой мир: место, люди рядом и ближайший конфликт. Канон — источник истины."),
-    );
-    procedural.insert(
-        "story_brief".into(),
-        json!("Ты начинаешь в живом, сгенерированном мире: рядом уже есть место, люди и первый источник напряжения. Осмотрись, выбери, кому верить, и реши, за какую нитку потянуть первым."),
-    );
+    let (title, description, story_brief) = match locale {
+        ContentLocale::Russian => (
+            "Процедурный мир",
+            "Сгенерированный живой мир: место, люди рядом и ближайший конфликт. Канон — источник истины.",
+            "Ты начинаешь в живом, сгенерированном мире: рядом уже есть место, люди и первый источник напряжения. Осмотрись, выбери, кому верить, и реши, за какую нитку потянуть первым.",
+        ),
+        ContentLocale::English => (
+            "Procedural World",
+            "A generated living world: a place, nearby people, and the nearest conflict. Canon is the source of truth.",
+            "You begin in a living generated world: there is already a place, people nearby, and a first source of tension. Look around, decide whom to trust, and choose which thread to follow first.",
+        ),
+    };
+    procedural.insert("title".into(), json!(title));
+    procedural.insert("description".into(), json!(description));
+    procedural.insert("story_brief".into(), json!(story_brief));
     procedural.insert("procedural".into(), json!(true));
     stories.push(procedural);
     ok_json(&json!({
@@ -1725,6 +2148,7 @@ async fn post_create_character(State(state): State<AppState>, body: Bytes) -> Re
         } else {
             Some(&story_id)
         },
+        response_content_locale(&state),
     ) {
         Ok(base) => base,
         Err(resp) => return resp,
@@ -1882,6 +2306,7 @@ async fn post_save_character(
     AxPath(chat_id): AxPath<String>,
     body: Bytes,
 ) -> Response {
+    let content_locale = response_content_locale(&state);
     let chat_id = urlencoding::decode(&chat_id)
         .map(|c| c.into_owned())
         .unwrap_or(chat_id);
@@ -1995,11 +2420,12 @@ async fn post_save_character(
             .lock()
             .expect("character store lock poisoned");
         if target_id.is_empty() {
-            // Create a new character. title = the hero's name, fallback "Персонаж".
+            // Create a new character. The fallback follows the model/content
+            // language, not the interface language.
             // The session's world/story refs ride along as base provenance.
             let name = pc.get("name").and_then(Value::as_str).unwrap_or("").trim();
             let title = if name.is_empty() {
-                "Персонаж"
+                content_fallback(content_locale, "Персонаж", "Character")
             } else {
                 name
             };
@@ -2623,6 +3049,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let registry_package_id = story_id.clone();
+    let content_locale = response_content_locale(&state);
     let app = state.clone();
     tokio::spawn(async move {
         let mut _architect_guard = match story_id.as_deref() {
@@ -2638,6 +3065,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
             &resolved,
             &message,
             client_draft.as_ref(),
+            content_locale,
         )
         .await
         {
@@ -2754,6 +3182,7 @@ async fn post_story_architect_chat(State(state): State<AppState>, body: Bytes) -
                         &resolved,
                         &message,
                         output.draft.as_ref(),
+                        content_locale,
                     )
                     .await
                     {
@@ -2950,8 +3379,8 @@ fn resolve_story_architect_world(
 }
 
 /// The plot title for a create: the draft's title, else the first user message,
-/// else the locked fallback "Новая история" (`§С1.3`).
-fn story_title_from_draft(draft: &Value, message: &str) -> String {
+/// else a fallback in the model/content language (`§С1.3`).
+fn story_title_from_draft(draft: &Value, message: &str, locale: ContentLocale) -> String {
     let from_draft = draft
         .as_object()
         .and_then(|m| m.get("title"))
@@ -2967,7 +3396,7 @@ fn story_title_from_draft(draft: &Value, message: &str) -> String {
         let clipped: String = msg.chars().take(80).collect();
         return clipped;
     }
-    "Новая история".to_string()
+    content_fallback(locale, "Новая история", "New Story").to_string()
 }
 
 /// The plot seed to persist: the draft plot as an object (empty when absent), so
@@ -2992,13 +3421,15 @@ async fn persist_story_payload(
     resolved: &ResolvedStoryWorld,
     message: &str,
     draft: Option<&Value>,
+    content_locale: ContentLocale,
 ) -> Result<(String, Value, Vec<Value>), Response> {
     let store = state.story_store.clone();
     let plot_seed = draft.map(story_plot_seed);
-    // A create needs a title now (fallback: message → "Новая история"); an update
+    // A create needs a title now (fallback: message → localized default); an update
     // only carries `title` when the draft actually supplies a non-blank one, so a
     // fallback never clobbers a title the model already authored on a prior turn.
-    let create_title = story_title_from_draft(draft.unwrap_or(&Value::Null), message);
+    let create_title =
+        story_title_from_draft(draft.unwrap_or(&Value::Null), message, content_locale);
     let draft_title = draft
         .and_then(Value::as_object)
         .and_then(|m| m.get("title"))
@@ -3057,7 +3488,7 @@ async fn persist_story_payload(
         // `story` carries the GM-scoped content draft row (same builder as
         // `GET /stories/{id}/draft`); `stories` stays the MINIMAL catalog.
         let story = store.draft_row(&id)?;
-        let stories = store.list_stories();
+        let stories = store.list_stories_for_locale(content_locale);
         Ok::<(String, Value, Vec<Value>), StoryStoreError>((
             id,
             Value::Object(story),
@@ -3438,6 +3869,7 @@ async fn post_character_architect_chat(State(state): State<AppState>, body: Byte
         character_id.as_deref(),
         world_id.as_deref(),
         story_id.as_deref(),
+        response_content_locale(&state),
     ) {
         Ok(base) => base,
         Err(resp) => return resp,
@@ -3737,8 +4169,8 @@ async fn get_character_architect(
 }
 
 /// The character title for a create: the draft's `name`, else the first user
-/// message (clipped), else the locked fallback "Персонаж".
-fn character_title_from_draft(draft: &Value, message: &str) -> String {
+/// message (clipped), else a fallback in the model/content language.
+fn character_title_from_draft(draft: &Value, message: &str, locale: ContentLocale) -> String {
     let from_draft = draft
         .as_object()
         .and_then(|m| m.get("name"))
@@ -3752,7 +4184,7 @@ fn character_title_from_draft(draft: &Value, message: &str) -> String {
     if !msg.is_empty() {
         return msg.chars().take(80).collect();
     }
-    "Персонаж".to_string()
+    content_fallback(locale, "Персонаж", "Character").to_string()
 }
 
 /// Snapshot a character sheet into its package and follow the title to the hero
@@ -3818,6 +4250,7 @@ fn resolve_character_architect_base(
     character_id: Option<&str>,
     world_id: Option<&str>,
     story_id: Option<&str>,
+    content_locale: ContentLocale,
 ) -> Result<ResolvedCharacterBase, Response> {
     // Existing character: refs come from the package, request ids are ignored.
     let (world_ref, story_ref, strict) = if let Some(cid) = character_id {
@@ -3917,7 +4350,7 @@ fn resolve_character_architect_base(
     if let Some(story_ref) = &story_ref {
         let public = {
             let store = state.story_store.lock().expect("story store lock poisoned");
-            story_public_for_character(&store, &story_ref.id)
+            story_public_for_character(&store, &story_ref.id, content_locale)
         };
         match public {
             Some(public) => {
@@ -3954,9 +4387,18 @@ fn resolve_character_architect_base(
 /// `title`/`description` from the catalog row plus `story_brief`/`public_intro`
 /// from the seed — exactly the player-visible premise, never `hidden_truth` or
 /// NPC secrets (the block builder whitelists again on top of this).
-fn story_public_for_character(store: &StoryStore, story_id: &str) -> Option<Value> {
-    let meta = store.story_metadata(story_id).ok()?;
-    let seed = store.seed(story_id).ok().unwrap_or(Value::Null);
+fn story_public_for_character(
+    store: &StoryStore,
+    story_id: &str,
+    content_locale: ContentLocale,
+) -> Option<Value> {
+    let meta = store
+        .story_metadata_for_locale(story_id, content_locale)
+        .ok()?;
+    let seed = store
+        .seed_for_locale(story_id, content_locale)
+        .ok()
+        .unwrap_or(Value::Null);
     let mut public = Map::new();
     for key in ["title", "description"] {
         if let Some(v) = meta.get(key) {
@@ -4065,7 +4507,11 @@ async fn persist_character_payload(
             ));
         }
     }
-    let create_title = character_title_from_draft(draft.unwrap_or(&Value::Null), message);
+    let create_title = character_title_from_draft(
+        draft.unwrap_or(&Value::Null),
+        message,
+        response_content_locale(state),
+    );
 
     let result = tokio::task::spawn_blocking(
         move || -> Result<(String, Value, Vec<Value>), gml_persistence::StoreError> {
@@ -4180,6 +4626,7 @@ async fn post_save_protagonist(
     State(state): State<AppState>,
     AxPath(id): AxPath<String>,
 ) -> Response {
+    let content_locale = response_content_locale(&state);
     let id = urlencoding::decode(&id)
         .map(|c| c.into_owned())
         .unwrap_or(id);
@@ -4234,7 +4681,10 @@ async fn post_save_protagonist(
 
     // Coerce the loose authored PC through the canonical seam, then re-serialize
     // to the full package sheet (missing fields default; card_revision preserved).
-    let pc = gml_orchestrator::session_payload::player_character_from_value(Some(&seed_pc));
+    let pc = gml_orchestrator::session_payload::player_character_from_value_for_locale(
+        Some(&seed_pc),
+        content_locale,
+    );
     let pc_payload = gml_orchestrator::session_payload::player_character_payload(&pc);
     let name = pc_payload
         .get("name")
@@ -4242,7 +4692,7 @@ async fn post_save_protagonist(
         .unwrap_or("")
         .trim();
     let title = if name.is_empty() {
-        "Персонаж"
+        content_fallback(content_locale, "Персонаж", "Character")
     } else {
         name
     };
@@ -4359,8 +4809,12 @@ async fn persist_world_payload(
         Some(id) => id,
         None => {
             let store = store.clone();
-            match tokio::task::spawn_blocking(move || store.create_world(Value::Object(Map::new())))
-                .await
+            let fallback_title =
+                content_fallback(response_content_locale(state), "Новый мир", "New World");
+            match tokio::task::spawn_blocking(move || {
+                store.create_world(json!({"title": fallback_title}))
+            })
+            .await
             {
                 Ok(Ok(created)) => {
                     freshly_created = true;
@@ -4529,14 +4983,34 @@ async fn get_sidecar_status(State(state): State<AppState>) -> Response {
 async fn sidecar_status_payload(state: &AppState) -> Value {
     let rag_enabled = state.config.rag_enabled;
     let reranker_enabled = state.config.rag_enabled && state.config.rag_rerank_enabled;
-    let tts_enabled = state.settings.tts_enabled(None);
+    let stt_requested = gml_config::config::env_bool("GM_STT_ENABLED", false);
+    let stt_available = local_stt_available(state);
+    let stt_enabled = stt_requested && stt_available;
+    let tts_requested = state.settings.tts_enabled(None);
+    let tts_available = local_tts_available(state);
+    let tts_enabled = tts_requested && tts_available;
     let image_enabled = image_generation_enabled(state);
     let image_provider = state.settings.image_provider(None);
-    let local_image_enabled = image_enabled && image_provider == IMAGE_PROVIDER_LOCAL;
+    let local_image_requested = image_enabled && image_provider == IMAGE_PROVIDER_LOCAL;
+    let local_image_available = state
+        .sidecar
+        .as_ref()
+        .map(|sidecar| sidecar.image_available())
+        .unwrap_or(false);
+    let local_image_enabled = local_image_requested && local_image_available;
     let (remote_image_ready, remote_image_error) =
         remote_image_status(state, image_enabled, &image_provider).await;
-    let sidecar_enabled = rag_enabled || tts_enabled || local_image_enabled;
-    let enabled = sidecar_enabled || image_enabled;
+    let sidecar_enabled = rag_enabled || stt_enabled || tts_enabled || local_image_enabled;
+    let enabled = rag_enabled || stt_requested || tts_requested || image_enabled;
+    let capability_error = if stt_requested && !stt_available {
+        "Local STT is not installed. Run setup.cmd with the Voice or Full profile."
+    } else if tts_requested && !tts_available {
+        "Local TTS is not installed. Run setup.cmd with the Voice or Full profile."
+    } else if local_image_requested && !local_image_available {
+        "Local image generation is not installed. Run setup.cmd with the Images or Full profile."
+    } else {
+        ""
+    };
 
     let Some(sidecar) = &state.sidecar else {
         let ready = image_enabled && remote_image_ready && !sidecar_enabled;
@@ -4550,7 +5024,8 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
             "components": sidecar_components(
                 None,
                 state,
-                tts_enabled,
+                stt_requested,
+                tts_requested,
                 image_enabled,
                 &image_provider,
                 remote_image_ready,
@@ -4558,6 +5033,8 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
             ),
             "error": if ready || !enabled {
                 String::new()
+            } else if !capability_error.is_empty() {
+                capability_error.to_string()
             } else if !remote_image_error.is_empty() {
                 remote_image_error.clone()
             } else {
@@ -4577,18 +5054,28 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
             health.as_ref(),
             rag_enabled,
             reranker_enabled,
+            stt_enabled,
             tts_enabled,
             local_image_enabled,
         );
-    let image_ready = !image_enabled || local_image_enabled || remote_image_ready;
-    let ready = enabled && sidecar_ready && image_ready;
+    let image_ready = !image_enabled
+        || (local_image_requested && local_image_enabled)
+        || (!local_image_requested && remote_image_ready);
+    let capabilities_ready = (!stt_requested || stt_available)
+        && (!tts_requested || tts_available)
+        && (!local_image_requested || local_image_available);
+    let ready = enabled && sidecar_ready && image_ready && capabilities_ready;
     let state_label = if ready {
         "ready".to_string()
+    } else if !capability_error.is_empty() {
+        "unavailable".to_string()
     } else {
         snapshot.state.as_str().to_string()
     };
     let error = if ready {
         String::new()
+    } else if !capability_error.is_empty() {
+        capability_error.to_string()
     } else if !remote_image_error.is_empty() {
         remote_image_error.clone()
     } else {
@@ -4609,7 +5096,8 @@ async fn sidecar_status_payload(state: &AppState) -> Value {
         "components": sidecar_components(
             health.as_ref(),
             state,
-            tts_enabled,
+            stt_requested,
+            tts_requested,
             image_enabled,
             &image_provider,
             remote_image_ready,
@@ -4623,10 +5111,31 @@ fn image_generation_enabled(state: &AppState) -> bool {
     state.config.image_enabled && state.settings.image_enabled(None)
 }
 
+fn local_tts_available(state: &AppState) -> bool {
+    state
+        .sidecar
+        .as_ref()
+        .map(|sidecar| sidecar.tts_available())
+        .unwrap_or(false)
+}
+
+fn local_stt_available(state: &AppState) -> bool {
+    state
+        .sidecar
+        .as_ref()
+        .map(|sidecar| sidecar.stt_available())
+        .unwrap_or(false)
+}
+
 fn local_image_generation_enabled(state: &AppState, settings: Option<&SettingsMap>) -> bool {
     state.config.image_enabled
         && state.settings.image_enabled(settings)
         && state.settings.image_provider(settings) == IMAGE_PROVIDER_LOCAL
+        && state
+            .sidecar
+            .as_ref()
+            .map(|sidecar| sidecar.image_available())
+            .unwrap_or(false)
 }
 
 async fn remote_image_status(
@@ -4673,9 +5182,10 @@ fn restart_sidecar_in_background(
     let Some(sidecar) = state.sidecar.clone() else {
         return;
     };
+    let stt_enabled = sidecar.stt_enabled();
     sidecar.set_env("TTS_ENABLED", bool_env(tts_enabled));
     sidecar.set_env("IMAGE_ENABLED", bool_env(image_enabled));
-    let should_start = state.config.rag_enabled || tts_enabled || image_enabled;
+    let should_start = state.config.rag_enabled || stt_enabled || tts_enabled || image_enabled;
     let http = state.http.clone();
     let base_url = state.config.infer_base_url.clone();
     let timeout =
@@ -4711,6 +5221,7 @@ fn sidecar_health_ready(
     health: Option<&Value>,
     rag_enabled: bool,
     reranker_enabled: bool,
+    stt_enabled: bool,
     tts_enabled: bool,
     image_enabled: bool,
 ) -> bool {
@@ -4721,6 +5232,7 @@ fn sidecar_health_ready(
     for (enabled, key) in [
         (rag_enabled, "embedder"),
         (reranker_enabled, "reranker"),
+        (stt_enabled, "stt"),
         (tts_enabled, "tts"),
         (image_enabled, "image"),
     ] {
@@ -4751,15 +5263,34 @@ fn component_field<'a>(health: Option<&'a Value>, key: &str, field: &str) -> Opt
 fn sidecar_components(
     health: Option<&Value>,
     state: &AppState,
+    stt_enabled: bool,
     tts_enabled: bool,
     image_enabled: bool,
     image_provider: &str,
     remote_image_ready: bool,
     remote_image_error: &str,
 ) -> Value {
+    let stt_available = local_stt_available(state);
+    let tts_available = local_tts_available(state);
+    let local_image_available = state
+        .sidecar
+        .as_ref()
+        .map(|sidecar| sidecar.image_available())
+        .unwrap_or(false);
     let image = if image_provider == IMAGE_PROVIDER_LOCAL {
+        let error = if image_enabled && !local_image_available {
+            Value::String(
+                "Local image generation is not installed. Run setup.cmd with the Images or Full profile."
+                    .to_string(),
+            )
+        } else {
+            component_field(health, "image", "error")
+                .cloned()
+                .unwrap_or(Value::String(String::new()))
+        };
         json!({
             "enabled": image_enabled,
+            "available": local_image_available,
             "provider": IMAGE_PROVIDER_LOCAL,
             "up": health.map(|body| component_up(body, "image")).unwrap_or(false),
             "warm": component_field(health, "image", "warm").cloned().unwrap_or(Value::Bool(false)),
@@ -4771,7 +5302,7 @@ fn sidecar_components(
             "comfy_url": component_field(health, "image", "comfy_url").cloned().unwrap_or(Value::Null),
             "comfy_up": component_field(health, "image", "comfy_up").cloned().unwrap_or(Value::Bool(false)),
             "models": component_field(health, "image", "models").cloned().unwrap_or(Value::Array(vec![])),
-            "error": component_field(health, "image", "error").cloned().unwrap_or(Value::String(String::new())),
+            "error": error,
         })
     } else {
         let model = if image_provider == IMAGE_PROVIDER_GROK_QUALITY {
@@ -4815,11 +5346,28 @@ fn sidecar_components(
                 .and_then(Value::as_str)
                 .unwrap_or(state.config.reranker_quant.as_str()),
         },
+        "stt": {
+            "enabled": stt_enabled,
+            "available": stt_available,
+            "up": health.map(|body| component_up(body, "stt")).unwrap_or(false),
+            "model": component_field(health, "stt", "model").cloned().unwrap_or(Value::Null),
+            "error": if stt_enabled && !stt_available {
+                "Local STT is not installed. Run setup.cmd with the Voice or Full profile."
+            } else {
+                ""
+            },
+        },
         "tts": {
             "enabled": tts_enabled,
+            "available": tts_available,
             "up": health.map(|body| component_up(body, "tts")).unwrap_or(false),
             "model": component_field(health, "tts", "model").cloned().unwrap_or(Value::Null),
             "voices": component_field(health, "tts", "voices").cloned().unwrap_or(Value::Array(vec![])),
+            "error": if tts_enabled && !tts_available {
+                "Local TTS is not installed. Run setup.cmd with the Voice or Full profile."
+            } else {
+                ""
+            },
         },
         "image": image,
     })
@@ -5173,6 +5721,7 @@ async fn get_connector_auth_status(
 async fn post_connector_auth_start(
     State(state): State<AppState>,
     AxPath(id): AxPath<String>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let id = match connector_id_from_path(id) {
@@ -5193,7 +5742,8 @@ async fn post_connector_auth_start(
             .map(|method| method.id)
             .unwrap_or_default();
     }
-    match registry.start_auth(&id, &method_id).await {
+    let ui_language = request_ui_locale(&headers).map(UiLocale::code);
+    match registry.start_auth(&id, &method_id, ui_language).await {
         Ok(start) => {
             let auth = registry.auth_status(&id).await.ok();
             ok_json(&json!({
@@ -5246,7 +5796,7 @@ async fn get_export(State(state): State<AppState>) -> Response {
             );
             resp.headers_mut().insert(
                 header::CONTENT_DISPOSITION,
-                HeaderValue::from_static("attachment; filename=\"gm-lab-export.json\""),
+                HeaderValue::from_static("attachment; filename=\"taleshift-export.json\""),
             );
             resp
         }
@@ -5273,11 +5823,17 @@ struct StoryLaunch {
 
 /// Resolve a story id into a [`StoryLaunch`] from the story store. Errors for an
 /// unknown id (no-fallback).
-fn resolve_story_launch(store: &StoryStore, story_id: &str) -> Result<StoryLaunch, String> {
+fn resolve_story_launch(
+    store: &StoryStore,
+    story_id: &str,
+    locale: ContentLocale,
+) -> Result<StoryLaunch, String> {
     let kind = store.kind(story_id).map_err(|e| e.to_string())?;
     let world_ref = store.world_ref(story_id).map_err(|e| e.to_string())?;
     let story_version = store.version(story_id).map_err(|e| e.to_string())?;
-    let plot = store.plot(story_id).map_err(|e| e.to_string())?;
+    let plot = store
+        .plot_for_locale(story_id, locale)
+        .map_err(|e| e.to_string())?;
     Ok(StoryLaunch {
         story_id: story_id.to_string(),
         story_version,
@@ -5297,7 +5853,11 @@ fn resolve_story_launch(store: &StoryStore, story_id: &str) -> Result<StoryLaunc
 /// the launch records the authored pin on the world and emits one warning; the
 /// launch still succeeds. An unpinned story ref (`version == 0`) records no pin
 /// and never warns. Self-contained stories (no `world_ref`) never warn.
-fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<(World, Vec<Value>), String> {
+fn build_story_world(
+    state: &AppState,
+    launch: StoryLaunch,
+    locale: ContentLocale,
+) -> Result<(World, Vec<Value>), String> {
     let story_ref = Some(PackageRef {
         id: launch.story_id.clone(),
         version: launch.story_version,
@@ -5307,7 +5867,7 @@ fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<(World, Ve
     let mut world = match &launch.world_ref {
         // Self-contained story (the built-ins): the seed carries the whole world.
         None => {
-            let world = World::from_seed(&launch.plot);
+            let world = World::from_seed_for_locale(&launch.plot, locale);
             // No world_ref: provenance is the story only, no version to compare.
             return Ok((attach_story_ref(world, story_ref), warnings));
         }
@@ -5330,7 +5890,7 @@ fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<(World, Ve
                 // exempts `story_carries_pc` launches, so the PC must actually
                 // land in the world (otherwise the worldgen default hero leaks).
                 "procedural" => {
-                    let mut world = World::from_worldgen_with_lore(&spec, lore);
+                    let mut world = World::from_worldgen_with_lore_for_locale(&spec, lore, locale);
                     overlay_story_identity(&mut world, &launch.plot);
                     let pc_raw = launch
                         .plot
@@ -5343,7 +5903,7 @@ fn build_story_world(state: &AppState, launch: StoryLaunch) -> Result<(World, Ve
                     world
                 }
                 // Authored story: compose the world bible + the authored plot.
-                "authored" => World::compose_authored(&spec, lore, &launch.plot),
+                "authored" => World::compose_authored_for_locale(&spec, lore, &launch.plot, locale),
                 other => {
                     return Err(format!("unsupported story kind: {other}"));
                 }
@@ -5457,6 +6017,7 @@ fn protagonist_required_response(procedural: bool) -> Response {
 
 async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
+    let content_locale = response_content_locale(&state);
     let brief = body_str(&data, "brief");
     let story_id = body_str(&data, "story_id");
     let effective_story_id = if story_id.is_empty() {
@@ -5605,7 +6166,11 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         let client = bound_client.clone();
         match gml_agents::build_world_seed(client.as_ref(), &brief).await {
             // A brief-seeded world never carries an authored PC of its own.
-            Ok(seed) => (World::from_seed(&seed), client, false),
+            Ok(seed) => (
+                World::from_seed_for_locale(&seed, content_locale),
+                client,
+                false,
+            ),
             Err(e) => {
                 return json_response(
                     StatusCode::BAD_REQUEST,
@@ -5656,7 +6221,8 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             return protagonist_required_response(true);
         }
         let client = bound_client.clone();
-        let mut world = World::from_worldgen_with_lore(&spec, world_lore);
+        let mut world =
+            World::from_worldgen_with_lore_for_locale(&spec, world_lore, content_locale);
         world.world_ref = world_ref;
         let story_title = body_str(&data, "story_title");
         if !story_title.is_empty() {
@@ -5689,7 +6255,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
         //   * authored + world_ref -> compose the world bible + authored plot.
         let launch = {
             let store = state.story_store.lock().expect("story store lock poisoned");
-            resolve_story_launch(&store, &effective_story_id)
+            resolve_story_launch(&store, &effective_story_id, content_locale)
         };
         let launch = match launch {
             Ok(l) => l,
@@ -5709,7 +6275,7 @@ async fn post_create_chat(State(state): State<AppState>, body: Bytes) -> Respons
             return protagonist_required_response(launch.kind == "procedural");
         }
         let client = bound_client.clone();
-        let world = match build_story_world(&state, launch) {
+        let world = match build_story_world(&state, launch, content_locale) {
             Ok((w, warnings)) => {
                 launch_warnings = warnings;
                 w
@@ -6029,6 +6595,7 @@ async fn post_delete_chat(State(state): State<AppState>, AxPath(id): AxPath<Stri
 
     let cfg = state.config.clone();
     let settings = state.settings.clone();
+    let content_locale = response_content_locale(&state);
     let store = state.store.clone();
     let res = tokio::task::spawn_blocking(move || {
         let result = store.delete_chat(&scope, &chat_id)?;
@@ -6040,7 +6607,7 @@ async fn post_delete_chat(State(state): State<AppState>, AxPath(id): AxPath<Stri
                 .to_string();
             return Ok(json!({"ok": false, "error": reason, "__status": 404}));
         }
-        let active_id = store.get_active(&scope)?;
+        let active_id = store.get_active_for_locale(&scope, content_locale)?;
         let chats = store.list_chats(&scope)?;
         let active_chat_id = store.active_chat_id(&scope)?.unwrap_or_default();
         let embeddings_purged = result
@@ -6236,10 +6803,11 @@ async fn post_settings(State(state): State<AppState>, body: Bytes) -> Response {
         Some(_) => Some(Map::new()),
         None => Some(data.clone()),
     };
-    let tts_was_enabled = state.settings.tts_enabled(None);
+    let tts_was_enabled = state.settings.tts_enabled(None) && local_tts_available(&state);
     let local_image_was_enabled = local_image_generation_enabled(&state, None);
     let settings_map = state.settings.update(update.as_ref());
-    let tts_now_enabled = state.settings.tts_enabled(Some(&settings_map));
+    let tts_now_enabled =
+        state.settings.tts_enabled(Some(&settings_map)) && local_tts_available(&state);
     let local_image_now_enabled = local_image_generation_enabled(&state, Some(&settings_map));
     if tts_was_enabled != tts_now_enabled || local_image_was_enabled != local_image_now_enabled {
         restart_sidecar_in_background(
@@ -6264,6 +6832,7 @@ async fn post_settings(State(state): State<AppState>, body: Bytes) -> Response {
 
 async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
     let data = parse_body(&body);
+    let content_locale = response_content_locale(&state);
     let cmd = body_str(&data, "cmd");
     let arg = body_str(&data, "arg");
     let cfg = state.config.clone();
@@ -6285,7 +6854,7 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
         };
         let session = match gml_agents::build_world_seed(client.as_ref(), &arg).await {
             Ok(seed) => {
-                let world = World::from_seed(&seed);
+                let world = World::from_seed_for_locale(&seed, content_locale);
                 build_session(client, world, &client_factory, &cfg, binding.clone())
             }
             Err(e) => {
@@ -6350,11 +6919,12 @@ async fn post_cmd(State(state): State<AppState>, body: Bytes) -> Response {
                             format!("cannot reset non-catalog story: {label}"),
                         ));
                     }
+                    let locale = session.world.world_canon.content_locale;
                     let seed = store
-                        .seed(&story_id)
+                        .seed_for_locale(&story_id, locale)
                         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
                     drop(store);
-                    let world = World::from_seed(&seed);
+                    let world = World::from_seed_for_locale(&seed, locale);
                     let factory = session.npc_client_factory.clone();
                     let client = factory();
                     client.set_model(binding.model_id());
@@ -6859,20 +7429,100 @@ fn decorate_scene_data_with_visual(data: &mut Value, visual_assets: &DialogVisua
     let Some(scene) = data.as_object_mut() else {
         return;
     };
-    let visual_key = ["location_id", "scene_id", "title"]
+    let Some(url) = ["location_id", "scene_id", "title"]
         .into_iter()
         .filter_map(|field| scene.get(field).and_then(Value::as_str))
         .map(str::trim)
-        .find(|value| !value.is_empty())
-        .map(str::to_string);
-    let Some(url) = visual_key
-        .as_deref()
-        .and_then(|key| visual_assets.locations.get(key))
+        .filter(|value| !value.is_empty())
+        .find_map(|key| visual_assets.locations.get(key))
         .and_then(|asset| safe_dialog_visual_url(&asset.url))
     else {
         return;
     };
     scene.insert("image_url".to_string(), Value::String(url));
+}
+
+/// Add already-generated visual assets to the exact player-state projection
+/// used by both `GET /state` and transient per-tool synchronization.
+pub(crate) fn decorate_player_state_visuals(state: &mut Value, visual_assets: &DialogVisualAssets) {
+    let Some(state) = state.as_object_mut() else {
+        return;
+    };
+
+    if let Some(scene) = state.get_mut("scene") {
+        decorate_scene_data_with_visual(scene, visual_assets);
+    }
+
+    if let Some(player) = state
+        .get_mut("player_character")
+        .and_then(Value::as_object_mut)
+    {
+        if let Some(url) = visual_assets
+            .characters
+            .get(PLAYER_VISUAL_ID)
+            .and_then(|asset| safe_dialog_visual_url(&asset.url))
+        {
+            player.insert("portrait_url".to_string(), Value::String(url));
+        }
+    }
+
+    if let Some(npcs) = state.get_mut("npcs").and_then(Value::as_array_mut) {
+        for npc in npcs {
+            let Some(npc) = npc.as_object_mut() else {
+                continue;
+            };
+            let Some(url) = npc
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| visual_assets.characters.get(id))
+                .and_then(|asset| safe_dialog_visual_url(&asset.url))
+            else {
+                continue;
+            };
+            npc.insert("portrait_url".to_string(), Value::String(url));
+        }
+    }
+
+    let Some(nodes) = state
+        .get_mut("location_graph")
+        .and_then(|graph| graph.get_mut("nodes"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for node in nodes {
+        let Some(node) = node.as_object_mut() else {
+            continue;
+        };
+        let url = ["id", "name"]
+            .into_iter()
+            .filter_map(|field| node.get(field).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .find_map(|key| visual_assets.locations.get(key))
+            .and_then(|asset| safe_dialog_visual_url(&asset.url))
+            .or_else(|| {
+                node.get("scene")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|scene| {
+                        ["location_id", "scene_id", "title"]
+                            .into_iter()
+                            .filter_map(|field| scene.get(field).and_then(Value::as_str))
+                    })
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .find_map(|key| visual_assets.locations.get(key))
+                    .and_then(|asset| safe_dialog_visual_url(&asset.url))
+            });
+        let Some(url) = url else {
+            continue;
+        };
+        node.insert("image_url".to_string(), Value::String(url.clone()));
+        if let Some(scene) = node.get_mut("scene").and_then(Value::as_object_mut) {
+            scene.insert("image_url".to_string(), Value::String(url));
+        }
+    }
 }
 
 fn decorate_scene_event_with_visual(
@@ -6881,7 +7531,15 @@ fn decorate_scene_event_with_visual(
 ) {
     if event.kind == gml_types::event_kind::SCENE_UPDATE {
         decorate_scene_data_with_visual(&mut event.data, visual_assets);
+    } else if event.kind == gml_types::event_kind::STATE_SYNC {
+        if let Some(state) = event.data.get_mut("state") {
+            decorate_player_state_visuals(state, visual_assets);
+        }
     }
+}
+
+fn is_transient_turn_event(event: &gml_types::Event) -> bool {
+    event.kind == gml_types::event_kind::STATE_SYNC
 }
 
 fn decorate_turn_scene_visuals(runtime: &mut DialogRuntime, turn_no: i64) {
@@ -7298,7 +7956,8 @@ async fn execute_turn(
     let turn_text = text.clone();
     let fallback_factory = rt.session.npc_client_factory.clone();
     let fallback_binding = rt.session.model_binding().clone();
-    let placeholder = placeholder_session(&fallback_factory, &fallback_binding);
+    let placeholder_locale = rt.session.world.world_canon.content_locale;
+    let placeholder = placeholder_session(&fallback_factory, &fallback_binding, placeholder_locale);
     let mut session = std::mem::replace(&mut rt.session, placeholder);
     let turn_handle = tokio::spawn(async move {
         let outcome = match player_event_index {
@@ -7331,6 +7990,13 @@ async fn execute_turn(
             continue;
         }
         decorate_scene_event_with_visual(&mut event, &rt.visual_assets);
+        if is_transient_turn_event(&event) {
+            // This is a live rendering aid for staged state. The authoritative
+            // world is persisted atomically only after the turn succeeds, so a
+            // transient snapshot must never become durable transcript history.
+            control.publish(event);
+            continue;
+        }
         let transcript_row = if event.kind == "player" {
             // One durable receipt per logical turn is enough for idempotency;
             // do not repeat the UUID on every token delta in the transcript.
@@ -7941,9 +8607,10 @@ fn ensure_client_owned(rt: &mut DialogRuntime, state: &AppState) {
 fn placeholder_session(
     client_factory: &gml_orchestrator::ClientFactory,
     binding: &ModelBinding,
+    locale: ContentLocale,
 ) -> Session {
     let client = client_factory();
-    let world = World::from_worldgen(&WorldSpec::default());
+    let world = World::from_worldgen_for_locale(&WorldSpec::default(), locale);
     Session::with_world_binding(client, world, client_factory.clone(), binding.clone())
 }
 
@@ -8002,6 +8669,12 @@ async fn generate_local_image_value(
             "sidecar manager is not attached",
         ));
     };
+    if !sidecar.image_available() {
+        return Err(ImageServiceError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Local image generation is not installed. Run setup.cmd with the Images or Full profile.",
+        ));
+    }
     sidecar.ensure_started(true).await.map_err(|error| {
         ImageServiceError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -9694,6 +10367,19 @@ async fn post_transcribe(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("audio/webm")
         .to_string();
+    if let Some(sidecar) = state
+        .sidecar
+        .as_ref()
+        .filter(|sidecar| sidecar.stt_enabled())
+    {
+        return match sidecar.transcribe(body.clone(), &content_type).await {
+            Ok(text) => ok_json(&json!({"ok": true, "text": text, "provider": "local"})),
+            Err(error) => json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &json!({"ok": false, "error": error.to_string(), "provider": "local"}),
+            ),
+        };
+    }
     let binding = active_model_binding(&state);
     let Some(registry) = state.store.connector_registry() else {
         return json_response(
@@ -9770,6 +10456,21 @@ async fn post_tts(State(state): State<AppState>, body: Bytes) -> Response {
     // Disk-cache hit -> no sidecar.
     if let Some(clip) = cache_lookup(&dir, &voice, &text, fmt) {
         return tts_clip_response(clip.bytes, clip.content_type, &voice);
+    }
+    if !state.settings.tts_enabled(None) {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({"ok": false, "error": "TTS is disabled"}),
+        );
+    }
+    if !local_tts_available(&state) {
+        return json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &json!({
+                "ok": false,
+                "error": "Local TTS is not installed. Run setup.cmd with the Voice or Full profile."
+            }),
+        );
     }
 
     let stream = bool_from_body(data.get("stream"), false);
@@ -9876,12 +10577,13 @@ async fn npc_pronouns(state: &AppState, npc_id: &str) -> String {
     .unwrap_or_default()
 }
 
-async fn post_codex_login(State(state): State<AppState>) -> Response {
+async fn post_codex_login(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(registry) = state.store.connector_registry() else {
         return not_found();
     };
     let id = ConnectorId::new("codex").expect("codex connector id is valid");
-    match registry.start_auth(&id, "chatgpt").await {
+    let ui_language = request_ui_locale(&headers).map(UiLocale::code);
+    match registry.start_auth(&id, "chatgpt", ui_language).await {
         Ok(_) => {
             let auth = registry.auth_status(&id).await.ok();
             ok_json(&json!({
@@ -10126,7 +10828,10 @@ async fn fallback_handler(
     let path = req.uri().path();
     if req.method() == axum::http::Method::GET && path.starts_with("/index") {
         let _ = active_chat(&state);
-        return serve_index(&state);
+        return serve_index(
+            &state,
+            request_ui_locale(req.headers()).unwrap_or(UiLocale::Russian),
+        );
     }
     not_found()
 }
@@ -10369,6 +11074,154 @@ fn load_key(path: &std::path::Path) -> std::io::Result<rustls::pki_types::Privat
 }
 
 #[cfg(test)]
+mod localization_tests {
+    use super::*;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    #[test]
+    fn accept_language_uses_quality_and_regional_tags() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("ru-RU;q=0.4, en-US;q=0.9"),
+        );
+        assert_eq!(request_ui_locale(&headers), Some(UiLocale::English));
+
+        headers.insert(
+            header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("de, ru;q=0.8, en;q=0"),
+        );
+        assert_eq!(request_ui_locale(&headers), Some(UiLocale::Russian));
+        assert_eq!(request_ui_locale(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn placeholder_and_content_fallbacks_use_independent_languages() {
+        let english_page = placeholder_html(UiLocale::English);
+        assert!(english_page.contains("<html lang=\"en\">"));
+        assert!(english_page.contains("frontend has not been built"));
+        assert!(!english_page.contains("Фронтенд"));
+
+        assert_eq!(
+            story_title_from_draft(&Value::Null, "", ContentLocale::English),
+            "New Story"
+        );
+        assert_eq!(
+            character_title_from_draft(&Value::Null, "", ContentLocale::Russian),
+            "Персонаж"
+        );
+    }
+
+    #[test]
+    fn presentation_localization_changes_only_reserved_defaults() {
+        let mut value = json!({
+            "chats": [
+                {"title": "Новый чат"},
+                {"title": "Новый чат — ветка"},
+                {"title": "Моя история — ветка"},
+                {"title": "Авторское название"}
+            ],
+            "worlds": [{"title": "Новый мир"}, {"title": "Туманный город"}],
+        });
+        localize_presentation_value(&mut value, UiLocale::English);
+        assert_eq!(value["chats"][0]["title"], "New Chat");
+        assert_eq!(value["chats"][1]["title"], "New Chat — branch");
+        assert_eq!(value["chats"][2]["title"], "Моя история — branch");
+        assert_eq!(value["chats"][3]["title"], "Авторское название");
+        assert_eq!(value["worlds"][0]["title"], "New World");
+        assert_eq!(value["worlds"][1]["title"], "Туманный город");
+    }
+
+    #[test]
+    fn character_architect_story_context_uses_content_locale() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = StoryStore::new(directory.path()).expect("open story store");
+        let story_id = store.default_story_id();
+
+        let russian = story_public_for_character(&store, story_id, ContentLocale::Russian)
+            .expect("russian story context");
+        let english = story_public_for_character(&store, story_id, ContentLocale::English)
+            .expect("english story context");
+        let expected_metadata = store
+            .story_metadata_for_locale(story_id, ContentLocale::English)
+            .expect("english metadata");
+        let expected_seed = store
+            .seed_for_locale(story_id, ContentLocale::English)
+            .expect("english seed");
+
+        assert_eq!(english["title"], expected_metadata["title"]);
+        assert_eq!(english["description"], expected_metadata["description"]);
+        assert_eq!(english["story_brief"], expected_seed["story_brief"]);
+        assert_eq!(english["public_intro"], expected_seed["public_intro"]);
+        assert_ne!(russian["title"], english["title"]);
+        assert_ne!(russian["story_brief"], english["story_brief"]);
+    }
+
+    #[tokio::test]
+    async fn middleware_localizes_http_errors_and_keeps_diagnostic_detail() {
+        let app = Router::new()
+            .route(
+                "/error",
+                get(|| async {
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        &json!({"ok": false, "error": "title is required"}),
+                    )
+                }),
+            )
+            .layer(axum::middleware::from_fn(localize_http_error_response));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/error")
+                    .header(header::ACCEPT_LANGUAGE, "en-US")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers().get(header::CONTENT_LANGUAGE).unwrap(),
+            "en"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "Enter a title.");
+        assert_eq!(value["detail"], "title is required");
+    }
+
+    #[tokio::test]
+    async fn missing_accept_language_preserves_legacy_error_contract() {
+        let app = Router::new()
+            .route(
+                "/error",
+                get(|| async {
+                    json_response(
+                        StatusCode::BAD_REQUEST,
+                        &json!({"ok": false, "error": "title is required"}),
+                    )
+                }),
+            )
+            .layer(axum::middleware::from_fn(localize_http_error_response));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/error")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"], "title is required");
+        assert!(value.get("detail").is_none());
+    }
+}
+
+#[cfg(test)]
 mod connector_history_tests {
     use super::*;
 
@@ -10582,6 +11435,59 @@ mod chat_concurrency_tests {
         }
     }
 
+    #[tokio::test]
+    async fn persisted_story_payload_returns_catalog_in_requested_content_locale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(&tmp);
+        let (story_id, english_catalog, russian_catalog) = {
+            let mut store = state.story_store.lock().unwrap();
+            let created = store
+                .create_bound_story(
+                    "Authored Story",
+                    "",
+                    "authored",
+                    StoryWorldRef {
+                        id: "test-world".to_string(),
+                        version: 1,
+                    },
+                    Value::Object(Map::new()),
+                )
+                .unwrap();
+            (
+                created["id"].as_str().unwrap().to_string(),
+                store
+                    .list_stories_for_locale(ContentLocale::English)
+                    .into_iter()
+                    .map(Value::Object)
+                    .collect::<Vec<_>>(),
+                store
+                    .list_stories_for_locale(ContentLocale::Russian)
+                    .into_iter()
+                    .map(Value::Object)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let resolved = ResolvedStoryWorld {
+            world_id: "unused-for-existing-story".to_string(),
+            world_version: 1,
+            lore_block: String::new(),
+        };
+
+        let (_, _, stories) = persist_story_payload(
+            &state,
+            Some(story_id),
+            &resolved,
+            "",
+            None,
+            ContentLocale::English,
+        )
+        .await
+        .unwrap_or_else(|response| panic!("story payload failed: {}", response.status()));
+
+        assert_eq!(stories, english_catalog);
+        assert_ne!(stories, russian_catalog);
+    }
+
     #[test]
     fn resource_locks_reuse_live_entries_and_prune_stale_batches() {
         let tmp = tempfile::tempdir().unwrap();
@@ -10734,9 +11640,9 @@ mod dialog_visual_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     use super::{
-        character_visual_prompt, decorate_scene_event_with_visual, dialog_visual_asset,
-        normalize_character_portrait_ref, rewrite_character_asset_url, safe_dialog_visual_url,
-        scene_visual_key, PLAYER_VISUAL_ID,
+        character_visual_prompt, decorate_player_state_visuals, decorate_scene_event_with_visual,
+        dialog_visual_asset, is_transient_turn_event, normalize_character_portrait_ref,
+        rewrite_character_asset_url, safe_dialog_visual_url, scene_visual_key, PLAYER_VISUAL_ID,
     };
     use gml_persistence::{DialogVisualAsset, DialogVisualAssets};
     use gml_types::{event_kind, Event};
@@ -10845,6 +11751,68 @@ mod dialog_visual_tests {
         assert_eq!(
             event.data["image_url"],
             json!("/image-files/run/location.png")
+        );
+    }
+
+    #[test]
+    fn live_state_sync_is_transient_and_receives_persisted_visuals() {
+        let mut assets = DialogVisualAssets::default();
+        assets.locations.insert(
+            "place-1".to_string(),
+            DialogVisualAsset {
+                url: "/image-files/run/location.png".to_string(),
+                provider: "local".to_string(),
+                model: "test".to_string(),
+            },
+        );
+        assets.characters.insert(
+            PLAYER_VISUAL_ID.to_string(),
+            DialogVisualAsset {
+                url: "/image-files/run/player.png".to_string(),
+                provider: "local".to_string(),
+                model: "test".to_string(),
+            },
+        );
+        let mut event = Event::new(
+            event_kind::STATE_SYNC,
+            Some("state_sync".to_string()),
+            json!({
+                "seq": 1,
+                "call_id": "call-1",
+                "state": {
+                    "scene": {"location_id": "place-1", "title": "Келья"},
+                    "player_character": {"name": "Ада"},
+                    "npcs": [],
+                    "location_graph": {"nodes": [{
+                        "id": "place-1",
+                        "name": "Келья",
+                        "scene": {"location_id": "place-1", "title": "Келья"}
+                    }]}
+                }
+            }),
+            Some("call-1".to_string()),
+        );
+
+        assert!(is_transient_turn_event(&event));
+        decorate_scene_event_with_visual(&mut event, &assets);
+        assert_eq!(
+            event.data["state"]["scene"]["image_url"],
+            "/image-files/run/location.png"
+        );
+        assert_eq!(
+            event.data["state"]["player_character"]["portrait_url"],
+            "/image-files/run/player.png"
+        );
+        assert_eq!(
+            event.data["state"]["location_graph"]["nodes"][0]["image_url"],
+            "/image-files/run/location.png"
+        );
+
+        let mut direct_state = event.data["state"].clone();
+        decorate_player_state_visuals(&mut direct_state, &assets);
+        assert_eq!(
+            direct_state["scene"]["image_url"],
+            "/image-files/run/location.png"
         );
     }
 }

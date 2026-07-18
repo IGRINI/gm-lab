@@ -4,6 +4,8 @@ import MarkdownText, { MarkdownInline } from "./MarkdownText.jsx";
 import Spoiler from "./Spoiler.jsx";
 import Tooltip from "./Tooltip.jsx";
 import { NpcRef, Field, Badge, TextBlock, nonEmpty, ActorRef, ParticipantChips } from "./ToolCard.jsx";
+import { localizeServerMessage } from "../serverMessages.js";
+import { characterChangeFieldLabel } from "../characterChanges.js";
 
 // Presentation-only maps mirroring the request-card vocabulary in ToolCard.jsx.
 const FACT_STATUS = {
@@ -40,6 +42,10 @@ function queryKind(kind) {
   const bare = k.replace(/^state_/, "");
   if (Object.hasOwn(WS_TYPE, bare)) return { kind: bare, tone: WS_TYPE[bare] };
   return { kind: bare || "record", tone: "" };
+}
+
+function resultError(value, t, fallbackKey) {
+  return localizeServerMessage(value, t, { fallbackText: t(fallbackKey) });
 }
 
 // id: stable concurrency key the model uses; short and monospace for the eye.
@@ -192,7 +198,7 @@ export function resultView(name, p, t) {
                 <div className="tc-list">
                   {errors.map((e, i) => (
                     <div className="tc-text redo" key={i}>
-                      <MarkdownInline>{e.error || t("results.writeError")}</MarkdownInline>
+                      <MarkdownInline>{resultError(e, t, "results.writeError")}</MarkdownInline>
                     </div>
                   ))}
                 </div>
@@ -221,10 +227,12 @@ export function resultView(name, p, t) {
               {payload.card_revision != null && <Badge tone="muted">{t("results.revision", { value: payload.card_revision })}</Badge>}
             </div>
             {nonEmpty(payload.error) ? (
-              <div className="tc-text redo"><MarkdownInline>{payload.error}</MarkdownInline></div>
+              <div className="tc-text redo">
+                <MarkdownInline>{resultError(payload, t, "results.profileError")}</MarkdownInline>
+              </div>
             ) : keys.length ? (
               keys.map((k) => (
-                <Field key={k} label={k}>
+                <Field key={k} label={characterChangeFieldLabel(k, t)}>
                   {typeof profile[k] === "object"
                     ? <code>{JSON.stringify(profile[k])}</code>
                     : <MarkdownInline>{String(profile[k])}</MarkdownInline>}
@@ -252,7 +260,11 @@ export function resultView(name, p, t) {
               {nonEmpty(now) && <Badge tone="ok">{now}</Badge>}
             </div>
             {nonEmpty(payload.summary) && <TextBlock>{payload.summary}</TextBlock>}
-            {nonEmpty(payload.error) && <div className="tc-text redo"><MarkdownInline>{payload.error}</MarkdownInline></div>}
+            {nonEmpty(payload.error) && (
+              <div className="tc-text redo">
+                <MarkdownInline>{resultError(payload, t, "results.timeError")}</MarkdownInline>
+              </div>
+            )}
           </>
         ),
       };
@@ -277,26 +289,64 @@ export function resultView(name, p, t) {
           <>
             <div className="tc-chips">
               {updated.length
-                ? updated.map((f) => <Badge key={f} tone="ok">{f}</Badge>)
+                ? updated.map((f) => <Badge key={f} tone="ok">{characterChangeFieldLabel(f, t)}</Badge>)
                 : <Badge tone="muted">{t("common.noChanges")}</Badge>}
               {payload.card_revision != null && <Badge tone="muted">{t("results.revision", { value: payload.card_revision })}</Badge>}
             </div>
             {nonEmpty(payload.reason) && <TextBlock>{payload.reason}</TextBlock>}
-            {nonEmpty(payload.error) && <div className="tc-text redo"><MarkdownInline>{payload.error}</MarkdownInline></div>}
+            {nonEmpty(payload.error) && (
+              <div className="tc-text redo">
+                <MarkdownInline>{resultError(payload, t, "results.characterError")}</MarkdownInline>
+              </div>
+            )}
           </>
         ),
       };
     }
 
-    case "tool_search": {
+    case "tool_search":
+    case "load_tool_schema": {
+      const matches = Array.isArray(payload.matches) ? payload.matches : [];
+      const missing = Array.isArray(payload.missing) ? payload.missing.filter(nonEmpty) : [];
+      const alreadyLoaded = Array.isArray(payload.already_loaded) ? payload.already_loaded.filter(nonEmpty) : [];
+      const status = nonEmpty(payload.status) ? String(payload.status) : "";
+      const schemaName = nonEmpty(payload.loaded_schema) ? payload.loaded_schema : payload.name;
+      const resultLabel = status
+        ? t(`results.toolSearch.statuses.${status}`, { defaultValue: t("results.toolSearch.statuses.unknown") })
+        : matches.length
+          ? t("results.found", { count: matches.length })
+          : alreadyLoaded.length
+            ? t("results.toolSearch.alreadyLoaded", { count: alreadyLoaded.length })
+            : payload.legacy
+              ? t("results.toolSearch.completed")
+              : t("results.nothingFound");
       return {
         icon: <Icon name="sliders" size={14} />,
         accent: "var(--text-3)",
-        title: t("results.toolSearch.title"),
-        body: nonEmpty(payload.text) ? (
-          <TextBlock>{payload.text}</TextBlock>
-        ) : (
-          <div className="tc-text">—</div>
+        title: t(name === "load_tool_schema" ? "results.toolSearch.schemaTitle" : "results.toolSearch.title"),
+        body: (
+          <>
+            <div className="tc-chips"><Badge tone={status === "missing" || status === "invalid" ? "warn" : "ok"}>{resultLabel}</Badge></div>
+            {matches.length > 0 && (
+              <Field label={t("results.toolSearch.matches")}>
+                <div className="tc-chips">
+                  {matches.map((match, index) => {
+                    const toolName = typeof match === "string" ? match : match?.name;
+                    return nonEmpty(toolName) ? <Badge key={`${toolName}:${index}`} tone="muted"><code>{toolName}</code></Badge> : null;
+                  })}
+                </div>
+              </Field>
+            )}
+            {nonEmpty(schemaName) && (
+              <Field label={t("results.toolSearch.schema")}><code>{schemaName}</code></Field>
+            )}
+            {alreadyLoaded.length > 0 && (
+              <Field label={t("results.toolSearch.available")}><code>{alreadyLoaded.join(", ")}</code></Field>
+            )}
+            {missing.length > 0 && (
+              <Field label={t("results.toolSearch.missing")}><code>{missing.join(", ")}</code></Field>
+            )}
+          </>
         ),
       };
     }

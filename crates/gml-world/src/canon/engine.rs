@@ -16,6 +16,7 @@
 
 use std::collections::BTreeSet;
 
+use gml_types::ContentLocale;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -771,18 +772,22 @@ fn execute_player_travel(
 ) -> Vec<CanonEvent> {
     let mut events = Vec::new();
     let start_minutes = canon.clock_minutes;
+    let content_locale = canon.content_locale;
 
     if can_create_travel_situation(canon) {
-        if let Some(situation) = travel::roll_travel_situation(travel::TravelRoll {
-            world_seed: &canon.world_seed,
-            transition_id: &travel.route_id,
-            from_place: &travel.from_place,
-            to_place: &travel.to_place,
-            turn,
-            start_minutes,
-            duration_minutes: travel.duration_minutes,
-            risk: travel.risk,
-        }) {
+        if let Some(situation) = travel::roll_travel_situation_for_locale(
+            travel::TravelRoll {
+                world_seed: &canon.world_seed,
+                transition_id: &travel.route_id,
+                from_place: &travel.from_place,
+                to_place: &travel.to_place,
+                turn,
+                start_minutes,
+                duration_minutes: travel.duration_minutes,
+                risk: travel.risk,
+            },
+            content_locale,
+        ) {
             events.extend(apply_travel_situation(
                 canon,
                 &travel.route_id,
@@ -884,6 +889,7 @@ fn apply_travel_situation(
     reason: &str,
 ) -> Vec<CanonEvent> {
     let mut events = Vec::new();
+    let content_locale = canon.content_locale;
     let site_id = situation.site_id.clone();
     let region_id = canon
         .place(from_place)
@@ -908,7 +914,9 @@ fn apply_travel_situation(
             district_id,
             default_description: situation.summary.clone(),
             state_flags: flags,
-            features: vec!["дорожная ситуация".to_string()],
+            features: vec![
+                content_text(content_locale, "дорожная ситуация", "road situation").to_string(),
+            ],
             transition_ids: Vec::new(),
             occupant_ids: BTreeSet::new(),
             item_ids: Vec::new(),
@@ -940,7 +948,7 @@ fn apply_travel_situation(
             from_place: site_id.clone(),
             to_place: to_place.to_string(),
             destination_hint: String::new(),
-            label: "Продолжить путь".to_string(),
+            label: content_text(content_locale, "Продолжить путь", "Continue journey").to_string(),
             kind: "road_segment".to_string(),
             visible: true,
             passable: true,
@@ -961,7 +969,7 @@ fn apply_travel_situation(
             from_place: site_id.clone(),
             to_place: from_place.to_string(),
             destination_hint: String::new(),
-            label: "Вернуться назад".to_string(),
+            label: content_text(content_locale, "Вернуться назад", "Turn back").to_string(),
             kind: "road_segment".to_string(),
             visible: true,
             passable: true,
@@ -1003,11 +1011,24 @@ fn apply_travel_situation(
         &[],
         "road situation roll",
         &[
-            format!("На дороге возникает ситуация: {}", situation.summary),
-            format!(
-                "До цели остается примерно {} мин.",
-                situation.remaining_minutes
-            ),
+            match content_locale {
+                ContentLocale::Russian => {
+                    format!("На дороге возникает ситуация: {}", situation.summary)
+                }
+                ContentLocale::English => {
+                    format!("A situation arises on the road: {}", situation.summary)
+                }
+            },
+            match content_locale {
+                ContentLocale::Russian => format!(
+                    "До цели остается примерно {} мин.",
+                    situation.remaining_minutes
+                ),
+                ContentLocale::English => format!(
+                    "About {} min. remain to the destination.",
+                    situation.remaining_minutes
+                ),
+            },
             format!("situation_type:{}", situation.tone),
             format!("rarity:{}", situation.rarity),
             format!("risk:{}", risk.as_str()),
@@ -1017,7 +1038,7 @@ fn apply_travel_situation(
             format!("remaining_minutes:{}", situation.remaining_minutes),
         ],
         &Scope::Player,
-        &["дорожные следы".to_string()],
+        &[content_text(content_locale, "дорожные следы", "roadside traces").to_string()],
     ));
 
     events
@@ -1078,6 +1099,7 @@ fn resolve_due_event(
     now: i64,
     turn: i64,
 ) -> Vec<CanonEvent> {
+    let content_locale = canon.content_locale;
     let snap = canon
         .event_log
         .events
@@ -1122,7 +1144,12 @@ fn resolve_due_event(
         account_id: ids::stable_id(&canon.world_seed, event_id, "account", "rumor"),
         event_id: event_id.to_string(),
         source: "rumor".to_string(),
-        text: "Говорят, что-то случилось в стороне.".to_string(),
+        text: content_text(
+            content_locale,
+            "Говорят, что-то случилось в стороне.",
+            "Rumor has it that something happened nearby.",
+        )
+        .to_string(),
         truth: Truthfulness::Partial,
         scope: Scope::Rumor,
     });
@@ -1363,5 +1390,183 @@ fn nonempty<'a>(s: &'a str, fallback: &'a str) -> &'a str {
         fallback
     } else {
         s
+    }
+}
+
+const fn content_text(
+    content_locale: ContentLocale,
+    russian: &'static str,
+    english: &'static str,
+) -> &'static str {
+    match content_locale {
+        ContentLocale::Russian => russian,
+        ContentLocale::English => english,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contains_cyrillic(value: &str) -> bool {
+        value
+            .chars()
+            .any(|character| matches!(character, '\u{0400}'..='\u{04ff}'))
+    }
+
+    fn travel_situation_fixture(content_locale: ContentLocale) -> (WorldCanon, Vec<CanonEvent>) {
+        let mut canon = WorldCanon {
+            world_seed: "localized-engine".to_string(),
+            content_locale,
+            ..Default::default()
+        };
+        let situation = travel::TravelSituation {
+            site_id: "road-site".to_string(),
+            title: content_text(content_locale, "Угроза на дороге", "Threat on the Road")
+                .to_string(),
+            summary: content_text(
+                content_locale,
+                "на дороге заметна угроза",
+                "there is a clear threat on the road",
+            )
+            .to_string(),
+            elapsed_minutes: 30,
+            remaining_minutes: 90,
+            chance_percent: 100,
+            roll: 42,
+            tone: "bad",
+            rarity: "common",
+        };
+        let events = apply_travel_situation(
+            &mut canon,
+            "long-road",
+            "village",
+            "city",
+            travel::TravelRisk::Certain,
+            &situation,
+            4,
+            "test travel",
+        );
+        (canon, events)
+    }
+
+    fn rumor_fixture(content_locale: ContentLocale) -> WorldCanon {
+        let mut canon = WorldCanon {
+            world_seed: "localized-rumor".to_string(),
+            content_locale,
+            ..Default::default()
+        };
+        canon.event_log.append(CanonEvent {
+            event_id: "scheduled-event".to_string(),
+            kind: "storm".to_string(),
+            scheduled: true,
+            due_minutes: 10,
+            ..Default::default()
+        });
+        resolve_due_event(&mut canon, "scheduled-event", 10, 2);
+        canon
+    }
+
+    #[test]
+    fn travel_situation_engine_text_follows_content_locale_without_changing_mechanics() {
+        let (russian, russian_events) = travel_situation_fixture(ContentLocale::Russian);
+        let (english, english_events) = travel_situation_fixture(ContentLocale::English);
+
+        assert_eq!(russian.player_place_id, english.player_place_id);
+        assert_eq!(russian.clock_minutes, english.clock_minutes);
+        assert_eq!(
+            russian.transitions.keys().collect::<Vec<_>>(),
+            english.transitions.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            russian_events
+                .iter()
+                .map(|event| (&event.event_id, &event.kind, event.time_minutes))
+                .collect::<Vec<_>>(),
+            english_events
+                .iter()
+                .map(|event| (&event.event_id, &event.kind, event.time_minutes))
+                .collect::<Vec<_>>()
+        );
+
+        let russian_site = russian.place("road-site").expect("Russian travel site");
+        let english_site = english.place("road-site").expect("English travel site");
+        assert_eq!(russian_site.features, ["дорожная ситуация"]);
+        assert_eq!(english_site.features, ["road situation"]);
+
+        let mut russian_labels = russian
+            .exits_from("road-site")
+            .into_iter()
+            .map(|transition| transition.label.as_str())
+            .collect::<Vec<_>>();
+        let mut english_labels = english
+            .exits_from("road-site")
+            .into_iter()
+            .map(|transition| transition.label.as_str())
+            .collect::<Vec<_>>();
+        russian_labels.sort_unstable();
+        english_labels.sort_unstable();
+        assert_eq!(russian_labels, ["Вернуться назад", "Продолжить путь"]);
+        assert_eq!(english_labels, ["Continue journey", "Turn back"]);
+
+        let russian_event = russian_events
+            .iter()
+            .find(|event| event.kind == "travel_situation")
+            .expect("Russian situation event");
+        let english_event = english_events
+            .iter()
+            .find(|event| event.kind == "travel_situation")
+            .expect("English situation event");
+        assert_eq!(
+            &russian_event.effects[..2],
+            [
+                "На дороге возникает ситуация: на дороге заметна угроза",
+                "До цели остается примерно 90 мин.",
+            ]
+        );
+        assert_eq!(
+            &english_event.effects[..2],
+            [
+                "A situation arises on the road: there is a clear threat on the road",
+                "About 90 min. remain to the destination.",
+            ]
+        );
+        assert_eq!(russian_event.possible_traces, ["дорожные следы"]);
+        assert_eq!(english_event.possible_traces, ["roadside traces"]);
+        assert_eq!(&russian_event.effects[2..], &english_event.effects[2..]);
+
+        for text in english_site
+            .features
+            .iter()
+            .map(String::as_str)
+            .chain(english_labels)
+            .chain(english_event.effects[..2].iter().map(String::as_str))
+            .chain(english_event.possible_traces.iter().map(String::as_str))
+        {
+            assert!(
+                !contains_cyrillic(text),
+                "English text contains Cyrillic: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheduled_event_rumor_follows_content_locale_without_changing_identity() {
+        let russian = rumor_fixture(ContentLocale::Russian);
+        let english = rumor_fixture(ContentLocale::English);
+        let russian_account = russian.event_log.accounts.first().expect("Russian rumor");
+        let english_account = english.event_log.accounts.first().expect("English rumor");
+
+        assert_eq!(russian_account.account_id, english_account.account_id);
+        assert_eq!(russian_account.event_id, english_account.event_id);
+        assert_eq!(russian_account.source, english_account.source);
+        assert_eq!(russian_account.truth, english_account.truth);
+        assert_eq!(russian_account.scope, english_account.scope);
+        assert_eq!(russian_account.text, "Говорят, что-то случилось в стороне.");
+        assert_eq!(
+            english_account.text,
+            "Rumor has it that something happened nearby."
+        );
+        assert!(!contains_cyrillic(&english_account.text));
     }
 }

@@ -121,13 +121,24 @@ export const MEMORY_TOOLS = new Set([
   "tool_search",
 ]);
 
-// Tools whose RESULT is safe and meaningful for a plain player — shown compact
-// when tool-call internals are hidden.
-export const PLAYER_TOOLS = new Set([
+// Curated tools whose existence and progress are meaningful to a player. Their
+// compact card never renders raw arguments or raw results. Memory lookups,
+// generators and NPC-internal maintenance deliberately stay out of this list.
+export const PLAYER_ACTION_TOOLS = new Set([
   "roll_dice",
   "advance_time",
+  "long_rest",
   "update_character",
   "update_player_character",
+  "take_item",
+  "drop_item",
+  "cast_spell",
+  "set_scene",
+  "move_player",
+  "travel_to",
+  "relocate_player",
+  "create_passage",
+  "set_passage_state",
 ]);
 
 function characterUpdateTarget(name, message) {
@@ -153,7 +164,7 @@ export function toolMode(name, vis, message) {
   // NPC card maintenance is an internal continuity operation. Only player-sheet
   // updates have a useful player-facing compact result.
   if (characterUpdateTarget(name, message) === "npc") return "hidden";
-  return PLAYER_TOOLS.has(name) ? "player" : "hidden";
+  return PLAYER_ACTION_TOOLS.has(name) ? "player" : "hidden";
 }
 
 // Whether a timeline message renders anything under the current visibility.
@@ -173,8 +184,6 @@ export function isMessageVisible(m, vis) {
     case "tool": {
       const mode = toolMode(m.name, vis, m);
       if (mode === "hidden") return false;
-      // Player-safe tools (dice/time/sheet) render nothing until their result lands.
-      if (mode === "player" && m.result == null) return false;
       return true;
     }
     case "tool_result":

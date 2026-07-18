@@ -24,6 +24,7 @@ import {
   genderVoice,
 } from "../ttsStore.js";
 import { useTranslation } from "react-i18next";
+import { localizeServerMessage } from "../serverMessages.js";
 
 // Resolve an NPC's voice from the roster (by id, falling back to the shown name),
 // since historical messages may lack npc_id.
@@ -116,9 +117,22 @@ function metaText(d, t) {
     cached,
   });
 }
+const META_LABEL_KEYS = new Map([
+  ["ГМ — нарратив", "narration"],
+  ["ГМ — решение", "decision"],
+  ["ГМ — прелюдия", "prelude"],
+  ["scene sync", "sceneSync"],
+]);
+function metaLabel(d, t) {
+  const knownKey = META_LABEL_KEYS.get(String(d?.label || "").trim());
+  if (knownKey) return t(`message.meta.labels.${knownKey}`);
+  if (d?.scope === "gm") return t("message.meta.labels.gm");
+  if (d?.scope === "other") return t("message.meta.labels.background");
+  return String(d?.label || t("message.meta.labels.model"));
+}
 function metaTitle(d, t) {
   return (
-    `${d.label}\n${t("message.meta.input", { count: d.in, seconds: d.prompt_secs })}` +
+    `${metaLabel(d, t)}\n${t("message.meta.input", { count: d.in, seconds: d.prompt_secs })}` +
     (d.cached ? `\n${t("message.meta.fromCache", { count: d.cached })}` : "") +
     `\n${t("message.meta.output", { count: d.out, seconds: d.eval_secs })}` +
     (d.load_secs > 0 ? `\n${t("message.meta.modelLoad", { seconds: d.load_secs })}` : "")
@@ -126,7 +140,7 @@ function metaTitle(d, t) {
 }
 function metaTotalTitle(d, t) {
   return (
-    d.calls.map((m) => `${m.label}: ${m.in}↑ ${m.out}↓  ${m.tps} tok/s  ${m.secs}s`).join("\n") +
+    d.calls.map((m) => `${metaLabel(m, t)}: ${m.in}↑ ${m.out}↓  ${m.tps} tok/s  ${m.secs}s`).join("\n") +
     `\n— — —\n${t("message.meta.systemPrompt", { count: d.sys_estimate })}`
   );
 }
@@ -214,7 +228,9 @@ function PlayerMessage({ m, onEditFrom, onBranchFrom, historyBusy }) {
       await action(m.turn, text);
       setMode("");
     } catch (reason) {
-      setError(reason?.message || t("message.history.changeFailed"));
+      setError(localizeServerMessage(reason, t, {
+        fallbackText: t("message.history.changeFailed"),
+      }));
     } finally {
       setSubmitting(false);
     }
@@ -532,11 +548,14 @@ function Message({
         </div>
       );
 
-    case "error":
+    case "error": {
+      const errorText = localizeServerMessage(m.text, t, {
+        fallbackCode: "generic",
+      });
       return (
         <div className={"err" + (onRetry ? " has-retry" : "")}>
           <div className="turn-error-text">
-            ⚠ {agentLabel(m.agent, t)}: <MarkdownInline>{m.text}</MarkdownInline>
+            ⚠ {agentLabel(m.agent, t)}: <MarkdownInline>{errorText}</MarkdownInline>
           </div>
           {onRetry && (
             <button
@@ -551,6 +570,7 @@ function Message({
           )}
         </div>
       );
+    }
 
     case "meta":
       if (!vis.messageTokens) return null;

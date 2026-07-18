@@ -884,7 +884,7 @@ fn world_architect_has_static_prompt_and_draft_tool() {
     );
     assert_eq!(messages[0]["role"], "system");
     let system = messages[0]["content"].as_str().unwrap();
-    assert!(system.contains("GM-Lab world architect"));
+    assert!(system.contains("TaleShift world architect"));
     // The field list lives in the tool schema now (not restated in the prompt), so
     // the prompt asserts on its stable behavioral markers, not the field names.
     assert!(system.contains("draft_world_bible"));
@@ -951,7 +951,7 @@ fn character_architect_has_static_prompt_and_draft_tool() {
     );
     assert_eq!(messages[0]["role"], "system");
     let system = messages[0]["content"].as_str().unwrap();
-    assert!(system.contains("GM-Lab character architect"));
+    assert!(system.contains("TaleShift character architect"));
     assert!(system.contains("draft_player_character"));
     // A standalone hero (no base world/story blocks) — exactly ONE system.
     let system_count = messages.iter().filter(|m| m["role"] == "system").count();

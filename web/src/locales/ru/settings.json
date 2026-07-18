@@ -138,6 +138,14 @@
     "elapsed": "Прошло",
     "elapsedOf": "{{elapsed}} из {{timeout}}",
     "state": "Состояние",
+    "image": "Изображения",
+    "states": {
+      "disabled": "выключен",
+      "starting": "запускается",
+      "ready": "готов",
+      "failed": "ошибка запуска",
+      "unknown": "неизвестно"
+    },
     "embedder": "Эмбеддер",
     "reranker": "Реранкер"
   }

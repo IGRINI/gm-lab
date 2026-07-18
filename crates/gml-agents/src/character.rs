@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn character_generator_templates_render_the_legacy_message_shape() {
         let system = render_character_generator_system();
-        assert!(system.starts_with("You are the GM-Lab NPC generator"));
+        assert!(system.starts_with("You are the TaleShift NPC generator"));
         assert!(system.ends_with("Return JSON only."));
         assert_eq!(
             render_character_generator_user(

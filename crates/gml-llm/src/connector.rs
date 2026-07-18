@@ -457,7 +457,11 @@ pub trait ModelConnector: Send + Sync {
         Ok(ConnectorAuthStatus::NotRequired)
     }
 
-    async fn start_auth(&self, _method_id: &str) -> Result<ConnectorAuthStart, ConnectorError> {
+    async fn start_auth(
+        &self,
+        _method_id: &str,
+        _ui_language: Option<&str>,
+    ) -> Result<ConnectorAuthStart, ConnectorError> {
         let connector_id = self.descriptor().id;
         Err(ConnectorError::UnsupportedOperation {
             connector_id,
@@ -680,6 +684,7 @@ impl ConnectorRegistry {
         &self,
         id: &ConnectorId,
         method_id: &str,
+        ui_language: Option<&str>,
     ) -> Result<ConnectorAuthStart, ConnectorError> {
         let method_id = method_id.trim();
         let (connector, descriptor) = self.require_entry(id)?;
@@ -693,7 +698,7 @@ impl ConnectorRegistry {
                 method_id: method_id.to_string(),
             });
         }
-        connector.start_auth(method_id).await
+        connector.start_auth(method_id, ui_language).await
     }
 
     pub async fn logout_auth(&self, id: &ConnectorId) -> Result<(), ConnectorError> {
@@ -1172,7 +1177,11 @@ mod tests {
             Ok(ConnectorAuthStatus::SignedOut)
         }
 
-        async fn start_auth(&self, _method_id: &str) -> Result<ConnectorAuthStart, ConnectorError> {
+        async fn start_auth(
+            &self,
+            _method_id: &str,
+            _ui_language: Option<&str>,
+        ) -> Result<ConnectorAuthStart, ConnectorError> {
             Ok(ConnectorAuthStart::DeviceCode {
                 verification_url: "https://example.test/device".to_string(),
                 user_code: "ABCD-EFGH".to_string(),
@@ -1379,11 +1388,14 @@ mod tests {
             ConnectorAuthStatus::SignedOut
         );
         assert!(matches!(
-            registry.start_auth(&connector_id, "device").await.unwrap(),
+            registry
+                .start_auth(&connector_id, "device", Some("en"))
+                .await
+                .unwrap(),
             ConnectorAuthStart::DeviceCode { .. }
         ));
         assert!(matches!(
-            registry.start_auth(&connector_id, "browser").await,
+            registry.start_auth(&connector_id, "browser", None).await,
             Err(ConnectorError::UnknownAuthMethod { .. })
         ));
         registry.logout_auth(&connector_id).await.unwrap();

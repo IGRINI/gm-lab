@@ -13,7 +13,7 @@
 //!
 //! Seeding an int (`random.Random(seed)` for a Python `int`) mirrors
 //! CPython's `random_seed`: the absolute value of the int is split into
-//! little-endian 32-bit words and fed to `init_by_array`. For new GM-Lab
+//! little-endian 32-bit words and fed to `init_by_array`. For new TaleShift
 //! campaigns the seed is a 64-bit int, so it becomes one or two 32-bit words.
 
 const N: usize = 624;
@@ -31,7 +31,7 @@ pub struct MersenneTwister {
     /// 625th element of the internal vector.
     index: usize,
     /// Cached gaussian value from `gauss`/`normalvariate`. Persisted as the
-    /// third element of `getstate()`. GM-Lab never uses gauss, so it stays
+    /// third element of `getstate()`. TaleShift never uses gauss, so it stays
     /// `None`, but we round-trip it for faithful save/restore.
     gauss_next: Option<f64>,
 }

@@ -495,3 +495,69 @@ fn run_turn_bare_ask_player_emits_prelude_before_options() {
     // Still no ask_player gm_tool_call event.
     assert!(!has_ask_player_tool_event(&events));
 }
+
+#[test]
+fn tool_events_share_call_id_and_publish_changed_state_before_result() {
+    let client = Arc::new(ScriptedGm::new(
+        vec![
+            Move::Tool {
+                content: "Рана сразу отражается на карточке.".to_string(),
+                call: (
+                    "update_character".to_string(),
+                    json!({
+                        "target": "player",
+                        "fields": {"condition": "ранен"},
+                        "reason": "получил ранение",
+                    }),
+                ),
+            },
+            Move::Final("Рана саднит, но путь продолжается.".to_string()),
+        ],
+        None,
+    ));
+    let mut session = session(client);
+    session.world.player_character.gm_notes = "секрет ГМ".to_string();
+    let before_condition = session.world.player_character.condition.clone();
+
+    let events = tokio_block_on(run_turn(
+        &mut session,
+        &settings_with(false),
+        "Я принимаю удар.",
+    ));
+    let position = |kind: &str| {
+        events
+            .iter()
+            .position(|event| event.kind == kind)
+            .unwrap_or_else(|| panic!("missing {kind} event"))
+    };
+    let call = &events[position("gm_tool_call")];
+    let update = &events[position("player_character_update")];
+    let state_sync = &events[position("state_sync")];
+    let result = &events[position("tool_result")];
+
+    for event in [call, update, state_sync, result] {
+        assert_eq!(event.sid.as_deref(), Some("call_1"));
+    }
+    assert_eq!(call.data["call_id"], "call_1");
+    assert_eq!(call.data["name"], "update_character");
+    assert_eq!(state_sync.data["seq"], 1);
+    assert_eq!(state_sync.data["call_id"], "call_1");
+    assert_eq!(
+        state_sync.data["state"]["player_character"]["condition"],
+        "ранен"
+    );
+    assert_eq!(result.data["call_id"], "call_1");
+    assert_eq!(result.data["name"], "update_character");
+    assert_eq!(result.data["result"]["changes"][0]["field"], "condition");
+    assert_eq!(
+        result.data["result"]["changes"][0]["before"],
+        before_condition
+    );
+    assert_eq!(result.data["result"]["changes"][0]["after"], "ранен");
+    assert!(!serde_json::to_string(&events)
+        .expect("event stream serializes")
+        .contains("секрет ГМ"));
+    assert!(position("gm_tool_call") < position("player_character_update"));
+    assert!(position("player_character_update") < position("state_sync"));
+    assert!(position("state_sync") < position("tool_result"));
+}

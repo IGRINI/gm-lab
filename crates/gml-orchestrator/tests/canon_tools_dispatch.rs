@@ -1801,7 +1801,7 @@ fn read_state_empty_or_invalid_sections_error_and_list_the_valid_ones() {
 /// setting them concurrently would race.
 static DEDUP_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// The canned mock secret the generator returns for the "GM-Lab NPC generator"
+/// The canned mock secret the generator returns for the "TaleShift NPC generator"
 /// marker — must NEVER surface in a tool result or SSE event.
 const CANNED_SECRET: &str = "Прячет письмо пропавшего смотрителя под стойкой.";
 

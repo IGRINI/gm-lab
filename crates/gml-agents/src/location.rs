@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn location_generator_templates_render_the_legacy_message_shape() {
         let system = render_location_generator_system();
-        assert!(system.starts_with("You are the GM-Lab location generator"));
+        assert!(system.starts_with("You are the TaleShift location generator"));
         assert!(system.contains(
             "An empty or disconnected supplied travel graph is missing geography for you to"
         ));

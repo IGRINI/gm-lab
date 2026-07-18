@@ -237,7 +237,11 @@ impl ModelConnector for SuperGrokConnector {
         }
     }
 
-    async fn start_auth(&self, method_id: &str) -> Result<ConnectorAuthStart, ConnectorError> {
+    async fn start_auth(
+        &self,
+        method_id: &str,
+        _ui_language: Option<&str>,
+    ) -> Result<ConnectorAuthStart, ConnectorError> {
         if method_id != SUPERGROK_DEVICE_AUTH_METHOD_ID {
             return Err(ConnectorError::UnknownAuthMethod {
                 connector_id: Self::id(),
@@ -437,7 +441,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_auth_method_is_rejected_before_network() {
-        let error = connector().start_auth("browser").await.unwrap_err();
+        let error = connector().start_auth("browser", None).await.unwrap_err();
         assert!(matches!(error, ConnectorError::UnknownAuthMethod { .. }));
     }
 

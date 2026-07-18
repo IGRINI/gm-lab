@@ -2,8 +2,9 @@
 name = "gml-app"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
-description = "GM-Lab shipped binary: Tauri desktop app (default) + headless --server mode."
+license.workspace = true
+description = "TaleShift desktop app and headless server — a local-first AI game master for worlds that remember."
+repository = "https://github.com/IGRINI/TaleShift"
 # The Tauri build script (tauri_build::build) only runs when the `gui` feature
 # is on; under --no-default-features the build script is a no-op so the headless
 # server binary builds without any Tauri system dependency.
@@ -42,7 +43,7 @@ reqwest = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 
-# app-data dirs (ProjectDirs "gm-lab") — read-only-bundle-safe paths on macOS
+# Legacy app-data key (ProjectDirs "gm-lab") retained for existing installations.
 directories = { workspace = true }
 
 # logging

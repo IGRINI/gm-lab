@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use gml_types::ContentLocale;
 use serde::{Deserialize, Serialize};
 
 use super::entity::Faction;
@@ -98,7 +99,12 @@ impl WorldSpec {
 /// one faction, and an initial history. No actors are seeded — the roster
 /// starts empty and grows through lazy NPC generation at play time.
 pub fn generate(spec: &WorldSpec) -> WorldCanon {
-    generate_with_lore(spec, None)
+    generate_for_locale(spec, ContentLocale::Russian)
+}
+
+/// [`generate`] using the selected static content bundle.
+pub fn generate_for_locale(spec: &WorldSpec, locale: ContentLocale) -> WorldCanon {
+    generate_with_lore_for_locale(spec, None, locale)
 }
 
 /// Generate a complete starting [`WorldCanon`], optionally using a
@@ -107,10 +113,20 @@ pub fn generate(spec: &WorldSpec) -> WorldCanon {
 /// provided lore only constrains what the GM and later generators consider
 /// plausible.
 pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> WorldCanon {
+    generate_with_lore_for_locale(spec, world_lore, ContentLocale::Russian)
+}
+
+/// [`generate_with_lore`] using the selected static content bundle.
+pub fn generate_with_lore_for_locale(
+    spec: &WorldSpec,
+    world_lore: Option<WorldLore>,
+    locale: ContentLocale,
+) -> WorldCanon {
     let seed = spec.seed.clone();
     let mut canon = WorldCanon {
         world_seed: seed.clone(),
         generator_version: GENERATOR_VERSION.to_string(),
+        content_locale: locale,
         ..Default::default()
     };
     if let Some(mut lore) = world_lore.filter(|lore| !lore.is_empty()) {
@@ -125,26 +141,37 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
 
     // --- Layer 1: Region --------------------------------------------------
     let region_id = ids::stable_id(&seed, "world", "region", "0");
-    let region_names = [
-        "Долина Пепельных Сосен",
-        "Серые Болота",
-        "Край Тихих Ветров",
-        "Каменная Гряда",
-    ];
-    let climates = ["холодный", "туманный", "сухой", "умеренный"];
+    let region_names = match locale {
+        ContentLocale::Russian => [
+            "Долина Пепельных Сосен",
+            "Серые Болота",
+            "Край Тихих Ветров",
+            "Каменная Гряда",
+        ],
+        ContentLocale::English => [
+            "Ashen Pine Valley",
+            "Grey Marshes",
+            "Land of Quiet Winds",
+            "Stone Ridge",
+        ],
+    };
+    let climates = match locale {
+        ContentLocale::Russian => ["холодный", "туманный", "сухой", "умеренный"],
+        ContentLocale::English => ["cold", "misty", "dry", "temperate"],
+    };
     let region = Region {
         region_id: region_id.clone(),
         name: rng.pick(&region_names).to_string(),
         theme: format!("{} / {}", spec.genre, spec.tone),
         climate: rng.pick(&climates).to_string(),
-        biomes: vec!["лес".to_string(), "холмы".to_string()],
-        routes: vec!["старый тракт".to_string()],
-        resources: vec!["древесина".to_string(), "руда".to_string()],
+        biomes: localized_vec(locale, &["лес", "холмы"], &["forest", "hills"]),
+        routes: localized_vec(locale, &["старый тракт"], &["old road"]),
+        resources: localized_vec(locale, &["древесина", "руда"], &["timber", "ore"]),
         faction_influence: Vec::new(),
         danger_level: rng.range(1, 3) as u8,
         settlement_ids: Vec::new(),
         site_ids: Vec::new(),
-        hinted_sites: vec!["заброшенная крипта".to_string()],
+        hinted_sites: localized_vec(locale, &["заброшенная крипта"], &["abandoned crypt"]),
         history_event_ids: Vec::new(),
         is_shell: false,
         provenance: prov(),
@@ -152,17 +179,24 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
 
     // --- Layer 2: Faction (needed before the settlement references it) ----
     let faction_id = ids::stable_id(&seed, &region_id, "faction", "0");
-    let faction_names = ["Гильдия Тракта", "Орден Серого Камня", "Вольное Братство"];
+    let faction_names = match locale {
+        ContentLocale::Russian => ["Гильдия Тракта", "Орден Серого Камня", "Вольное Братство"],
+        ContentLocale::English => ["Road Guild", "Order of the Grey Stone", "Free Brotherhood"],
+    };
     let faction = Faction {
         faction_id: faction_id.clone(),
         name: rng.pick(&faction_names).to_string(),
         territory: vec![region_id.clone()],
-        goals: vec!["контроль над трактом".to_string()],
-        resources: vec!["золото".to_string(), "наёмники".to_string()],
+        goals: localized_vec(locale, &["контроль над трактом"], &["control of the road"]),
+        resources: localized_vec(locale, &["золото", "наёмники"], &["gold", "mercenaries"]),
         relations: BTreeMap::new(),
         attitude_to_player: 0,
         member_ids: Vec::new(),
-        plans: vec!["перекрыть северную дорогу".to_string()],
+        plans: localized_vec(
+            locale,
+            &["перекрыть северную дорогу"],
+            &["block the northern road"],
+        ),
         pending_event_ids: Vec::new(),
         history_event_ids: Vec::new(),
         provenance: prov(),
@@ -170,35 +204,65 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
 
     // --- Layer 3: Settlement with a real function (TZ §6.3) ---------------
     let settlement_id = ids::stable_id(&seed, &region_id, "settlement", "0");
-    let town_names = ["Развилье", "Камнебор", "Тихий Брод", "Сосновый Дол"];
-    let powers = [
-        "староста и совет старейшин",
-        "капитан гарнизона",
-        "торговая гильдия",
-    ];
-    let conflicts = [
-        "спор за права на тракт между гильдией и старостой",
-        "налёты с болот истощают запасы",
-        "две семьи борются за власть в совете",
-    ];
+    let town_names = match locale {
+        ContentLocale::Russian => ["Развилье", "Камнебор", "Тихий Брод", "Сосновый Дол"],
+        ContentLocale::English => ["Crossroads", "Stoneford", "Quiet Ford", "Pine Hollow"],
+    };
+    let powers = match locale {
+        ContentLocale::Russian => [
+            "староста и совет старейшин",
+            "капитан гарнизона",
+            "торговая гильдия",
+        ],
+        ContentLocale::English => [
+            "reeve and council of elders",
+            "garrison captain",
+            "merchants' guild",
+        ],
+    };
+    let conflicts = match locale {
+        ContentLocale::Russian => [
+            "спор за права на тракт между гильдией и старостой",
+            "налёты с болот истощают запасы",
+            "две семьи борются за власть в совете",
+        ],
+        ContentLocale::English => [
+            "the guild and the reeve dispute control of the road",
+            "raids from the marshes are draining supplies",
+            "two families are fighting for control of the council",
+        ],
+    };
     let district_id = ids::stable_id(&seed, &settlement_id, "district", "center");
     let settlement = Settlement {
         settlement_id: settlement_id.clone(),
         name: rng.pick(&town_names).to_string(),
         region_id: region_id.clone(),
         kind: spec.scale.clone(),
-        economy: vec![
-            "торговля на тракте".to_string(),
-            "лесозаготовка".to_string(),
-        ],
-        routes: vec!["северный тракт".to_string(), "брод через реку".to_string()],
+        economy: localized_vec(
+            locale,
+            &["торговля на тракте", "лесозаготовка"],
+            &["road trade", "logging"],
+        ),
+        routes: localized_vec(
+            locale,
+            &["северный тракт", "брод через реку"],
+            &["northern road", "river ford"],
+        ),
         power: rng.pick(&powers).to_string(),
-        social_groups: vec!["торговцы".to_string(), "лесорубы".to_string()],
+        social_groups: localized_vec(
+            locale,
+            &["торговцы", "лесорубы"],
+            &["merchants", "woodcutters"],
+        ),
         conflict: rng.pick(&conflicts).to_string(),
         faction_ids: vec![faction_id.clone()],
         important_npc_ids: Vec::new(),
-        local_rumors: vec!["в старой крипте на холме кто-то снова зажигает огни".to_string()],
-        threats: vec!["разбойники на тракте".to_string()],
+        local_rumors: localized_vec(
+            locale,
+            &["в старой крипте на холме кто-то снова зажигает огни"],
+            &["someone is lighting fires in the old crypt on the hill again"],
+        ),
+        threats: localized_vec(locale, &["разбойники на тракте"], &["road bandits"]),
         district_ids: vec![district_id.clone()],
         place_ids: Vec::new(),
         history_event_ids: Vec::new(),
@@ -206,7 +270,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
     };
     let district = District {
         district_id: district_id.clone(),
-        name: "Центральный район".to_string(),
+        name: localized(locale, "Центральный район", "Central District").to_string(),
         settlement_id: settlement_id.clone(),
         region_id: region_id.clone(),
         kind: "center".to_string(),
@@ -224,15 +288,19 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
     start_flags.insert("visited".to_string());
     let start = Place {
         place_id: start_id.clone(),
-        name: "Рыночная площадь".to_string(),
+        name: localized(locale, "Рыночная площадь", "Market Square").to_string(),
         kind: "square".to_string(),
         parent: district_id.clone(),
         region_id: region_id.clone(),
         district_id: district_id.clone(),
-        default_description: "Мощёная площадь в центре поселения: колодец, лавки, гул торга."
-            .to_string(),
+        default_description: localized(
+            locale,
+            "Мощёная площадь в центре поселения: колодец, лавки, гул торга.",
+            "A cobbled square at the heart of the settlement: a well, stalls, and the din of trade.",
+        )
+        .to_string(),
         state_flags: start_flags,
-        features: vec!["колодец".to_string(), "доска объявлений".to_string()],
+        features: localized_vec(locale, &["колодец", "доска объявлений"], &["well", "notice board"]),
         transition_ids: Vec::new(),
         occupant_ids: BTreeSet::new(),
         item_ids: Vec::new(),
@@ -243,7 +311,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
 
     // Neighbour specs carry explicit travel metadata. Player-facing names never
     // participate in route mechanics.
-    let neighbours: [(&str, &str, &str, &str, LinkProfile); 3] = [
+    let neighbours_ru: [(&str, &str, &str, &str, LinkProfile); 3] = [
         (
             "smithy",
             "Кузница",
@@ -266,6 +334,33 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
             ROAD_LINK,
         ),
     ];
+    let neighbours_en: [(&str, &str, &str, &str, LinkProfile); 3] = [
+        (
+            "smithy",
+            "Smithy",
+            "building",
+            "A sweltering smithy: ringing hammers and the smell of coal and iron.",
+            SMITHY_LINK,
+        ),
+        (
+            "gate",
+            "North Gate",
+            "gate",
+            "Iron-bound gates leading onto the road.",
+            GATE_LINK,
+        ),
+        (
+            "road",
+            "Northern Road",
+            "road",
+            "A battered road winding into the hills.",
+            ROAD_LINK,
+        ),
+    ];
+    let neighbours = match locale {
+        ContentLocale::Russian => neighbours_ru,
+        ContentLocale::English => neighbours_en,
+    };
 
     canon.insert_place(start.clone());
     let mut settlement_place_ids = vec![start_id.clone()];
@@ -305,7 +400,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
             &start_id,
             &pid,
             name,
-            "Площадь",
+            localized(locale, "Площадь", "Square"),
             travel_profile,
         );
     }
@@ -319,15 +414,19 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
     crypt_flags.insert("shell".to_string());
     canon.insert_place(Place {
         place_id: crypt_id.clone(),
-        name: "Заброшенная крипта".to_string(),
+        name: localized(locale, "Заброшенная крипта", "Abandoned Crypt").to_string(),
         kind: "dungeon".to_string(),
         parent: String::new(),
         region_id: region_id.clone(),
         district_id: String::new(),
-        default_description: "Покосившийся вход в старую крипту; из темноты тянет холодом."
-            .to_string(),
+        default_description: localized(
+            locale,
+            "Покосившийся вход в старую крипту; из темноты тянет холодом.",
+            "The crooked entrance to an old crypt; cold air seeps from the darkness.",
+        )
+        .to_string(),
         state_flags: crypt_flags,
-        features: vec!["разбитая плита".to_string()],
+        features: localized_vec(locale, &["разбитая плита"], &["broken slab"]),
         transition_ids: Vec::new(),
         occupant_ids: BTreeSet::new(),
         item_ids: Vec::new(),
@@ -342,8 +441,8 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
             &seed,
             &road_id,
             &crypt_id,
-            "Вход в крипту",
-            "Тракт",
+            localized(locale, "Вход в крипту", "Crypt Entrance"),
+            localized(locale, "Тракт", "Road"),
             CRYPT_LINK,
         );
     }
@@ -380,6 +479,7 @@ pub fn generate_with_lore(spec: &WorldSpec, world_lore: Option<WorldLore>) -> Wo
         &settlement_id,
         &faction_id,
         &start_id,
+        locale,
     );
 
     // --- Player starts on the square --------------------------------------
@@ -458,6 +558,7 @@ fn seed_initial_history(
     settlement_id: &str,
     faction_id: &str,
     start_id: &str,
+    locale: ContentLocale,
 ) {
     let mk = |kind: &str, salt: &str| -> String { ids::stable_id(seed, kind, "event", salt) };
 
@@ -467,7 +568,7 @@ fn seed_initial_history(
         seq: 0,
         kind: "founding".to_string(),
         time_minutes: 0,
-        time_label: "давно".to_string(),
+        time_label: localized(locale, "давно", "long ago").to_string(),
         place_id: settlement_id.to_string(),
         actors: Vec::new(),
         causes: Vec::new(),
@@ -486,14 +587,18 @@ fn seed_initial_history(
         seq: 0,
         kind: "faction_move".to_string(),
         time_minutes: 0,
-        time_label: "недавно".to_string(),
+        time_label: localized(locale, "недавно", "recently").to_string(),
         place_id: region_id.to_string(),
         actors: vec![faction_id.to_string()],
         causes: Vec::new(),
         effects: vec!["faction tightened control of the road".to_string()],
         visible_to_player: false,
         scope: Scope::GmPrivate,
-        possible_traces: vec!["больше патрулей на тракте".to_string()],
+        possible_traces: localized_vec(
+            locale,
+            &["больше патрулей на тракте"],
+            &["more patrols on the road"],
+        ),
         scheduled: false,
         due_minutes: 0,
         provenance: Provenance::by("worldgen", "faction backstory", 0),
@@ -505,11 +610,15 @@ fn seed_initial_history(
         seq: 0,
         kind: "public_notice".to_string(),
         time_minutes: 0,
-        time_label: "сегодня".to_string(),
+        time_label: localized(locale, "сегодня", "today").to_string(),
         place_id: start_id.to_string(),
         actors: Vec::new(),
         causes: Vec::new(),
-        effects: vec!["на доске объявлений висит предупреждение о крипте".to_string()],
+        effects: localized_vec(
+            locale,
+            &["на доске объявлений висит предупреждение о крипте"],
+            &["a warning about the crypt hangs on the notice board"],
+        ),
         visible_to_player: true,
         scope: Scope::Public,
         possible_traces: Vec::new(),
@@ -522,10 +631,36 @@ fn seed_initial_history(
         account_id: ids::stable_id(seed, &founding_id, "account", "legend"),
         event_id: founding_id,
         source: "rumor".to_string(),
-        text: "Старики говорят, поселение выросло на костях старого святилища.".to_string(),
+        text: localized(
+            locale,
+            "Старики говорят, поселение выросло на костях старого святилища.",
+            "The elders say the settlement rose on the bones of an ancient shrine.",
+        )
+        .to_string(),
         truth: Truthfulness::Partial,
         scope: Scope::Rumor,
     });
+}
+
+const fn localized(
+    locale: ContentLocale,
+    russian: &'static str,
+    english: &'static str,
+) -> &'static str {
+    match locale {
+        ContentLocale::Russian => russian,
+        ContentLocale::English => english,
+    }
+}
+
+fn localized_vec(locale: ContentLocale, russian: &[&str], english: &[&str]) -> Vec<String> {
+    match locale {
+        ContentLocale::Russian => russian,
+        ContentLocale::English => english,
+    }
+    .iter()
+    .map(|value| (*value).to_string())
+    .collect()
 }
 
 #[cfg(test)]

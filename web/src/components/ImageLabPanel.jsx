@@ -2,6 +2,7 @@ import Icon from "./Icon.jsx";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import ImageThumbnail from "./ImagePreview.jsx";
+import { localizeServerMessage } from "../serverMessages.js";
 
 function textValue(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -44,10 +45,18 @@ export default function ImageLabPanel({ locked, sidecarStatus, onGenerateImage }
         width: 1024,
         height: 1024,
       });
-      if (!data?.ok) throw new Error(data?.error || t("imageLab.errors.notGenerated"));
+      if (!data?.ok) {
+        setError(localizeServerMessage(data, t, {
+          fallbackText: t("imageLab.errors.notGenerated"),
+        }));
+        return;
+      }
       const image = Array.isArray(data.images) ? data.images.find((item) => textValue(item?.url)) : null;
       const url = textValue(image?.url);
-      if (!url) throw new Error(t("imageLab.errors.missingUrl"));
+      if (!url) {
+        setError(t("imageLab.errors.missingUrl"));
+        return;
+      }
       setResult({
         url,
         seed: data.seed,
@@ -55,7 +64,9 @@ export default function ImageLabPanel({ locked, sidecarStatus, onGenerateImage }
         bytes: Number(image?.bytes) || 0,
       });
     } catch (err) {
-      setError(err?.message || t("imageLab.errors.failed"));
+      setError(localizeServerMessage(err, t, {
+        fallbackText: t("imageLab.errors.failed"),
+      }));
     } finally {
       setBusy(false);
     }
@@ -90,7 +101,7 @@ export default function ImageLabPanel({ locked, sidecarStatus, onGenerateImage }
           <button type="submit" className="btn primary" disabled={!canGenerate}>
             {busy ? t("imageLab.generating") : t("imageLab.generate")}
           </button>
-          {result?.seed != null && <span className="image-lab-meta">seed {result.seed}</span>}
+          {result?.seed != null && <span className="image-lab-meta">{t("imageLab.seed", { value: result.seed })}</span>}
           {result?.elapsed > 0 && (
             <span className="image-lab-meta">
               {t("imageLab.elapsed", { seconds: result.elapsed.toFixed(1) })}

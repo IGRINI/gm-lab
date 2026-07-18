@@ -47,6 +47,8 @@ import {
   hasLocationGraph,
   locationTravelIntent,
 } from "./locationTransition.js";
+import { acceptStateSyncEvent, applyStateSyncEvent } from "./liveTurnState.js";
+import { localizeServerMessage } from "./serverMessages.js";
 import {
   connectorAuthState,
   connectorAuthUrl,
@@ -73,6 +75,12 @@ function appText(key, options = {}) {
   return i18n.t(key, { ns: "app", ...options });
 }
 
+function userErrorText(value, fallback) {
+  return localizeServerMessage(value, (key, options) => i18n.t(key, options), {
+    fallbackText: fallback,
+  });
+}
+
 function connectorAuthPollInterval(start) {
   const seconds = Number(start?.interval_seconds);
   if (!Number.isFinite(seconds) || seconds <= 0) return 2000;
@@ -88,7 +96,7 @@ function connectorAuthTimeout(start) {
 
 function waitForAbortable(milliseconds, signal) {
   if (signal?.aborted) {
-    const error = new Error("Операция отменена");
+    const error = new Error();
     error.name = "AbortError";
     return Promise.reject(error);
   }
@@ -99,7 +107,7 @@ function waitForAbortable(milliseconds, signal) {
     }, milliseconds);
     const onAbort = () => {
       window.clearTimeout(timer);
-      const error = new Error("Операция отменена");
+      const error = new Error();
       error.name = "AbortError";
       reject(error);
     };
@@ -286,18 +294,15 @@ export default function App() {
     (message, opts = {}) => pushToast({ kind: "error", message: textValue(message), ...opts }),
     [pushToast]
   );
-  // Server failures are `{ok:false, code?, error}`. Keep the machine `code` so
-  // Toasts maps it to a human headline and tucks the raw server text behind the
-  // «детали» expander — never lose the code by throwing `data.error` as bare text.
-  // `fallback` covers a body with no `error`. Wire this into every `!data.ok`
-  // branch instead of `notify(data.error)` / `throw new Error(data.error)`.
+  // Server failures are `{ok:false, code?, params?}`. Resolve the stable code in
+  // the browser locale and never surface raw transport/backend details here.
   const notifyApiError = useCallback(
     (data, fallback = "") => {
       const rawCode = data && typeof data.code === "string" ? data.code.trim() : "";
       pushToast({
         kind: "error",
         code: rawCode || undefined,
-        message: textValue(data?.error) || textValue(fallback),
+        message: userErrorText(data, textValue(fallback)),
       });
     },
     [pushToast]
@@ -420,6 +425,29 @@ export default function App() {
     connectorAuthOperationsRef.current.clear();
   }, []);
 
+  const publishServerState = useCallback(
+    (nextSrv, { animateLocationChange = false, clearLocationTransition = false } = {}) => {
+      const transition = createLocationTransition(
+        srvRef.current,
+        nextSrv,
+        animateLocationChange
+      );
+      srvRef.current = nextSrv;
+      setSrv(nextSrv);
+      if (clearLocationTransition) {
+        setLocationTransition(null);
+      } else if (transition) {
+        locationTransitionSequenceRef.current += 1;
+        setLocationMapOpen(false);
+        setLocationTransition({
+          ...transition,
+          sequence: locationTransitionSequenceRef.current,
+        });
+      }
+    },
+    []
+  );
+
   const setStateFromServer = useCallback((s, { animateLocationChange = false } = {}) => {
     const binding = normalizeModelBinding(s.model_binding || {
       connector_id: s.backend,
@@ -446,28 +474,35 @@ export default function App() {
       statusLabels: s.status_labels || {},
       locationGraph: s.location_graph || null,
     };
-    const transition = createLocationTransition(
-      srvRef.current,
-      nextSrv,
-      animateLocationChange
-    );
-    srvRef.current = nextSrv;
-    setSrv(nextSrv);
-    if (transition) {
-      locationTransitionSequenceRef.current += 1;
-      setLocationMapOpen(false);
-      setLocationTransition({
-        ...transition,
-        sequence: locationTransitionSequenceRef.current,
-      });
-    }
+    publishServerState(nextSrv, { animateLocationChange });
     if (s.settings) setSettings((prev) => ({ ...prev, ...s.settings }));
     if (s.settings_options) {
       setSettingsOptions((prev) => ({ ...prev, ...s.settings_options }));
     }
     setRunUsage(s.run_usage || EMPTY_RUN_USAGE);
     setContextUsage(s.context_usage || EMPTY_CONTEXT_USAGE);
-  }, []);
+  }, [publishServerState]);
+
+  const applyLiveStateSync = useCallback(
+    (event, { animateLocationChange = true } = {}) => {
+      const nextSrv = applyStateSyncEvent(srvRef.current, event);
+      if (nextSrv === srvRef.current) return false;
+      publishServerState(nextSrv, { animateLocationChange });
+      return true;
+    },
+    [publishServerState]
+  );
+
+  const restoreLiveStateCheckpoint = useCallback(
+    (snapshot) => {
+      if (!snapshot) return;
+      publishServerState(snapshot, {
+        animateLocationChange: false,
+        clearLocationTransition: true,
+      });
+    },
+    [publishServerState]
+  );
 
   const setChatsFromServer = useCallback((data) => {
     const list = Array.isArray(data?.chats) ? data.chats : [];
@@ -486,7 +521,7 @@ export default function App() {
       setChatsFromServer(data);
       return data;
     } catch (e) {
-      setChatsError(e.message || appText("errors.chatsLoad"));
+      setChatsError(userErrorText(e, appText("errors.chatsLoad")));
       return null;
     } finally {
       setChatsLoading(false);
@@ -502,7 +537,7 @@ export default function App() {
       setWorlds(Array.isArray(data.worlds) ? data.worlds : []);
       return data;
     } catch (e) {
-      setWorldsError(e.message || appText("errors.worldsLoad"));
+      setWorldsError(userErrorText(e, appText("errors.worldsLoad")));
       return null;
     } finally {
       setWorldsLoading(false);
@@ -534,7 +569,7 @@ export default function App() {
           ...EMPTY_SIDECAR_STATUS,
           enabled: true,
           state: "unavailable",
-          error: e.message || appText("errors.sidecarUnavailable"),
+        error: userErrorText(e, appText("errors.sidecarUnavailable")),
         });
       }
       timer = window.setTimeout(poll, delay);
@@ -558,7 +593,7 @@ export default function App() {
       return nextStories;
     } catch (e) {
       setStories([]);
-      setStoriesError(e.message || appText("errors.storiesLoad"));
+      setStoriesError(userErrorText(e, appText("errors.storiesLoad")));
       return [];
     } finally {
       setStoriesLoading(false);
@@ -576,7 +611,7 @@ export default function App() {
       return next;
     } catch (e) {
       setCharacters([]);
-      setCharactersError(e.message || appText("errors.charactersLoad"));
+      setCharactersError(userErrorText(e, appText("errors.charactersLoad")));
       return [];
     } finally {
       setCharactersLoading(false);
@@ -638,7 +673,7 @@ export default function App() {
         connectorModelsLoadedRef.current.add(connectorId);
         return nextModels;
       } catch (error) {
-        notify(error.message || appText("errors.connectorModelsLoad"));
+      notify(userErrorText(error, appText("errors.connectorModelsLoad")));
         return [];
       } finally {
         connectorModelsRequestsRef.current.delete(connectorId);
@@ -698,7 +733,7 @@ export default function App() {
         const s = await api.state();
         setStateFromServer(s);
       } catch (e) {
-        notify(e.message || appText("errors.stateLoad"));
+      notify(userErrorText(e, appText("errors.stateLoad")));
       }
       await loadConnectors();
       try {
@@ -709,7 +744,7 @@ export default function App() {
         store.dispatchMany(events);
         setPlayerOptions(playerOptionsFromEvents(events));
       } catch (e) {
-        notify(e.message || appText("errors.transcriptLoad"));
+      notify(userErrorText(e, appText("errors.transcriptLoad")));
       }
       setStatus("");
       // The server may still be running a turn started before this page load;
@@ -742,7 +777,7 @@ export default function App() {
       try {
         if (!requestId) requestId = createTurnRequestId();
       } catch (error) {
-        notify(error?.message || appText("errors.turnFailed"));
+      notify(userErrorText(error, appText("errors.turnFailed")));
         return;
       }
 
@@ -765,6 +800,7 @@ export default function App() {
         history,
         attach,
       };
+      const stateCheckpoint = srvRef.current;
       const activeTurn = {
         chatId: attemptChatId,
         requestId,
@@ -773,6 +809,8 @@ export default function App() {
         cancelling: false,
         cancelPromise: null,
         animateLocationChange: !historyMutation,
+        stateCheckpoint,
+        stateSyncSequences: new Set(),
       };
       activeTurnRef.current = activeTurn;
       const previousPlayerOptions = playerOptions;
@@ -797,60 +835,70 @@ export default function App() {
       // reach this handler several times but must be voiced at most once.
       const ttsSeenKeys = new Set();
       const handleTurnEvent = (ev) => {
-            store.dispatch(ev);
-            if (ev.kind === "error") {
-              streamError = {
-                agent: textValue(ev.agent) || "ГМ",
-                text: textValue(ev.data) || appText("errors.turnFailed"),
-              };
-            }
-            const auto = ttsAutoplayRef.current;
-            if (auto || ttsEnabledRef.current) {
-              const emit = (key, segs) => {
-                if (ttsSeenKeys.has(key)) return;
-                ttsSeenKeys.add(key);
-                if (auto) ttsAutoEnqueue(key, segs);
-                else ttsPrime(key, segs);
-              };
-              if (ev.kind === "gm_narration" && typeof ev.data === "string" && ev.data.trim())
-                emit(`${ev.sid}:narration`, gmSegments(ev.data));
-              else if (ev.kind === "npc_speech" && (ev.data?.response || ev.data?.speech || ev.data?.action)) {
-                const npc = (npcsRef.current || []).find(
-                  (n) => (ev.data.npc_id && n.id === ev.data.npc_id) || n.name === ev.agent
-                );
-                emit(
-                  `${ev.sid}:npc`,
-                  npcSegments({
-                    name: ev.agent,
-                    response: ev.data.response,
-                    beats: ev.data.beats,
-                    speech: ev.data.speech,
-                    action: ev.data.action,
-                    voice: genderVoice(npc?.pronouns ?? npc?.gender),
-                  })
-                );
-              }
-            }
-            if (ev.kind === "player_options") setPlayerOptions(normalizePlayerOptions(ev.data));
-            if (ev.kind === "player") {
-              playerEventSeen = true;
-              // The replayed feed is the only place an attached client learns
-              // the player text; keep it for the manual-retry checkpoint.
-              if (typeof ev.data === "string" && ev.data.trim()) {
-                failedAttempt.text = ev.data;
-              }
-              setPlayerOptions(null);
-            }
-            if (ev.kind === "meta_total") {
-              if (ev.data?.run) setRunUsage(ev.data.run);
-              if (ev.data?.context) setContextUsage(ev.data.context);
-            }
-            if (ev.kind === "gm_tool_call") {
-              setStatus(appText("status.gmTool", { tool: ev.data.name }));
-            } else if (ev.kind === "npc_start") {
-              setStatus(appText("status.npcTyping", { name: ev.agent }));
-            }
-            else if (ev.kind === "npc_speech") setStatus("");
+        if (ev.kind === "state_sync") {
+          if (!acceptStateSyncEvent(activeTurn.stateSyncSequences, ev)) return;
+          applyLiveStateSync(ev, {
+            animateLocationChange: activeTurn.animateLocationChange,
+          });
+        }
+        store.dispatch(ev);
+        if (ev.kind === "error") {
+          streamError = {
+            agent: textValue(ev.agent) || "ГМ",
+            text: textValue(ev.data) || appText("errors.turnFailed"),
+          };
+        }
+        const auto = ttsAutoplayRef.current;
+        if (auto || ttsEnabledRef.current) {
+          const emit = (key, segs) => {
+            if (ttsSeenKeys.has(key)) return;
+            ttsSeenKeys.add(key);
+            if (auto) ttsAutoEnqueue(key, segs);
+            else ttsPrime(key, segs);
+          };
+          if (ev.kind === "gm_narration" && typeof ev.data === "string" && ev.data.trim())
+            emit(`${ev.sid}:narration`, gmSegments(ev.data));
+          else if (ev.kind === "npc_speech" && (ev.data?.response || ev.data?.speech || ev.data?.action)) {
+            const npc = (npcsRef.current || []).find(
+              (n) => (ev.data.npc_id && n.id === ev.data.npc_id) || n.name === ev.agent
+            );
+            emit(
+              `${ev.sid}:npc`,
+              npcSegments({
+                name: ev.agent,
+                response: ev.data.response,
+                beats: ev.data.beats,
+                speech: ev.data.speech,
+                action: ev.data.action,
+                voice: genderVoice(npc?.pronouns ?? npc?.gender),
+              })
+            );
+          }
+        }
+        if (ev.kind === "player_options") setPlayerOptions(normalizePlayerOptions(ev.data));
+        if (ev.kind === "player") {
+          playerEventSeen = true;
+          // The replayed feed is the only place an attached client learns
+          // the player text; keep it for the manual-retry checkpoint.
+          if (typeof ev.data === "string" && ev.data.trim()) {
+            failedAttempt.text = ev.data;
+          }
+          setPlayerOptions(null);
+        }
+        if (ev.kind === "meta_total") {
+          if (ev.data?.run) setRunUsage(ev.data.run);
+          if (ev.data?.context) setContextUsage(ev.data.context);
+        }
+        if (ev.kind === "gm_tool_call") {
+          const toolName = ev.data?.name === "invoke_loaded_tool"
+            ? textValue(ev.data?.arguments?.name) || ev.data.name
+            : ev.data?.name;
+          if (toolName !== "ask_player") {
+            setStatus(appText("status.gmTool", { tool: toolName }));
+          }
+        } else if (ev.kind === "npc_start") {
+          setStatus(appText("status.npcTyping", { name: ev.agent }));
+        } else if (ev.kind === "npc_speech") setStatus("");
       };
       // First attempt starts (or replays) the turn; reconnect attempts join
       // the live feed the server kept running. Every attempt replays the feed
@@ -881,6 +929,8 @@ export default function App() {
               if (!reconnectable) throw error;
               streamError = null;
               playerEventSeen = false;
+              restoreLiveStateCheckpoint(activeTurn.stateCheckpoint);
+              activeTurn.stateSyncSequences.clear();
               store.rollbackTurn();
               store.beginTurn();
               setStatus(appText("status.turnReconnecting"));
@@ -895,6 +945,7 @@ export default function App() {
           if (controller.signal.aborted || isAbortError(e)) {
             if (!activeTurn.canonicalRestored) {
               restoreAttemptUi();
+              restoreLiveStateCheckpoint(activeTurn.stateCheckpoint);
               store.rollbackTurn();
             }
             setFailedTurn(null);
@@ -907,9 +958,10 @@ export default function App() {
             };
           }
           restoreAttemptUi();
+          restoreLiveStateCheckpoint(activeTurn.stateCheckpoint);
           const errorRow = streamError || {
             agent: "ГМ",
-            text: e?.message || appText("errors.turnFailed"),
+            text: userErrorText(e, appText("errors.turnFailed")),
           };
           if (e?.code === "turn_not_running") {
             // The server neither runs nor committed this request, so the
@@ -959,6 +1011,7 @@ export default function App() {
         if (terminal.cancelled === true) {
           if (!activeTurn.canonicalRestored) {
             restoreAttemptUi();
+            restoreLiveStateCheckpoint(activeTurn.stateCheckpoint);
             store.rollbackTurn();
           }
           setFailedTurn(null);
@@ -967,6 +1020,7 @@ export default function App() {
 
         if (!terminal.ok) {
           restoreAttemptUi();
+          restoreLiveStateCheckpoint(activeTurn.stateCheckpoint);
           const errorRow = streamError || {
             agent: "ГМ",
             text: textValue(terminal.error) || appText("errors.turnFailed"),
@@ -1016,14 +1070,14 @@ export default function App() {
             restoreAttemptUi();
             if (legacyResume) {
               store.rollbackTurn();
-              notify(error?.message || appText("errors.turnCommittedTranscriptRefresh"));
+        notify(userErrorText(error, appText("errors.turnCommittedTranscriptRefresh")));
             } else {
               if (!playerEventSeen && textValue(failedAttempt.text))
                 store.pushLocal({ type: "player", text: failedAttempt.text });
               store.pushLocal({
                 type: "error",
                 agent: "ГМ",
-                text: error?.message || appText("errors.turnCommittedTranscriptRefresh"),
+          text: userErrorText(error, appText("errors.turnCommittedTranscriptRefresh")),
               });
             }
             // Retain the current checkpoint. Repeating the same id is safe and
@@ -1048,7 +1102,7 @@ export default function App() {
             setPlayerOptions(playerOptionsFromEvents(events));
             setStateFromServer(nextState, { animateLocationChange: !historyMutation });
           } catch (error) {
-            notify(error?.message || appText("errors.turnTranscriptRefresh"));
+        notify(userErrorText(error, appText("errors.turnTranscriptRefresh")));
           }
         }
 
@@ -1056,7 +1110,7 @@ export default function App() {
         try {
           await refreshChats();
         } catch (error) {
-          notify(error?.message || appText("errors.turnChatsRefresh"));
+        notify(userErrorText(error, appText("errors.turnChatsRefresh")));
         }
         return terminal;
       } finally {
@@ -1079,6 +1133,8 @@ export default function App() {
       notify,
       playerOptions,
       refreshChats,
+      applyLiveStateSync,
+      restoreLiveStateCheckpoint,
       runUsage,
       setStateFromServer,
       store,
@@ -1120,7 +1176,7 @@ export default function App() {
       } catch (error) {
         activeTurn.cancelling = false;
         setStatus(appText("status.gmThinking"));
-        notify(error?.message || appText("errors.stopFailed"));
+      notify(userErrorText(error, appText("errors.stopFailed")));
       }
     })();
     activeTurn.cancelPromise = cancelPromise;
@@ -1218,7 +1274,7 @@ export default function App() {
         }
         await refreshChats();
       } catch (e) {
-        notify(e.message || appText("errors.commandFailed"));
+      notify(userErrorText(e, appText("errors.commandFailed")));
       } finally {
         setBusy(false);
       }
@@ -1504,14 +1560,18 @@ export default function App() {
         // «warn-but-allow» notices on a SUCCESSFUL launch — show them as
         // non-sticky warning toasts, never as sticky red errors.
         for (const w of data.warnings ?? []) {
-          pushToast({ kind: "warning", code: w.code, message: w.message });
+          pushToast({
+            kind: "warning",
+            code: w.code,
+            message: userErrorText(w, appText("errors.gameCreate")),
+          });
         }
         setWizardOpen(false);
         setMainView("chat");
         await refreshChats();
         closeChatsOnMobile();
       } catch (e) {
-        notify(e.message || appText("errors.gameCreate"));
+        notify(userErrorText(e, appText("errors.gameCreate")));
       } finally {
         setChatActionBusy(false);
         setStatus("");
@@ -1565,7 +1625,7 @@ export default function App() {
         // image URLs (/world-assets/...) instead of keeping volatile sidecar URLs.
         return data.world || null;
       } catch (e) {
-        notify(e.message || appText("errors.worldCreate"));
+        notify(userErrorText(e, appText("errors.worldCreate")));
         return null;
       } finally {
         setChatActionBusy(false);
@@ -1719,7 +1779,7 @@ export default function App() {
         await refreshChats();
         closeChatsOnMobile();
       } catch (e) {
-        notify(e.message || appText("errors.gameOpen"));
+      notify(userErrorText(e, appText("errors.gameOpen")));
       } finally {
         setChatActionBusy(false);
         setStatus("");
@@ -1769,7 +1829,7 @@ export default function App() {
         }
         await refreshChats();
       } catch (e) {
-        notify(e.message || appText("errors.gameDelete"));
+      notify(userErrorText(e, appText("errors.gameDelete")));
       }
     },
     [activeChatId, restoreChatSession, refreshChats, notify, notifyApiError]
@@ -1788,7 +1848,7 @@ export default function App() {
         if (Array.isArray(data.worlds)) setWorlds(data.worlds);
         else await refreshWorlds();
       } catch (e) {
-        notify(e.message || appText("errors.worldDelete"));
+      notify(userErrorText(e, appText("errors.worldDelete")));
       }
     },
     [refreshWorlds, selectedWorldId, notify, notifyApiError]
@@ -1805,7 +1865,7 @@ export default function App() {
         }
         await loadStories();
       } catch (e) {
-        notify(e.message || appText("errors.storyDelete"));
+      notify(userErrorText(e, appText("errors.storyDelete")));
       }
     },
     [loadStories, notify, notifyApiError]
@@ -1818,7 +1878,7 @@ export default function App() {
       try {
         await api.downloadExport(api.exportWorldUrl(worldId), `${worldId}.gmworld.zip`);
       } catch (e) {
-        notify(e.message || appText("errors.exportFailed"));
+      notify(userErrorText(e, appText("errors.exportFailed")));
       }
     },
     [notify]
@@ -1830,7 +1890,7 @@ export default function App() {
       try {
         await api.downloadExport(api.exportStoryUrl(storyId, !!bake), `${storyId}.gmstory.zip`);
       } catch (e) {
-        notify(e.message || appText("errors.exportFailed"));
+      notify(userErrorText(e, appText("errors.exportFailed")));
       }
     },
     [notify]
@@ -1842,7 +1902,7 @@ export default function App() {
       try {
         await api.downloadExport(api.exportCharacterUrl(characterId), `${characterId}.gmchar.zip`);
       } catch (e) {
-        notify(e.message || appText("errors.exportFailed"));
+      notify(userErrorText(e, appText("errors.exportFailed")));
       }
     },
     [notify]
@@ -1864,7 +1924,7 @@ export default function App() {
         }
         await loadCharacters();
       } catch (e) {
-        notify(e.message || appText("errors.characterRename"));
+      notify(userErrorText(e, appText("errors.characterRename")));
       }
     },
     [loadCharacters, notify, notifyApiError]
@@ -1881,7 +1941,7 @@ export default function App() {
         }
         await loadCharacters();
       } catch (e) {
-        notify(e.message || appText("errors.characterDelete"));
+      notify(userErrorText(e, appText("errors.characterDelete")));
       }
     },
     [loadCharacters, notify, notifyApiError]
@@ -1911,7 +1971,7 @@ export default function App() {
           message: appText("notices.characterSaved", { title, version }),
         });
       } catch (e) {
-        notify(e.message || appText("errors.characterSave"));
+      notify(userErrorText(e, appText("errors.characterSave")));
       }
     },
     [activeChatId, loadCharacters, pushToast, notify, notifyApiError]
@@ -1932,7 +1992,7 @@ export default function App() {
           message: appText("notices.protagonistSaved", { title }),
         });
       } catch (e) {
-        notify(e.message || appText("errors.protagonistSave"));
+      notify(userErrorText(e, appText("errors.protagonistSave")));
       }
     },
     [loadCharacters, pushToast, notify]
@@ -1943,7 +2003,7 @@ export default function App() {
       const data = await api.revealLibrary();
       if (!data.ok) throw new Error(data.error || appText("errors.libraryReveal"));
     } catch (e) {
-      notify(e.message || appText("errors.libraryReveal"));
+      notify(userErrorText(e, appText("errors.libraryReveal")));
     }
   }, [notify]);
 
@@ -2100,7 +2160,7 @@ export default function App() {
         if (!data.ok) throw new Error(data.error || appText("errors.modelSwitch"));
         setStateFromServer(data.state);
       } catch (e) {
-        notify(e.message || appText("errors.modelSwitch"));
+      notify(userErrorText(e, appText("errors.modelSwitch")));
       }
     },
     [setStateFromServer, notify]
@@ -2119,7 +2179,7 @@ export default function App() {
         }
         if (data.state) setStateFromServer(data.state);
       } catch (e) {
-        notify(e.message || appText("errors.settingsSave"));
+      notify(userErrorText(e, appText("errors.settingsSave")));
       }
     },
     [settings, setStateFromServer, notify]
@@ -2178,7 +2238,7 @@ export default function App() {
       const authState = connectorAuthState(auth);
       if (authState === "signed_in" || authState === "not_required") return auth;
       if (authState === "expired") {
-        throw new Error(auth.message || appText("errors.authExpired"));
+        throw new Error(userErrorText(auth, appText("errors.authExpired")));
       }
       if (Date.now() >= deadline) {
         throw lastStatusError || new Error(appText("errors.authExpired"));
@@ -2252,7 +2312,7 @@ export default function App() {
       if (operation.cancelRequested || operation.disposed) return;
       if (operation.timedOut) notify(appText("errors.authExpired"));
       else if (!isAbortError(e)) {
-        notify(e.message || appText("errors.connectorConnect", { name }));
+      notify(userErrorText(e, appText("errors.connectorConnect", { name })));
       }
     } finally {
       if (!operation.cancelRequested && finishConnectorAuthOperation(connectorId, operation)) {
@@ -2291,7 +2351,7 @@ export default function App() {
       if (operation.disposed) return;
       const message = isAbortError(error)
         ? appText("errors.connectorCancelNotConfirmed", { name })
-        : error.message || appText("errors.connectorCancel", { name });
+          : userErrorText(error, appText("errors.connectorCancel", { name }));
       notify(message);
     } finally {
       if (finishConnectorAuthOperation(connectorId, operation)) await loadConnectors();
@@ -2328,7 +2388,7 @@ export default function App() {
       if (operation.disposed) return;
       const message = isAbortError(e)
         ? appText("errors.connectorDisconnectNotConfirmed", { name })
-        : e.message || appText("errors.connectorDisconnect", { name });
+          : userErrorText(e, appText("errors.connectorDisconnect", { name }));
       notify(message);
     } finally {
       if (finishConnectorAuthOperation(connectorId, operation)) await loadConnectors();
@@ -2349,7 +2409,7 @@ export default function App() {
       setStateFromServer(data.state);
       await refreshChats();
     } catch (e) {
-      notify(e.message || appText("errors.gameReset"));
+      notify(userErrorText(e, appText("errors.gameReset")));
     }
   }, [store, setStateFromServer, refreshChats, notify, notifyApiError]);
 
@@ -2479,6 +2539,7 @@ export default function App() {
               </button>
               <WorldArchitectPanel
                 world={selectedWorld}
+                responseLanguage={settings.response_language}
                 locked={interactionBusy}
                 connectors={connectors}
                 models={models}
@@ -2508,6 +2569,7 @@ export default function App() {
               <StoryArchitectPanel
                 key={storyArchitectWorldId || "new-story"}
                 story={storyArchitectStory}
+                responseLanguage={settings.response_language}
                 worldId={storyArchitectWorldId}
                 worldTitle={
                   textValue(storyArchitectWorld?.title) ||
@@ -2540,6 +2602,7 @@ export default function App() {
               <CharacterArchitectPanel
                 key={`char-studio-${characterStudioEpoch}`}
                 character={characterArchitectCharacter}
+                responseLanguage={settings.response_language}
                 worldId={characterStudioRefs.worldId}
                 storyId={characterStudioRefs.storyId}
                 worldTitle={characterStudioRefs.worldTitle}

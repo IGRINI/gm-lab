@@ -86,9 +86,12 @@ pub mod event_kind {
     pub const META_TOTAL: &str = "meta_total";
     /// A GM tool call is about to run (suppressed for `ask_player`).
     pub const GM_TOOL_CALL: &str = "gm_tool_call";
-    /// Result of a GM tool call — full text, not the model-facing compact text
-    /// (suppressed for `ask_player`).
+    /// Result of a GM tool call — call identity plus the parsed full result,
+    /// never the model-facing compact text (suppressed for `ask_player`).
     pub const TOOL_RESULT: &str = "tool_result";
+    /// Transient, player-safe state after a tool or automatic scene sync.
+    /// Published live but deliberately omitted from the durable transcript.
+    pub const STATE_SYNC: &str = "state_sync";
     /// Result of a `tool_search` call.
     pub const TOOL_SEARCH: &str = "tool_search";
     /// Quick-reply player options (from the `ask_player` tool).
@@ -161,6 +164,7 @@ pub mod event_kind {
         PLAYER_CHARACTER_UPDATE,
         PLAYER_OPTIONS,
         SCENE_UPDATE,
+        STATE_SYNC,
         TIME,
         TOOL_RESULT,
         TOOL_SEARCH,

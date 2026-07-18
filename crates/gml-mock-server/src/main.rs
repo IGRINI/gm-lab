@@ -454,7 +454,7 @@ async fn get_index() -> Response {
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
     let body = "<!doctype html><meta charset=utf-8><title>gml-mock-server</title>\
-        <p>Mock GM-Lab backend is running. Point the Vite dev server (port 5173) here, \
+        <p>Mock TaleShift backend is running. Point the Vite dev server (port 5173) here, \
         or build the frontend into web/dist/."
         .to_string();
     (headers, body).into_response()
@@ -1088,8 +1088,8 @@ async fn main() {
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .unwrap_or_else(|e| panic!("mock GM-Lab failed to bind {addr}: {e}"));
-    println!("mock GM-Lab on http://{addr}");
+        .unwrap_or_else(|e| panic!("mock TaleShift failed to bind {addr}: {e}"));
+    println!("mock TaleShift on http://{addr}");
     axum::serve(listener, app)
         .await
         .expect("mock server crashed");

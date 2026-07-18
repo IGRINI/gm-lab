@@ -17,6 +17,33 @@
       "loc": "локация",
       "item": "предмет",
       "note": "заметка"
+    },
+    "entityMeta": {
+      "role": "роль",
+      "status": "статус",
+      "gender": "род",
+      "where": "где",
+      "activity": "занят",
+      "presentCharacters": "в сцене",
+      "exits": "выходы",
+      "via": "через",
+      "source": "источник"
+    },
+    "entityGenders": {
+      "masculine": "мужской род",
+      "feminine": "женский род",
+      "neuter": "средний род",
+      "plural": "множественное число",
+      "other": "другое"
+    },
+    "entitySources": {
+      "publicLore": "публичные сведения",
+      "previousScene": "предыдущая сцена",
+      "currentScene": "текущая сцена",
+      "characterRoster": "ростер персонажей",
+      "startingData": "стартовые данные",
+      "characterMovement": "перемещение персонажа",
+      "gameMaster": "гейм-мастер"
     }
   },
   "chat": {
@@ -183,6 +210,7 @@
     "edgeBlockedBy": "Преграда",
     "edgeAvailable": "Переход доступен",
     "edgeUnavailable": "Переход недоступен",
+    "exitFallback": "Выход",
     "unexploredExit": "Неизведанный выход",
     "emptyTitle": "Карта пока пуста",
     "emptyDescription": "Открытые локации и известные выходы появятся здесь.",
@@ -386,7 +414,8 @@
       "systemPrompt": "≈ системный промпт ГМ: ~{{count}} ток (оценка, входит в «ввод»)",
       "turnTotal": "Σ за ход:",
       "tokenCount": "{{count}} токенов",
-      "totalDetails": " ({{input}}↑ ввод / {{output}}↓ вывод){{cached}} · {{calls}} вызовов"
+      "totalDetails": " ({{input}}↑ ввод / {{output}}↓ вывод){{cached}} · {{calls}} вызовов",
+      "labels": { "narration": "ГМ — нарратив", "decision": "ГМ — решение", "prelude": "ГМ — прелюдия", "sceneSync": "Синхронизация сцены", "gm": "ГМ", "background": "Фоновая задача", "model": "Модель" }
     }
   },
   "dice": {
@@ -461,6 +490,8 @@
     "counting": "Считаю…",
     "count": "Посчитать",
     "countFailed": "не удалось посчитать",
+    "keySaveFailed": "Не удалось сохранить API-ключ",
+    "keyDeleteFailed": "Не удалось удалить API-ключ",
     "inputTokens_one": "токен ввода",
     "inputTokens_few": "токена ввода",
     "inputTokens_many": "токенов ввода",

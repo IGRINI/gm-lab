@@ -1,9 +1,10 @@
 """
-gmlab unified inference sidecar — ONE Python process hosting embedder + reranker + TTS + image generation.
+gmlab unified inference sidecar — ONE Python process hosting embedder + reranker + STT + TTS + image generation.
 
 Endpoints (drop-in for the Rust gml-rag client + gml-audio TTS proxy):
   POST /v1/embeddings   OpenAI-compatible  {input,[model],[encoding_format],[input_type],[task]} -> {data:[{embedding}]}
   POST /rerank          {query,documents,[top_n],[return_documents]} -> {results:[{index,relevance_score,[document]}]}
+  POST /transcribe      raw browser audio (WebM/WAV/...) -> {text}
   POST /speak           {text, voice:"gm|male|female"} -> audio/wav
   POST /speak_stream    {text, voice} -> raw PCM16 mono stream + X-Sample-Rate header
   POST /images/generate {prompt,[steps],[seed],[width],[height],[batch],[cfg],[model]} -> generated image metadata
@@ -13,14 +14,16 @@ Endpoints (drop-in for the Rust gml-rag client + gml-audio TTS proxy):
 Per-model config from env (the Rust app passes these from gml-config):
   EMBEDDER_MODEL   (default Qwen/Qwen3-Embedding-0.6B)   EMBEDDER_QUANT = bf16 | nf4   EMBEDDER_ENABLED=1
   RERANKER_MODEL   (default jinaai/jina-reranker-v3)     RERANKER_QUANT = bf16 | nf4   RERANKER_ENABLED=1
+  STT_ENABLED=1    STT_MODEL (managed local Whisper snapshot)
   TTS_ENABLED=1    TTS_MODEL_ID (override) TTS_HOME (refs + qwen17b_base dir) TTS_LANG (default Russian)
   IMAGE_ENABLED=1  IMAGE_RUNTIME_ROOT (default ./image_runtime) IMAGE_OUTPUT_DIR
-  USE_FLASH=1  JINA_COMPILE=1  JINA_MAX_DOC_LEN=2048  JINA_MAX_QUERY_LEN=512
+  USE_FLASH=auto  JINA_COMPILE=1  JINA_MAX_DOC_LEN=2048  JINA_MAX_QUERY_LEN=512
   RERANK_TOP_N         default # of results /rerank returns when the request omits top_n (0/empty = all)
   RERANK_RETURN_DOCS=0 default for echoing document text back (retriever owns the corpus -> off)
   EMBED_QUERY_TASK     English instruction used for query-side embedding (Qwen3 wants it in English)
   GMLAB_SIDECAR_HOST=127.0.0.1  GMLAB_SIDECAR_PORT=8077
-  HF_HOME / HF_HUB_CACHE (default the faster-qwen3-tts cache on E:)
+  GM_INFERENCE_HOME / HF_HOME / HF_HUB_CACHE
+  GMLAB_ALLOW_RUNTIME_DOWNLOADS=0 (set to 1 only for an intentional custom setup)
 
 RAG best-practice notes (researched 2026-06-22):
   - Qwen3-Embedding is ASYMMETRIC: the instruction is prepended to QUERIES ONLY; documents stay bare
@@ -33,8 +36,8 @@ RAG best-practice notes (researched 2026-06-22):
     notes, but the Rust default still feeds 64 candidates for rerank quality. int8 dropped
     (5x slower than bf16); bf16 remains the default model-weight profile.
 
-INTEGRATION STATUS (see sidecar/README.md for the full doc) — all three WIRED & LIVE:
-  - /v1/embeddings — gml-rag client; /speak,/speak_stream — gml-audio. The Rust app spawns this
+INTEGRATION STATUS (see sidecar/README.md for the full doc) — all components WIRED & LIVE:
+  - /v1/embeddings — gml-rag client; /transcribe,/speak,/speak_stream — gml-audio. The Rust app spawns this
     process (gml-audio::Sidecar) at startup; HF_HOME / GMLAB_SIDECAR_PORT / EMBEDDER_QUANT /
     RERANKER_QUANT / *_ENABLED are passed via the spawn env.
   - /rerank — gml-rag/src/engine.rs POSTs the fused top-N (GM_RAG_RERANK_CANDIDATES, default 64)
@@ -58,11 +61,17 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# --- HF cache: default to the faster-qwen3-tts cache on E: (where TTS weights live).
-#     MUST be set before importing torch / faster_qwen3_tts. Env wins.
-_DEFAULT_TTS_HOME = r"E:/gemma/gm-lab/hf_models/faster-qwen3-tts"
-_DEFAULT_HF_HOME = r"E:/gemma/gm-lab/hf_models/.hf-home"
-os.environ.setdefault("HF_HOME", _DEFAULT_HF_HOME)
+# --- Managed inference paths. These must be set before importing torch / HF
+#     libraries. The Rust launcher and setup.ps1 use the same directory layout.
+if "GM_INFERENCE_HOME" in os.environ:
+    _INFERENCE_HOME = Path(os.environ["GM_INFERENCE_HOME"]).resolve()
+elif os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+    _INFERENCE_HOME = (Path(os.environ["LOCALAPPDATA"]) / "gm-lab" / "inference").resolve()
+else:
+    _INFERENCE_HOME = (Path.home() / ".local" / "share" / "gm-lab" / "inference").resolve()
+_DEFAULT_TTS_HOME = _INFERENCE_HOME / "tts"
+_DEFAULT_HF_HOME = _INFERENCE_HOME / "hf"
+os.environ.setdefault("HF_HOME", str(_DEFAULT_HF_HOME))
 os.environ.setdefault("HF_HUB_CACHE", str(Path(os.environ["HF_HOME"]) / "hub"))
 
 # --- Self-logging: the Rust spawner runs us with stdout/stderr -> null, so a
@@ -70,7 +79,8 @@ os.environ.setdefault("HF_HUB_CACHE", str(Path(os.environ["HF_HOME"]) / "hub"))
 #     BEFORE the heavy imports so an import error (torch/cuda/flash-attn) is
 #     captured. Override the path with GMLAB_SIDECAR_LOG.
 import sys
-_LOG_PATH = os.environ.get("GMLAB_SIDECAR_LOG") or str(Path(__file__).with_name("serve.log"))
+_LOG_PATH = os.environ.get("GMLAB_SIDECAR_LOG") or str(_INFERENCE_HOME / "logs" / "sidecar.log")
+Path(_LOG_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 
 class _Tee:
@@ -116,7 +126,7 @@ except Exception:
 import numpy as np
 import torch
 import soundfile as sf
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse, JSONResponse, FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -137,9 +147,19 @@ EMBEDDER_QUANT = os.environ.get("EMBEDDER_QUANT", "bf16").lower()
 RERANKER_QUANT = os.environ.get("RERANKER_QUANT", "bf16").lower()
 EMBEDDER_ENABLED = os.environ.get("EMBEDDER_ENABLED", "1") == "1"
 RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "1") == "1"
+STT_ENABLED = os.environ.get("STT_ENABLED", "0") == "1"
 TTS_ENABLED = os.environ.get("TTS_ENABLED", "1") == "1"
 IMAGE_ENABLED = os.environ.get("IMAGE_ENABLED", "1") == "1"
-USE_FLASH = os.environ.get("USE_FLASH", "1") == "1"
+ALLOW_RUNTIME_DOWNLOADS = os.environ.get("GMLAB_ALLOW_RUNTIME_DOWNLOADS", "0") == "1"
+_USE_FLASH_RAW = os.environ.get("USE_FLASH", "auto").strip().lower()
+if _USE_FLASH_RAW == "auto":
+    try:
+        import flash_attn  # noqa: F401
+        USE_FLASH = True
+    except Exception:
+        USE_FLASH = False
+else:
+    USE_FLASH = _USE_FLASH_RAW in {"1", "true", "yes", "on"}
 JINA_COMPILE = os.environ.get("JINA_COMPILE", "1") == "1"
 JINA_MAX_DOC_LEN = int(os.environ.get("JINA_MAX_DOC_LEN", "2048"))
 JINA_MAX_QUERY_LEN = int(os.environ.get("JINA_MAX_QUERY_LEN", "512"))
@@ -154,16 +174,20 @@ EMBED_QUERY_TASK = os.environ.get(
 )
 HOST = os.environ.get("GMLAB_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("GMLAB_SIDECAR_PORT", "8077"))
+STT_MODEL = os.environ.get("STT_MODEL") or str(_INFERENCE_HOME / "models" / "stt")
+STT_MAX_BYTES = int(os.environ.get("STT_MAX_BYTES", str(32 * 1024 * 1024)))
+STT_MAX_SECONDS = int(os.environ.get("STT_MAX_SECONDS", "600"))
+STT_SAMPLE_RATE = 16_000
 
-_IMAGE_RUNTIME_DEFAULT = Path(__file__).with_name("image_runtime")
+_IMAGE_RUNTIME_DEFAULT = _INFERENCE_HOME / "image"
 IMAGE_RUNTIME_ROOT = Path(os.environ.get("IMAGE_RUNTIME_ROOT", str(_IMAGE_RUNTIME_DEFAULT))).resolve()
 IMAGE_COMFY_DIR = Path(os.environ.get("IMAGE_COMFY_DIR", str(IMAGE_RUNTIME_ROOT / "ComfyUI"))).resolve()
 IMAGE_PYTHON = Path(os.environ.get(
     "IMAGE_PYTHON",
-    str(IMAGE_RUNTIME_ROOT / ".venv-flux" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
+    str(IMAGE_RUNTIME_ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
 )).resolve()
 IMAGE_OUTPUT_DIR = Path(os.environ.get("IMAGE_OUTPUT_DIR", str(IMAGE_RUNTIME_ROOT / "generated"))).resolve()
-IMAGE_HF_HOME = Path(os.environ.get("IMAGE_HF_HOME", str(IMAGE_RUNTIME_ROOT / "hf-cache"))).resolve()
+IMAGE_HF_HOME = Path(os.environ.get("IMAGE_HF_HOME", str(IMAGE_RUNTIME_ROOT / "hf"))).resolve()
 IMAGE_COMFY_HOST = os.environ.get("IMAGE_COMFY_HOST", "127.0.0.1").strip() or "127.0.0.1"
 IMAGE_COMFY_PORT = int(os.environ.get("IMAGE_COMFY_PORT", "8188") or "8188")
 IMAGE_COMFY_URL = os.environ.get("IMAGE_COMFY_URL", f"http://{IMAGE_COMFY_HOST}:{IMAGE_COMFY_PORT}").rstrip("/")
@@ -183,36 +207,28 @@ IMAGE_PRESETS = {
     "nvfp4": ("flux-2-klein-4b-nvfp4.safetensors", "qwen_3_4b_fp4_flux2.safetensors"),
 }
 
-TTS_HOME = Path(os.environ.get("TTS_HOME", _DEFAULT_TTS_HOME))
+TTS_HOME = Path(os.environ.get("TTS_HOME", str(_DEFAULT_TTS_HOME)))
 TTS_LANG = os.environ.get("TTS_LANG", "Russian")
-# Model: env override > local 1.7B-Base (qwen17b_base/) if weights present > cached 0.6B-Base.
+# Setup installs the complete 1.7B model here. Runtime downloads are disabled
+# by default so enabling a UI toggle never starts an unplanned network transfer.
 _LOCAL_17B = TTS_HOME / "qwen17b_base"
-TTS_MODEL_ID = (
-    os.environ.get("TTS_MODEL_ID")
-    or (str(_LOCAL_17B) if (_LOCAL_17B / "model.safetensors").exists()
-        else "Qwen/Qwen3-TTS-12Hz-0.6B-Base")
-)
+TTS_MODEL_ID = os.environ.get("TTS_MODEL_ID") or str(_LOCAL_17B)
 
-# female reference text — MUST match female_ref_deepwarm.wav exactly (ICL clone).
-FEMALE_REF_TEXT = (
-    "Над рекой медленно поднимался густой туман. Где-то в чаще ухнула сова, "
-    "и ветер качнул верхушки сосен. Я шла по тропе, прислушиваясь к шороху "
-    "листьев под ногами."
-)
 # Three voices, all clones on one model (prompt cached per reference at warmup):
 #   gm     -> ref_audio_2.wav         (x-vector clone)  narrator
 #   male   -> ref_audio.wav           (x-vector clone)  male characters
-#   female -> female_ref_deepwarm.wav (ICL, exact text) female characters
+#   female -> ref_audio_3.wav         (x-vector clone)  female characters
 VOICES = {
-    "gm":     dict(ref_audio=str(TTS_HOME / "ref_audio_2.wav"),          ref_text="",              xvec_only=True),
-    "male":   dict(ref_audio=str(TTS_HOME / "ref_audio.wav"),           ref_text="",              xvec_only=True),
-    "female": dict(ref_audio=str(TTS_HOME / "female_ref_deepwarm.wav"), ref_text=FEMALE_REF_TEXT, xvec_only=False),
+    "gm":     dict(ref_audio=str(TTS_HOME / "ref_audio_2.wav"), ref_text="", xvec_only=True),
+    "male":   dict(ref_audio=str(TTS_HOME / "ref_audio.wav"), ref_text="", xvec_only=True),
+    "female": dict(ref_audio=str(TTS_HOME / "ref_audio_3.wav"), ref_text="", xvec_only=True),
 }
 SAMPLING = dict(temperature=0.75, top_k=50, top_p=1.0, repetition_penalty=1.1)
 
 STATE = {
     "embedder": None,
     "reranker": None,
+    "stt": None,
     "tts": None,
     "image_process": None,
     "image_warm": False,
@@ -224,15 +240,24 @@ STATE = {
 # throughput anyway; rely on the models' internal batching.)
 _embed_lock = threading.Lock()
 _rerank_lock = threading.Lock()
+_stt_lock = threading.Lock()
 _tts_lock = threading.Lock()
 _image_lock = threading.Lock()
 # Bounded wait so a stuck / leaked TTS generation degrades to 503 instead of an
 # unbounded hang (e.g. if a streamed response's generator frame is abandoned on
 # client disconnect and its lock release is deferred).
 _TTS_LOCK_TIMEOUT = float(os.environ.get("TTS_LOCK_TIMEOUT", "180"))
+_STT_LOCK_TIMEOUT = float(os.environ.get("STT_LOCK_TIMEOUT", "300"))
 
 
 class ImageRequestError(RuntimeError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+class SttRequestError(RuntimeError):
     def __init__(self, status_code: int, message: str):
         super().__init__(message)
         self.status_code = status_code
@@ -255,8 +280,17 @@ def _quant_kwargs(quant):
     return mk
 
 
+def _require_local_model(model: str, component: str) -> None:
+    if ALLOW_RUNTIME_DOWNLOADS or Path(model).exists():
+        return
+    raise RuntimeError(
+        f"{component} is not installed at {model!r}; rerun setup.ps1 with the required profile"
+    )
+
+
 def _load_embedder():
     from sentence_transformers import SentenceTransformer
+    _require_local_model(EMBEDDER_MODEL, "embedder")
     mk = _quant_kwargs(EMBEDDER_QUANT)
     m = SentenceTransformer(EMBEDDER_MODEL, model_kwargs=mk, device="cuda")
     print(f"[sidecar] embedder {EMBEDDER_MODEL} quant={EMBEDDER_QUANT} loaded", flush=True)
@@ -265,6 +299,7 @@ def _load_embedder():
 
 def _load_reranker():
     from transformers import AutoModel
+    _require_local_model(RERANKER_MODEL, "reranker")
     mk = _quant_kwargs(RERANKER_QUANT)
     m = AutoModel.from_pretrained(RERANKER_MODEL, trust_remote_code=True, **mk).eval()
     try:
@@ -281,16 +316,110 @@ def _load_reranker():
     return m
 
 
+def _load_stt():
+    import av  # noqa: F401 - fail startup if the bundled decoder is unavailable
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+    model_path = Path(STT_MODEL)
+    if not model_path.is_dir():
+        raise RuntimeError(
+            f"STT model is not installed at {STT_MODEL!r}; rerun setup.cmd with the Voice or Full profile"
+        )
+    device = 0 if torch.cuda.is_available() else -1
+    dtype = torch.float16 if device >= 0 else torch.float32
+    processor = AutoProcessor.from_pretrained(model_path, local_files_only=True)
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model_path,
+        local_files_only=True,
+        use_safetensors=True,
+        low_cpu_mem_usage=True,
+        dtype=dtype,
+    ).eval()
+    recognizer = pipeline(
+        "automatic-speech-recognition",
+        model=model,
+        tokenizer=processor.tokenizer,
+        feature_extractor=processor.feature_extractor,
+        device=device,
+        dtype=dtype,
+        chunk_length_s=30,
+        stride_length_s=(5, 5),
+    )
+    print(f"[sidecar] STT {STT_MODEL} loaded ({'cuda' if device >= 0 else 'cpu'})", flush=True)
+    return recognizer
+
+
+def _decode_audio(blob: bytes) -> np.ndarray:
+    if not blob:
+        raise SttRequestError(400, "empty audio")
+    if len(blob) > STT_MAX_BYTES:
+        raise SttRequestError(413, f"audio exceeds {STT_MAX_BYTES} bytes")
+    try:
+        import av
+
+        with av.open(io.BytesIO(blob), mode="r") as container:
+            stream = next((item for item in container.streams if item.type == "audio"), None)
+            if stream is None:
+                raise SttRequestError(400, "input has no audio stream")
+            resampler = av.AudioResampler(format="fltp", layout="mono", rate=STT_SAMPLE_RATE)
+            chunks = []
+            sample_count = 0
+
+            def append_frames(frames) -> None:
+                nonlocal sample_count
+                for frame in frames or []:
+                    chunk = np.asarray(frame.to_ndarray(), dtype=np.float32).reshape(-1)
+                    if chunk.size == 0:
+                        continue
+                    sample_count += int(chunk.size)
+                    if sample_count > STT_MAX_SECONDS * STT_SAMPLE_RATE:
+                        raise SttRequestError(413, f"audio exceeds {STT_MAX_SECONDS} seconds")
+                    chunks.append(chunk)
+
+            for frame in container.decode(stream):
+                append_frames(resampler.resample(frame))
+            append_frames(resampler.resample(None))
+    except SttRequestError:
+        raise
+    except Exception as exc:
+        raise SttRequestError(400, f"cannot decode audio: {exc}") from exc
+    if not chunks:
+        raise SttRequestError(400, "decoded audio is empty")
+    return np.nan_to_num(np.concatenate(chunks), copy=False)
+
+
+def _transcribe_audio(blob: bytes) -> str:
+    audio = _decode_audio(blob)
+    if not _stt_lock.acquire(timeout=_STT_LOCK_TIMEOUT):
+        raise SttRequestError(503, "stt busy")
+    try:
+        result = STATE["stt"](
+            {"raw": audio, "sampling_rate": STT_SAMPLE_RATE},
+            return_timestamps=True,
+            generate_kwargs={"task": "transcribe"},
+        )
+    finally:
+        _stt_lock.release()
+    text = str(result.get("text", "")).strip() if isinstance(result, dict) else ""
+    if not text:
+        raise SttRequestError(422, "speech was not recognized")
+    return text
+
+
 def _load_tts():
     from faster_qwen3_tts import FasterQwen3TTS
+    _require_local_model(TTS_MODEL_ID, "TTS model")
+    missing_refs = [cfg["ref_audio"] for cfg in VOICES.values() if not Path(cfg["ref_audio"]).is_file()]
+    if missing_refs:
+        raise RuntimeError(
+            "TTS voice references are missing; rerun setup.ps1 with the Voice or Full profile: "
+            + ", ".join(missing_refs)
+        )
     print(f"[sidecar] loading TTS {TTS_MODEL_ID} ...", flush=True)
     m = FasterQwen3TTS.from_pretrained(TTS_MODEL_ID, device="cuda", dtype=torch.bfloat16)
     m._warmup(prefill_len=100)  # capture CUDA graphs
     # Prime each voice's reference-prompt cache (and surface missing refs early).
     for name, cfg in VOICES.items():
-        if not Path(cfg["ref_audio"]).exists():
-            print(f"[sidecar] WARNING missing ref for '{name}': {cfg['ref_audio']}", flush=True)
-            continue
         try:
             m.generate_voice_clone(text="Тест.", language=TTS_LANG,
                                    ref_audio=cfg["ref_audio"], ref_text=cfg["ref_text"],
@@ -670,6 +799,11 @@ async def lifespan(app: FastAPI):
             STATE["reranker"] = _load_reranker()
         except Exception as e:
             print(f"[sidecar] reranker load FAILED (/rerank disabled): {e}", flush=True)
+    if STT_ENABLED:
+        try:
+            STATE["stt"] = _load_stt()
+        except Exception as e:
+            print(f"[sidecar] STT load FAILED (/transcribe disabled): {e}", flush=True)
     if TTS_ENABLED:
         try:
             STATE["tts"] = _load_tts()
@@ -684,7 +818,7 @@ async def lifespan(app: FastAPI):
             STATE["image_error"] = str(e)
             print(f"[sidecar] image warmup FAILED (/images/generate disabled): {e}", flush=True)
     _warmup_text_models()
-    up = [k for k in ("embedder", "reranker", "tts") if STATE.get(k) is not None]
+    up = [k for k in ("embedder", "reranker", "stt", "tts") if STATE.get(k) is not None]
     if IMAGE_ENABLED and STATE.get("image_warm"):
         up.append("image")
     print(f"[sidecar] ready in {time.time()-t0:.1f}s on {HOST}:{PORT} — up: {up}", flush=True)
@@ -693,7 +827,7 @@ async def lifespan(app: FastAPI):
     STATE.clear()
 
 
-app = FastAPI(title="gmlab-sidecar", lifespan=lifespan)
+app = FastAPI(title="taleshift-sidecar", lifespan=lifespan)
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
@@ -748,7 +882,9 @@ def health():
         "embedder": {"up": STATE["embedder"] is not None, "model": EMBEDDER_MODEL,
                      "quant": EMBEDDER_QUANT, "dim": dim},
         "reranker": {"up": STATE["reranker"] is not None, "model": RERANKER_MODEL,
-                     "quant": RERANKER_QUANT, "scores": "raw cosine [-1,1], not 0..1"},
+                      "quant": RERANKER_QUANT, "scores": "raw cosine [-1,1], not 0..1"},
+        "stt": {"up": STATE["stt"] is not None, "model": STT_MODEL,
+                "sample_rate": STT_SAMPLE_RATE, "max_seconds": STT_MAX_SECONDS},
         "tts": {"up": STATE["tts"] is not None, "model": TTS_MODEL_ID,
                 "voices": list(VOICES) if STATE["tts"] is not None else []},
         "image": _image_status(),
@@ -855,6 +991,40 @@ def rerank(req: RerankReq):
             item["document"] = req.documents[idx]
         out.append(item)
     return {"results": out}
+
+
+# ── STT ───────────────────────────────────────────────────────────────────────
+@app.post("/transcribe")
+async def transcribe(request: Request):
+    if STATE["stt"] is None:
+        return JSONResponse({"error": "stt not loaded"}, status_code=503)
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > STT_MAX_BYTES:
+                return JSONResponse(
+                    {"error": f"audio exceeds {STT_MAX_BYTES} bytes"}, status_code=413
+                )
+        except ValueError:
+            return JSONResponse({"error": "invalid content-length"}, status_code=400)
+    chunks = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > STT_MAX_BYTES:
+            return JSONResponse({"error": f"audio exceeds {STT_MAX_BYTES} bytes"}, status_code=413)
+        chunks.append(chunk)
+    if not chunks:
+        return JSONResponse({"error": "empty audio"}, status_code=400)
+    blob = b"".join(chunks)
+    try:
+        text = await run_in_threadpool(_transcribe_audio, blob)
+        return {"text": text}
+    except SttRequestError as exc:
+        return JSONResponse({"error": exc.message}, status_code=exc.status_code)
+    except Exception as exc:
+        print(f"[sidecar] STT request failed: {exc}", flush=True)
+        return JSONResponse({"error": "stt inference failed"}, status_code=503)
 
 
 # ── TTS ───────────────────────────────────────────────────────────────────────

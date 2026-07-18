@@ -22,7 +22,7 @@ export function locationTravelIntent(node, formatIntent) {
   const localized = typeof formatIntent === "function"
     ? cleanText(formatIntent(destinationReference))
     : "";
-  return localized || `Я хочу перейти в ${destinationReference}.`;
+  return localized;
 }
 
 export function createLocationTransition(previousState, nextState, enabled) {

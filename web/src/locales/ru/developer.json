@@ -23,6 +23,14 @@
   },
   "status": {
     "unknown": "неизвестно",
+    "labels": {
+      "present": "в текущей сцене",
+      "known": "известно",
+      "likely": "вероятно",
+      "rumored": "по слухам",
+      "unknown": "неизвестно",
+      "left_scene": "ушёл"
+    },
     "help": {
       "default": "Статус уверенности по местонахождению персонажа.",
       "known": "Местонахождение установлено как рабочий факт текущей истории.",
@@ -172,7 +180,63 @@
   },
   "playerCards": {
     "timeElapsed": "Прошло {{value}}",
-    "sheetUpdated": "Лист персонажа обновлён"
+    "sheetUpdated": "Лист персонажа обновлён",
+    "actionState": {
+      "pending": "Действие выполняется…",
+      "completed": "Действие выполнено",
+      "failed": "Действие не удалось"
+    },
+    "changeValues": { "yes": "да", "no": "нет" },
+    "changeFields": {
+      "name": "Имя",
+      "pronouns": "Местоимения",
+      "class_role": "Класс / роль",
+      "background": "Предыстория",
+      "age": "Возраст",
+      "physical_type": "Телосложение",
+      "inventory": "Инвентарь",
+      "equipment": "Снаряжение",
+      "hp": "Здоровье",
+      "hp_current": "Текущее здоровье",
+      "hp_max": "Максимальное здоровье",
+      "condition": "Состояние",
+      "current_appearance": "Внешний вид",
+      "life_status": "Жизненный статус",
+      "life_status_note": "Примечание к статусу",
+      "personality": "Характер",
+      "values": "Ценности",
+      "spell_slots": "Ячейки заклинаний",
+      "spell_slots_max": "Максимум ячеек",
+      "concentration": "Концентрация",
+      "distinctive_features": "Особые приметы",
+      "features": "Особенности",
+      "abilities": "Характеристики",
+      "skills": "Навыки",
+      "saving_throws": "Спасброски",
+      "passive_perception": "Пассивное восприятие",
+      "ac": "Класс брони",
+      "level": "Уровень",
+      "speed": "Скорость",
+      "senses": "Чувства",
+      "languages": "Языки",
+      "spells": "Заклинания"
+    },
+    "actions": {
+      "roll_dice": { "pending": "Бросок кубика…", "completed": "Кубик брошен", "failed": "Бросок не удался" },
+      "advance_time": { "pending": "Время идёт…", "completed": "Время изменилось", "failed": "Время не изменилось" },
+      "long_rest": { "pending": "Персонаж отдыхает…", "completed": "Отдых завершён", "failed": "Отдых не удался" },
+      "update_character": { "pending": "Лист персонажа обновляется…", "completed": "Лист персонажа обновлён", "failed": "Лист персонажа не обновлён" },
+      "update_player_character": { "pending": "Лист персонажа обновляется…", "completed": "Лист персонажа обновлён", "failed": "Лист персонажа не обновлён" },
+      "take_item": { "pending": "Персонаж берёт предмет…", "completed": "Предмет добавлен в инвентарь", "failed": "Не удалось взять предмет" },
+      "drop_item": { "pending": "Персонаж оставляет предмет…", "completed": "Предмет оставлен", "failed": "Не удалось оставить предмет" },
+      "cast_spell": { "pending": "Персонаж применяет заклинание…", "completed": "Заклинание применено", "failed": "Заклинание не сработало" },
+      "set_scene": { "pending": "Обстановка меняется…", "completed": "Обстановка изменилась", "failed": "Обстановка не изменилась" },
+      "move_player": { "pending": "Переход в соседнюю локацию…", "completed": "Переход завершён", "failed": "Переход не удался" },
+      "travel_to": { "pending": "Путь к локации…", "completed": "Путь завершён", "failed": "Не удалось добраться" },
+      "relocate_player": { "pending": "Перемещение персонажа…", "completed": "Перемещение завершено", "failed": "Перемещение не удалось" },
+      "create_passage": { "pending": "Создаётся новый проход…", "completed": "Новый проход создан", "failed": "Не удалось создать проход" },
+      "set_passage_state": { "pending": "Состояние прохода меняется…", "completed": "Состояние прохода изменено", "failed": "Не удалось изменить проход" }
+    }
   },
   "factStatus": {
     "known": "известно", "likely": "вероятно", "rumored": "слух", "confirmed": "подтверждено", "unknown": "неизвестно"
@@ -184,7 +248,7 @@
     "recordId": "id записи: {{id}}",
     "noNew": "нового нет", "nothingFound": "ничего не найдено", "found": "найдено: {{count}}",
     "alreadyDelivered": "уже было: {{count}}", "saved": "сохранено: {{count}}", "rejected": "отклонено: {{count}}",
-    "notSaved": "Не сохранено", "writeError": "ошибка записи", "revision": "ревизия {{value}}", "noFields": "нет полей",
+    "notSaved": "Не сохранено", "writeError": "Не удалось сохранить запись памяти мира", "profileError": "Не удалось загрузить карточку NPC", "timeError": "Не удалось изменить время мира", "characterError": "Не удалось обновить персонажа", "revision": "ревизия {{value}}", "noFields": "нет полей",
     "fallbackTitle": "Результат",
     "worldFact": { "title": "Память мира — ответ" },
     "worldQuery": { "title": "Память мира — найдено" },
@@ -193,7 +257,11 @@
     "worldTime": { "title": "Время мира" },
     "playerSheet": { "title": "Лист персонажа — обновлён" },
     "character": { "playerTitle": "Лист персонажа — обновлён", "npcTitle": "Карточка персонажа — обновлена — " },
-    "toolSearch": { "title": "Инструменты ГМ" },
+    "toolSearch": {
+      "title": "Инструменты ГМ", "schemaTitle": "Схема инструмента ГМ", "matches": "Найденные инструменты", "schema": "Загруженная схема",
+      "available": "Уже доступны", "missing": "Не найдено", "alreadyLoaded": "уже доступно: {{count}}", "completed": "поиск завершён",
+      "statuses": { "loaded_schema": "схема загружена", "already_loaded": "схема уже загружена", "missing": "инструмент не найден", "invalid": "неверное имя инструмента", "unknown": "операция завершена" }
+    },
     "sources": {
       "label": "Источники", "kind": "тип: {{value}}", "status": "статус: {{value}}",
       "source": "источник: {{value}}", "relevance": "релевантность: {{value}}"
@@ -207,18 +275,19 @@
       "advance_time": "Новое состояние часов мира после сдвига.",
       "update_character": "Какие поля игрока или NPC изменились.",
       "update_player_character": "Какие поля листа персонажа изменились.",
-      "tool_search": "Какие скрытые инструменты загрузил ГМ."
+      "tool_search": "Какие скрытые инструменты загрузил ГМ.",
+      "load_tool_schema": "Загружена ли схема запрошенного скрытого инструмента."
     }
   },
   "debug": {
     "common": {
       "add": "Добавить", "apply": "Применить", "cancel": "Отменить", "close": "Закрыть", "disable": "Выключить",
-      "edit": "править", "empty": "пока пусто", "enable": "Включить", "none": "нет", "off": "выкл", "save": "Сохранить"
+      "edit": "править", "empty": "пока пусто", "enable": "Включить", "none": "нет", "off": "выкл", "save": "Сохранить", "yes": "да", "no": "нет"
     },
     "badges": { "gm": "ГМ", "gmOnly": "только ГМ", "sheet": "лист" },
     "errors": {
       "load": "debug не загружен", "apply": "не удалось применить",
-      "jsonArray": "{{label}}: нужен JSON-массив", "integer": "{{label}}: нужно целое число"
+      "jsonArray": "{{label}}: нужен корректный JSON-массив", "integer": "{{label}}: нужно целое число", "invalidValue": "Проверьте введённые значения"
     },
     "factKinds": { "public": "Публичный", "truth": "Скрытая правда", "rumor": "Слух", "fact": "факт" },
     "rolls": {
@@ -268,7 +337,7 @@
       "background": "Предыстория", "life": "Жизнь", "condition": "Состояние", "gmNotes": "Заметки ГМ",
       "inventory": "Инвентарь", "equipment": "Снаряжение", "specialFeatures": "Особенности",
       "featureDescription": "Что даёт (необязательно)", "concentration": "Концентрация", "turns": "ходов", "model": "модель",
-      "backend": "бэкенд", "where": "где"
+      "backend": "бэкенд", "where": "где", "id": "ID", "entityIdNpc": "ID сущности NPC", "locationId": "ID локации"
     },
     "npcEditor": {
       "secretWarning": "Смена секрета — опасная правка. Старая память NPC может конфликтовать с новой картой. При необходимости сбросьте память NPC вручную.",
@@ -291,7 +360,7 @@
     },
     "playerCard": {
       "notLoaded": "карточка игрока не загружена", "defaultName": "Персонаж игрока", "sheet": "лист персонажа",
-      "equipmentFeatures": "Снаряжение и особенности", "spells": "Заклинания", "slots": "слоты"
+      "equipmentFeatures": "Снаряжение и особенности", "spells": "Заклинания", "slots": "слоты", "revision": "ревизия {{value}}"
     },
     "events": { "turn": "ход {{value}}", "witnesses": "видели: {{value}}" },
     "runtime": {
@@ -300,7 +369,8 @@
       "context": "Контекст", "modelSettings": "Настройки модели", "modelSettingsHelp": "Только просмотр. Настройки меняются в шапке и применяются со следующего хода.",
       "gmReasoning": "Рассуждение ГМ", "npcReasoning": "Рассуждение NPC", "compactReasoning": "Рассуждение сжатия",
       "verbosity": "подробность", "toolChoice": "выбор инструментов", "gmStream": "поток ответа ГМ", "parallelTools": "параллельные инструменты",
-      "suggestOptions": "предлагать варианты", "toolHopLimit": "tool-hop лимит", "unlimited": "без ограничения", "tokenLimit": "лимит токенов"
+      "suggestOptions": "предлагать варианты", "toolHopLimit": "tool-hop лимит", "unlimited": "без ограничения", "tokenLimit": "лимит токенов",
+      "promptCacheKey": "Ключ кеша промпта", "threadId": "ID треда", "store": "Сохранять ответы"
     },
     "tabs": {
       "overview": "Обзор", "story": "Сюжет", "scene": "Сцена", "player": "Игрок", "npcs": "Персонажи",
@@ -312,6 +382,7 @@
       "sections": "Разделы дебага", "loading": "загружаю…", "notOpened": "панель ещё не открывалась", "storyFallback": "История",
       "backendModel": "бэкенд · модель", "characters": "персонажей", "time": "время", "startBrief": "Бриф игрока на старте",
       "editStory": "Править сюжет и канон", "objective": "Цель ведения", "objectiveHelp": "Пояснение для разработчика; модели оно напрямую не передаётся.",
+      "objectiveText": "Вести игрока к раскрытию скрытой правды истории через действия, улики, свидетелей и последствия, не выдавая секреты без игрового основания.",
       "briefHelp": "Этот текст показывается в верхней карточке чата и не меняет кеш-префикс ГМ.",
       "publicIntroHelp": "Лежит в кешируемом префиксе. Правка пересоберёт префикс один раз.",
       "hiddenTruthHelp": "В префикс не входит. Доходит до ГМ через query_world_state со scope=gm.", "hiddenEvents": "Скрытые события ГМ",

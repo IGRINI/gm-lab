@@ -17,6 +17,33 @@
       "loc": "location",
       "item": "item",
       "note": "note"
+    },
+    "entityMeta": {
+      "role": "role",
+      "status": "status",
+      "gender": "gender",
+      "where": "where",
+      "activity": "activity",
+      "presentCharacters": "in the scene",
+      "exits": "exits",
+      "via": "via",
+      "source": "source"
+    },
+    "entityGenders": {
+      "masculine": "masculine",
+      "feminine": "feminine",
+      "neuter": "neuter",
+      "plural": "plural",
+      "other": "other"
+    },
+    "entitySources": {
+      "publicLore": "public lore",
+      "previousScene": "previous scene",
+      "currentScene": "current scene",
+      "characterRoster": "character roster",
+      "startingData": "starting data",
+      "characterMovement": "character movement",
+      "gameMaster": "game master"
     }
   },
   "chat": {
@@ -183,6 +210,7 @@
     "edgeBlockedBy": "Obstacle",
     "edgeAvailable": "Passage available",
     "edgeUnavailable": "Passage unavailable",
+    "exitFallback": "Exit",
     "unexploredExit": "Unexplored exit",
     "emptyTitle": "The map is empty",
     "emptyDescription": "Discovered locations and known exits will appear here.",
@@ -386,7 +414,8 @@
       "systemPrompt": "≈ GM system prompt: ~{{count}} tok (estimate, included in input)",
       "turnTotal": "Σ this turn:",
       "tokenCount": "{{count}} tokens",
-      "totalDetails": " ({{input}}↑ input / {{output}}↓ output){{cached}} · {{calls}} calls"
+      "totalDetails": " ({{input}}↑ input / {{output}}↓ output){{cached}} · {{calls}} calls",
+      "labels": { "narration": "GM — narration", "decision": "GM — decision", "prelude": "GM — prelude", "sceneSync": "Scene sync", "gm": "GM", "background": "Background task", "model": "Model" }
     }
   },
   "dice": {
@@ -461,6 +490,8 @@
     "counting": "Counting…",
     "count": "Count",
     "countFailed": "could not count tokens",
+    "keySaveFailed": "Could not save the API key",
+    "keyDeleteFailed": "Could not delete the API key",
     "inputTokens_one": "input token",
     "inputTokens_few": "input tokens",
     "inputTokens_many": "input tokens",

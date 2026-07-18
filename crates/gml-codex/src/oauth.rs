@@ -342,6 +342,7 @@ pub async fn refresh_credential(
 pub async fn run_oauth(
     http: &reqwest::Client,
     cfg: &Config,
+    ui_language: Option<&str>,
 ) -> Result<CodexCredential, OAuthError> {
     let pkce_verifier = random_url_token(32);
     let code_challenge = code_challenge(&pkce_verifier);
@@ -359,7 +360,8 @@ pub async fn run_oauth(
     eprintln!("Codex OAuth: open this URL to authorize:\n{auth_url}");
 
     // Wait for exactly one /auth/callback request, with the 300s timeout.
-    let callback = wait_for_callback(server)?;
+    let callback_locale = ui_language.and_then(callback_ui_locale_from_language_tag);
+    let callback = wait_for_callback(server, callback_locale)?;
     if callback.state != state {
         return Err(OAuthError::new("OAuth state mismatch"));
     }
@@ -473,9 +475,12 @@ fn bind_callback_server(cfg: &Config) -> Result<(tiny_http::Server, u16), OAuthE
     )))
 }
 
-/// Wait for one callback request with the 300s timeout, serve the RU success/
-/// failure HTML, and return the parsed `{code, state}` or an error.
-fn wait_for_callback(server: tiny_http::Server) -> Result<Callback, OAuthError> {
+/// Wait for one callback request with the 300s timeout, serve a localized
+/// success/failure page, and return the parsed `{code, state}` or an error.
+fn wait_for_callback(
+    server: tiny_http::Server,
+    requested_locale: Option<CallbackUiLocale>,
+) -> Result<Callback, OAuthError> {
     let timeout = Duration::from_secs_f64(OAUTH_TIMEOUT_SECS);
     let request = match server.recv_timeout(timeout) {
         Ok(Some(req)) => req,
@@ -487,9 +492,10 @@ fn wait_for_callback(server: tiny_http::Server) -> Result<Callback, OAuthError> 
         Err(e) => return Err(OAuthError::new(e)),
     };
 
+    let locale = resolve_callback_ui_locale(requested_locale, request.headers());
     let (callback, callback_error) = parse_callback(request.url());
     let ok = callback.is_some() && callback_error.is_none();
-    let body = callback_html(ok);
+    let body = callback_html(ok, locale);
     let encoded = body.into_bytes();
     let header =
         tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
@@ -549,19 +555,93 @@ fn parse_callback(raw_url: &str) -> (Option<Callback>, Option<String>) {
     }
 }
 
-/// The exact RU success / failure HTML bodies from the Python handler.
-fn callback_html(ok: bool) -> String {
-    if ok {
-        "<!doctype html><meta charset=utf-8><title>GM-Lab Codex</title>\
-<body style=\"font-family:system-ui;background:#14161c;color:#e7e9ef\">\
-<p>Codex авторизован. Можно закрыть вкладку и вернуться в GM-Lab.</p>"
-            .to_string()
-    } else {
-        "<!doctype html><meta charset=utf-8><title>GM-Lab Codex</title>\
-<body style=\"font-family:system-ui;background:#14161c;color:#e7e9ef\">\
-<p>Авторизация Codex не удалась. Вернись в GM-Lab и попробуй снова.</p>"
-            .to_string()
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum CallbackUiLocale {
+    English,
+    #[default]
+    Russian,
+}
+
+fn callback_ui_locale(headers: &[tiny_http::Header]) -> CallbackUiLocale {
+    headers
+        .iter()
+        .find(|header| header.field.equiv("Accept-Language"))
+        .map(|header| callback_ui_locale_from_header(header.value.as_str()))
+        .unwrap_or_default()
+}
+
+fn callback_ui_locale_from_language_tag(value: &str) -> Option<CallbackUiLocale> {
+    match value.trim().to_ascii_lowercase().split('-').next()? {
+        "en" => Some(CallbackUiLocale::English),
+        "ru" => Some(CallbackUiLocale::Russian),
+        _ => None,
     }
+}
+
+fn resolve_callback_ui_locale(
+    requested_locale: Option<CallbackUiLocale>,
+    headers: &[tiny_http::Header],
+) -> CallbackUiLocale {
+    requested_locale.unwrap_or_else(|| callback_ui_locale(headers))
+}
+
+fn callback_ui_locale_from_header(value: &str) -> CallbackUiLocale {
+    let mut supported = value
+        .split(',')
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let mut parts = item.trim().split(';');
+            let language = parts.next()?.trim().to_ascii_lowercase();
+            let primary = language.split('-').next().unwrap_or_default();
+            let locale = match primary {
+                "en" => CallbackUiLocale::English,
+                "ru" => CallbackUiLocale::Russian,
+                _ => return None,
+            };
+            let quality = parts
+                .find_map(|part| part.trim().strip_prefix("q="))
+                .and_then(|quality| quality.parse::<f32>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0);
+            (quality > 0.0).then_some((quality, index, locale))
+        })
+        .collect::<Vec<_>>();
+    supported.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    supported
+        .first()
+        .map(|(_, _, locale)| *locale)
+        .unwrap_or_default()
+}
+
+fn callback_html(ok: bool, locale: CallbackUiLocale) -> String {
+    let (language, message) = match (locale, ok) {
+        (CallbackUiLocale::English, true) => (
+            "en",
+            "Codex is connected. You can close this tab and return to TaleShift.",
+        ),
+        (CallbackUiLocale::English, false) => (
+            "en",
+            "Codex authorization failed. Return to TaleShift and try again.",
+        ),
+        (CallbackUiLocale::Russian, true) => (
+            "ru",
+            "Codex авторизован. Можно закрыть вкладку и вернуться в TaleShift.",
+        ),
+        (CallbackUiLocale::Russian, false) => (
+            "ru",
+            "Авторизация Codex не удалась. Вернись в TaleShift и попробуй снова.",
+        ),
+    };
+    format!(
+        "<!doctype html><html lang=\"{language}\"><meta charset=utf-8><title>TaleShift Codex</title>\
+<body style=\"font-family:system-ui;background:#14161c;color:#e7e9ef\">\
+<p>{message}</p></body></html>"
+    )
 }
 
 // --- URL / token helpers ----------------------------------------------------
@@ -1081,10 +1161,44 @@ mod tests {
     }
 
     #[test]
-    fn callback_html_is_russian_and_exact() {
-        let ok = callback_html(true);
-        assert!(ok.contains("Codex авторизован. Можно закрыть вкладку и вернуться в GM-Lab."));
-        let bad = callback_html(false);
-        assert!(bad.contains("Авторизация Codex не удалась. Вернись в GM-Lab и попробуй снова."));
+    fn callback_html_is_localized() {
+        let ok = callback_html(true, CallbackUiLocale::Russian);
+        assert!(ok.contains("Codex авторизован. Можно закрыть вкладку и вернуться в TaleShift."));
+        assert!(ok.contains("<html lang=\"ru\">"));
+        let bad = callback_html(false, CallbackUiLocale::Russian);
+        assert!(bad.contains("Авторизация Codex не удалась. Вернись в TaleShift и попробуй снова."));
+
+        let en = callback_html(true, CallbackUiLocale::English);
+        assert!(en.contains("Codex is connected. You can close this tab and return to TaleShift."));
+        assert!(en.contains("<html lang=\"en\">"));
+    }
+
+    #[test]
+    fn callback_locale_follows_accept_language_quality() {
+        assert_eq!(
+            callback_ui_locale_from_header("en-US,en;q=0.9,ru;q=0.8"),
+            CallbackUiLocale::English
+        );
+        assert_eq!(
+            callback_ui_locale_from_header("en;q=0.4,ru-RU;q=0.9"),
+            CallbackUiLocale::Russian
+        );
+        assert_eq!(
+            callback_ui_locale_from_header("de-DE,de;q=0.9"),
+            CallbackUiLocale::Russian
+        );
+    }
+
+    #[test]
+    fn requested_callback_locale_overrides_browser_locale() {
+        let headers = [tiny_http::Header::from_bytes("Accept-Language", "ru-RU").unwrap()];
+        assert_eq!(
+            resolve_callback_ui_locale(Some(CallbackUiLocale::English), &headers),
+            CallbackUiLocale::English
+        );
+        assert_eq!(
+            callback_ui_locale_from_language_tag("en-US"),
+            Some(CallbackUiLocale::English)
+        );
     }
 }

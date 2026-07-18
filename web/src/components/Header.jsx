@@ -23,6 +23,7 @@ import {
   modelsForConnector,
   normalizeModelBinding,
 } from "../connectorCatalog.js";
+import { localizeServerMessage } from "../serverMessages.js";
 
 function fmtExpiry(raw, t, language) {
   const ms = raw > 0 && raw < 1_000_000_000_000 ? raw * 1000 : raw;
@@ -64,7 +65,8 @@ function connectorStatus(connector, t, language) {
       note: t("connectors:auth.notRequired"),
     };
   }
-  const msg = auth.message || "";
+  const authNote = (fallback) => localizeServerMessage(auth, t, { fallbackText: fallback });
+  const hasAuthDetail = Boolean(auth.message || auth.error || auth.code);
   const exp = typeof auth.expires_at === "number" ? auth.expires_at : null;
   const rows = [];
   if (auth.account_id) rows.push({ k: t("connectors:auth.account"), v: String(auth.account_id) });
@@ -75,29 +77,44 @@ function connectorStatus(connector, t, language) {
     if (exp != null) {
       rows.push({ k: t("connectors:auth.token"), v: fmtExpiry(exp, t, language) });
     }
-    return { level: "ok", title: t("connectors:auth.connected", { name }), rows, note: msg };
+    return {
+      level: "ok",
+      title: t("connectors:auth.connected", { name }),
+      rows,
+      note: hasAuthDetail ? authNote(t("connectors:auth.connectedNote")) : "",
+    };
   }
 
   const status = String(auth.state || auth.status || "").toLowerCase();
   if (status === "pending" || status === "authorizing") {
-    return { level: "warn", title: t("connectors:auth.connecting", { name }), rows, note: msg };
+    return {
+      level: "warn",
+      title: t("connectors:auth.connecting", { name }),
+      rows,
+      note: authNote(t("connectors:auth.browserPrompt")),
+    };
   }
   if (status === "expired") {
     return {
       level: "error",
       title: t("connectors:auth.notCompleted", { name }),
       rows,
-      note: msg || t("connectors:auth.expired"),
+      note: authNote(t("connectors:auth.expired")),
     };
   }
   if (["denied", "error", "failed", "invalid"].includes(status)) {
-    return { level: "error", title: t("connectors:auth.error", { name }), rows, note: msg };
+    return {
+      level: "error",
+      title: t("connectors:auth.error", { name }),
+      rows,
+      note: authNote(t("connectors:auth.failedNote")),
+    };
   }
   return {
     level: "off",
     title: t("connectors:auth.disconnected", { name }),
     rows,
-    note: msg || t("connectors:auth.required"),
+    note: authNote(t("connectors:auth.required")),
   };
 }
 
@@ -145,7 +162,8 @@ function componentLine(component, fallback, t) {
 }
 
 function imageComponentLine(component, t) {
-  if (!component?.enabled) return `Image: ${t("settings:sidecar.off")}`;
+  const name = t("settings:sidecar.image");
+  if (!component?.enabled) return `${name}: ${t("settings:sidecar.off")}`;
   const label = component.up
     ? t("settings:sidecar.ready")
     : component.runtime_ready
@@ -155,7 +173,7 @@ function imageComponentLine(component, t) {
     ? ` · ${component.models.join(", ")}`
     : "";
   const comfy = component.comfy_up ? " · ComfyUI" : "";
-  return `Image: ${label}${models}${comfy}`;
+  return `${name}: ${label}${models}${comfy}`;
 }
 
 function sidecarUiStatus(status, t) {
@@ -167,7 +185,7 @@ function sidecarUiStatus(status, t) {
   const parts = [];
   if (hasRag) parts.push("RAG");
   if (hasTts) parts.push("TTS");
-  if (hasImage) parts.push("Image");
+  if (hasImage) parts.push(t("settings:sidecar.image"));
   const name = parts.join("/") || t("settings:sidecar.inference");
   if (status.ready) {
     return { level: "ok", label: name, title: t("settings:sidecar.readyTitle") };
@@ -195,11 +213,18 @@ function SidecarTooltip({ status, ui }) {
           v: timeout ? t("settings:sidecar.elapsedOf", { elapsed, timeout }) : elapsed,
         }
       : null,
-    status?.manager_state ? { k: t("settings:sidecar.state"), v: status.manager_state } : null,
+    status?.manager_state
+      ? {
+          k: t("settings:sidecar.state"),
+          v: t(`settings:sidecar.states.${status.manager_state}`, {
+            defaultValue: t("settings:sidecar.states.unknown"),
+          }),
+        }
+      : null,
   ].filter(Boolean);
-  const note =
-    status?.error ||
-    [
+  const note = status?.error
+    ? localizeServerMessage(status, t, { fallbackText: ui.title })
+    : [
       componentLine(c.embedder, t("settings:sidecar.embedder"), t),
       componentLine(c.reranker, t("settings:sidecar.reranker"), t),
       componentLine(c.tts, "TTS", t),
@@ -886,7 +911,7 @@ export default function Header({
         <span className="logo-tile" aria-hidden="true">
           <Icon name="d20" size={16} className="logo-mark" />
         </span>
-        <span>GM-<b>Lab</b></span>
+        <span>Tale<b>Shift</b></span>
       </h1>
       </div>
       <nav className="header-nav" aria-label={t("common:nav.sections")}>

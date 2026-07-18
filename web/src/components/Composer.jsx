@@ -6,6 +6,7 @@ import { transcribeAudio } from "../api.js";
 import { VisibilityContext } from "../devSettings.js";
 import { setAudioSessionType } from "../ttsStore.js";
 import { useTranslation } from "react-i18next";
+import { localizeServerMessage } from "../serverMessages.js";
 
 // Pick a MediaRecorder MIME the browser actually supports, preferring Opus.
 function pickRecorderMime() {
@@ -375,7 +376,9 @@ export default function Composer({
       } catch (err) {
         if (token !== attemptRef.current) return;
         setTranscribing(false);
-        setVoiceError(err?.message || t("voice.recognitionError"));
+        setVoiceError(localizeServerMessage(err, t, {
+          fallbackText: t("voice.recognitionError"),
+        }));
       }
     },
     [insertTranscript, t]

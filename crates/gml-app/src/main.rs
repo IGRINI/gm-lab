@@ -1,4 +1,4 @@
-//! gml-app — the SHIPPED GM-Lab binary.
+//! gml-app — the shipped TaleShift binary.
 //!
 //! One binary, two modes (PORT_PLAN §3.1):
 //!
@@ -6,13 +6,13 @@
 //!     server is bound on `127.0.0.1:<ephemeral-or-GM_PORT>`, then a
 //!     `WebviewWindow` opens pointing at that loopback origin so the UNCHANGED
 //!     React app (`web/src`) runs with real HTTP / SSE / binary semantics.
-//!   * **`--server` / `GM_HEADLESS=1`**: skip Tauri, run the axum server on
-//!     `GM_HOST:GM_PORT` (default `127.0.0.1:8000`), enabling the LAN HTTPS
-//!     listener when exposed on `0.0.0.0` (phone-mic secure-context, mirroring
-//!     `server.py main()`). People play via browser.
+//!   * **`--server` / `GM_HEADLESS=1`**: skip Tauri and run the axum server on
+//!     a loopback-only `GM_HOST:GM_PORT` (default `127.0.0.1:8000`). The server
+//!     has no built-in authentication, so external bind addresses are rejected.
 //!
 //! App-data lives in per-OS dirs via the `directories` crate (`ProjectDirs
-//! "gm-lab"`): settings.json, dialogs.sqlite3, embeddings.sqlite3, tts_cache,
+//! "gm-lab"`, retained for existing installations): settings.json,
+//! dialogs.sqlite3, embeddings.sqlite3, tts_cache,
 //! `.tls`, codex creds. macOS bundle dirs are read-only, so we NEVER write next
 //! to the binary. Existing `GM_*` path env overrides are honored by the
 //! downstream crates' default-path helpers, so we only set those env vars when
@@ -32,7 +32,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gml_audio::{Sidecar, SidecarConfig};
+#[cfg(test)]
+use gml_audio::InferenceFeatures;
+use gml_audio::{default_inference_home, installed_inference_features, Sidecar, SidecarConfig};
 use gml_config::{Config, RuntimeSettings, IMAGE_PROVIDER_LOCAL};
 use gml_llm::{ConnectorId, ConnectorRegistry, ModelBinding};
 use gml_mock::MockConnector;
@@ -131,7 +133,7 @@ impl Args {
 
 fn print_help() {
     println!(
-        "gml-app {ver} — GM-Lab desktop app + headless server\n\
+        "gml-app {ver} — TaleShift desktop app + headless server\n\
 \n\
 USAGE:\n\
     gml-app [OPTIONS]\n\
@@ -144,9 +146,9 @@ OPTIONS:\n\
 \n\
 ENVIRONMENT (headless --server):\n\
     GM_HEADLESS=1       Force --server mode.\n\
-    GM_HOST             Bind host (default 127.0.0.1). Use 0.0.0.0 for LAN.\n\
+    GM_HOST             Loopback bind host only (default 127.0.0.1).\n\
     GM_PORT             HTTP port (default 8000).\n\
-    GM_HTTPS            1=force HTTPS on, 0=force off (auto-on when GM_HOST=0.0.0.0).\n\
+    GM_HTTPS            1=also enable the loopback HTTPS listener (default off).\n\
     GM_HTTPS_PORT       HTTPS port (default 8443).\n\
     GM_OPEN_BROWSER=1   Open the URL in the default browser.\n\
 \n\
@@ -198,7 +200,7 @@ impl AppDirs {
         let _ = std::fs::create_dir_all(&self.cache_dir);
     }
 
-    /// The `.tls` cert dir for the LAN HTTPS listener.
+    /// The `.tls` cert dir for the optional loopback HTTPS listener.
     fn tls_dir(&self) -> PathBuf {
         self.data_dir.join(".tls")
     }
@@ -232,6 +234,9 @@ fn seed_path_env(dirs: &AppDirs) {
     // the global cache — deliberately NOT under `library/` (export privacy).
     set_if_unset("GM_RAG_WORLDS_DIR", dirs.data_dir.join("rag_worlds"));
     set_if_unset("GM_TTS_CACHE_DIR", dirs.cache_dir.join("tts_cache"));
+    let inference_home = default_inference_home();
+    set_if_unset("GM_INFERENCE_HOME", inference_home.clone());
+    seed_inference_feature_env(&inference_home);
     set_if_unset("GM_CODEX_CREDENTIAL_PATH", codex_credential_path);
     set_if_unset("GM_PACKAGES_DIR", dirs.data_dir.join("library"));
 }
@@ -276,6 +281,74 @@ fn set_if_unset(key: &str, value: PathBuf) {
     }
 }
 
+/// Derive safe first-run feature defaults from the completed installation
+/// state. A missing/interrupted setup keeps local inference disabled, while an
+/// explicit environment or `.env` value always wins.
+fn seed_inference_feature_env(inference_home: &std::path::Path) {
+    let features = installed_inference_features(inference_home);
+    gate_bool_by_available("GM_RAG_ENABLED", features.rag);
+    gate_bool_by_available("GM_RAG_RERANK_ENABLED", features.rag);
+    set_bool_if_unset("GM_STT_ENABLED", features.stt);
+    set_bool_if_unset("GM_LOCAL_STT_AVAILABLE", features.stt);
+    set_bool_if_unset("GM_TTS_ENABLED", features.tts);
+    set_bool_if_unset("GM_LOCAL_TTS_AVAILABLE", features.tts);
+    set_bool_if_unset("GM_LOCAL_IMAGE_AVAILABLE", features.images);
+}
+
+fn gate_bool_by_available(key: &str, available: bool) {
+    let configured = std::env::var(key).ok();
+    let enabled = requested_feature_enabled(configured.as_deref(), available);
+    std::env::set_var(key, if enabled { "true" } else { "false" });
+}
+
+fn requested_feature_enabled(configured: Option<&str>, available: bool) -> bool {
+    let requested = configured
+        .filter(|value| !value.trim().is_empty())
+        .map(env_value_is_truthy)
+        .unwrap_or(available);
+    available && requested
+}
+
+fn set_bool_if_unset(key: &str, value: bool) {
+    let already = std::env::var(key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if !already {
+        std::env::set_var(key, if value { "true" } else { "false" });
+    }
+}
+
+#[cfg(test)]
+fn venv_python(venv: &std::path::Path) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
+/// Prefer a model installed by `setup.ps1` unless the user explicitly chose a
+/// model through the public configuration variable. The marker prevents a
+/// half-downloaded directory from being treated as ready.
+fn installed_model_or_configured(config_env: &str, relative_dir: &str, configured: &str) -> String {
+    let explicitly_configured = std::env::var(config_env)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if explicitly_configured {
+        return configured.to_string();
+    }
+
+    let Some(root) = std::env::var_os("GM_INFERENCE_HOME") else {
+        return configured.to_string();
+    };
+    let model_dir = PathBuf::from(root).join(relative_dir);
+    if model_dir.join(".gml-model.json").is_file() {
+        model_dir.to_string_lossy().into_owned()
+    } else {
+        configured.to_string()
+    }
+}
+
 /// Everything the running server needs, plus the handles we shut down on exit.
 struct App {
     state: AppState,
@@ -287,10 +360,11 @@ struct App {
 async fn build_app() -> Result<App, String> {
     let dirs = AppDirs::resolve();
     dirs.ensure();
-    seed_path_env(&dirs);
 
-    // Honor `.env` files like `config.py`'s module-init `_load_dotenv()`.
+    // Load explicit user configuration before seeding per-OS path defaults so
+    // setup.ps1's custom inference directory is allowed to win.
     gml_config::load_dotenv();
+    seed_path_env(&dirs);
 
     let config = Arc::new(Config::from_env());
     let settings = Arc::new(RuntimeSettings::new(
@@ -361,22 +435,33 @@ async fn build_app() -> Result<App, String> {
         index_html: Arc::new(resolve_index_html(&dirs)),
     };
 
-    // Unified inference sidecar (serve.py: embeddings + rerank + TTS in one
+    // Unified inference sidecar (serve.py: embeddings + rerank + STT + TTS in one
     // process). Pass per-model quant + which models to load so the sidecar
     // mirrors the app's RAG/TTS settings; base_url/port/HF_HOME come from
     // SidecarConfig::from_env. Started best-effort at boot, killed on exit.
     let mut sidecar_cfg = SidecarConfig::from_env();
     let b01 = |on: bool| if on { "1" } else { "0" }.to_string();
+    let local_stt_enabled = env_flag("GM_STT_ENABLED") && sidecar_cfg.stt_available;
+    let local_tts_enabled = state.settings.tts_enabled(None) && sidecar_cfg.tts_available;
     let local_image_enabled = state.config.image_enabled
         && state.settings.image_enabled(None)
-        && state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL;
+        && state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL
+        && sidecar_cfg.image_available;
     sidecar_cfg.envs.push((
         "EMBEDDER_MODEL".to_string(),
-        state.config.rag_embeddings_model.clone(),
+        installed_model_or_configured(
+            "GM_RAG_EMBEDDINGS_MODEL",
+            "models/embedder",
+            &state.config.rag_embeddings_model,
+        ),
     ));
     sidecar_cfg.envs.push((
         "RERANKER_MODEL".to_string(),
-        state.config.rag_rerank_model.clone(),
+        installed_model_or_configured(
+            "GM_RAG_RERANK_MODEL",
+            "models/reranker",
+            &state.config.rag_rerank_model,
+        ),
     ));
     sidecar_cfg.envs.push((
         "EMBEDDER_QUANT".to_string(),
@@ -394,10 +479,12 @@ async fn build_app() -> Result<App, String> {
         "RERANKER_ENABLED".to_string(),
         b01(state.config.rag_enabled && state.config.rag_rerank_enabled),
     ));
-    sidecar_cfg.envs.push((
-        "TTS_ENABLED".to_string(),
-        b01(state.settings.tts_enabled(None)),
-    ));
+    sidecar_cfg
+        .envs
+        .push(("STT_ENABLED".to_string(), b01(local_stt_enabled)));
+    sidecar_cfg
+        .envs
+        .push(("TTS_ENABLED".to_string(), b01(local_tts_enabled)));
     sidecar_cfg
         .envs
         .push(("IMAGE_ENABLED".to_string(), b01(local_image_enabled)));
@@ -526,6 +613,20 @@ fn resolve_index_html(dirs: &AppDirs) -> Option<PathBuf> {
 // =========================================================================
 
 async fn run_server() {
+    let host = env_str("GM_HOST", DEFAULT_HOST);
+    let bind_host = match parse_loopback_host(&host) {
+        Ok(host) => host,
+        Err(error) => {
+            eprintln!("gml-app: {error}");
+            std::process::exit(2);
+        }
+    };
+    let port = env_u16("GM_PORT", DEFAULT_PORT);
+    let shown_host = match bind_host {
+        std::net::IpAddr::V4(address) => address.to_string(),
+        std::net::IpAddr::V6(address) => format!("[{address}]"),
+    };
+
     let app = match build_app().await {
         Ok(a) => a,
         Err(e) => {
@@ -540,18 +641,24 @@ async fn run_server() {
     {
         let sidecar = app.sidecar.clone();
         let rag = app.state.config.rag_enabled;
-        let tts = app.state.settings.tts_enabled(None);
+        let stt = sidecar.stt_enabled();
+        let tts = app.state.settings.tts_enabled(None) && sidecar.tts_available();
         let image = app.state.config.image_enabled
             && app.state.settings.image_enabled(None)
-            && app.state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL;
+            && app.state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL
+            && sidecar.image_available();
         tokio::spawn(async move {
-            if !(rag || tts || image) {
-                tracing::info!("RAG + TTS + image all disabled; inference sidecar not started");
+            if !(rag || stt || tts || image) {
+                tracing::info!(
+                    "RAG + STT + TTS + image all disabled; inference sidecar not started"
+                );
                 return;
             }
             match sidecar.ensure_started(true).await {
                 Ok(()) => {
-                    tracing::info!("inference sidecar ready (rag={rag} tts={tts} image={image})")
+                    tracing::info!(
+                        "inference sidecar ready (rag={rag} stt={stt} tts={tts} image={image})"
+                    )
                 }
                 Err(e) => {
                     tracing::warn!("inference sidecar not started ({e}); continuing degraded")
@@ -560,54 +667,26 @@ async fn run_server() {
         });
     }
 
-    let host = env_str("GM_HOST", DEFAULT_HOST);
-    let port = env_u16("GM_PORT", DEFAULT_PORT);
-    let lan_exposed = host.is_empty() || host == "0.0.0.0";
-    let shown_host = if lan_exposed {
-        "localhost"
-    } else {
-        host.as_str()
-    };
-
     let default_binding = app.state.store.default_binding();
     let url = format!("http://{shown_host}:{port}");
     println!(
-        "GM-Lab web UI: {url}  (default connector {}, model {})",
+        "TaleShift web UI: {url}  (default connector {}, model {})",
         default_binding.connector_id(),
         default_binding.model_id()
     );
     println!("SQLite dialogs: {}", app.state.store.db_path());
     println!("Shared chat scope: {}", gml_server::chat_scope_id());
 
-    // HTTPS auto-enable rules (server.py main()): GM_HTTPS=1 forces on,
-    // GM_HTTPS=0 forces off, otherwise on iff LAN-exposed (0.0.0.0).
-    let https_flag = std::env::var("GM_HTTPS").ok();
-    let want_https = match https_flag.as_deref() {
-        Some("1") => true,
-        Some("0") => false,
-        _ => lan_exposed,
-    };
+    let want_https = env_flag("GM_HTTPS");
 
-    let bind_host: std::net::IpAddr = if lan_exposed {
-        std::net::IpAddr::from([0, 0, 0, 0])
-    } else {
-        host.parse()
-            .unwrap_or_else(|_| std::net::IpAddr::from([127, 0, 0, 1]))
-    };
-
-    // Optional LAN HTTPS listener (own port) — never touches the HTTP port.
+    // Optional loopback HTTPS listener (own port) — never touches the HTTP port.
     if want_https {
         let https_port = env_u16("GM_HTTPS_PORT", DEFAULT_HTTPS_PORT);
         let addr = std::net::SocketAddr::new(bind_host, https_port);
         let router = build_router(app.state.clone());
         let dirs = AppDirs::resolve();
         let cert_dir = dirs.tls_dir();
-        println!("HTTPS (phone mic): https://{shown_host}:{https_port}");
-        if lan_exposed {
-            for ip in gml_server::tls::lan_ipv4() {
-                println!("  from phone/tablet: https://{ip}:{https_port}  (accept the self-signed cert once)");
-            }
-        }
+        println!("HTTPS: https://{shown_host}:{https_port}");
         tokio::spawn(async move {
             if let Err(e) = gml_server::run_https(addr, router, &cert_dir).await {
                 eprintln!("HTTPS listener stopped: {e}");
@@ -695,14 +774,14 @@ fn run_desktop() {
     let state = app.state.clone();
     let sidecar = app.sidecar.clone();
     handle.spawn(async move {
+        let stt = sidecar.stt_enabled();
+        let tts = state.settings.tts_enabled(None) && sidecar.tts_available();
+        let image = state.config.image_enabled
+            && state.settings.image_enabled(None)
+            && state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL
+            && sidecar.image_available();
         let _ = sidecar
-            .ensure_started(
-                state.config.rag_enabled
-                    || state.settings.tts_enabled(None)
-                    || (state.config.image_enabled
-                        && state.settings.image_enabled(None)
-                        && state.settings.image_provider(None) == IMAGE_PROVIDER_LOCAL),
-            )
+            .ensure_started(state.config.rag_enabled || stt || tts || image)
             .await;
     });
     let router = build_router(app.state.clone());
@@ -724,7 +803,7 @@ fn run_desktop() {
         let url =
             WebviewUrl::External(origin_for_setup.parse().expect("parse loopback origin url"));
         WebviewWindowBuilder::new(tauri_app, "main", url)
-            .title("GM-Lab")
+            .title("TaleShift")
             .inner_size(1280.0, 860.0)
             .min_inner_size(900.0, 600.0)
             .on_new_window(|url, _features| {
@@ -789,6 +868,23 @@ fn run_with_runtime<F: std::future::Future>(fut: F) -> F::Output {
     rt.block_on(fut)
 }
 
+fn parse_loopback_host(host: &str) -> Result<std::net::IpAddr, String> {
+    let host = host.trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(std::net::IpAddr::from([127, 0, 0, 1]));
+    }
+    let address = host
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| format!("invalid GM_HOST '{host}'. Use 127.0.0.1, localhost, or ::1."))?;
+    if !address.is_loopback() {
+        return Err(format!(
+            "refusing external GM_HOST '{host}': server mode has no built-in authentication. \
+             Bind to 127.0.0.1 and place an authenticated reverse proxy in front of TaleShift."
+        ));
+    }
+    Ok(address)
+}
+
 fn env_str(key: &str, default: &str) -> String {
     match std::env::var(key) {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
@@ -809,12 +905,16 @@ fn env_u16_opt(key: &str) -> Option<u16> {
 /// Truthy env flag: set and not in the falsey set.
 fn env_flag(key: &str) -> bool {
     match std::env::var(key) {
-        Ok(v) => !matches!(
-            v.trim().to_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        ),
+        Ok(v) => env_value_is_truthy(&v),
         Err(_) => false,
     }
+}
+
+fn env_value_is_truthy(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
 }
 
 #[cfg(test)]
@@ -864,6 +964,15 @@ mod tests {
     }
 
     #[test]
+    fn requested_local_feature_never_bypasses_availability() {
+        assert!(requested_feature_enabled(None, true));
+        assert!(requested_feature_enabled(Some("true"), true));
+        assert!(!requested_feature_enabled(Some("false"), true));
+        assert!(!requested_feature_enabled(Some("true"), false));
+        assert!(!requested_feature_enabled(None, false));
+    }
+
+    #[test]
     fn external_browser_allows_only_web_urls() {
         assert!(is_external_browser_scheme("https"));
         assert!(is_external_browser_scheme("http"));
@@ -880,6 +989,23 @@ mod tests {
         assert_eq!(env_u16("GML_APP_TEST_PORT", 8000), 8000);
         std::env::remove_var("GML_APP_TEST_PORT");
         assert_eq!(env_u16("GML_APP_TEST_PORT", 8000), 8000);
+    }
+
+    #[test]
+    fn server_bind_accepts_only_loopback_addresses() {
+        assert_eq!(
+            parse_loopback_host("localhost").unwrap(),
+            std::net::IpAddr::from([127, 0, 0, 1])
+        );
+        assert!(parse_loopback_host("127.0.0.2").unwrap().is_loopback());
+        assert!(parse_loopback_host("::1").unwrap().is_loopback());
+
+        for host in ["0.0.0.0", "192.168.1.10", "::", "example.com", ""] {
+            assert!(
+                parse_loopback_host(host).is_err(),
+                "{host:?} must not create an unauthenticated external listener"
+            );
+        }
     }
 
     #[test]
@@ -913,5 +1039,220 @@ mod tests {
         std::fs::write(&source, b"not json").unwrap();
         migrate_legacy_credential(&source, &target);
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn inference_features_require_completed_profile_and_markers() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        assert_eq!(
+            installed_inference_features(root),
+            InferenceFeatures::default()
+        );
+
+        std::fs::write(root.join("install.json"), r#"{"profile":"Full"}"#).unwrap();
+        let runtime_python = venv_python(&root.join("runtime/.venv"));
+        std::fs::create_dir_all(runtime_python.parent().unwrap()).unwrap();
+        std::fs::write(runtime_python, "").unwrap();
+        let write_snapshot = |relative: &str,
+                              component: &str,
+                              manifest_sha256: &str,
+                              artifacts: &[&str]| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(&path).unwrap();
+            let mut inventory = serde_json::Map::new();
+            for artifact in artifacts {
+                let artifact_path = path.join(artifact);
+                std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+                std::fs::write(&artifact_path, b"fixture").unwrap();
+                inventory.insert(
+                    (*artifact).to_string(),
+                    serde_json::json!({"size": 7, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}),
+                );
+            }
+            std::fs::write(
+                path.join(".gml-model.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 2,
+                    "component": component,
+                    "manifest_sha256": manifest_sha256,
+                    "artifacts": inventory,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_snapshot(
+            "models/embedder",
+            "embedder",
+            "1e6298ca5951abf6efcb7d47a2288c0e362e45889fd6ab4630f93e82181e8b8b",
+            &[
+                "1_Pooling/config.json",
+                "config.json",
+                "config_sentence_transformers.json",
+                "generation_config.json",
+                "merges.txt",
+                "model.safetensors",
+                "modules.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "vocab.json",
+            ],
+        );
+        write_snapshot(
+            "models/reranker",
+            "reranker",
+            "22e050d32cabd283ac3a66e087f7630134563db52d7bbe3dc151df468fc4a875",
+            &[
+                "added_tokens.json",
+                "config.json",
+                "generation_config.json",
+                "merges.txt",
+                "model.safetensors",
+                "modeling.py",
+                "special_tokens_map.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "vocab.json",
+            ],
+        );
+        write_snapshot(
+            "models/stt",
+            "stt-model",
+            "b84ca8daa2a4faf65f882bf08b3fc15718d5f42d4e2305388054c93430751a19",
+            &[
+                "added_tokens.json",
+                "config.json",
+                "generation_config.json",
+                "merges.txt",
+                "model.safetensors",
+                "normalizer.json",
+                "preprocessor_config.json",
+                "special_tokens_map.json",
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "vocab.json",
+            ],
+        );
+        write_snapshot(
+            "tts/qwen17b_base",
+            "tts-model",
+            "69a233c62e435a58bdcdfff28255189064410d95d2a65dda7f569113903f53f5",
+            &[
+                "config.json",
+                "generation_config.json",
+                "merges.txt",
+                "model.safetensors",
+                "preprocessor_config.json",
+                "speech_tokenizer/config.json",
+                "speech_tokenizer/configuration.json",
+                "speech_tokenizer/model.safetensors",
+                "speech_tokenizer/preprocessor_config.json",
+                "tokenizer_config.json",
+                "vocab.json",
+            ],
+        );
+        let write_file = |relative: &str, component: &str, manifest_sha256: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"fixture").unwrap();
+            let marker = path.with_file_name(format!(
+                "{}.gml-model.json",
+                path.file_name().unwrap().to_string_lossy()
+            ));
+            std::fs::write(
+                marker,
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 2,
+                    "component": component,
+                    "manifest_sha256": manifest_sha256,
+                    "artifacts": {".": {"size": 7, "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}},
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        for (relative, component, manifest_sha256) in [
+            (
+                "tts/ref_audio.wav",
+                "tts-male-voice",
+                "cc57f500ae418a80a47829d325d125a537393aafdb369b28fe9044671f89329d",
+            ),
+            (
+                "tts/ref_audio_2.wav",
+                "tts-gm-voice",
+                "ec5709f6e43bd96fa9df54e77c2febcc5dd189d1378fe060d4a431c85d0c219a",
+            ),
+            (
+                "tts/ref_audio_3.wav",
+                "tts-female-voice",
+                "510a03a2d85cfe194b8822c330a03aa4474e114ac0c5ee3836b00336b8dc7392",
+            ),
+            (
+                "image/ComfyUI/models/diffusion_models/flux-2-klein-4b-nvfp4.safetensors",
+                "image-diffusion",
+                "0bceaa8033bf39a8a126a3ea06a9e66e2c0cd3f72f00072b18f2bfd8d4bc965b",
+            ),
+            (
+                "image/ComfyUI/models/text_encoders/qwen_3_4b_fp4_flux2.safetensors",
+                "image-text-encoder",
+                "d16374ca413a9fed1786787955d7f5a1fa185d0bd9530d18eaa19b829ee067e8",
+            ),
+            (
+                "image/ComfyUI/models/vae/flux2-vae.safetensors",
+                "image-vae",
+                "60a649d1bb7e37e5a570412c108bece623cbb79aac41cfd3e52ea80bed5364cf",
+            ),
+        ] {
+            write_file(relative, component, manifest_sha256);
+        }
+        std::fs::write(root.join("image/ComfyUI/main.py"), "").unwrap();
+        let image_python = venv_python(&root.join("image/.venv"));
+        std::fs::create_dir_all(image_python.parent().unwrap()).unwrap();
+        std::fs::write(image_python, "").unwrap();
+
+        // Legacy and interrupted setup state must never enable a local runtime,
+        // even when model files and their markers happen to exist.
+        assert_eq!(
+            installed_inference_features(root),
+            InferenceFeatures::default()
+        );
+        let write_install = |profile: &str, build_complete: bool| {
+            std::fs::write(
+                root.join("install.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "schema_version": 2,
+                    "profile": profile,
+                    "build_complete": build_complete,
+                    "source_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "executable_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "web_dist_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_install("Full", false);
+        assert_eq!(
+            installed_inference_features(root),
+            InferenceFeatures::default()
+        );
+
+        write_install("Full", true);
+        assert_eq!(
+            installed_inference_features(root),
+            InferenceFeatures {
+                rag: true,
+                stt: true,
+                tts: true,
+                images: true,
+            }
+        );
+
+        write_install("Minimal", true);
+        assert_eq!(
+            installed_inference_features(root),
+            InferenceFeatures::default()
+        );
     }
 }

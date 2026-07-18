@@ -5,6 +5,8 @@ import MarkdownText from "./MarkdownText.jsx";
 import Modal from "./Modal.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { nameColor } from "../nameColor.js";
+import { localizeServerMessage } from "../serverMessages.js";
+import { localizeStatusLabel } from "../statusContext.js";
 import {
   asObject,
   numText,
@@ -175,7 +177,7 @@ function StateRecordsManager({ records, npcs, onApply }) {
               {SR_SCOPES.map((s) => <option key={s} value={s}>{t(`worldState.scopes.${s}`, { defaultValue: s })}</option>)}
             </select>
           </Tooltip>
-          <input placeholder="entity_id (npc)" value={entity} list="dbg-npc-ids" onChange={(e) => setEntity(e.target.value)} />
+          <input placeholder={t("debug.fields.entityIdNpc")} value={entity} list="dbg-npc-ids" onChange={(e) => setEntity(e.target.value)} />
           <button type="button" className="btn primary" disabled={!text.trim()} onClick={add}>{t("debug.common.add")}</button>
         </div>
         <datalist id="dbg-npc-ids">{npcs.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}</datalist>
@@ -365,7 +367,7 @@ function SceneEditor({ scene, npcs, onSave }) {
       };
       setEditError("");
     } catch (e) {
-      setEditError(e.message || String(e));
+      setEditError(debugErrorText(e, t));
       return;
     }
     onSave(patch);
@@ -374,7 +376,7 @@ function SceneEditor({ scene, npcs, onSave }) {
     <div className="dbg-form">
       <div className="dbg-edit-grid">
         <EditField label={t("debug.sceneEditor.title")}><input value={d.title} onChange={(e) => set({ title: e.target.value })} /></EditField>
-        <EditField label="location_id"><input value={d.location_id} onChange={(e) => set({ location_id: e.target.value })} /></EditField>
+        <EditField label={t("debug.fields.locationId")}><input value={d.location_id} onChange={(e) => set({ location_id: e.target.value })} /></EditField>
       </div>
       <EditField label={t("debug.sceneEditor.description")}><textarea rows={3} value={d.description} onChange={(e) => set({ description: e.target.value })} /></EditField>
       <EditField label={t("debug.sceneEditor.tension")}><textarea rows={2} value={d.tension} onChange={(e) => set({ tension: e.target.value })} /></EditField>
@@ -442,7 +444,10 @@ function NpcEditor({ npc, statusLabels, onSave }) {
   const set = (patch) => setD((p) => ({ ...p, ...patch }));
   const updateAbility = numKeyUpdater(setAbilities);
   const updateHp = numKeyUpdater(setHp);
-  const statusEntries = Object.entries(statusLabels || {});
+  const statusEntries = Object.keys(statusLabels || {}).map((key) => [
+    key,
+    localizeStatusLabel(t, key, statusLabels),
+  ]);
   const secretChanged = d.secret !== (npc.secret || "");
   const presenceChanged = d.present !== !!npc.present;
   const save = () => {
@@ -466,7 +471,7 @@ function NpcEditor({ npc, statusLabels, onSave }) {
       };
       setEditError("");
     } catch (e) {
-      setEditError(e.message || String(e));
+      setEditError(debugErrorText(e, t));
       return;
     }
     const body = {
@@ -670,7 +675,7 @@ function PlayerEditor({ player, onSave }) {
       };
       setEditError("");
     } catch (e) {
-      setEditError(e.message || String(e));
+      setEditError(debugErrorText(e, t));
       return;
     }
     onSave({ fields, reason: "debug edit" });
@@ -817,11 +822,31 @@ function parseListField(value) {
     .filter(Boolean);
 }
 
+class DebugValidationError extends Error {
+  constructor(localizedMessage) {
+    super("Debug form validation failed");
+    this.name = "DebugValidationError";
+    this.localizedMessage = localizedMessage;
+  }
+}
+
+function debugErrorText(error, t, fallbackKey = "debug.errors.invalidValue") {
+  if (error instanceof DebugValidationError) return error.localizedMessage;
+  return localizeServerMessage(error, t, { fallbackText: t(fallbackKey) });
+}
+
 function parseArrayField(label, value, t) {
   const raw = String(value || "").trim();
   if (!raw) return [];
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error(t("debug.errors.jsonArray", { label }));
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new DebugValidationError(t("debug.errors.jsonArray", { label }));
+  }
+  if (!Array.isArray(parsed)) {
+    throw new DebugValidationError(t("debug.errors.jsonArray", { label }));
+  }
   return parsed;
 }
 
@@ -835,7 +860,9 @@ function parseIntegerField(label, value, t) {
   const raw = String(value || "").trim();
   if (!raw) return null;
   const parsed = Number(raw);
-  if (!Number.isInteger(parsed)) throw new Error(t("debug.errors.integer", { label }));
+  if (!Number.isInteger(parsed)) {
+    throw new DebugValidationError(t("debug.errors.integer", { label }));
+  }
   return parsed;
 }
 
@@ -960,7 +987,7 @@ function NpcCard({ npc, statusLabels = {}, onEdit }) {
         </span>
       </summary>
       <div className="debug-grid">
-        <div><span>id</span><b>{npc.id}</b></div>
+        <div><span>{t("debug.fields.id")}</span><b>{npc.id}</b></div>
         <div><span>{t("debug.fields.playerSees")}</span><b>{npc.player_label || npc.public_label || "—"}</b></div>
         <div><span>{t("debug.fields.knownName")}</span><b>{npc.known_name || "—"}</b></div>
         <div><span>{t("debug.fields.publicLabel")}</span><b>{npc.public_label || "—"}</b></div>
@@ -973,7 +1000,7 @@ function NpcCard({ npc, statusLabels = {}, onEdit }) {
         <div><span>{t("debug.fields.lifeStatus")}</span><b>{npc.life_status_note || "—"}</b></div>
         <div><span>{t("debug.fields.condition")}</span><b>{npc.condition || "—"}</b></div>
         <div><span>{t("debug.fields.where")}</span><b>{npc.whereabouts?.location_name || npc.whereabouts?.location_id || "—"}</b></div>
-        <div><span>{t("debug.fields.status")}</span><b>{statusLabels[status] || status}</b></div>
+        <div><span>{t("debug.fields.status")}</span><b>{localizeStatusLabel(t, status, statusLabels)}</b></div>
       </div>
 
       <h4>{t("debug.npcCard.personality")}</h4>
@@ -1037,7 +1064,7 @@ function PlayerCard({ player, onEdit }) {
             className="btn small"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onEdit?.(); }}
           >✎ {t("debug.common.edit")}</button>
-          <small>rev {player.card_revision || 0}</small>
+          <small>{t("debug.playerCard.revision", { value: player.card_revision || 0 })}</small>
         </span>
       </summary>
       <div className="debug-grid">
@@ -1129,9 +1156,9 @@ function RuntimeView({ meta, runtime }) {
     <div className="debug-stack">
       <h4>{t("debug.runtime.cacheTitle")} <Info>{t("debug.runtime.cacheHelp")}</Info></h4>
       <div className="debug-grid">
-        <div><span>prompt_cache_key</span><b className="dbg-mono">{cache.prompt_cache_key || "—"}</b></div>
-        <div><span>thread_id</span><b className="dbg-mono">{cache.thread_id || "—"}</b></div>
-        <div><span>store</span><b>{String(cache.store ?? false)}</b></div>
+        <div><span>{t("debug.runtime.promptCacheKey")}</span><b className="dbg-mono">{cache.prompt_cache_key || "—"}</b></div>
+        <div><span>{t("debug.runtime.threadId")}</span><b className="dbg-mono">{cache.thread_id || "—"}</b></div>
+        <div><span>{t("debug.runtime.store")}</span><b>{t(cache.store ? "debug.common.yes" : "debug.common.no")}</b></div>
         <div><span>{t("debug.fields.turns")}</span><b>{meta?.turns ?? "—"}</b></div>
       </div>
 
@@ -1179,10 +1206,13 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
     setError("");
     try {
       const payload = await api.debug();
-      if (!payload.ok) throw new Error(payload.error || t("debug.errors.load"));
+      if (!payload.ok) {
+        setError(localizeServerMessage(payload, t, { fallbackText: t("debug.errors.load") }));
+        return;
+      }
       setData(payload);
     } catch (e) {
-      setError(e.message || String(e));
+      setError(localizeServerMessage(e, t, { fallbackText: t("debug.errors.load") }));
     } finally {
       setLoading(false);
     }
@@ -1214,9 +1244,9 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
     try {
       const payload = await promise;
       if (payload && payload.ok !== false) setData(payload);
-      else setError(payload?.error || t("debug.errors.apply"));
+      else setError(localizeServerMessage(payload, t, { fallbackText: t("debug.errors.apply") }));
     } catch (e) {
-      setError(e.message || String(e));
+      setError(localizeServerMessage(e, t, { fallbackText: t("debug.errors.apply") }));
     }
   }, [t]);
 
@@ -1291,7 +1321,7 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
           </nav>
         )}
 
-        {error && <div className="err">debug: {error}</div>}
+        {error && <div className="err">{error}</div>}
         {!data && !error && <Empty>{loading ? t("debug.panel.loading") : t("debug.panel.notOpened")}</Empty>}
 
         {data && (
@@ -1324,7 +1354,7 @@ export default function DebugPanel({ refreshKey = "", open = false, onOpenChange
                   <button type="button" className="btn primary" onClick={() => openModal({ type: "story" })}>✎ {t("debug.panel.editStory")}</button>
                 </div>
                 <h4>{t("debug.panel.objective")} <Info>{t("debug.panel.objectiveHelp")}</Info></h4>
-                <TextBlock>{data.story?.objective}</TextBlock>
+                <TextBlock>{t("debug.panel.objectiveText")}</TextBlock>
                 <h4>{t("debug.storyEditor.brief")} <Info>{t("debug.panel.briefHelp")}</Info></h4>
                 <TextBlock>{data.story?.brief}</TextBlock>
                 <h4>{t("debug.storyEditor.publicIntro")} <Info>{t("debug.panel.publicIntroHelp")}</Info></h4>

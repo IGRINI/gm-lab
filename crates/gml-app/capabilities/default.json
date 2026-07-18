@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2/acl-capability",
   "identifier": "default",
-  "description": "Minimal core permissions for the GM-Lab desktop window. The React frontend talks to the embedded loopback HTTP/SSE server, NOT the Tauri IPC bridge, so no plugin/command permissions are required.",
+  "description": "Minimal core permissions for the TaleShift desktop window. The React frontend talks to the embedded loopback HTTP/SSE server, NOT the Tauri IPC bridge, so no plugin/command permissions are required.",
   "windows": ["main"],
   "permissions": [
     "core:default"

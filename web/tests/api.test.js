@@ -22,6 +22,7 @@ test("turn cancellation is addressed by chat and request id", async (t) => {
 
   assert.equal(request.url, "/turn/turn%2Fid/cancel");
   assert.equal(request.init.method, "POST");
+  assert.equal(request.init.headers.get("Accept-Language"), "ru");
   assert.deepEqual(JSON.parse(request.init.body), { chat_id: "chat/one" });
 });
 
@@ -169,7 +170,7 @@ test("streamTurn sends a staged history mutation", async (t) => {
   });
 });
 
-test("streamTurn surfaces a non-success HTTP response", async (t) => {
+test("streamTurn hides raw server detail behind a localized safe fallback", async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => {
     globalThis.fetch = originalFetch;
@@ -182,7 +183,10 @@ test("streamTurn surfaces a non-success HTTP response", async (t) => {
 
   await assert.rejects(
     streamTurn("Иду", "9e4b507d-8f55-4570-91f6-1c77ae4dc0a8", () => {}),
-    (error) => error.retryable === true && /Сервис временно недоступен/.test(error.message)
+    (error) =>
+      error.retryable === true &&
+      /ход не выполнен/.test(error.message) &&
+      !/Сервис временно недоступен/.test(error.message)
   );
 });
 
@@ -199,7 +203,10 @@ test("streamTurn marks ordinary client errors as non-retryable", async (t) => {
 
   await assert.rejects(
     streamTurn("Иду", "9e4b507d-8f55-4570-91f6-1c77ae4dc0a8", () => {}),
-    (error) => error.retryable === false && /Некорректный ход/.test(error.message)
+    (error) =>
+      error.retryable === false &&
+      /ход не выполнен/.test(error.message) &&
+      !/Некорректный ход/.test(error.message)
   );
 });
 

@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 
+use gml_types::ContentLocale;
 use gml_world::state_record::RagDocument;
 use gml_world::{
     MemoryInjectionState, MemoryTier, MemoryTruthStatus, MemoryUnit, NpcWhereabouts, StateRecord,
@@ -600,4 +601,154 @@ fn rng_state_roundtrips_through_world() {
     assert_eq!(t_a, t_b);
     assert_eq!(saved.version, 3);
     assert_eq!(saved.internal.len(), 625);
+}
+
+#[test]
+fn player_update_reports_exact_public_list_diff() {
+    let mut w = pinned_world();
+    w.player_character.inventory = vec!["старый ключ".to_string(), "карта".to_string()];
+
+    let out = w.update_player_character(
+        &json!({
+            "inventory_remove": ["старый ключ"],
+            "inventory_add": ["новый ключ"],
+        }),
+        "замена ключа",
+    );
+
+    assert_eq!(out["updated"], json!(["inventory"]));
+    assert_eq!(out["changes"][0]["field"], "inventory");
+    assert_eq!(out["changes"][0]["before"], json!(["старый ключ", "карта"]));
+    assert_eq!(out["changes"][0]["after"], json!(["карта", "новый ключ"]));
+    assert_eq!(out["changes"][0]["added"], json!(["новый ключ"]));
+    assert_eq!(out["changes"][0]["removed"], json!(["старый ключ"]));
+}
+
+#[test]
+fn private_player_notes_never_enter_public_mutation_or_live_state_payloads() {
+    let mut w = pinned_world();
+    let secret = "тайный приказ короля";
+    let out = w.update_player_character(&json!({"gm_notes": secret}), "служебная заметка");
+
+    assert_eq!(w.player_character.gm_notes, secret);
+    assert_eq!(out["updated"], json!([]));
+    assert_eq!(out["changes"], json!([]));
+    assert!(out["player_character"].get("gm_notes").is_none());
+    assert!(!out.to_string().contains(secret));
+
+    let live = w.player_state_export();
+    assert!(live["player_character"].get("gm_notes").is_none());
+    assert!(!live.to_string().contains(secret));
+}
+
+#[test]
+fn live_npc_labels_follow_the_persisted_content_locale() {
+    let seed = json!({
+        "id": "localized_live_state",
+        "title": "Localized live state",
+        "npcs": [{
+            "id": "guide",
+            "name": "Guide",
+            "role": "innkeeper",
+            "pronouns": "m"
+        }],
+        "scene": {
+            "location_id": "hall",
+            "title": "Hall",
+            "present_npcs": ["guide"]
+        }
+    });
+
+    for (locale, expected_role, expected_pronouns) in [
+        (ContentLocale::Russian, "трактирщик", "мужской род"),
+        (ContentLocale::English, "innkeeper", "masculine"),
+    ] {
+        let mut world = World::from_seed_with_dice_seed_for_locale(&seed, 7, locale);
+        let state = world.player_state_export();
+        assert_eq!(state["npcs"][0]["role"], expected_role);
+        assert_eq!(state["npcs"][0]["pronouns"], expected_pronouns);
+    }
+}
+
+#[test]
+fn entity_refs_keep_ui_semantics_separate_from_content_locale() {
+    let seed = json!({
+        "id": "localized_entity_refs",
+        "title": "Localized entity refs",
+        "npcs": [{
+            "id": "guide",
+            "name": "Guide",
+            "role": "innkeeper",
+            "pronouns": "m"
+        }],
+        "scene": {
+            "location_id": "hall",
+            "title": "Hall",
+            "description": "A quiet hall.",
+            "present_npcs": ["guide"],
+            "exits": [{"id": "gate", "name": "Gate", "destination": "Road"}]
+        }
+    });
+
+    for (locale, legacy_kind, legacy_role_label, expected_role) in [
+        (ContentLocale::Russian, "персонаж", "роль", "трактирщик"),
+        (ContentLocale::English, "character", "role", "innkeeper"),
+    ] {
+        let mut world = World::from_seed_with_dice_seed_for_locale(&seed, 7, locale);
+        let registry = world.entity_refs();
+        let entities = registry["entities"].as_array().expect("entity array");
+        let npc = entities
+            .iter()
+            .find(|entity| entity["key"] == "npc:guide")
+            .expect("guide entity");
+
+        assert_eq!(npc["subtitle_key"], "entity.kind.npc");
+        assert_eq!(npc["subtitle_detail"], expected_role);
+        assert_eq!(npc["subtitle"], format!("{legacy_kind} · {expected_role}"));
+
+        let meta = npc["meta"].as_array().expect("NPC metadata");
+        let role = meta
+            .iter()
+            .find(|row| row["label_key"] == "entity.meta.role")
+            .expect("role row");
+        assert_eq!(role["label"], legacy_role_label);
+        assert_eq!(role["value"], expected_role);
+        let status = meta
+            .iter()
+            .find(|row| row["label_key"] == "entity.meta.status")
+            .expect("status row");
+        assert_eq!(status["value_key"], "entity.status.present");
+        let gender = meta
+            .iter()
+            .find(|row| row["label_key"] == "entity.meta.gender")
+            .expect("gender row");
+        assert_eq!(gender["value_key"], "entity.gender.masculine");
+
+        let location = entities
+            .iter()
+            .find(|entity| entity["key"] == "loc:hall")
+            .expect("current location entity");
+        assert_eq!(location["subtitle_key"], "entity.kind.loc");
+        assert!(location["meta"]
+            .as_array()
+            .expect("location metadata")
+            .iter()
+            .any(|row| row["label_key"] == "entity.meta.present_characters"));
+
+        world.npcs.get_mut("guide").expect("guide NPC").role.clear();
+        let fallback_registry = world.entity_refs();
+        let fallback_npc = fallback_registry["entities"]
+            .as_array()
+            .expect("fallback entity array")
+            .iter()
+            .find(|entity| entity["key"] == "npc:guide")
+            .expect("fallback guide entity");
+        let fallback_role = fallback_npc["meta"]
+            .as_array()
+            .expect("fallback NPC metadata")
+            .iter()
+            .find(|row| row["label_key"] == "entity.meta.role")
+            .expect("fallback role row");
+        assert_eq!(fallback_role["value_key"], "entity.fallback.character");
+    }
 }

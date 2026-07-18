@@ -11,7 +11,7 @@ export function connectorIdOf(connector) {
 export function connectorName(connector) {
   return textValue(connector?.display_name || connector?.name || connector?.label)
     || connectorIdOf(connector)
-    || runtimeText("connectors:catalog.fallbackName", { defaultValue: "Коннектор" });
+    || runtimeText("connectors:catalog.fallbackName", { defaultValue: "Connector" });
 }
 
 export function modelIdOf(model) {
@@ -28,7 +28,7 @@ export function modelLabel(model) {
   const base = name && name !== id ? `${name} · ${id}` : id;
   return model?.supported === false
     ? `${base} · ${runtimeText("connectors:catalog.experimental", {
-        defaultValue: "экспериментальная",
+        defaultValue: "experimental",
       })}`
     : base;
 }

@@ -8,6 +8,7 @@ use super::{
     ids::{self, DetRng},
     PassageDirectionality, Transition, WorldCanon,
 };
+use gml_types::ContentLocale;
 
 pub const SITUATION_THRESHOLD_MINUTES: i64 = 30;
 
@@ -198,6 +199,18 @@ pub fn situation_chance_percent(duration_minutes: i64, risk: TravelRisk) -> u8 {
 }
 
 pub fn roll_travel_situation(input: TravelRoll<'_>) -> Option<TravelSituation> {
+    roll_travel_situation_for_locale(input, ContentLocale::Russian)
+}
+
+/// Deterministically rolls a travel situation and renders only its authored
+/// player-facing text in the selected content locale.
+///
+/// The locale is deliberately excluded from the RNG seed, so switching the
+/// content bundle cannot change the roll, tone, rarity, timings, or stable id.
+pub fn roll_travel_situation_for_locale(
+    input: TravelRoll<'_>,
+    content_locale: ContentLocale,
+) -> Option<TravelSituation> {
     let chance = situation_chance_percent(input.duration_minutes, input.risk);
     if chance == 0 {
         return None;
@@ -228,8 +241,8 @@ pub fn roll_travel_situation(input: TravelRoll<'_>) -> Option<TravelSituation> {
     let rarity = pick_rarity(&mut rng, input.risk, input.duration_minutes);
     let salt = format!("{}:{}:{elapsed}", input.turn, input.start_minutes);
     let site_id = ids::stable_id(input.world_seed, input.transition_id, "travel_site", &salt);
-    let title = title_for(tone);
-    let summary = summary_for(tone);
+    let title = title_for(tone, content_locale);
+    let summary = summary_for(tone, content_locale);
 
     Some(TravelSituation {
         site_id,
@@ -301,28 +314,44 @@ fn pick_weighted<T: Copy>(rng: &mut DetRng, items: &[(T, u32)]) -> T {
     items[0].0
 }
 
-fn title_for(tone: SituationTone) -> &'static str {
-    match tone {
-        SituationTone::Good => "Возможность на дороге",
-        SituationTone::Bad => "Угроза на дороге",
-        SituationTone::Neutral => "Встреча на дороге",
-        SituationTone::Mixed => "Выбор на дороге",
+fn title_for(tone: SituationTone, content_locale: ContentLocale) -> &'static str {
+    match (content_locale, tone) {
+        (ContentLocale::Russian, SituationTone::Good) => "Возможность на дороге",
+        (ContentLocale::Russian, SituationTone::Bad) => "Угроза на дороге",
+        (ContentLocale::Russian, SituationTone::Neutral) => "Встреча на дороге",
+        (ContentLocale::Russian, SituationTone::Mixed) => "Выбор на дороге",
+        (ContentLocale::English, SituationTone::Good) => "Opportunity on the Road",
+        (ContentLocale::English, SituationTone::Bad) => "Threat on the Road",
+        (ContentLocale::English, SituationTone::Neutral) => "Encounter on the Road",
+        (ContentLocale::English, SituationTone::Mixed) => "Choice on the Road",
     }
 }
 
-fn summary_for(tone: SituationTone) -> &'static str {
-    match tone {
-        SituationTone::Good => {
+fn summary_for(tone: SituationTone, content_locale: ContentLocale) -> &'static str {
+    match (content_locale, tone) {
+        (ContentLocale::Russian, SituationTone::Good) => {
             "путь открывает полезную возможность: след, помощь или находку"
         }
-        SituationTone::Bad => {
+        (ContentLocale::Russian, SituationTone::Bad) => {
             "дорогу осложняет заметная угроза: опасные следы, препятствие или чужое присутствие"
         }
-        SituationTone::Neutral => {
+        (ContentLocale::Russian, SituationTone::Neutral) => {
             "путь прерывает встреча, знак или след, требующий решения"
         }
-        SituationTone::Mixed => {
+        (ContentLocale::Russian, SituationTone::Mixed) => {
             "дорога предлагает шанс с ценой: можно выиграть сведения, время или добычу, но это несет риск"
+        }
+        (ContentLocale::English, SituationTone::Good) => {
+            "the journey reveals a useful opportunity: a trail, help, or a discovery"
+        }
+        (ContentLocale::English, SituationTone::Bad) => {
+            "the road is complicated by a clear threat: dangerous tracks, an obstacle, or another presence"
+        }
+        (ContentLocale::English, SituationTone::Neutral) => {
+            "the journey is interrupted by an encounter, sign, or trail that demands a decision"
+        }
+        (ContentLocale::English, SituationTone::Mixed) => {
+            "the road offers an opportunity at a price: information, time, or loot can be gained, but not without risk"
         }
     }
 }
@@ -331,6 +360,81 @@ fn summary_for(tone: SituationTone) -> &'static str {
 mod tests {
     use super::*;
     use crate::canon::Provenance;
+
+    fn certain_travel_roll() -> TravelRoll<'static> {
+        TravelRoll {
+            world_seed: "localized-travel",
+            transition_id: "long-road",
+            from_place: "village",
+            to_place: "city",
+            turn: 7,
+            start_minutes: 480,
+            duration_minutes: 48 * 60,
+            risk: TravelRisk::Certain,
+        }
+    }
+
+    fn contains_cyrillic(value: &str) -> bool {
+        value
+            .chars()
+            .any(|character| matches!(character, '\u{0400}'..='\u{04ff}'))
+    }
+
+    #[test]
+    fn russian_travel_text_remains_compatible() {
+        for (tone, title, summary) in [
+            (
+                SituationTone::Good,
+                "Возможность на дороге",
+                "путь открывает полезную возможность: след, помощь или находку",
+            ),
+            (
+                SituationTone::Bad,
+                "Угроза на дороге",
+                "дорогу осложняет заметная угроза: опасные следы, препятствие или чужое присутствие",
+            ),
+            (
+                SituationTone::Neutral,
+                "Встреча на дороге",
+                "путь прерывает встреча, знак или след, требующий решения",
+            ),
+            (
+                SituationTone::Mixed,
+                "Выбор на дороге",
+                "дорога предлагает шанс с ценой: можно выиграть сведения, время или добычу, но это несет риск",
+            ),
+        ] {
+            assert_eq!(title_for(tone, ContentLocale::Russian), title);
+            assert_eq!(summary_for(tone, ContentLocale::Russian), summary);
+        }
+
+        assert_eq!(
+            roll_travel_situation(certain_travel_roll()),
+            roll_travel_situation_for_locale(certain_travel_roll(), ContentLocale::Russian)
+        );
+    }
+
+    #[test]
+    fn locale_changes_only_travel_situation_text() {
+        let russian =
+            roll_travel_situation_for_locale(certain_travel_roll(), ContentLocale::Russian)
+                .expect("certain risk creates a situation");
+        let english =
+            roll_travel_situation_for_locale(certain_travel_roll(), ContentLocale::English)
+                .expect("certain risk creates a situation");
+
+        assert_eq!(english.site_id, russian.site_id);
+        assert_eq!(english.elapsed_minutes, russian.elapsed_minutes);
+        assert_eq!(english.remaining_minutes, russian.remaining_minutes);
+        assert_eq!(english.chance_percent, russian.chance_percent);
+        assert_eq!(english.roll, russian.roll);
+        assert_eq!(english.tone, russian.tone);
+        assert_eq!(english.rarity, russian.rarity);
+        assert_ne!(english.title, russian.title);
+        assert_ne!(english.summary, russian.summary);
+        assert!(!contains_cyrillic(&english.title));
+        assert!(!contains_cyrillic(&english.summary));
+    }
 
     fn transition(
         id: &str,

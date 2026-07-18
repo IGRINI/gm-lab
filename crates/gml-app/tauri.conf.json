@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "GM-Lab",
+  "productName": "TaleShift",
   "version": "0.1.0",
-  "identifier": "com.gmlab.app",
+  "identifier": "io.github.igrini.taleshift",
   "build": {
     "frontendDist": "../../web/dist"
   },
@@ -21,7 +21,7 @@
       "icons/icon.ico"
     ],
     "category": "Game",
-    "shortDescription": "GM-Lab — LLM game-master orchestrator",
-    "longDescription": "GM-Lab: an LLM game master that calls NPC sub-agent LLMs as tools, with prompt-caching, history compaction, RAG, SQLite persistence and a React/SSE UI."
+    "shortDescription": "TaleShift — Your world remembers.",
+    "longDescription": "TaleShift is a local-first AI game master for persistent solo RPG worlds where characters, choices, and consequences are remembered."
   }
 }

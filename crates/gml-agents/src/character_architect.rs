@@ -1241,7 +1241,7 @@ mod tests {
         assert!(messages[0]["content"]
             .as_str()
             .unwrap()
-            .contains("GM-Lab character architect"));
+            .contains("TaleShift character architect"));
     }
 
     #[test]

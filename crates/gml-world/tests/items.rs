@@ -98,6 +98,13 @@ fn take_item_by_id_moves_body_into_inventory_with_details() {
         .any(|e| e == "Медная монета — потёртая, с профилем короля"));
     // card_revision bumped.
     assert_eq!(w.player_character.card_revision, before_rev + 1);
+    assert_eq!(out["updated"], json!(["inventory"]));
+    assert_eq!(out["changes"][0]["field"], "inventory");
+    assert_eq!(
+        out["changes"][0]["added"],
+        json!(["Медная монета — потёртая, с профилем короля"])
+    );
+    assert!(out["player_character"].get("gm_notes").is_none());
 }
 
 #[test]
@@ -231,12 +238,14 @@ fn take_item_dedups_by_head_when_inventory_already_has_it() {
         .inventory
         .push("медная монета — старая запись".to_string());
     let count_before = w.player_character.inventory.len();
-    w.take_item("coin", "", "").expect("take ok");
+    let out = w.take_item("coin", "", "").expect("take ok");
     // No duplicate head appended.
     assert_eq!(w.player_character.inventory.len(), count_before);
     // The scene item is still removed and the revision still bumps (it is a
     // successful, idempotent re-take).
     assert!(!item_ids(&w).contains(&"coin".to_string()));
+    assert_eq!(out["updated"], json!([]));
+    assert_eq!(out["changes"], json!([]));
 }
 
 // --- §И3 drop_item ----------------------------------------------------------
@@ -269,6 +278,8 @@ fn drop_item_by_head_moves_entry_into_scene() {
     assert!(dropped.visible && dropped.portable);
     assert_eq!(dropped.location, "у входа");
     assert_eq!(w.player_character.card_revision, before_rev + 1);
+    assert_eq!(out["changes"][0]["field"], "inventory");
+    assert_eq!(out["changes"][0]["removed"], json!(["Факел — горит 1 час"]));
 }
 
 #[test]

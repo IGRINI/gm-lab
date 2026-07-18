@@ -28,6 +28,7 @@
     "characterName": "New character name"
   },
   "api": {
+    "requestFailed": "Request failed (HTTP {{status}})",
     "importFailed": "Import failed ({{status}})",
     "exportFailed": "Export failed ({{status}})",
     "transcriptionFailed": "Transcription failed ({{status}})",

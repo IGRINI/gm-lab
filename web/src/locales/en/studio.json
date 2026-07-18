@@ -40,6 +40,11 @@
     "kicker": "world creation",
     "title": "World Studio",
     "subtitle": "Build the world's lore and rules with the architect, or fill them in manually without starting a game chat.",
+    "defaults": {
+      "title": "New world",
+      "genre": "fantasy",
+      "tone": "tense"
+    },
     "readiness": {
       "notReady": "draft not ready",
       "ready": "ready to save"
@@ -68,15 +73,65 @@
       "ariaLabel": "Quick world presets",
       "machine": {
         "label": "Machine post-apocalypse",
-        "description": "Ruins, autonomous nodes, water, energy, drones, and survivor communities."
+        "description": "Ruins, autonomous nodes, water, energy, drones, and survivor communities.",
+        "values": {
+          "title": "Ashen Nexus",
+          "genre": "post-apocalyptic machine world",
+          "tone": "bleak",
+          "worldSize": "One large region surrounding a chain of old machine hubs. The world extends far beyond it, but communications and roads are unreliable.",
+          "population": "Hundreds of thousands of survivors divided among communities, caravan alliances, and machine cults.",
+          "publicPremise": "People live around old water, energy, and repair hubs. The machines never vanished: some serve, while others guard protocols that no one understands anymore.",
+          "worldLore": {
+            "world_laws": "Old machines follow protocols, not morality.\nWater, energy, spare parts, and hub access matter more than coins.",
+            "inhabitants": "Survivor communities\nMachine cults\nCaravaneers\nAutonomous drones",
+            "regions": "A network of hubs in the ash zone\nDry highways between settlements\nSealed machine sectors",
+            "power_centers": "Water-community councils\nRepair brotherhoods\nHub cults",
+            "location_rules": "Every location must reveal the cost of water, energy, spare parts, access, or signal.",
+            "prohibited_elements": "No classical magic unless it is explained as a malfunction, cult belief, or alien artifact."
+          }
+        }
       },
       "isekai": {
         "label": "Fantasy isekai",
-        "description": "Oaths, local spirits, the price of magic, summoned outsiders, and local debts."
+        "description": "Oaths, local spirits, the price of magic, summoned outsiders, and local debts.",
+        "values": {
+          "title": "Threshold of the Second Sky",
+          "genre": "fantasy isekai",
+          "tone": "tense and hopeful",
+          "worldSize": "A continent of several kingdoms, road spirits, and local shrines. The game can begin anywhere within it.",
+          "population": "Tens of millions of people, spirit-blooded lineages, summoned outsiders, and minor folk.",
+          "publicPremise": "Names, oaths, and debts carry the force of law and magic. Summoned outsiders appear rarely, but almost always become part of an ancient covenant.",
+          "worldLore": {
+            "dogmas": "A name and an oath have both legal and mystical force.\nSpirits of place remember debts better than people do.",
+            "world_laws": "Magic requires a name, a price, or a recognized right.\nLong journeys change rumors and the balance of power.",
+            "inhabitants": "Ancestral houses\nSpirits of place\nSummoned outsiders\nRunesmith guilds",
+            "regions": "The Seven Lands beneath the Shattered Moon\nLiving roads\nThreshold shrines",
+            "religions": "The cult of road spirits\nThe official faith of oaths",
+            "gods": "The Elder Spirits of the Thresholds",
+            "location_rules": "Every new location must connect to a debt, authority, road, or spirit of place.",
+            "prohibited_elements": "No free resurrection.\nNo magic without a name, price, or covenant."
+          }
+        }
       },
       "frontier": {
         "label": "The frontier",
-        "description": "Roads, factions, rumors, ancient sites, and settlements with real functions."
+        "description": "Roads, factions, rumors, ancient sites, and settlements with real functions.",
+        "values": {
+          "title": "Edge of the Old Roads",
+          "genre": "frontier fantasy",
+          "tone": "tense",
+          "worldSize": "One settled continent with kingdoms, frontier roads, ancient sites, and distant lands beyond the map.",
+          "population": "Several million inhabitants: city-states, villages, nomadic families, road orders, and ancient peoples.",
+          "publicPremise": "Roads matter more than walls: rumors, caravans, old agreements, and dangerous places bind settlements more tightly than any crown.",
+          "worldLore": {
+            "conflicts": "The crown is trying to subjugate the roads.\nAncient places are awakening again.\nFrontier settlements are fighting over tolls.",
+            "regions": "Royal roads\nAncient forests\nFrontier towns\nForgotten shrines",
+            "power_centers": "Road orders\nCity councils\nCaravan houses\nThe frontier guard",
+            "economy": "Tolls\nCaravans\nProtection debts\nRights of passage",
+            "location_rules": "Every road must have a character, a price, a risk, and people who know its secrets.",
+            "prohibited_elements": "No random dungeons disconnected from roads, debts, or ancient law."
+          }
+        }
       }
     },
     "fields": {
@@ -474,6 +529,7 @@
     "generate": "Generate",
     "generating": "Generating…",
     "elapsed": "{{seconds}}s",
+    "seed": "Seed: {{value}}",
     "generatedAlt": "Generated image",
     "generatedCaption": "Generated image",
     "empty": "The image will appear here",

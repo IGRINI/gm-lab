@@ -1,4 +1,4 @@
-//! gml-types — shared cross-crate value types for GM-Lab.
+//! gml-types — shared cross-crate value types for TaleShift.
 //!
 //! This is the single home for value types passed across module boundaries, so
 //! there are no circular dependencies (see PORT_PLAN.md §1.2). Every type here is
@@ -15,7 +15,7 @@ pub mod tool;
 
 pub use error::{ParseRoleError, TypesError};
 pub use event::{event_kind, Event};
-pub use language::{normalize_language_tag, DEFAULT_RESPONSE_LANGUAGE};
+pub use language::{normalize_language_tag, ContentLocale, DEFAULT_RESPONSE_LANGUAGE};
 pub use npc::{NpcBeat, NpcResponse};
 pub use role::{Role, REASONING_ROLES};
 pub use tool::{ParsedCall, ToolExecutionResult};
@@ -130,10 +130,10 @@ mod tests {
 
     #[test]
     fn event_kind_all_contains_done_and_emitted() {
-        // 28 distinct ev() kinds (incl. living-world `world_debug` and the
-        // NPC-only tool call/result events) + server-pushed terminal `done`.
-        assert_eq!(event_kind::ALL.len(), 30);
+        // All streamed event kinds plus the server-pushed terminal `done`.
+        assert_eq!(event_kind::ALL.len(), 31);
         assert!(event_kind::ALL.contains(&event_kind::DONE));
+        assert!(event_kind::ALL.contains(&event_kind::STATE_SYNC));
         assert!(event_kind::ALL.contains(&event_kind::NPC_SPEECH));
         assert!(event_kind::ALL.contains(&event_kind::NPC_TOOL_CALL));
         assert!(event_kind::ALL.contains(&event_kind::NPC_TOOL_RESULT));

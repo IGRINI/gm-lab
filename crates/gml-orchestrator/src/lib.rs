@@ -20,6 +20,7 @@
 //! - [`rag`] — the `gml-world` -> `gml-rag` retrieval seam.
 
 pub mod compact;
+mod content_locale;
 pub mod helpers;
 pub mod memory_crystals;
 pub mod model_text;

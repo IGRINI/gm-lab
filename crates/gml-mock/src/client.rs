@@ -82,7 +82,7 @@ impl MockClient {
     fn chat_impl(&self, messages: &Value) -> ChatOutput {
         self.remember("chat");
         let system_text = join_role_contents(messages, "system");
-        if system_text.contains("GM-Lab world architect") {
+        if system_text.contains("TaleShift world architect") {
             // Agent loop: first hop drafts the bible (tool call); once the draft
             // result is fed back, finish with a chat reply (no tool) so the loop
             // ends — mirrors a real model's think → draft → reply flow.
@@ -91,7 +91,7 @@ impl MockClient {
             }
             return world_architect_reply_output();
         }
-        if system_text.contains("GM-Lab story architect") {
+        if system_text.contains("TaleShift story architect") {
             // Same agent loop for the STORY architect: first hop drafts the plot
             // (tool call), then finishes with a chat reply once the tool result
             // is fed back.
@@ -100,7 +100,7 @@ impl MockClient {
             }
             return story_architect_reply_output();
         }
-        if system_text.contains("GM-Lab character architect") {
+        if system_text.contains("TaleShift character architect") {
             // Same agent loop for the CHARACTER architect: first hop drafts the
             // hero sheet (tool call), then finishes with a chat reply once the
             // tool result is fed back.
@@ -181,7 +181,7 @@ impl MockClient {
             // {"moves": []}
             return obj([("moves", Value::Array(Vec::new()))]);
         }
-        if system_text.contains("GM-Lab location generator") {
+        if system_text.contains("TaleShift location generator") {
             return obj([
                 ("name", Value::String("Дорожная остановка".to_string())),
                 ("kind", Value::String("travel_situation".to_string())),
@@ -254,7 +254,7 @@ impl MockClient {
                 ),
             ]);
         }
-        if system_text.contains("GM-Lab NPC generator") {
+        if system_text.contains("TaleShift NPC generator") {
             return serde_json::json!({
                 "name": "Тихон Ржавый",
                 "pronouns": "М",

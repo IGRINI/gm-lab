@@ -15,6 +15,25 @@
 
 use crate::model::{SceneExit, SceneState};
 use crate::World;
+use gml_types::ContentLocale;
+
+fn localized_text(locale: ContentLocale, russian: &str, english: &str) -> String {
+    match locale {
+        ContentLocale::Russian => russian.to_string(),
+        ContentLocale::English => english.to_string(),
+    }
+}
+
+fn default_presence_activity(role: &str, locale: ContentLocale) -> String {
+    if role.trim().is_empty() {
+        return localized_text(locale, "в текущей сцене", "in the current scene");
+    }
+
+    match locale {
+        ContentLocale::Russian => format!("присутствует как {role}"),
+        ContentLocale::English => format!("present as {role}"),
+    }
+}
 
 /// Rebuild the current [`SceneState`] for the player's current place from the
 /// canon. Structural fields come from the canonical [`super::Place`]; ephemeral
@@ -30,6 +49,7 @@ use crate::World;
 /// worse than today.
 pub fn build_current_view(world: &World) -> SceneState {
     let scene = &world.scene;
+    let content_locale = world.world_canon.content_locale;
     // Anchor on the canonical player place. Fall back to the legacy scene
     // location only when the canon has no player place (pre-canon saves).
     let anchor_id = if world.world_canon.player_place_id.is_empty() {
@@ -87,7 +107,7 @@ pub fn build_current_view(world: &World) -> SceneState {
             .map(|p| p.activity.clone())
             .filter(|s| !s.is_empty())
             .or_else(|| actor.map(|a| a.agenda.clone()).filter(|s| !s.is_empty()))
-            .or_else(|| actor.map(|a| format!("present as {}", a.role)))
+            .or_else(|| actor.map(|a| default_presence_activity(&a.role, content_locale)))
             .unwrap_or_default();
         presence.insert(
             actor_id.clone(),
@@ -96,7 +116,7 @@ pub fn build_current_view(world: &World) -> SceneState {
                 location: prior
                     .map(|p| p.location.clone())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "в сцене".to_string()),
+                    .unwrap_or_else(|| localized_text(content_locale, "в сцене", "in the scene")),
                 visible: true,
                 can_hear: true,
                 activity,

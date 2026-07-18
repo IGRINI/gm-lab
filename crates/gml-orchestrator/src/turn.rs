@@ -20,6 +20,7 @@ use gml_types::{event_kind, Event, NpcBeat, ParsedCall, Role, ToolExecutionResul
 use crate::compact::{
     add_total_context, context_usage, maybe_compact, maybe_compact_npc, meta, meta_total, round2,
 };
+use crate::content_locale::text as content_text;
 use crate::helpers::{
     json_compact, player_facing_payload, tool_error, tool_reminder, tool_result,
     visible_continuation_reminder, with_model_reminder,
@@ -86,10 +87,29 @@ fn ev(kind: &str, agent: Option<&str>, data: Value, sid: Option<&str>) -> Event 
 /// generator `yield`.
 pub struct Sink {
     tx: mpsc::UnboundedSender<Event>,
+    call_id: Option<String>,
 }
 
 impl Sink {
-    fn emit(&self, e: Event) {
+    fn root(tx: mpsc::UnboundedSender<Event>) -> Self {
+        Self { tx, call_id: None }
+    }
+
+    fn for_call(&self, call_id: &str) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            call_id: Some(call_id.to_string()),
+        }
+    }
+
+    fn call_id(&self) -> Option<&str> {
+        self.call_id.as_deref()
+    }
+
+    fn emit(&self, mut e: Event) {
+        if e.sid.is_none() {
+            e.sid.clone_from(&self.call_id);
+        }
         let _ = self.tx.send(e);
     }
 }
@@ -134,7 +154,7 @@ pub async fn run_turn_into(
     player_text: &str,
     tx: mpsc::UnboundedSender<Event>,
 ) -> TurnOutcome {
-    let sink = Sink { tx };
+    let sink = Sink::root(tx);
 
     run_turn_with_entry(session, settings, player_text, TurnEntry::Fresh, &sink).await
 }
@@ -154,7 +174,7 @@ pub async fn resume_turn_into(
     player_event_index: usize,
     tx: mpsc::UnboundedSender<Event>,
 ) -> TurnOutcome {
-    let sink = Sink { tx };
+    let sink = Sink::root(tx);
     if let Err(message) = validate_resume_preconditions(session, player_text, player_event_index) {
         sink.emit(ev(
             event_kind::ERROR,
@@ -328,7 +348,7 @@ async fn drive(
     let max_tool_hops = settings.max_tool_hops(None);
     let mut tool_hops = 0_i64;
     let mut player_options_shown = false;
-    let mut turn_tool_state = TurnToolState::default();
+    let mut turn_tool_state = TurnToolState::new(session);
 
     while max_tool_hops <= 0 || tool_hops < max_tool_hops {
         tool_hops += 1;
@@ -414,6 +434,7 @@ async fn drive(
                     Some(&sid),
                 ));
                 sync_scene_delta(session, &final_text, metas, sink).await;
+                emit_state_sync_if_changed(session, sink, &mut turn_tool_state);
             }
             fell_through = false;
             break;
@@ -472,22 +493,32 @@ async fn drive(
         for call in &calls {
             let name = call.name.clone();
             let args = Value::Object(call.arguments.clone());
+            let tool_sink = sink.for_call(&call.id);
             let show_tool_event = name != "ask_player";
             if show_tool_event {
-                sink.emit(ev(
+                tool_sink.emit(ev(
                     event_kind::GM_TOOL_CALL,
                     Some("ГМ"),
-                    json!({"name": name, "arguments": args}),
+                    json!({"call_id": call.id, "name": name, "arguments": args}),
                     None,
                 ));
             }
-            let mut result =
-                run_tool(session, &name, &args, metas, sink, &mut turn_tool_state).await;
+            let mut result = run_tool(
+                session,
+                &name,
+                &args,
+                metas,
+                &tool_sink,
+                &mut turn_tool_state,
+            )
+            .await;
             if show_tool_event {
-                sink.emit(ev(
+                let public_result = serde_json::from_str::<Value>(&result.full)
+                    .unwrap_or_else(|_| Value::String(result.full.clone()));
+                tool_sink.emit(ev(
                     event_kind::TOOL_RESULT,
                     Some(&name),
-                    Value::String(result.full.clone()),
+                    json!({"call_id": call.id, "name": name, "result": public_result}),
                     None,
                 ));
             }
@@ -873,11 +904,48 @@ fn tool_emits_visible_output(name: &str, result: &ToolExecutionResult) -> bool {
 // _run_tool
 // =========================================================================
 
-#[derive(Default)]
 struct TurnToolState {
     travel_scheduled_in_batch: bool,
     travel_attempted: bool,
     travel_rejected: bool,
+    state_seq: u64,
+    last_player_state: Value,
+}
+
+impl TurnToolState {
+    fn new(session: &mut Session) -> Self {
+        Self {
+            travel_scheduled_in_batch: false,
+            travel_attempted: false,
+            travel_rejected: false,
+            state_seq: 0,
+            last_player_state: session.world.player_state_export(),
+        }
+    }
+}
+
+fn emit_state_sync_if_changed(
+    session: &mut Session,
+    sink: &Sink,
+    turn_tool_state: &mut TurnToolState,
+) {
+    let current = session.world.player_state_export();
+    if current == turn_tool_state.last_player_state {
+        return;
+    }
+
+    turn_tool_state.state_seq += 1;
+    turn_tool_state.last_player_state = current.clone();
+    sink.emit(ev(
+        event_kind::STATE_SYNC,
+        Some("state_sync"),
+        json!({
+            "seq": turn_tool_state.state_seq,
+            "call_id": sink.call_id(),
+            "state": current,
+        }),
+        None,
+    ));
 }
 
 fn call_targets_tool(call: &ParsedCall, target: &str) -> bool {
@@ -924,9 +992,9 @@ pub async fn run_tool_collect(
     args: &Value,
 ) -> (Vec<Event>, ToolExecutionResult) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
-    let sink = Sink { tx };
+    let sink = Sink::root(tx);
     let mut metas: Vec<Value> = Vec::new();
-    let mut turn_tool_state = TurnToolState::default();
+    let mut turn_tool_state = TurnToolState::new(session);
     let result = run_tool(session, name, args, &mut metas, &sink, &mut turn_tool_state).await;
     drop(sink);
     let mut events = Vec::new();
@@ -950,11 +1018,13 @@ async fn run_tool(
         Value::Object(Map::new())
     };
 
-    if name == "invoke_loaded_tool" {
-        return run_invoke_loaded_tool(session, &args, metas, sink, turn_tool_state).await;
-    }
-
-    run_executable_tool(session, name, &args, metas, sink, turn_tool_state).await
+    let result = if name == "invoke_loaded_tool" {
+        run_invoke_loaded_tool(session, &args, metas, sink, turn_tool_state).await
+    } else {
+        run_executable_tool(session, name, &args, metas, sink, turn_tool_state).await
+    };
+    emit_state_sync_if_changed(session, sink, turn_tool_state);
+    result
 }
 
 async fn run_executable_tool(
@@ -1540,7 +1610,12 @@ fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     let reason = {
         let r = arg_str(args, "reason").trim();
         if r.is_empty() {
-            "долгий отдых".to_string()
+            content_text(
+                session.world.world_canon.content_locale,
+                "долгий отдых",
+                "long rest",
+            )
+            .to_string()
         } else {
             r.to_string()
         }
@@ -1632,6 +1707,11 @@ fn run_long_rest(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         "hp": Value::Object(pc.hp.clone()),
         "concentration_dropped": had_concentration,
         "restored": update_payload.get("updated").cloned().unwrap_or(json!([])),
+        "changes": update_payload.get("changes").cloned().unwrap_or(json!([])),
+        "player_character": update_payload
+            .get("player_character")
+            .cloned()
+            .unwrap_or(Value::Null),
         "card_revision": pc.card_revision,
     });
     tool_result(&json_compact(&payload), Some(&model), None, false)
@@ -1895,13 +1975,18 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
     use gml_world::NpcWhereabouts;
 
     session.world.ensure_npc_whereabouts();
-    let title = nonempty_string(arg_str(args, "title").trim().to_string(), "Новая сцена");
+    let content_locale = session.world.world_canon.content_locale;
+    let title = nonempty_string(
+        arg_str(args, "title").trim().to_string(),
+        content_text(content_locale, "Новая сцена", "New Scene"),
+    );
     let description = nonempty_string(arg_str(args, "description").trim().to_string(), &title);
     let reason = nonempty_string(arg_str(args, "reason").trim().to_string(), "set_scene");
 
     if session.world.world_canon.is_empty() {
         let seed = session.world.dice_seed.to_string();
         session.world.world_canon = WorldCanon::from_scene(&session.world.scene, &seed);
+        session.world.world_canon.content_locale = content_locale;
     }
     let from_place = session.world.world_canon.player_place_id.clone();
     if from_place.is_empty() || session.world.world_canon.place(&from_place).is_none() {
@@ -1985,7 +2070,8 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
         }
     }
 
-    let coerced_items = coerce_set_scene_items(args.get("items").unwrap_or(&Value::Null));
+    let coerced_items =
+        coerce_set_scene_items(args.get("items").unwrap_or(&Value::Null), content_locale);
     let constraints: Vec<String> = as_list(args.get("constraints").unwrap_or(&Value::Null))
         .iter()
         .map(as_str)
@@ -2117,7 +2203,8 @@ fn run_set_scene(session: &mut Session, args: &Value, sink: &Sink) -> ToolExecut
                 location_id: dest_id.clone(),
                 location_name: title.clone(),
                 status: "present".to_string(),
-                details: "в текущей сцене".to_string(),
+                details: content_text(content_locale, "в текущей сцене", "in the current scene")
+                    .to_string(),
                 source: "set_scene".to_string(),
             },
         );
@@ -2197,7 +2284,10 @@ fn set_scene_bool(value: Option<&Value>, default: bool) -> bool {
     }
 }
 
-fn coerce_set_scene_items(raw: &Value) -> Vec<gml_world::SceneItem> {
+fn coerce_set_scene_items(
+    raw: &Value,
+    content_locale: gml_types::ContentLocale,
+) -> Vec<gml_world::SceneItem> {
     use gml_world::helpers::{as_list, as_str, get_str, safe_id};
 
     let mut items = Vec::new();
@@ -2205,11 +2295,18 @@ fn coerce_set_scene_items(raw: &Value) -> Vec<gml_world::SceneItem> {
         let number = idx + 1;
         match item {
             Value::Object(map) => {
-                let name = nonempty_string(get_str(map, "name"), &format!("предмет {number}"));
+                let fallback_name = match content_locale {
+                    gml_types::ContentLocale::Russian => format!("предмет {number}"),
+                    gml_types::ContentLocale::English => format!("item {number}"),
+                };
+                let name = nonempty_string(get_str(map, "name"), &fallback_name);
                 items.push(gml_world::SceneItem {
                     item_id: safe_id(&get_str(map, "id"), &format!("item_{number}")),
                     name,
-                    location: nonempty_string(get_str(map, "location"), "в сцене"),
+                    location: nonempty_string(
+                        get_str(map, "location"),
+                        content_text(content_locale, "в сцене", "in the scene"),
+                    ),
                     visible: set_scene_bool(map.get("visible"), true),
                     portable: set_scene_bool(map.get("portable"), false),
                     owner: get_str(map, "owner"),
@@ -2222,7 +2319,8 @@ fn coerce_set_scene_items(raw: &Value) -> Vec<gml_world::SceneItem> {
                     items.push(gml_world::SceneItem {
                         item_id: safe_id(&name, &format!("item_{number}")),
                         name,
-                        location: "в сцене".to_string(),
+                        location: content_text(content_locale, "в сцене", "in the scene")
+                            .to_string(),
                         visible: true,
                         portable: false,
                         owner: String::new(),
@@ -2257,7 +2355,12 @@ fn sync_canon_move_time(
 ) -> i64 {
     let elapsed_minutes = (session.world.world_canon.clock_minutes - before_clock_minutes).max(0);
     let reason = if reason.trim().is_empty() {
-        "travel".to_string()
+        content_text(
+            session.world.world_canon.content_locale,
+            "путешествие",
+            "travel",
+        )
+        .to_string()
     } else {
         reason.trim().to_string()
     };
@@ -3657,7 +3760,7 @@ async fn auto_generate_travel_situation(
     let visible_seed = travel_event
         .effects
         .iter()
-        .filter(|effect| !effect.contains(':') || effect.starts_with("На дороге"))
+        .filter(|effect| !is_travel_metadata_effect(effect))
         .cloned()
         .collect::<Vec<_>>()
         .join("; ");
@@ -3693,6 +3796,19 @@ async fn auto_generate_travel_situation(
         "place_id": place_id,
         "applied": parsed.get("applied").cloned().unwrap_or(Value::Null),
     }))
+}
+
+fn is_travel_metadata_effect(effect: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "situation_type:",
+        "rarity:",
+        "risk:",
+        "chance_percent:",
+        "roll:",
+        "elapsed_minutes:",
+        "remaining_minutes:",
+    ];
+    PREFIXES.iter().any(|prefix| effect.starts_with(prefix))
 }
 
 /// Fill an already-reached contentless destination through the dedicated
@@ -3993,7 +4109,13 @@ async fn run_generate_location(
     let name = generated
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or("location");
+        .unwrap_or_else(|| {
+            content_text(
+                session.world.world_canon.content_locale,
+                "локация",
+                "location",
+            )
+        });
     if commit
         && applied_ok
         && applied
@@ -4013,7 +4135,14 @@ async fn run_generate_location(
                 before_time,
                 before_clock_minutes,
                 &entry_transition_id,
-                &format!("enter generated place: {name}"),
+                &match session.world.world_canon.content_locale {
+                    gml_types::ContentLocale::Russian => {
+                        format!("вход в созданную локацию: {name}")
+                    }
+                    gml_types::ContentLocale::English => {
+                        format!("enter generated place: {name}")
+                    }
+                },
             );
             if let Value::Object(ref mut applied) = applied {
                 applied.insert("elapsed_minutes".to_string(), json!(elapsed_minutes));
@@ -4314,7 +4443,14 @@ fn commit_generated_location(
         session.world.world_canon.world_seed.clone()
     };
 
-    let name = nonempty_string(generated_str(generated, "name"), "Unnamed place");
+    let name = nonempty_string(
+        generated_str(generated, "name"),
+        content_text(
+            session.world.world_canon.content_locale,
+            "Безымянное место",
+            "Unnamed Place",
+        ),
+    );
     let kind = nonempty_string(generated_str(generated, "kind"), "generated_place");
     let entry = requires_entry_transition
         .then(|| generated.get("entry_transition"))
@@ -5138,7 +5274,13 @@ async fn run_generate_npc(session: &mut Session, args: &Value, sink: &Sink) -> T
     let name = applied
         .get("name")
         .and_then(Value::as_str)
-        .unwrap_or("character");
+        .unwrap_or_else(|| {
+            content_text(
+                session.world.world_canon.content_locale,
+                "персонаж",
+                "character",
+            )
+        });
     let model_message = if applied_ok {
         render_prompt(
             PromptId::NpcGeneratorCreatedMessage,
@@ -5213,7 +5355,14 @@ fn commit_generated_npc(session: &mut Session, request: &Value, generated: &Valu
         session.world.world_canon.world_seed.clone()
     };
 
-    let name = nonempty_string(generated_str(generated, "name"), "Unnamed character");
+    let name = nonempty_string(
+        generated_str(generated, "name"),
+        content_text(
+            session.world.world_canon.content_locale,
+            "Безымянный персонаж",
+            "Unnamed Character",
+        ),
+    );
     let role = nonempty_string(generated_str(generated, "role"), &role_req);
     let public_label = nonempty_string(generated_str(generated, "public_label"), &name);
     let pronouns = generated_str(generated, "pronouns");
@@ -6064,10 +6213,14 @@ mod tests {
 
     use gml_llm::Backend;
     use gml_mock::MockClient;
+    use gml_types::ContentLocale;
     use serde_json::json;
     use tokio::sync::mpsc;
 
-    use super::{run_tool, situation_includes_room_witnesses, Session, Sink, TurnToolState};
+    use super::{
+        coerce_set_scene_items, is_travel_metadata_effect, run_tool,
+        situation_includes_room_witnesses, Session, Sink, TurnToolState,
+    };
 
     #[test]
     fn situation_witness_mode_prefers_private_markers_over_loud_words() {
@@ -6082,6 +6235,145 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn scene_item_fallbacks_follow_content_locale_without_touching_authored_names() {
+        for (locale, expected_name, expected_location) in [
+            (ContentLocale::Russian, "предмет 1", "в сцене"),
+            (ContentLocale::English, "item 1", "in the scene"),
+        ] {
+            let items = coerce_set_scene_items(&json!([{}, "Authored relic"]), locale);
+            assert_eq!(items[0].name, expected_name);
+            assert_eq!(items[0].location, expected_location);
+            assert_eq!(items[1].name, "Authored relic");
+            assert_eq!(items[1].location, expected_location);
+        }
+    }
+
+    #[test]
+    fn travel_visible_hook_keeps_localized_prose_and_drops_protocol_effects() {
+        for visible in [
+            "На дороге возникает ситуация: впереди опасность",
+            "A situation arises on the road: danger lies ahead",
+            "До цели остается примерно 90 мин.",
+            "About 90 min. remain to the destination.",
+        ] {
+            assert!(!is_travel_metadata_effect(visible), "{visible}");
+        }
+        for metadata in [
+            "situation_type:bad",
+            "rarity:common",
+            "risk:risky",
+            "chance_percent:35",
+            "roll:12",
+            "elapsed_minutes:30",
+            "remaining_minutes:90",
+        ] {
+            assert!(is_travel_metadata_effect(metadata), "{metadata}");
+        }
+    }
+
+    #[tokio::test]
+    async fn long_rest_fallback_reason_follows_persisted_content_locale() {
+        for (locale, expected_reason) in [
+            (ContentLocale::Russian, "долгий отдых"),
+            (ContentLocale::English, "long rest"),
+        ] {
+            let client: Arc<dyn Backend> = Arc::new(MockClient::new());
+            let mut session = Session::new(client);
+            session.world.world_canon.content_locale = locale;
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let sink = Sink::root(tx);
+            let mut metas = Vec::new();
+            let mut state = TurnToolState::new(&mut session);
+
+            let result = run_tool(
+                &mut session,
+                "long_rest",
+                &json!({}),
+                &mut metas,
+                &sink,
+                &mut state,
+            )
+            .await;
+
+            let payload: serde_json::Value =
+                serde_json::from_str(&result.full).expect("long-rest result");
+            assert_eq!(payload["ok"], true);
+            assert_eq!(session.world.time.last_advance_reason, expected_reason);
+        }
+    }
+
+    #[tokio::test]
+    async fn set_scene_fallback_content_follows_persisted_content_locale() {
+        for (locale, expected_title, expected_item, expected_location, expected_details) in [
+            (
+                ContentLocale::Russian,
+                "Новая сцена",
+                "предмет 1",
+                "в сцене",
+                "в текущей сцене",
+            ),
+            (
+                ContentLocale::English,
+                "New Scene",
+                "item 1",
+                "in the scene",
+                "in the current scene",
+            ),
+        ] {
+            let client: Arc<dyn Backend> = Arc::new(MockClient::new());
+            let mut session = Session::new(client);
+            session.world.world_canon.content_locale = locale;
+            let npc = serde_json::from_value(json!({
+                "npc_id": "guide",
+                "name": "Authored Guide",
+                "persona": "",
+                "voice": "",
+                "goals": "",
+                "knowledge": "",
+                "secret": ""
+            }))
+            .expect("minimal NPC card");
+            session.world.npcs.insert("guide".to_string(), npc);
+            let current_place = session.world.world_canon.player_place_id.clone();
+            let (tx, _rx) = mpsc::unbounded_channel();
+            let sink = Sink::root(tx);
+            let mut metas = Vec::new();
+            let mut state = TurnToolState::new(&mut session);
+
+            let result = run_tool(
+                &mut session,
+                "set_scene",
+                &json!({
+                    "location_id": current_place,
+                    "present_npcs": ["guide"],
+                    "items": [{}]
+                }),
+                &mut metas,
+                &sink,
+                &mut state,
+            )
+            .await;
+
+            let payload: serde_json::Value =
+                serde_json::from_str(&result.full).expect("set-scene result");
+            assert_ne!(
+                payload.get("status"),
+                Some(&json!("error")),
+                "{}",
+                result.full
+            );
+            assert_eq!(session.world.scene.title, expected_title);
+            assert_eq!(session.world.scene.items[0].name, expected_item);
+            assert_eq!(session.world.scene.items[0].location, expected_location);
+            assert_eq!(
+                session.world.npc_whereabouts["guide"].details,
+                expected_details
+            );
+            assert_eq!(session.world.npcs["guide"].name, "Authored Guide");
+        }
+    }
+
     #[tokio::test]
     async fn rejected_travel_blocks_local_movement_until_the_next_turn() {
         let client: Arc<dyn Backend> = Arc::new(MockClient::new());
@@ -6090,9 +6382,9 @@ mod tests {
         let before_clock = session.world.world_canon.clock_minutes;
         let before_transitions = session.world.world_canon.transitions.clone();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let sink = Sink { tx };
+        let sink = Sink::root(tx);
         let mut metas = Vec::new();
-        let mut state = TurnToolState::default();
+        let mut state = TurnToolState::new(&mut session);
 
         let rejected = run_tool(
             &mut session,

@@ -1,5 +1,6 @@
 //! The `World` aggregate — faithful port of `class World` in world.py.
 
+use gml_types::ContentLocale;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +15,7 @@ use crate::helpers::{
 };
 use crate::model::*;
 use crate::rng::{MersenneTwister, RngState};
-use crate::seed::normalize_seed;
+use crate::seed::normalize_seed_for_locale;
 use crate::state_record::{
     self, state_record_hash, state_record_kind, state_record_scope, RagDocument,
 };
@@ -77,6 +78,36 @@ fn whereabouts_status_label(status: &str) -> Option<&'static str> {
         .map(|(_, v)| *v)
 }
 
+fn whereabouts_status_label_for_locale(
+    status: &str,
+    locale: ContentLocale,
+) -> Option<&'static str> {
+    if locale.is_russian() {
+        return whereabouts_status_label(status);
+    }
+    match status {
+        "present" => Some("in the current scene"),
+        "known" => Some("known"),
+        "likely" => Some("likely"),
+        "rumored" => Some("rumored"),
+        "unknown" => Some("unknown"),
+        "left_scene" => Some("left"),
+        _ => None,
+    }
+}
+
+fn whereabouts_status_ui_key(status: &str) -> Option<&'static str> {
+    match status {
+        "present" => Some("entity.status.present"),
+        "known" => Some("entity.status.known"),
+        "likely" => Some("entity.status.likely"),
+        "rumored" => Some("entity.status.rumored"),
+        "unknown" => Some("entity.status.unknown"),
+        "left_scene" => Some("entity.status.left_scene"),
+        _ => None,
+    }
+}
+
 // Source tag constants.
 pub const SOURCE_DEFAULT_LORE: &str = "default public lore";
 pub const SOURCE_PREVIOUS_SCENE: &str = "previous scene";
@@ -108,12 +139,28 @@ pub fn public_role(role: &str) -> String {
         .unwrap_or(raw)
 }
 
+pub(crate) fn public_role_for_locale(role: &str, locale: ContentLocale) -> String {
+    if locale.is_russian() {
+        public_role(role)
+    } else {
+        as_str(&Value::String(role.to_string()))
+    }
+}
+
 /// `_public_gender(value)`.
 pub fn public_gender(value: &str) -> String {
     let raw = value.trim().to_string();
     gender_label_ru(&raw.to_lowercase())
         .map(|s| s.to_string())
         .unwrap_or(raw)
+}
+
+pub(crate) fn public_gender_for_locale(value: &str, locale: ContentLocale) -> String {
+    if locale.is_russian() {
+        public_gender(value)
+    } else {
+        model_gender_label(value)
+    }
 }
 
 /// English grammatical-gender label for model-facing context. Custom notes are
@@ -136,6 +183,46 @@ fn public_source(source: &str) -> String {
     source_ru(&raw.to_lowercase())
         .map(|s| s.to_string())
         .unwrap_or(raw)
+}
+
+fn public_source_for_locale(source: &str, locale: ContentLocale) -> String {
+    if locale.is_russian() {
+        return public_source(source);
+    }
+    match source.trim().to_lowercase().as_str() {
+        "default public lore" => "public lore".to_string(),
+        "previous scene" => "previous scene".to_string(),
+        "current scene" | "current_scene" => "current scene".to_string(),
+        "npc_roster" => "character roster".to_string(),
+        "seed" => "starting data".to_string(),
+        "move_npc" => "character movement".to_string(),
+        "gm" => "game master".to_string(),
+        _ => source.trim().to_string(),
+    }
+}
+
+fn source_ui_key(source: &str) -> Option<&'static str> {
+    match source.trim().to_lowercase().as_str() {
+        "default public lore" => Some("entity.source.public_lore"),
+        "previous scene" => Some("entity.source.previous_scene"),
+        "current scene" | "current_scene" => Some("entity.source.current_scene"),
+        "npc_roster" => Some("entity.source.character_roster"),
+        "seed" => Some("entity.source.starting_data"),
+        "move_npc" => Some("entity.source.character_movement"),
+        "gm" => Some("entity.source.game_master"),
+        _ => None,
+    }
+}
+
+fn gender_ui_key(value: &str) -> Option<&'static str> {
+    match value.trim().to_lowercase().as_str() {
+        "m" => Some("entity.gender.masculine"),
+        "f" => Some("entity.gender.feminine"),
+        "n" => Some("entity.gender.neuter"),
+        "pl" => Some("entity.gender.plural"),
+        "other" => Some("entity.gender.other"),
+        _ => None,
+    }
 }
 
 /// `NPC_PROFILE_PRESETS` and `NPC_PROFILE_FIELDS`.
@@ -425,14 +512,28 @@ impl World {
 
     /// `World(seed=seed)` — fresh OS-entropy dice seed.
     pub fn from_seed(seed: &Value) -> Self {
-        Self::from_seed_with_dice_seed(seed, Self::new_dice_seed())
+        Self::from_seed_for_locale(seed, ContentLocale::Russian)
+    }
+
+    /// [`World::from_seed`] using localized fallbacks for incomplete seeds.
+    pub fn from_seed_for_locale(seed: &Value, locale: ContentLocale) -> Self {
+        Self::from_seed_with_dice_seed_for_locale(seed, Self::new_dice_seed(), locale)
     }
 
     /// Construct with an explicit dice seed (deterministic tests; persistence
     /// restore wires RNG separately via [`World::set_rng_state`]).
     pub fn from_seed_with_dice_seed(seed: &Value, dice_seed: u128) -> Self {
+        Self::from_seed_with_dice_seed_for_locale(seed, dice_seed, ContentLocale::Russian)
+    }
+
+    /// [`World::from_seed_with_dice_seed`] using the selected content locale.
+    pub fn from_seed_with_dice_seed_for_locale(
+        seed: &Value,
+        dice_seed: u128,
+        locale: ContentLocale,
+    ) -> Self {
         let mut world = World::skeleton(dice_seed);
-        world.load_seed(seed);
+        world.load_seed_for_locale(seed, locale);
         world
     }
 
@@ -501,11 +602,16 @@ impl World {
     /// otherwise a fresh OS-entropy dice seed is used. Use
     /// [`World::from_worldgen_with_dice_seed`] to pin the dice seed in tests.
     pub fn from_worldgen(spec: &crate::canon::WorldSpec) -> Self {
+        Self::from_worldgen_for_locale(spec, ContentLocale::Russian)
+    }
+
+    /// [`World::from_worldgen`] using the selected content locale.
+    pub fn from_worldgen_for_locale(spec: &crate::canon::WorldSpec, locale: ContentLocale) -> Self {
         let dice_seed = spec
             .seed
             .parse::<u128>()
             .unwrap_or_else(|_| Self::new_dice_seed());
-        Self::from_worldgen_with_lore_and_dice_seed(spec, None, dice_seed)
+        Self::from_worldgen_with_lore_and_dice_seed(spec, None, dice_seed, locale)
     }
 
     /// [`World::from_worldgen`] with a model-authored top-level world bible.
@@ -513,37 +619,66 @@ impl World {
         spec: &crate::canon::WorldSpec,
         lore: crate::canon::WorldLore,
     ) -> Self {
+        Self::from_worldgen_with_lore_for_locale(spec, lore, ContentLocale::Russian)
+    }
+
+    /// [`World::from_worldgen_with_lore`] using the selected content locale.
+    pub fn from_worldgen_with_lore_for_locale(
+        spec: &crate::canon::WorldSpec,
+        lore: crate::canon::WorldLore,
+        locale: ContentLocale,
+    ) -> Self {
         let dice_seed = spec
             .seed
             .parse::<u128>()
             .unwrap_or_else(|_| Self::new_dice_seed());
-        Self::from_worldgen_with_lore_and_dice_seed(spec, Some(lore), dice_seed)
+        Self::from_worldgen_with_lore_and_dice_seed(spec, Some(lore), dice_seed, locale)
     }
 
     /// [`World::from_worldgen`] with an explicit dice seed (deterministic tests).
     pub fn from_worldgen_with_dice_seed(spec: &crate::canon::WorldSpec, dice_seed: u128) -> Self {
-        Self::from_worldgen_with_lore_and_dice_seed(spec, None, dice_seed)
+        Self::from_worldgen_with_dice_seed_for_locale(spec, dice_seed, ContentLocale::Russian)
+    }
+
+    /// [`World::from_worldgen_with_dice_seed`] using the selected content locale.
+    pub fn from_worldgen_with_dice_seed_for_locale(
+        spec: &crate::canon::WorldSpec,
+        dice_seed: u128,
+        locale: ContentLocale,
+    ) -> Self {
+        Self::from_worldgen_with_lore_and_dice_seed(spec, None, dice_seed, locale)
     }
 
     fn from_worldgen_with_lore_and_dice_seed(
         spec: &crate::canon::WorldSpec,
         lore: Option<crate::canon::WorldLore>,
         dice_seed: u128,
+        locale: ContentLocale,
     ) -> Self {
         let mut world = World::skeleton(dice_seed);
         world.story_id = "procedural".to_string();
-        world.story_title = "Процедурный мир".to_string();
-        world.story_brief =
-            "Ты начинаешь в живом, сгенерированном мире: рядом уже есть место, люди и первый источник напряжения. Осмотрись, выбери, кому верить, и реши, за какую нитку потянуть первым."
-                .to_string();
-        world.public =
-            "Процедурно созданный мир. Игрок видит место, людей рядом и ближайший конфликт."
-                .to_string();
-        world.time.current_date_label = "День начала пути".to_string();
+        world.story_title =
+            localized_text(locale, "Процедурный мир", "Procedural World").to_string();
+        world.story_brief = localized_text(
+            locale,
+            "Ты начинаешь в живом, сгенерированном мире: рядом уже есть место, люди и первый источник напряжения. Осмотрись, выбери, кому верить, и реши, за какую нитку потянуть первым.",
+            "You begin in a living generated world: there is already a place, people nearby, and a first source of tension. Look around, decide whom to trust, and choose which thread to follow first.",
+        )
+        .to_string();
+        world.public = localized_text(
+            locale,
+            "Процедурно созданный мир. Игрок видит место, людей рядом и ближайший конфликт.",
+            "A procedurally generated world. The player can see the place, nearby people, and the nearest conflict.",
+        )
+        .to_string();
+        world.time.current_date_label =
+            localized_text(locale, "День начала пути", "First Day of the Journey").to_string();
         world.time.absolute_minutes = 480;
+        world.player_character = PlayerCharacter::for_locale(locale);
 
         // Generate the canon — the source of truth — and derive everything else.
-        world.world_canon = crate::canon::worldgen::generate_with_lore(spec, lore);
+        world.world_canon =
+            crate::canon::worldgen::generate_with_lore_for_locale(spec, lore, locale);
         world.world_canon.clock_minutes = world.time.absolute_minutes;
         world.derive_legacy_from_canon();
         world
@@ -554,6 +689,7 @@ impl World {
     /// after generation; idempotent.
     fn derive_legacy_from_canon(&mut self) {
         use crate::canon::Containment;
+        let locale = self.world_canon.content_locale;
 
         // One NPC card per canon actor, so ask_npc / get_npc_profile / move_npc
         // work on the procedural roster. The rich card body is synthesised from
@@ -568,12 +704,17 @@ impl World {
                 actor.public_label.clone()
             };
             let role = if actor.role.is_empty() {
-                "персонаж мира".to_string()
+                localized_text(locale, "персонаж мира", "world character").to_string()
             } else {
                 actor.role.clone()
             };
             let goals = if actor.goals.is_empty() {
-                "Реагировать правдоподобно и защищать свои интересы.".to_string()
+                localized_text(
+                    locale,
+                    "Реагировать правдоподобно и защищать свои интересы.",
+                    "React believably and protect their own interests.",
+                )
+                .to_string()
             } else {
                 actor.goals.join("; ")
             };
@@ -597,7 +738,7 @@ impl World {
                 life_status_note: String::new(),
                 condition: String::new(),
                 persona: if actor.agenda.is_empty() {
-                    "Житель мира.".to_string()
+                    localized_text(locale, "Житель мира.", "A resident of this world.").to_string()
                 } else {
                     actor.agenda.clone()
                 },
@@ -606,10 +747,25 @@ impl World {
                 habits: String::new(),
                 pressure_response: String::new(),
                 boundaries: String::new(),
-                voice: "Естественно, кратко, в образе.".to_string(),
+                voice: localized_text(
+                    locale,
+                    "Естественно, кратко, в образе.",
+                    "Natural, concise, and in character.",
+                )
+                .to_string(),
                 goals,
-                knowledge: "Только то, что очевидно в текущей сцене.".to_string(),
-                secret: "Личная тайна не задана.".to_string(),
+                knowledge: localized_text(
+                    locale,
+                    "Только то, что очевидно в текущей сцене.",
+                    "Only what is evident in the current scene.",
+                )
+                .to_string(),
+                secret: localized_text(
+                    locale,
+                    "Личная тайна не задана.",
+                    "No personal secret is specified.",
+                )
+                .to_string(),
                 abilities: Map::new(),
                 skills: Map::new(),
                 saving_throws: Map::new(),
@@ -674,8 +830,18 @@ impl World {
         lore: crate::canon::WorldLore,
         plot: &Value,
     ) -> Self {
-        let mut world = World::from_worldgen_with_lore(spec, lore);
-        world.overlay_authored_plot(plot);
+        Self::compose_authored_for_locale(spec, lore, plot, ContentLocale::Russian)
+    }
+
+    /// [`World::compose_authored`] using the selected content locale.
+    pub fn compose_authored_for_locale(
+        spec: &crate::canon::WorldSpec,
+        lore: crate::canon::WorldLore,
+        plot: &Value,
+        locale: ContentLocale,
+    ) -> Self {
+        let mut world = World::from_worldgen_with_lore_for_locale(spec, lore, locale);
+        world.overlay_authored_plot_for_locale(plot, locale);
         world
     }
 
@@ -683,6 +849,12 @@ impl World {
     /// generated/loaded World, preserving the existing world canon. See
     /// [`World::compose_authored`] for the field-by-field contract.
     pub fn overlay_authored_plot(&mut self, plot: &Value) {
+        let locale = self.world_canon.content_locale;
+        self.overlay_authored_plot_for_locale(plot, locale);
+    }
+
+    /// [`World::overlay_authored_plot`] with explicit locale for construction.
+    pub fn overlay_authored_plot_for_locale(&mut self, plot: &Value, locale: ContentLocale) {
         // Story identity (title/brief/public/hidden_truth) and the player
         // character are read from the RAW plot: `normalize_seed` rebuilds a
         // loose seed and folds `title` into the derived scene title (dropping the
@@ -690,7 +862,7 @@ impl World {
         // normalized form is used only for the structural pieces (npcs / scene /
         // facts / state_records) that benefit from its lenient coercion.
         let raw = plot.as_object().cloned().unwrap_or_default();
-        let plot = normalize_seed(plot);
+        let plot = normalize_seed_for_locale(plot, locale);
 
         // --- story identity ------------------------------------------------
         let title = get_str(&raw, "title");
@@ -745,7 +917,7 @@ impl World {
             raw.get("player")
         };
         if pc_raw.is_some() {
-            self.player_character = seed_player_character(pc_raw);
+            self.player_character = seed_player_character_for_locale(pc_raw, locale);
         }
 
         // --- proper nouns --------------------------------------------------
@@ -764,7 +936,7 @@ impl World {
         // `extra_proper_nouns`); merge them over the generated roster so an
         // authored id overrides a generated one but the rest of the world's
         // actors remain.
-        let authored_npcs = self.seed_npcs(&plot);
+        let authored_npcs = self.seed_npcs_for_locale(&plot, locale);
         // `seed_npcs` returns a single default "stranger" when the plot has no
         // npcs; do not inject it over a populated worldgen roster.
         let plot_has_npcs = !as_list(plot.get("npcs").unwrap_or(&Value::Null)).is_empty();
@@ -793,7 +965,7 @@ impl World {
         // absolute start minutes (the `story.json` shorthand in the TZ).
         match raw.get("time") {
             Some(Value::Object(_)) => {
-                self.time = seed_time(raw.get("time"));
+                self.time = seed_time_for_locale(raw.get("time"), locale);
                 self.world_canon.clock_minutes = self.time.absolute_minutes;
             }
             Some(num @ Value::Number(_)) => {
@@ -868,8 +1040,8 @@ impl World {
     // Seeding (_load_seed and friends)
     // =====================================================================
 
-    fn load_seed(&mut self, seed: &Value) {
-        let seed = normalize_seed(seed);
+    fn load_seed_for_locale(&mut self, seed: &Value, locale: ContentLocale) {
+        let seed = normalize_seed_for_locale(seed, locale);
         self.story_id = {
             let v = get_str(&seed, "id");
             if v.is_empty() {
@@ -881,7 +1053,7 @@ impl World {
         self.story_title = {
             let v = get_str(&seed, "title");
             if v.is_empty() {
-                "Пользовательская история".to_string()
+                localized_text(locale, "Пользовательская история", "Custom Story").to_string()
             } else {
                 v
             }
@@ -913,7 +1085,12 @@ impl World {
                 if !p.is_empty() {
                     p
                 } else {
-                    "Новая сцена готова. Игрок видит место, людей рядом и ближайший источник конфликта.".to_string()
+                    localized_text(
+                        locale,
+                        "Новая сцена готова. Игрок видит место, людей рядом и ближайший источник конфликта.",
+                        "A new scene is ready. The player can see the place, nearby people, and the nearest source of conflict.",
+                    )
+                    .to_string()
                 }
             }
         };
@@ -925,20 +1102,20 @@ impl World {
                 get_str(&seed, "canon")
             }
         };
-        self.time = seed_time(seed.get("time"));
+        self.time = seed_time_for_locale(seed.get("time"), locale);
         let pc_raw = if seed.contains_key("player_character") {
             seed.get("player_character")
         } else {
             seed.get("player")
         };
-        self.player_character = seed_player_character(pc_raw);
+        self.player_character = seed_player_character_for_locale(pc_raw, locale);
         self.extra_proper_nouns = as_list(seed.get("proper_nouns").unwrap_or(&Value::Null))
             .iter()
             .map(as_str)
             .filter(|s| !s.is_empty())
             .collect();
-        self.npcs = self.seed_npcs(&seed);
-        self.scene = self.seed_scene(&seed);
+        self.npcs = self.seed_npcs_for_locale(&seed, locale);
+        self.scene = self.seed_scene_for_locale(&seed, locale);
         self.constraints = self.scene.constraints.clone();
         self.fact_records = self.seed_facts(&seed);
         self.state_records = self.seed_state_records(&seed);
@@ -948,6 +1125,7 @@ impl World {
         // consumes no RNG (ids are taken verbatim), so deterministic replay is
         // unaffected; the dice_seed is recorded only as provenance.
         self.world_canon = WorldCanon::from_scene(&self.scene, &self.dice_seed.to_string());
+        self.world_canon.content_locale = locale;
         self.world_canon.clock_minutes = self.time.absolute_minutes;
         self.populate_canon_actors();
         self.migrate_legacy_state_records_to_memory();
@@ -1162,7 +1340,11 @@ impl World {
         let _ = self.archive_state_record_memory(record_id);
     }
 
-    fn seed_npcs(&mut self, seed: &Map<String, Value>) -> BTreeMap<String, Npc> {
+    fn seed_npcs_for_locale(
+        &mut self,
+        seed: &Map<String, Value>,
+        locale: ContentLocale,
+    ) -> BTreeMap<String, Npc> {
         let mut out: BTreeMap<String, Npc> = BTreeMap::new();
         // Preserve insertion order for dedup suffixing AND extra_proper_nouns.
         let mut order: Vec<String> = Vec::new();
@@ -1209,7 +1391,10 @@ impl World {
             let npc = Npc {
                 npc_id: npc_id.clone(),
                 name: name.clone(),
-                role: nonempty_or(get_str(raw, "role"), "персонаж сцены"),
+                role: nonempty_or(
+                    get_str(raw, "role"),
+                    localized_text(locale, "персонаж сцены", "scene character"),
+                ),
                 pronouns,
                 color: get_str(raw, "color"),
                 public_label: get_str(raw, "public_label"),
@@ -1226,16 +1411,38 @@ impl World {
                 habits: get_str(raw, "habits"),
                 pressure_response: get_str(raw, "pressure_response"),
                 boundaries: get_str(raw, "boundaries"),
-                voice: nonempty_or(get_str(raw, "voice"), "Естественно, кратко, в образе."),
+                voice: nonempty_or(
+                    get_str(raw, "voice"),
+                    localized_text(
+                        locale,
+                        "Естественно, кратко, в образе.",
+                        "Natural, concise, and in character.",
+                    ),
+                ),
                 goals: nonempty_or(
                     get_str(raw, "goals"),
-                    "Реагировать правдоподобно и защищать свои интересы.",
+                    localized_text(
+                        locale,
+                        "Реагировать правдоподобно и защищать свои интересы.",
+                        "React believably and protect their own interests.",
+                    ),
                 ),
                 knowledge: nonempty_or(
                     get_str(raw, "knowledge"),
-                    "Только то, что очевидно в текущей сцене.",
+                    localized_text(
+                        locale,
+                        "Только то, что очевидно в текущей сцене.",
+                        "Only what is evident in the current scene.",
+                    ),
                 ),
-                secret: nonempty_or(get_str(raw, "secret"), "Личная тайна не задана."),
+                secret: nonempty_or(
+                    get_str(raw, "secret"),
+                    localized_text(
+                        locale,
+                        "Личная тайна не задана.",
+                        "No personal secret is specified.",
+                    ),
+                ),
                 abilities: as_dict(raw.get("abilities").unwrap_or(&Value::Null)),
                 skills: as_dict(raw.get("skills").unwrap_or(&Value::Null)),
                 saving_throws: as_dict(raw.get("saving_throws").unwrap_or(&Value::Null)),
@@ -1268,14 +1475,43 @@ impl World {
             "stranger".to_string(),
             Npc {
                 npc_id: "stranger".to_string(),
-                name: "Незнакомец".to_string(),
-                role: "персонаж стартовой сцены".to_string(),
-                persona: "Осторожный человек, присутствующий в новой сцене.".to_string(),
-                voice: "Кратко, настороженно, естественно.".to_string(),
-                goals: "Оставаться в безопасности и правдоподобно реагировать на игрока."
-                    .to_string(),
-                knowledge: "Только то, что очевидно в стартовой сцене.".to_string(),
-                secret: "Личная тайна не задана.".to_string(),
+                name: localized_text(locale, "Незнакомец", "Stranger").to_string(),
+                role: localized_text(
+                    locale,
+                    "персонаж стартовой сцены",
+                    "opening-scene character",
+                )
+                .to_string(),
+                persona: localized_text(
+                    locale,
+                    "Осторожный человек, присутствующий в новой сцене.",
+                    "A cautious person present in the new scene.",
+                )
+                .to_string(),
+                voice: localized_text(
+                    locale,
+                    "Кратко, настороженно, естественно.",
+                    "Brief, wary, and natural.",
+                )
+                .to_string(),
+                goals: localized_text(
+                    locale,
+                    "Оставаться в безопасности и правдоподобно реагировать на игрока.",
+                    "Stay safe and react believably to the player.",
+                )
+                .to_string(),
+                knowledge: localized_text(
+                    locale,
+                    "Только то, что очевидно в стартовой сцене.",
+                    "Only what is evident in the opening scene.",
+                )
+                .to_string(),
+                secret: localized_text(
+                    locale,
+                    "Личная тайна не задана.",
+                    "No personal secret is specified.",
+                )
+                .to_string(),
                 pronouns: String::new(),
                 color: String::new(),
                 public_label: String::new(),
@@ -1307,7 +1543,11 @@ impl World {
         def
     }
 
-    fn seed_scene(&self, seed: &Map<String, Value>) -> SceneState {
+    fn seed_scene_for_locale(
+        &self,
+        seed: &Map<String, Value>,
+        locale: ContentLocale,
+    ) -> SceneState {
         let raw = match seed.get("scene") {
             Some(Value::Object(m)) => m.clone(),
             _ => Map::new(),
@@ -1336,7 +1576,7 @@ impl World {
                 if !l.is_empty() {
                     l
                 } else {
-                    "Стартовая сцена".to_string()
+                    localized_text(locale, "Стартовая сцена", "Opening Scene").to_string()
                 }
             }
         };
@@ -1348,10 +1588,12 @@ impl World {
             .filter(|s| !s.is_empty())
             .collect();
         if constraints.is_empty() {
-            constraints = vec![
-                "Здесь существуют только описанные выходы, видимые предметы и присутствующие люди."
-                    .to_string(),
-            ];
+            constraints = vec![localized_text(
+                locale,
+                "Здесь существуют только описанные выходы, видимые предметы и присутствующие люди.",
+                "Only the described exits, visible items, and people present exist here.",
+            )
+            .to_string()];
         }
 
         let mut presence: BTreeMap<String, Presence> = BTreeMap::new();
@@ -1378,7 +1620,7 @@ impl World {
                             if !dl.is_empty() {
                                 dl
                             } else {
-                                "в сцене".to_string()
+                                localized_text(locale, "в сцене", "in the scene").to_string()
                             }
                         }
                     },
@@ -1393,7 +1635,11 @@ impl World {
                             if !na.is_empty() {
                                 na
                             } else {
-                                format!("present as {}", npc.role)
+                                format!(
+                                    "{} {}",
+                                    localized_text(locale, "присутствует как", "present as"),
+                                    npc.role
+                                )
                             }
                         }
                     },
@@ -1409,8 +1655,16 @@ impl World {
             );
         }
 
-        let items = coerce_scene_items(raw.get("items"), "in the scene");
-        let exits = coerce_scene_exits(raw.get("exits"), "unknown destination");
+        let items = coerce_scene_items(
+            raw.get("items"),
+            localized_text(locale, "в сцене", "in the scene"),
+            locale,
+        );
+        let exits = coerce_scene_exits(
+            raw.get("exits"),
+            localized_text(locale, "неизвестное направление", "unknown destination"),
+            locale,
+        );
 
         SceneState {
             scene_id: safe_id(&get_str(&raw, "id"), "start_scene"),
@@ -2956,6 +3210,7 @@ impl World {
 
     pub fn entity_refs(&mut self) -> Value {
         self.ensure_npc_whereabouts();
+        let locale = self.world_canon.content_locale;
         let mut entities: Vec<Value> = Vec::new();
 
         let npc_ids: Vec<String> = self.npcs.keys().cloned().collect();
@@ -2968,8 +3223,8 @@ impl World {
                 .get(npc_id)
                 .cloned()
                 .unwrap_or_else(|| NpcWhereabouts::new(npc_id));
-            let role = public_role(&npc.role);
-            let pronouns = public_gender(&npc.pronouns);
+            let role = public_role_for_locale(&npc.role, locale);
+            let pronouns = public_gender_for_locale(&npc.pronouns, locale);
             let label = self.npc_player_label(npc_id, "player");
             let where_str = if present {
                 presence
@@ -2981,35 +3236,68 @@ impl World {
             } else {
                 whereabouts.location_id.clone()
             };
+            let role_value_key = role.is_empty().then_some("entity.fallback.character");
+            let status_value = if present {
+                localized_text(locale, "в сцене", "in the scene").to_string()
+            } else {
+                whereabouts_status_label_for_locale(&whereabouts.status, locale)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| whereabouts.status.clone())
+            };
+            let status_value_key = if present {
+                Some("entity.status.present")
+            } else {
+                whereabouts_status_ui_key(&whereabouts.status)
+            };
             let mut meta: Vec<Value> = vec![
-                json!({"label": "роль", "value": nonempty_or(role.clone(), "персонаж")}),
-                json!({
-                    "label": "статус",
-                    "value": if present {
-                        "в сцене".to_string()
-                    } else {
-                        whereabouts_status_label(&whereabouts.status)
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| whereabouts.status.clone())
-                    }
-                }),
+                entity_meta_row(
+                    "entity.meta.role",
+                    localized_text(locale, "роль", "role"),
+                    nonempty_or(
+                        role.clone(),
+                        localized_text(locale, "персонаж", "character"),
+                    ),
+                    role_value_key,
+                ),
+                entity_meta_row(
+                    "entity.meta.status",
+                    localized_text(locale, "статус", "status"),
+                    status_value,
+                    status_value_key,
+                ),
             ];
             if !pronouns.is_empty() {
-                meta.push(json!({"label": "род", "value": pronouns}));
+                meta.push(entity_meta_row(
+                    "entity.meta.gender",
+                    localized_text(locale, "род", "gender"),
+                    pronouns,
+                    gender_ui_key(&npc.pronouns),
+                ));
             }
             if !where_str.is_empty() {
-                meta.push(json!({"label": "где", "value": where_str}));
+                meta.push(entity_meta_row(
+                    "entity.meta.where",
+                    localized_text(locale, "где", "where"),
+                    where_str,
+                    None,
+                ));
             }
             if present {
                 if let Some(ref p) = presence {
                     if !p.activity.is_empty() {
-                        meta.push(json!({"label": "занят", "value": p.activity}));
+                        meta.push(entity_meta_row(
+                            "entity.meta.activity",
+                            localized_text(locale, "занят", "activity"),
+                            p.activity.clone(),
+                            None,
+                        ));
                     }
                 }
             }
-            let description = public_npc_description(&npc);
+            let description = public_npc_description_for_locale(&npc, locale);
             let subtitle = format!(
-                "персонаж{}",
+                "{}{}",
+                localized_text(locale, "персонаж", "character"),
                 if role.is_empty() {
                     String::new()
                 } else {
@@ -3023,6 +3311,8 @@ impl World {
                 &label,
                 &label,
                 &subtitle,
+                "entity.kind.npc",
+                &role,
                 &description,
                 meta,
                 &npc.color,
@@ -3040,7 +3330,12 @@ impl World {
                 .iter()
                 .filter_map(|n| self.npcs.get(n).map(|npc| npc.name.clone()))
                 .collect();
-            current_meta.push(json!({"label": "в сцене", "value": names.join(", ")}));
+            current_meta.push(entity_meta_row(
+                "entity.meta.present_characters",
+                localized_text(locale, "в сцене", "in the scene"),
+                names.join(", "),
+                None,
+            ));
         }
         let visible_exit_names: Vec<String> = self
             .scene
@@ -3049,7 +3344,12 @@ impl World {
             .map(|e| e.name.clone())
             .collect();
         if !visible_exit_names.is_empty() {
-            current_meta.push(json!({"label": "выходы", "value": visible_exit_names.join(", ")}));
+            current_meta.push(entity_meta_row(
+                "entity.meta.exits",
+                localized_text(locale, "выходы", "exits"),
+                visible_exit_names.join(", "),
+                None,
+            ));
         }
         add_location(
             &mut entities,
@@ -3058,6 +3358,7 @@ impl World {
             &self.scene.title,
             &self.scene.description,
             current_meta,
+            locale,
         );
 
         for exit_ in self
@@ -3076,8 +3377,22 @@ impl World {
                 &mut seen_locs,
                 &format!("{}_destination", exit_.exit_id),
                 &destination,
-                &format!("Видимый выход из текущей сцены: {}.", exit_.name),
-                vec![json!({"label": "через", "value": exit_.name})],
+                &format!(
+                    "{}: {}.",
+                    localized_text(
+                        locale,
+                        "Видимый выход из текущей сцены",
+                        "Visible exit from the current scene",
+                    ),
+                    exit_.name
+                ),
+                vec![entity_meta_row(
+                    "entity.meta.via",
+                    localized_text(locale, "через", "via"),
+                    exit_.name,
+                    None,
+                )],
+                locale,
             );
         }
 
@@ -3094,14 +3409,19 @@ impl World {
                 continue;
             }
             let source_label = {
-                let s = public_source(&row.source);
+                let s = public_source_for_locale(&row.source, locale);
                 if !s.is_empty() {
                     s
                 } else {
-                    whereabouts_status_label(&row.status)
+                    whereabouts_status_label_for_locale(&row.status, locale)
                         .map(|x| x.to_string())
                         .unwrap_or_else(|| row.status.clone())
                 }
+            };
+            let source_value_key = if row.source.trim().is_empty() {
+                whereabouts_status_ui_key(&row.status)
+            } else {
+                source_ui_key(&row.source)
             };
             let loc_id = if !row.location_id.is_empty() {
                 row.location_id.clone()
@@ -3114,7 +3434,13 @@ impl World {
                 &loc_id,
                 &label,
                 &row.details,
-                vec![json!({"label": "источник", "value": source_label})],
+                vec![entity_meta_row(
+                    "entity.meta.source",
+                    localized_text(locale, "источник", "source"),
+                    source_label,
+                    source_value_key,
+                )],
+                locale,
             );
         }
 
@@ -3418,6 +3744,7 @@ impl World {
         attitude: &str,
     ) -> Result<Value, String> {
         self.ensure_npc_whereabouts();
+        let locale = self.world_canon.content_locale;
         let resolved_id = self.resolve(npc_id)?;
         let role = self.npcs[&resolved_id].role.clone();
         if present {
@@ -3429,17 +3756,20 @@ impl World {
                     npc_id: resolved_id.clone(),
                     location: nonempty_or(
                         location.trim().to_string(),
-                        &old.as_ref()
-                            .map(|o| o.location.clone())
-                            .unwrap_or_else(|| "in the scene".to_string()),
+                        &old.as_ref().map(|o| o.location.clone()).unwrap_or_else(|| {
+                            localized_text(locale, "в сцене", "in the scene").to_string()
+                        }),
                     ),
                     visible,
                     can_hear,
                     activity: nonempty_or(
                         activity.trim().to_string(),
-                        &old.as_ref()
-                            .map(|o| o.activity.clone())
-                            .unwrap_or_else(|| format!("present as {role}")),
+                        &old.as_ref().map(|o| o.activity.clone()).unwrap_or_else(|| {
+                            format!(
+                                "{} {role}",
+                                localized_text(locale, "присутствует как", "present as")
+                            )
+                        }),
                     ),
                     attitude: nonempty_or(
                         attitude.trim().to_string(),
@@ -3460,7 +3790,11 @@ impl World {
                         can_hear: false,
                         activity: nonempty_or(
                             activity.trim().to_string(),
-                            "not present in the current scene",
+                            localized_text(
+                                locale,
+                                "вне текущей сцены",
+                                "not present in the current scene",
+                            ),
                         ),
                         attitude: nonempty_or(attitude.trim().to_string(), &old.attitude),
                     },
@@ -3475,7 +3809,14 @@ impl World {
                         location_id: safe_id(&location_text, ""),
                         location_name: location_text,
                         status: "known".to_string(),
-                        details: nonempty_or(activity.trim().to_string(), "вне текущей сцены"),
+                        details: nonempty_or(
+                            activity.trim().to_string(),
+                            localized_text(
+                                locale,
+                                "вне текущей сцены",
+                                "outside the current scene",
+                            ),
+                        ),
                         source: "move_npc".to_string(),
                     },
                 );
@@ -3489,7 +3830,11 @@ impl World {
                         status: "unknown".to_string(),
                         details: nonempty_or(
                             activity.trim().to_string(),
-                            "покинул текущую сцену; куда именно, не установлено",
+                            localized_text(
+                                locale,
+                                "покинул текущую сцену; куда именно, не установлено",
+                                "left the current scene; the destination is unknown",
+                            ),
                         ),
                         source: "move_npc".to_string(),
                     },
@@ -3585,8 +3930,12 @@ impl World {
         allow_initial_relocation: bool,
     ) -> Value {
         use crate::canon::{Containment, Provenance, Transition};
+        let locale = self.world_canon.content_locale;
 
-        let title = nonempty_or(title.trim().to_string(), "Новая сцена");
+        let title = nonempty_or(
+            title.trim().to_string(),
+            localized_text(locale, "Новая сцена", "New Scene"),
+        );
         let description = nonempty_or(description.trim().to_string(), &title);
         let fallback_id = format!("scene_{}", ord_sum(&title) % 100000);
         let dest_id = safe_id(
@@ -3600,13 +3949,18 @@ impl World {
         if self.world_canon.is_empty() {
             let seed = self.dice_seed.to_string();
             self.world_canon = crate::canon::WorldCanon::from_scene(&self.scene, &seed);
+            self.world_canon.content_locale = locale;
         }
         let turn = self.world_canon.event_log.events.len() as i64;
         let from_place = self.world_canon.player_place_id.clone();
         if !allow_initial_relocation && !from_place.is_empty() && from_place != dest_id {
             return json!({
                 "ok": false,
-                "error": "set_scene cannot change location; use move_player or generate_location",
+                "error": localized_text(
+                    locale,
+                    "set_scene не может менять локацию; используй move_player или generate_location",
+                    "set_scene cannot change location; use move_player or generate_location",
+                ),
                 "code": "location_change_requires_transition",
                 "current_location_id": from_place,
                 "requested_location_id": dest_id,
@@ -3630,7 +3984,11 @@ impl World {
         }
 
         // --- upsert the destination Place ---------------------------------
-        let coerced_items = coerce_scene_items(Some(items), "в сцене");
+        let coerced_items = coerce_scene_items(
+            Some(items),
+            localized_text(locale, "в сцене", "in the scene"),
+            locale,
+        );
         let item_ids: Vec<String> = coerced_items.iter().map(|i| i.item_id.clone()).collect();
         match self.world_canon.places.get_mut(&dest_id) {
             Some(p) => {
@@ -3667,7 +4025,7 @@ impl World {
         // patches preserve canon exits; the dedicated location creator owns
         // every new route and its profile.
         if allow_initial_relocation {
-            for exit in coerce_initial_scene_exits(Some(exits)) {
+            for exit in coerce_initial_scene_exits(Some(exits), locale) {
                 let base = if exit.exit_id.is_empty() {
                     safe_id(&exit.name, "exit")
                 } else {
@@ -3773,7 +4131,8 @@ impl World {
                         location_id: dest_id.clone(),
                         location_name: title.clone(),
                         status: "unknown".to_string(),
-                        details: "покинул сцену".to_string(),
+                        details: localized_text(locale, "покинул сцену", "left the scene")
+                            .to_string(),
                         source: "set_scene".to_string(),
                     },
                 );
@@ -4509,6 +4868,7 @@ impl World {
 
     pub fn time_export(&self) -> Value {
         let time = &self.time;
+        let locale = self.world_canon.content_locale;
         let minutes_per_hour = std::cmp::max(1, time.minutes_per_hour);
         let hours_per_day = std::cmp::max(1, time.hours_per_day);
         let day_minutes = minutes_per_hour * hours_per_day;
@@ -4519,7 +4879,10 @@ impl World {
         json!({
             "calendar_name": time.calendar_name,
             "absolute_minutes": absolute,
-            "current_date_label": nonempty_or(time.current_date_label.clone(), "День 1"),
+            "current_date_label": nonempty_or(
+                time.current_date_label.clone(),
+                localized_text(locale, "День 1", "Day 1"),
+            ),
             "day_number": absolute / day_minutes + 1,
             "time_of_day": format!("{hour:02}:{minute:02}"),
             "minutes_per_hour": minutes_per_hour,
@@ -4532,6 +4895,7 @@ impl World {
     }
 
     pub fn time_summary(&self) -> String {
+        let locale = self.world_canon.content_locale;
         let payload = self.time_export();
         let calendar = payload["calendar_name"].as_str().unwrap_or("");
         let date = {
@@ -4539,7 +4903,11 @@ impl World {
             if !d.is_empty() {
                 d.to_string()
             } else {
-                format!("День {}", payload["day_number"])
+                format!(
+                    "{} {}",
+                    localized_text(locale, "День", "Day"),
+                    payload["day_number"]
+                )
             }
         };
         let prefix = if !calendar.is_empty() {
@@ -4834,7 +5202,8 @@ impl World {
     /// package payload still yields a valid card. `raw` is the
     /// `payload.player_character` object; a non-object seeds the default hero.
     pub fn seed_player_character(&mut self, raw: Option<&Value>) {
-        self.player_character = seed_player_character(raw);
+        self.player_character =
+            seed_player_character_for_locale(raw, self.world_canon.content_locale);
     }
 
     /// K2.2 inventory/equipment delta ops (`docs/CHARACTERS_AND_STORY_TZ.md`
@@ -4885,6 +5254,61 @@ impl World {
         *list != before
     }
 
+    fn player_character_changes(before: &Value, after: &Value, fields: &[String]) -> Vec<Value> {
+        let mut changes = Vec::new();
+        for field in fields {
+            let (Some(before_value), Some(after_value)) = (before.get(field), after.get(field))
+            else {
+                // Private fields such as gm_notes are intentionally absent from
+                // both player-safe snapshots and therefore never leak here.
+                continue;
+            };
+            if before_value == after_value {
+                continue;
+            }
+            let mut change = json!({
+                "field": field,
+                "before": before_value,
+                "after": after_value,
+            });
+            if let (Some(before_items), Some(after_items)) =
+                (before_value.as_array(), after_value.as_array())
+            {
+                let mut unmatched = before_items.to_vec();
+                let mut added = Vec::new();
+                for item in after_items {
+                    if let Some(index) = unmatched.iter().position(|candidate| candidate == item) {
+                        unmatched.remove(index);
+                    } else {
+                        added.push(item.clone());
+                    }
+                }
+                if !added.is_empty() {
+                    change
+                        .as_object_mut()
+                        .expect("character change is an object")
+                        .insert("added".to_string(), Value::Array(added));
+                }
+                if !unmatched.is_empty() {
+                    change
+                        .as_object_mut()
+                        .expect("character change is an object")
+                        .insert("removed".to_string(), Value::Array(unmatched));
+                }
+            }
+            changes.push(change);
+        }
+        changes
+    }
+
+    fn player_character_change_fields(changes: &[Value]) -> Vec<String> {
+        changes
+            .iter()
+            .filter_map(|change| change.get("field").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// Validate the GM-facing player patch before applying it. Internal engine
     /// paths may keep using `update_player_character` directly.
     pub fn update_player_character_checked(
@@ -4926,6 +5350,7 @@ impl World {
     }
 
     pub fn update_player_character(&mut self, fields: &Value, reason: &str) -> Value {
+        let before = self.player_character_export(true);
         let map = match fields {
             Value::Object(m) => m.clone(),
             _ => Map::new(),
@@ -4966,12 +5391,19 @@ impl World {
             self.player_character.card_revision += 1;
         }
         let changed_sorted: Vec<String> = changed.into_iter().collect();
+        let player_character = self.player_character_export(true);
+        let public_updated = changed_sorted
+            .into_iter()
+            .filter(|field| before.get(field).is_some() && player_character.get(field).is_some())
+            .collect::<Vec<_>>();
+        let changes = Self::player_character_changes(&before, &player_character, &public_updated);
         json!({
             "ok": true,
-            "updated": changed_sorted,
+            "updated": public_updated,
+            "changes": changes,
             "reason": reason.trim(),
             "card_revision": self.player_character.card_revision,
-            "player_character": self.player_character_export(false),
+            "player_character": player_character,
         })
     }
 
@@ -4992,6 +5424,7 @@ impl World {
     /// PLAYER_CHARACTER_UPDATE) plus scene-item fields, or `Err(payload)` carrying
     /// the structured rejection so the handler renders it as a tool error.
     pub fn take_item(&mut self, item_id: &str, name: &str, reason: &str) -> Result<Value, Value> {
+        let locale = self.world_canon.content_locale;
         let item_id = item_id.trim();
         let name = name.trim();
         let idx = if !item_id.is_empty() {
@@ -5000,7 +5433,14 @@ impl World {
                 None => {
                     return Err(json!({
                         "code": "unknown_item",
-                        "error": format!("no scene item has item_id '{item_id}'"),
+                    "error": match locale {
+                        ContentLocale::Russian => {
+                            format!("в сцене нет предмета с item_id '{item_id}'")
+                        }
+                        ContentLocale::English => {
+                            format!("no scene item has item_id '{item_id}'")
+                        }
+                    },
                         "item_id": item_id,
                     }));
                 }
@@ -5026,7 +5466,14 @@ impl World {
                         .collect();
                     return Err(json!({
                         "code": "item_not_here",
-                        "error": format!("no visible item named '{name}' is in the current scene"),
+                    "error": match locale {
+                        ContentLocale::Russian => format!(
+                            "в текущей сцене нет видимого предмета с названием '{name}'"
+                        ),
+                        ContentLocale::English => format!(
+                            "no visible item named '{name}' is in the current scene"
+                        ),
+                    },
                         "name": name,
                         "visible_items": visible,
                     }));
@@ -5042,7 +5489,14 @@ impl World {
                         .collect();
                     return Err(json!({
                         "code": "ambiguous_item",
-                        "error": format!("more than one visible item named '{name}'; pass item_id"),
+                    "error": match locale {
+                        ContentLocale::Russian => format!(
+                            "найдено несколько видимых предметов с названием '{name}'; передай item_id"
+                        ),
+                        ContentLocale::English => format!(
+                            "more than one visible item named '{name}'; pass item_id"
+                        ),
+                    },
                         "name": name,
                         "candidates": cands,
                     }));
@@ -5051,7 +5505,11 @@ impl World {
         } else {
             return Err(json!({
                 "code": "missing_item_ref",
-                "error": "take_item requires item_id or name",
+                "error": localized_text(
+                    locale,
+                    "Для take_item нужен item_id или name.",
+                    "take_item requires item_id or name",
+                ),
             }));
         };
 
@@ -5059,12 +5517,20 @@ impl World {
             let it = &self.scene.items[idx];
             return Err(json!({
                 "code": "not_portable",
-                "error": format!("'{}' cannot be picked up (not portable)", it.name),
+                "error": match locale {
+                    ContentLocale::Russian => {
+                        format!("'{}' нельзя подобрать: предмет непереносимый", it.name)
+                    }
+                    ContentLocale::English => {
+                        format!("'{}' cannot be picked up (not portable)", it.name)
+                    }
+                },
                 "item_id": it.item_id,
                 "name": it.name,
             }));
         }
 
+        let before = self.player_character_export(true);
         let item = self.scene.items.remove(idx);
         let entry = item_entry_string(&item.name, &item.details);
         // Dedup by head like apply_list_delta (trim + lowercase — the one §И1
@@ -5080,6 +5546,10 @@ impl World {
             self.player_character.inventory.push(entry.clone());
         }
         self.player_character.card_revision += 1;
+        let player_character = self.player_character_export(true);
+        let changes =
+            Self::player_character_changes(&before, &player_character, &["inventory".to_string()]);
+        let updated = Self::player_character_change_fields(&changes);
         Ok(json!({
             "ok": true,
             "status": "taken",
@@ -5087,9 +5557,10 @@ impl World {
             "name": item.name,
             "inventory_entry": entry,
             "reason": reason.trim(),
-            "updated": ["inventory"],
+            "updated": updated,
+            "changes": changes,
             "card_revision": self.player_character.card_revision,
-            "player_character": self.player_character_export(false),
+            "player_character": player_character,
         }))
     }
 
@@ -5103,11 +5574,16 @@ impl World {
     /// `visible` = true, `location` = `location` arg or `"рядом"`. `card_revision`
     /// bumps. NO canon event (§0). `Ok`/`Err` payload shape matches `take_item`.
     pub fn drop_item(&mut self, name: &str, location: &str, reason: &str) -> Result<Value, Value> {
+        let locale = self.world_canon.content_locale;
         let needle = name.trim().to_lowercase();
         if needle.is_empty() {
             return Err(json!({
                 "code": "unknown_item",
-                "error": "drop_item requires a non-empty name",
+                "error": localized_text(
+                    locale,
+                    "Для drop_item нужно непустое название.",
+                    "drop_item requires a non-empty name",
+                ),
                 "name": name.trim(),
             }));
         }
@@ -5122,19 +5598,29 @@ impl World {
                 let inventory = self.player_character.inventory.clone();
                 return Err(json!({
                     "code": "unknown_item",
-                    "error": format!("no inventory entry named '{}'", name.trim()),
+                    "error": match locale {
+                        ContentLocale::Russian => format!(
+                            "в инвентаре нет предмета с названием '{}'",
+                            name.trim()
+                        ),
+                        ContentLocale::English => format!(
+                            "no inventory entry named '{}'",
+                            name.trim()
+                        ),
+                    },
                     "name": name.trim(),
                     "inventory": inventory,
                 }));
             }
         };
+        let before = self.player_character_export(true);
         let entry = self.player_character.inventory.remove(inv_idx);
         let head = item_head(&entry).to_string();
         let details = item_tail(&entry).to_string();
         let location = {
             let loc = location.trim();
             if loc.is_empty() {
-                "рядом".to_string()
+                localized_text(locale, "рядом", "nearby").to_string()
             } else {
                 loc.to_string()
             }
@@ -5159,6 +5645,10 @@ impl World {
         };
         self.scene.items.push(scene_item);
         self.player_character.card_revision += 1;
+        let player_character = self.player_character_export(true);
+        let changes =
+            Self::player_character_changes(&before, &player_character, &["inventory".to_string()]);
+        let updated = Self::player_character_change_fields(&changes);
         Ok(json!({
             "ok": true,
             "status": "dropped",
@@ -5167,9 +5657,10 @@ impl World {
             "details": details,
             "location": location,
             "reason": reason.trim(),
-            "updated": ["inventory"],
+            "updated": updated,
+            "changes": changes,
             "card_revision": self.player_character.card_revision,
-            "player_character": self.player_character_export(false),
+            "player_character": player_character,
         }))
     }
 
@@ -5197,11 +5688,16 @@ impl World {
         slot_level: Option<i64>,
         reason: &str,
     ) -> Result<Value, Value> {
+        let locale = self.world_canon.content_locale;
         let needle = name.trim().to_lowercase();
         if needle.is_empty() {
             return Err(json!({
                 "code": "unknown_spell",
-                "error": "cast_spell requires a non-empty spell name",
+                "error": localized_text(
+                    locale,
+                    "Для cast_spell нужно непустое название заклинания.",
+                    "cast_spell requires a non-empty spell name",
+                ),
                 "name": name.trim(),
             }));
         }
@@ -5222,7 +5718,16 @@ impl World {
                     .collect();
                 return Err(json!({
                     "code": "unknown_spell",
-                    "error": format!("персонаж не знает заклинания '{}'", name.trim()),
+                    "error": match locale {
+                        ContentLocale::Russian => format!(
+                            "персонаж не знает заклинания '{}'",
+                            name.trim()
+                        ),
+                        ContentLocale::English => format!(
+                            "the character does not know the spell '{}'",
+                            name.trim()
+                        ),
+                    },
                     "name": name.trim(),
                     "known_spells": known,
                 }));
@@ -5231,6 +5736,7 @@ impl World {
         // Clone the fields we need before mutating the slot map (borrow split).
         let spell = self.player_character.spells[idx].clone();
         let base_level = spell.level as i64;
+        let before = self.player_character_export(true);
 
         // §С2.2/3: level 0 spends no slot; else effective level = max(base,
         // requested). A requested level below the spell's own is clamped up.
@@ -5243,7 +5749,14 @@ impl World {
             if remaining <= 0 {
                 return Err(json!({
                     "code": "no_slots",
-                    "error": format!("нет свободных слотов уровня {lvl}"),
+                    "error": match locale {
+                        ContentLocale::Russian => {
+                            format!("нет свободных слотов уровня {lvl}")
+                        }
+                        ContentLocale::English => {
+                            format!("no level {lvl} spell slots remain")
+                        }
+                    },
                     "name": spell.name,
                     "level": lvl,
                 }));
@@ -5271,6 +5784,13 @@ impl World {
 
         self.player_character.card_revision += 1;
         let slots_remaining = Value::Object(self.player_character.spell_slots.clone());
+        let player_character = self.player_character_export(true);
+        let changes = Self::player_character_changes(
+            &before,
+            &player_character,
+            &["spell_slots".to_string(), "concentration".to_string()],
+        );
+        let updated = Self::player_character_change_fields(&changes);
         Ok(json!({
             "ok": true,
             "status": "cast",
@@ -5281,9 +5801,10 @@ impl World {
             "concentration_started": concentration_started,
             "concentration_ended": concentration_ended,
             "reason": reason.trim(),
-            "updated": ["spell_slots", "concentration"],
+            "updated": updated,
+            "changes": changes,
             "card_revision": self.player_character.card_revision,
-            "player_character": self.player_character_export(false),
+            "player_character": player_character,
         }))
     }
 
@@ -5787,7 +6308,10 @@ impl World {
             ),
             seq: self.rumor_seq,
             turn: 0,
-            speaker: nonempty_or(speaker.trim().to_string(), "слух"),
+            speaker: nonempty_or(
+                speaker.trim().to_string(),
+                localized_text(self.world_canon.content_locale, "слух", "rumor"),
+            ),
             text,
             witnesses: BTreeSet::new(),
             origin_scope: "gm_private".to_string(),
@@ -6071,6 +6595,17 @@ impl<'a> StateRecordQuery<'a> {
 // Free helper functions
 // =========================================================================
 
+const fn localized_text(
+    locale: ContentLocale,
+    russian: &'static str,
+    english: &'static str,
+) -> &'static str {
+    match locale {
+        ContentLocale::Russian => russian,
+        ContentLocale::English => english,
+    }
+}
+
 fn nonempty_or(value: String, fallback: &str) -> String {
     if value.is_empty() {
         fallback.to_string()
@@ -6229,7 +6764,7 @@ fn normalize_stat_value(v: Value) -> Value {
 
 // --- seed-time / player-character / scene coercion -----------------------
 
-fn seed_time(raw: Option<&Value>) -> WorldTime {
+fn seed_time_for_locale(raw: Option<&Value>, locale: ContentLocale) -> WorldTime {
     let data = match raw {
         Some(Value::Object(m)) => m.clone(),
         _ => Map::new(),
@@ -6246,7 +6781,10 @@ fn seed_time(raw: Option<&Value>) -> WorldTime {
             0,
             as_int_or_none(data.get("absolute_minutes").unwrap_or(&Value::Null)).unwrap_or(0),
         ),
-        current_date_label: nonempty_or(get_str(&data, "current_date_label"), "День 1"),
+        current_date_label: nonempty_or(
+            get_str(&data, "current_date_label"),
+            localized_text(locale, "День 1", "Day 1"),
+        ),
         minutes_per_hour: std::cmp::max(1, minutes_per_hour),
         hours_per_day: std::cmp::max(1, hours_per_day),
         day_names: as_list(data.get("day_names").unwrap_or(&Value::Null))
@@ -6267,12 +6805,12 @@ fn seed_time(raw: Option<&Value>) -> WorldTime {
     }
 }
 
-fn seed_player_character(raw: Option<&Value>) -> PlayerCharacter {
+fn seed_player_character_for_locale(raw: Option<&Value>, locale: ContentLocale) -> PlayerCharacter {
     let m = match raw {
         Some(Value::Object(m)) => m.clone(),
-        _ => return PlayerCharacter::default(),
+        _ => return PlayerCharacter::for_locale(locale),
     };
-    let mut pc = PlayerCharacter::default();
+    let mut pc = PlayerCharacter::for_locale(locale);
     World::apply_player_character_fields(&mut pc, &m);
     pc.card_revision = std::cmp::max(
         0,
@@ -6281,7 +6819,11 @@ fn seed_player_character(raw: Option<&Value>) -> PlayerCharacter {
     pc
 }
 
-fn coerce_scene_items(raw: Option<&Value>, default_location: &str) -> Vec<SceneItem> {
+fn coerce_scene_items(
+    raw: Option<&Value>,
+    default_location: &str,
+    locale: ContentLocale,
+) -> Vec<SceneItem> {
     let list = match raw {
         Some(v) => as_list(v),
         None => Vec::new(),
@@ -6291,7 +6833,10 @@ fn coerce_scene_items(raw: Option<&Value>, default_location: &str) -> Vec<SceneI
         let i = idx + 1;
         match item {
             Value::Object(m) => {
-                let name = nonempty_or(get_str(m, "name"), &format!("предмет {i}"));
+                let name = nonempty_or(
+                    get_str(m, "name"),
+                    &format!("{} {i}", localized_text(locale, "предмет", "item")),
+                );
                 items.push(SceneItem {
                     item_id: safe_id(&get_str(m, "id"), &format!("item_{i}")),
                     name,
@@ -6321,7 +6866,11 @@ fn coerce_scene_items(raw: Option<&Value>, default_location: &str) -> Vec<SceneI
     items
 }
 
-fn coerce_scene_exits(raw: Option<&Value>, default_dest: &str) -> Vec<SceneExit> {
+fn coerce_scene_exits(
+    raw: Option<&Value>,
+    default_dest: &str,
+    locale: ContentLocale,
+) -> Vec<SceneExit> {
     let list = match raw {
         Some(v) => as_list(v),
         None => Vec::new(),
@@ -6331,7 +6880,10 @@ fn coerce_scene_exits(raw: Option<&Value>, default_dest: &str) -> Vec<SceneExit>
         let i = idx + 1;
         match exit_ {
             Value::Object(m) => {
-                let name = nonempty_or(get_str(m, "name"), &format!("выход {i}"));
+                let name = nonempty_or(
+                    get_str(m, "name"),
+                    &format!("{} {i}", localized_text(locale, "выход", "exit")),
+                );
                 exits.push(SceneExit {
                     exit_id: safe_id(&get_str(m, "id"), &format!("exit_{i}")),
                     name,
@@ -6369,7 +6921,7 @@ fn coerce_scene_exits(raw: Option<&Value>, default_dest: &str) -> Vec<SceneExit>
 }
 
 /// Initial seed exit coercion kept for compatibility with legacy story seeds.
-fn coerce_initial_scene_exits(raw: Option<&Value>) -> Vec<SceneExit> {
+fn coerce_initial_scene_exits(raw: Option<&Value>, locale: ContentLocale) -> Vec<SceneExit> {
     let list = match raw {
         Some(v) => as_list(v),
         None => Vec::new(),
@@ -6379,13 +6931,16 @@ fn coerce_initial_scene_exits(raw: Option<&Value>) -> Vec<SceneExit> {
         let i = idx + 1;
         match exit_ {
             Value::Object(m) => {
-                let name = nonempty_or(get_str(m, "name"), &format!("выход {i}"));
+                let name = nonempty_or(
+                    get_str(m, "name"),
+                    &format!("{} {i}", localized_text(locale, "выход", "exit")),
+                );
                 exits.push(SceneExit {
                     exit_id: safe_id(&get_str(m, "id"), &format!("exit_{i}")),
                     name,
                     destination: crate::helpers::normalize_slug_like(&nonempty_or(
                         get_str(m, "destination"),
-                        "неизвестное направление",
+                        localized_text(locale, "неизвестное направление", "unknown destination"),
                     )),
                     visible: m.get("visible").map(as_bool_pyish).unwrap_or(true),
                     blocked_by: get_str(m, "blocked_by"),
@@ -6489,7 +7044,7 @@ fn unique_state_record_id(preferred_id: &str, kind: &str, existing: &BTreeSet<St
 
 // --- entity_refs helpers --------------------------------------------------
 
-fn public_npc_description(npc: &Npc) -> String {
+fn public_npc_description_for_locale(npc: &Npc, locale: ContentLocale) -> String {
     let mut visible_bits: Vec<String> = Vec::new();
     if !npc.physical_type.is_empty() {
         visible_bits.push(npc.physical_type.clone());
@@ -6508,11 +7063,39 @@ fn public_npc_description(npc: &Npc) -> String {
         return text;
     }
     let role = if !npc.role.is_empty() {
-        format!(" Публичная роль: {}.", public_role(&npc.role))
+        format!(
+            " {}: {}.",
+            localized_text(locale, "Публичная роль", "Public role"),
+            public_role_for_locale(&npc.role, locale)
+        )
     } else {
         String::new()
     };
-    format!("Конкретный персонаж текущего мира.{role} Подробности появятся, когда игрок их узнает.")
+    format!(
+        "{}.{role} {}",
+        localized_text(
+            locale,
+            "Конкретный персонаж текущего мира",
+            "A specific character in the current world",
+        ),
+        localized_text(
+            locale,
+            "Подробности появятся, когда игрок их узнает.",
+            "Details will appear when the player learns them.",
+        )
+    )
+}
+
+fn entity_meta_row(label_key: &str, label: &str, value: String, value_key: Option<&str>) -> Value {
+    let mut row = json!({
+        "label_key": label_key,
+        "label": label,
+        "value": value,
+    });
+    if let Some(value_key) = value_key {
+        row["value_key"] = json!(value_key);
+    }
+    row
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6523,6 +7106,8 @@ fn push_entity(
     label: &str,
     title: &str,
     subtitle: &str,
+    subtitle_key: &str,
+    subtitle_detail: &str,
     description: &str,
     meta: Vec<Value>,
     color: &str,
@@ -6539,6 +7124,8 @@ fn push_entity(
         "label": clean_label,
         "title": nonempty_or(title.trim().to_string(), clean_label),
         "subtitle": subtitle.trim(),
+        "subtitle_key": subtitle_key.trim(),
+        "subtitle_detail": subtitle_detail.trim(),
         "description": description.trim(),
         "color": color.trim(),
         "meta": meta,
@@ -6552,6 +7139,7 @@ fn add_location(
     label: &str,
     description: &str,
     meta: Vec<Value>,
+    locale: ContentLocale,
 ) {
     let basis = {
         let l = label.trim();
@@ -6576,7 +7164,9 @@ fn add_location(
         &clean_id,
         label,
         label,
-        "локация",
+        localized_text(locale, "локация", "location"),
+        "entity.kind.loc",
+        "",
         description,
         meta,
         "",

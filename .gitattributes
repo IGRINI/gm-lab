@@ -16,3 +16,6 @@ crates/gml-prompts/prompts/**/*.prompt.md text eol=lf
 *.jsx text eol=lf
 *.css text eol=lf
 *.html text eol=lf
+*.py text eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf

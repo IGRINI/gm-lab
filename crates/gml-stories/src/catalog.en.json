@@ -1,0 +1,1481 @@
+[
+  {
+    "id": "turnvale-murder",
+    "title": "Murder in Turnvale",
+    "description": "A tavern, a murdered merchant, a thieves' guild and guards without evidence.",
+    "seed": {
+      "id": "turnvale-murder",
+      "title": "Murder in Turnvale",
+      "public_intro": "The town of Turnvale greets the morning with the ringing of bells and closed shutters. The Gray Gryphon tavern smells of sour ale, wet wool and fear: last night the merchant Aldric was found dead, and everyone at the table already has their own version. The guards have closed off the shop of the murdered man, the merchants are demanding answers, and even the regulars are speaking more quietly than usual.",
+      "story_brief": "You are Darra, an independent investigator drawn into the murder of the merchant Aldric in Turnvale. The morning begins at the Gray Gryphon tavern: the guards are already on edge, the merchants are whispering, and everyone is afraid to say too much. They expect facts from you, not a convenient story: find out who is lying, where Aldric spent his final hours, and why the town is so eager to silence the case.",
+      "time": {
+        "current_date_label": "The morning after the murder",
+        "absolute_minutes": 480
+      },
+      "hidden_truth": "Last night, the merchant Aldric was murdered in Turnvale. He was no random victim: Aldric smuggled spices through the town and kept a second debt ledger recording payments to members of the Thieves' Guild. When he offered to sell the ledger to Captain Mareth in exchange for protection, the guild ordered his death before dawn. The killer entered through the shop's rear yard, took part of the ledger, and planted evidence pointing to highwaymen. Borin is a Thieves' Guild informant: he warned the guild that Aldric wanted to meet the guard, and now realizes he helped cause the murder. Borin knows the intermediary's alias, the location of a cache beneath an ale barrel, and that Lysa saw a hooded figure. Lysa does not know the whole scheme, but she noticed the smell of black saffron and a silver buckle on the figure's cloak. Mareth suspects both the guild and her informant, but without the debt ledger any arrest will collapse, and the town's nobility will accuse the guard of chasing rumors.",
+      "player_character": {
+        "name": "Darra",
+        "pronouns": "F",
+        "class_role": "wandering detective",
+        "level": 2,
+        "background": "an independent investigator who travels from town to town, earning a living by uncovering the truth",
+        "age": "Actually 34 years old; looks a little younger.",
+        "physical_type": "short, wiry woman in a traveling dress",
+        "distinctive_features": "a tenacious gaze, a wry smile, a silver signet ring from a previous employer, a worn notebook",
+        "condition": "travel-worn but composed; senses that she has stepped into someone else's trouble",
+        "personality": "sharp-tongued, observant, distrustful of authorities, easily gets along with ordinary people",
+        "values": "truth, justice for those who were silenced, personal independence, owing no one a debt",
+        "gm_notes": "Darra stopped at the Gray Gryphon while passing through, looking only for a bed for the night, and woke in a town where the merchant Aldric had been murdered. She has no authority from the guard, only a reputation for listening closely and fitting small details together. Captain Mareth tolerates her as long as she brings facts rather than rumors. The guild would prefer her to leave with the morning caravan before noon.",
+        "abilities": {
+          "STR": 9,
+          "DEX": 13,
+          "CON": 11,
+          "INT": 13,
+          "WIS": 14,
+          "CHA": 15
+        },
+        "skills": {
+          "Insight": 4,
+          "Perception": 4,
+          "Investigation": 3,
+          "Persuasion": 4,
+          "Deception": 4
+        },
+        "saving_throws": {
+          "WIS": 4,
+          "CHA": 4
+        },
+        "passive_perception": 14,
+        "ac": 13,
+        "hp": {
+          "current": 16,
+          "max": 16
+        },
+        "speed": "30 ft",
+        "senses": "normal vision; alert to lies and evasions in conversation",
+        "languages": "General; thieves' argot",
+        "inventory": [
+          "travel raincoat",
+          "dagger",
+          "hidden lantern",
+          "notebook with pencil",
+          "magnifying glass",
+          "set of master keys",
+          "a set of loaded dice",
+          "purse of coins for bribery"
+        ],
+      "equipment": [
+        "studded leather jacket"
+      ],
+        "features": [
+          "Interrogator's Eye: spot inconsistencies in another person's account",
+          "Silver Tongue: strike up a conversation with almost any regular",
+          "Quiet Fingers: pick a simple lock without making noise"
+        ]
+      },
+      "proper_nouns": [
+        "Aldric",
+        "Turnvale",
+        "\"Gray Gryphon\"",
+        "Captain Mareth",
+        "Borin",
+        "Lysa",
+        "Thieves' Guild",
+        "black saffron"
+      ],
+      "public_facts": [
+        {
+          "id": "aldrik_public",
+          "text": "Aldric was a modest merchant who traded in spices, dried herbs, and rare tinctures, occasionally carrying goods through Turnvale. People considered him secretive and aloof. He kept his own debt records and disliked letting clerks touch his books. Last night he was found dead beside his shop.",
+          "keywords": [
+            "Aldric",
+            "aldrik"
+          ]
+        },
+        {
+          "id": "turnvale_public",
+          "text": "Turnvale is a small trading town on the high road. It lives on passing merchants, a seasonal fair, and taxes on caravans. Locals know that a bad reputation can close a road more effectively than any barricade.",
+          "keywords": [
+            "turnvale",
+            "turnvale",
+            "town"
+          ]
+        },
+        {
+          "id": "griffon_public",
+          "text": "The Gray Gryphon is Turnvale's main tavern, kept by the innkeeper Borin. Caravaners sleep here, wagoners play dice, and rumors usually surface here before they reach the guard.",
+          "keywords": [
+            "gray griffin",
+            "griffin",
+            "grey griffon",
+            "griffon",
+            "tavern",
+            "inn"
+          ]
+        },
+        {
+          "id": "guild_rumor",
+          "text": "Rumor says a thieves' guild operates along the high road: bales vanish from caravans, toll collectors forget faces, and witnesses later retract their statements. There is no official evidence.",
+          "keywords": [
+            "guilds",
+            "guild",
+            "thieves"
+          ]
+        },
+        {
+          "id": "guard_public",
+          "text": "The town guard is small, and Captain Mareth is investigating the murder. She has sealed Aldric's shop and ordered the crowd to leave the evidence alone, but lacks enough people to cordon off the entire site.",
+          "keywords": [
+            "Captain Mareth",
+            "maret",
+            "mareth",
+            "town guard",
+            "guard captain",
+            "guard"
+          ]
+        },
+        {
+          "id": "market_pressure",
+          "text": "Merchants from the morning caravan demand that the road be opened before noon: if the guards delay the convoys, Turnvale will lose money and reputation.",
+          "keywords": [
+            "caravan",
+            "merchants",
+            "market",
+            "convoy",
+            "market",
+            "caravan"
+          ]
+        },
+        {
+          "id": "crime_scene_public",
+          "text": "Aldric's shop stands two alleys from the Gray Gryphon. Townspeople argue over whether they heard cart wheels, barking dogs, or merely wind rattling the shutters during the night.",
+          "keywords": [
+            "shop",
+            "lane",
+            "place",
+            "traces",
+            "shop",
+            "crime scene"
+          ]
+        },
+        {
+          "id": "black_saffron_public",
+          "text": "Black saffron is rarely sold openly: it is expensive, smells sharp, and leaves dark dust on cloth. In Turnvale it is known as a merchant's curiosity rather than an everyday spice.",
+          "keywords": [
+            "black saffron",
+            "saffron",
+            "spices",
+            "black saffron",
+            "spices"
+          ]
+        }
+      ],
+      "state_records": [
+        {
+          "id": "known_name_borin",
+          "kind": "fact",
+          "text": "The player knows from public knowledge that the innkeeper of the Gray Gryphon is named Borin.",
+          "scope": "public",
+          "entity_id": "borin",
+          "source": "story_public_setup",
+          "metadata": {
+            "known_name": "Borin"
+          }
+        },
+        {
+          "id": "known_name_mareth",
+          "kind": "fact",
+          "text": "The player knows from public knowledge that Captain Mareth is involved in the investigation.",
+          "scope": "public",
+          "entity_id": "mareth",
+          "source": "story_public_setup",
+          "metadata": {
+            "known_name": "Captain Mareth"
+          }
+        }
+      ],
+      "npcs": [
+        {
+          "id": "borin",
+          "name": "Borin",
+          "role": "innkeeper",
+          "pronouns": "M",
+          "color": "#e6c08a",
+          "public_label": "innkeeper",
+          "age": "Actually 53 years old; looks 50-55.",
+          "physical_type": "large, aging man",
+          "distinctive_features": "copper ring on his finger, hoarse voice, habit of rubbing his mug",
+          "life_status": "alive",
+          "condition": "tired, alert, apparently healthy",
+          "personality": "cautious, cunning, rude, accustomed to counting risks",
+          "values": "the tavern, survival, Lysa, his standing with both guild and guard",
+          "habits": "counts coins, polishes one mug, turns the conversation to food or debts",
+          "pressure_response": "He first laughs off the questions, then bargains and offers only part of the truth.",
+          "boundaries": "will not betray Lysa or reveal a guild cache without compelling protection or a credible threat",
+          "abilities": {
+            "STR": 13,
+            "DEX": 10,
+            "CON": 12,
+            "INT": 11,
+            "WIS": 13,
+            "CHA": 12
+          },
+          "skills": {
+            "Insight": 3,
+            "Perception": 3,
+            "Deception": 3
+          },
+          "saving_throws": {
+            "WIS": 3
+          },
+          "passive_perception": 13,
+          "ac": 10,
+          "hp": {
+            "current": 11,
+            "max": 11
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; notices the order in the room well",
+          "languages": "General",
+          "persona": "Large innkeeper of the Gray Gryphon, over fifty; cautious, cunning and on his own. He remembers who pays what, who sits with whom, and who looks at the door too often. He is rude in public, but knows how to look hospitable; when pressed with facts, he begins to wipe the same mug until it squeaks dry.",
+          "voice": "Short, hoarse, with jokes. He often calls guests “buddy,” jokes about his bad memory, and turns the conversation to food, weather, or debts.",
+          "goals": "Keep the inn afloat, stop anyone from digging too deeply into the guild, protect Lysa from interrogation, and survive the day without either the guard or the guild deciding he has become expendable.",
+          "knowledge": "Local rumors, who came into the tavern, who left, how much the ale cost. Officially, the only rumor you know about the murder is that Aldric was found dead. You can describe that Aldric drank little yesterday, argued with the caravan owner about the price of saffron, waited for someone until closing and left through the main hall without finishing dinner.",
+          "secret": "You are an informant for the Thieves' Guild and know that the guild killed Aldric to conceal its smuggling. You told an intermediary that Aldric was seeking protection from the guard, and you saw a silver buckle on the cloak of the person heading toward the shop. A secret guild contact token is hidden beneath your counter. If the truth comes out, the guild will kill you, and Mareth will close the inn as a den of accomplices."
+        },
+        {
+          "id": "lysa",
+          "name": "Lysa",
+          "role": "maid",
+          "pronouns": "F",
+          "color": "#c4a7e7",
+          "public_label": "maid",
+          "age": "Actually 24 years old; looks 20-25.",
+          "physical_type": "young, quick-moving woman",
+          "distinctive_features": "rapid movements, confused whispers, constantly looking back at the counter",
+          "life_status": "alive",
+          "condition": "scared, but sticks to work",
+          "personality": "curious, kind, anxious, quickly becomes attached to those who protect her",
+          "values": "younger brother, security, justice, trust",
+          "habits": "fidgets with the edge of her apron, speaks too quickly, lowers her voice around dangerous subjects",
+          "pressure_response": "gets scared, asks for protection and gives out details in parts",
+          "boundaries": "will not loudly accuse the guild in front of Borin or strangers",
+          "abilities": {
+            "STR": 8,
+            "DEX": 14,
+            "CON": 10,
+            "INT": 11,
+            "WIS": 12,
+            "CHA": 13
+          },
+          "skills": {
+            "Perception": 3,
+            "Insight": 3,
+            "Stealth": 4
+          },
+          "saving_throws": {
+            "DEX": 4
+          },
+          "passive_perception": 13,
+          "ac": 12,
+          "hp": {
+            "current": 7,
+            "max": 7
+          },
+          "speed": "30 ft",
+          "senses": "normal vision",
+          "languages": "General",
+          "persona": "A young maid in a tavern: fast, talkative, curious, but timid when things get serious. She is used to hearing snippets of other people's secrets, but today for the first time she understands that silence can cost someone their life.",
+          "voice": "Lively, emotional, chattering quickly; when she’s scared, she breaks down into a whisper and asks not to repeat her words in front of Borin or the guards.",
+          "goals": "Share what she knows without landing in trouble; decide whether the player can be trusted; keep her younger brother away from the guild's street messengers.",
+          "knowledge": "Last night you saw a hooded figure come out of Aldric's shop. You're afraid to talk about it out loud. You know the usual tavern rumors, you remember that the figure smelled of sharp spice, and on the floor by the back door in the morning there was dark dust, which Borin hastened to sweep away.",
+          "secret": "You saw the hooded figure closer than you admit: the cloak had a silver buckle in the shape of three prongs. You hid a piece of dark fabric that was caught in a wood chip near the back door. You are afraid that if you talk about the figure too loudly, the guild will find your brother."
+        },
+        {
+          "id": "mareth",
+          "name": "Captain Mareth",
+          "role": "captain of the guard",
+          "pronouns": "F",
+          "color": "#9ccfd8",
+          "public_label": "captain of the guard",
+          "age": "Actually 41 years old; looks 40.",
+          "physical_type": "wiry adult woman in guard uniform",
+          "distinctive_features": "dry speech, trace of an old cut near the eyebrow, captain's steel badge",
+          "life_status": "alive",
+          "condition": "sleep-deprived, tense, ready for trouble",
+          "personality": "strict, collected, suspicious, respects verifiable facts",
+          "values": "law, order, evidence, witness safety",
+          "habits": "speaks in short orders, notes details, does not like empty versions",
+          "pressure_response": "Presses with questions, demands sources, but listens to specific evidence",
+          "boundaries": "does not reveal the informant and does not arrest without cause",
+          "abilities": {
+            "STR": 13,
+            "DEX": 12,
+            "CON": 14,
+            "INT": 13,
+            "WIS": 15,
+            "CHA": 12
+          },
+          "skills": {
+            "Insight": 4,
+            "Investigation": 3,
+            "Perception": 4,
+            "Intimidation": 3
+          },
+          "saving_throws": {
+            "CON": 4,
+            "WIS": 4
+          },
+          "passive_perception": 14,
+          "ac": 16,
+          "hp": {
+            "current": 32,
+            "max": 32
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; attentive to traces and lies",
+          "languages": "General",
+          "default_whereabouts": {
+            "location_id": "town_guard_duty",
+            "location_name": "town guard duty post",
+            "status": "likely",
+            "details": "investigating Aldric's murder; if her exact location is unknown, she is most likely at the guardhouse, the town gates, or the place where the body was found",
+            "source": "default public lore"
+          },
+          "persona": "Captain of the town guard: composed, suspicious, and strict about the law. She is leading the murder investigation on almost no sleep and hates the point where politics starts deciding who may be arrested.",
+          "voice": "Dry, to the point, with light pressure. Doesn't like it when outsiders meddle in the guard's affairs, but respects specific observations, names and verifiable evidence.",
+          "goals": "Solve Aldric's murder, prevent panic, keep the merchant council from burying the case, and protect her informant until he leads her to solid evidence.",
+          "knowledge": "Aldric's body, crime scene, testimony from several townspeople. You suspect the guild, but there is no evidence. You know that the lock of the shop was not broken open roughly, there is a trace of dark dust on the windowsill, and a thin debt book has disappeared from the papers.",
+          "secret": "You have an informant in town whose name you reveal to no one. The informant hinted that Aldric wanted to meet the guard, then vanished before handing over the evidence. You fear that moving too early will prompt the guild to kill its witnesses; waiting too long will let the merchants force you to close the case as a common robbery."
+        }
+      ],
+      "scene": {
+        "id": "griffon_common_room",
+        "location_id": "grey_griffon",
+        "title": "Tavern \"Gray Gryphon\"",
+        "description": "Morning lies heavy and gray over the tavern's common room. Hearth smoke hangs low, fresh footprints darken the wet floor, and caravan hands argue in whispers at a distant table, unwilling to name the guild aloud. From here the counter, the side door to the kitchen, the stairs to the rooms, and the main entrance are all clearly visible. Beyond the windows, the spears of the town guard flash in the alley.",
+        "present_npcs": [
+          "borin",
+          "lysa"
+        ],
+        "npc_presence": {
+          "borin": {
+            "location": "behind the counter",
+            "activity": "slowly wipes the mug and watches who is listening to conversations",
+            "attitude": "wary if asked about Aldric, saffron, backyard or guild"
+          },
+          "lysa": {
+            "location": "between tables",
+            "activity": "carries mugs and looks at the footprints at the back door",
+            "attitude": "curious, but afraid to attract the attention of Borin and the regulars"
+          }
+        },
+        "items": [
+          {
+            "id": "counter",
+            "name": "counter",
+            "location": "common room",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "mugs",
+            "name": "mugs",
+            "location": "on the counter",
+            "visible": true,
+            "portable": true,
+            "owner": "borin"
+          },
+          {
+            "id": "ale_barrels",
+            "name": "casks of ale",
+            "location": "behind the counter",
+            "visible": true,
+            "portable": false,
+            "owner": "borin"
+          },
+          {
+            "id": "wet_tracks",
+            "name": "wet tracks with dark dust",
+            "location": "at the back door",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "unfinished_stew",
+            "name": "Aldric's untouched bowl of cold stew",
+            "location": "end table",
+            "visible": true,
+            "portable": true
+          },
+          {
+            "id": "notice_board",
+            "name": "notice board with caravan receipts",
+            "location": "at the entrance",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "hearth_ash",
+            "name": "ash with a piece of blue wax seal",
+            "location": "at the hearth",
+            "visible": true,
+            "portable": true
+          }
+        ],
+        "exits": [
+          {
+            "id": "main_door",
+            "name": "main door",
+            "destination": "a Turnvale street",
+            "visible": true
+          },
+          {
+            "id": "kitchen_door",
+            "name": "door to the kitchen",
+            "destination": "kitchen and backyard of the inn",
+            "visible": true
+          },
+          {
+            "id": "stairs",
+            "name": "staircase to rooms",
+            "destination": "second floor guest rooms",
+            "visible": true
+          },
+          {
+            "id": "cellar_hatch",
+            "name": "cellar hatch",
+            "destination": "cellar under the inn",
+            "visible": true
+          }
+        ],
+        "constraints": [
+          "The common room is full of visitors: it is almost impossible to cross the hall, go out, fight or tinker with objects unnoticed. Quiet words spoken closely remain private by default; others may notice gestures, posture, or proximity, but not the content of the conversation unless they are clearly eavesdropping.",
+          "The hatch to the cellar is located behind the counter: you cannot go there unnoticed without the consent of Borin.",
+          "The guards in the alley keep an eye on the crowd, but do not hear the quiet conversations inside the inn.",
+          "The caravan leaders are nervous and may intervene if they think the investigation will delay their departure."
+        ],
+        "tension": "The room is crowded and tense: everyone fears the killer, but fears even more becoming a witness who can be silenced."
+      }
+    }
+  },
+  {
+    "id": "frozen-harbor",
+    "title": "The Frozen Harbor of Nordholm",
+    "description": "A missing ship, a false beacon, and people who profit from silence.",
+    "seed": {
+      "id": "frozen-harbor",
+      "title": "The Frozen Harbor of Nordholm",
+      "public_intro": "Nordholm's harbor lies frozen. The schooner the Northern Candle vanished three days ago, and last night a lifeless green light appeared once more above the old lighthouse. Sailors' families wait at the pier, the port office keeps its ledgers locked away, and every blow of ice against the pilings sounds like the footsteps of those who never returned.",
+      "story_brief": "You are Kalev, a marine investigator called to Nordholm after the schooner the Northern Candle vanished. The harbor is locked in ice, the sailors' families demand answers, and officials and merchants are far too quick to call the loss an accident. The traces will survive only until the evening tide. Find where the ship went, who profits from the silence, and why the old lighthouse is burning again with a stranger's green fire.",
+      "time": {
+        "current_date_label": "Third day after the disappearance",
+        "absolute_minutes": 630
+      },
+      "hidden_truth": "The Northern Candle was not lost to the storm: a false light lured her onto the ice spit, where she was plundered. The lighthouse keeper Veik altered the signal mechanism so the green light burned lower and east of the true channel. The merchant agent Sana Rey paid for the sabotage by exploiting Veik's brother's debts, and is selling the cargo through a secret ice store beneath the old warehouse. Not everyone survived the wreck. The cabin boy El is hiding with Iva; he saw people with hooks unloading crates while the captain was still calling for help. Run survived, but abandoned the wounded captain and now masks his guilt with anger. Sana holds an IOU and a letter about the lens over Veik; Veik holds a fragment of an invoice bearing Sana's personal seal. If the store is found before the cargo is moved, the merchant house will try to blame the dead sailors for insurance fraud.",
+      "player_character": {
+        "name": "Kalev",
+        "pronouns": "M",
+        "class_role": "marine investigator",
+        "level": 2,
+        "background": "former navigator, now sorts out wrecks and lost cargo for insurance companies and widows",
+        "age": "Actually 45 years old; gray hair and weathered face.",
+        "physical_type": "a large, broad-shouldered man in a salted raincoat",
+        "distinctive_features": "gray stubble, an old scar across the eyebrow, heavy gait, habit of squinting at the horizon",
+        "condition": "chilled from the road, stubborn, in a hurry to catch the tide",
+        "personality": "taciturn, stubborn, meticulous, does not trust smooth versions and beautiful papers",
+        "values": "the truth about the dead, honest seals and invoices, duty to those who remained on the shore",
+        "gm_notes": "Kalev was sent to discover the fate of the Northern Candle, either by the insurer or through money pooled by the sailors' families. He has no formal authority in the harbor: the merchant house and port office oppose his inquiry, while the families' grief and the survivors' consciences support it. The tracks on the ice spit will remain readable only until the evening tide.",
+        "abilities": {
+          "STR": 14,
+          "DEX": 11,
+          "CON": 14,
+          "INT": 12,
+          "WIS": 14,
+          "CHA": 10
+        },
+        "skills": {
+          "Perception": 4,
+          "Investigation": 3,
+          "Survival": 4,
+          "Athletics": 4,
+          "Insight": 4
+        },
+        "saving_throws": {
+          "STR": 4,
+          "CON": 4
+        },
+        "passive_perception": 14,
+        "ac": 14,
+        "hp": {
+          "current": 20,
+          "max": 20
+        },
+        "speed": "30 ft",
+        "senses": "normal vision; reads water, ice and weather better than any city dweller",
+        "languages": "General; maritime signals and port jargon",
+        "inventory": [
+          "warm storm raincoat",
+          "heavy knife",
+          "storm lantern",
+          "notebook in oilcloth",
+          "telescope",
+          "ice spikes",
+          "a ball of tarred rope"
+        ],
+      "equipment": [
+        "chainmail shirt under cloak"
+      ],
+        "features": [
+          "Sea Eye: assessing what is possible on water and ice",
+          "Scent of Forgery: detect false invoices and seals",
+          "Cold-Hardened: endure cold and damp conditions"
+        ]
+      },
+      "proper_nouns": [
+        "Nordholm",
+        "Northern Candle",
+        "old lighthouse",
+        "ice spit",
+        "Iva",
+        "Run",
+        "Sana Rey",
+        "Veik",
+        "El",
+        "old warehouse"
+      ],
+      "public_facts": [
+        {
+          "id": "ship_public",
+          "text": "The schooner Northern Candle vanished on her approach to Nordholm three days ago. She carried wool, salt, medicinal oil, and crates bearing merchant seals.",
+          "keywords": [
+            "northern candle",
+            "ship",
+            "missing ship",
+            "ship"
+          ]
+        },
+        {
+          "id": "lighthouse_public",
+          "text": "The old lighthouse is officially closed for renovations, but residents have seen a green light there. Port elders argue whether a closed lighthouse could shine without a keeper.",
+          "keywords": [
+            "lighthouse",
+            "lighthouse",
+            "green light",
+            "green fire"
+          ]
+        },
+        {
+          "id": "harbor_public",
+          "text": "The port office keeps the cargo manifests, but some papers concerning the Northern Candle have vanished. The surviving ledgers show fresh changes to her expected arrival time.",
+          "keywords": [
+            "port",
+            "office",
+            "cargo",
+            "cargo",
+            "manifest"
+          ]
+        },
+        {
+          "id": "families_public",
+          "text": "Families of missing sailors come to the icy pier every morning. They know which of the crew were afraid of water, who owed money and who would never voluntarily leave the ship.",
+          "keywords": [
+            "families",
+            "sailors",
+            "missing",
+            "relatives",
+            "families",
+            "crew"
+          ]
+        },
+        {
+          "id": "ice_conditions_public",
+          "text": "The ice near the spit cracks even in calm weather. Sled tracks and heavy bootprints do not last there; by evening, wind-driven snow scours them away.",
+          "keywords": [
+            "ice",
+            "braid",
+            "traces",
+            "snow",
+            "ice",
+            "tracks"
+          ]
+        },
+        {
+          "id": "warehouse_public",
+          "text": "The old warehouse by the salt sheds has long been considered unsafe. It stands empty by day, but harbor dogs sometimes bark around it at night.",
+          "keywords": [
+            "warehouse",
+            "warehouse",
+            "salt",
+            "warehouse",
+            "dogs"
+          ]
+        },
+        {
+          "id": "sana_public",
+          "text": "Sana Rey represents the merchant house and demands that the Northern Candle's cargo be formally declared lost, without prolonged speculation or unauthorized searches.",
+          "keywords": [
+            "sana",
+            "ray",
+            "merchant's house",
+            "merchant",
+            "sana"
+          ]
+        }
+      ],
+      "state_records": [
+        {
+          "id": "known_name_iva",
+          "kind": "fact",
+          "text": "The player knows from public information that the owner of the port teahouse is called Iva.",
+          "scope": "public",
+          "entity_id": "iva",
+          "source": "story_public_setup",
+          "metadata": {
+            "known_name": "Iva"
+          }
+        },
+        {
+          "id": "known_name_sana",
+          "kind": "fact",
+          "text": "The player knows from public information that the interests of the merchant house in the port are represented by Sana Rey.",
+          "scope": "public",
+          "entity_id": "sana",
+          "source": "story_public_setup",
+          "metadata": {
+            "known_name": "Sana Rey"
+          }
+        }
+      ],
+      "npcs": [
+        {
+          "id": "iva",
+          "name": "Iva",
+          "role": "teahouse owner",
+          "pronouns": "F",
+          "color": "#f6c177",
+          "public_label": "teahouse owner",
+          "age": "Actually 51 years old; looks 50-55.",
+          "physical_type": "a strong elderly northern woman with a weathered face",
+          "distinctive_features": "a warm scarf, calloused hands at the samovar, the habit of warming other people’s fingers on a mug",
+          "life_status": "alive",
+          "condition": "collected, lacking sleep, outwardly calm",
+          "personality": "calm, observant, warm to the weak, tough to those who profit from someone else’s misfortune",
+          "values": "people of the port, children of sailors, a teahouse like a quiet pier, justice without lynching",
+          "habits": "listens silently, tops up tea instead of answering, reads hands and gait, switches to full name when angry",
+          "pressure_response": "at first goes into silence and general words, opens only to those who sincerely protect children",
+          "boundaries": "will not reveal where the child is hidden without a firm guarantee of his safety; will not surrender anyone to mob justice",
+          "abilities": {
+            "STR": 11,
+            "DEX": 9,
+            "CON": 13,
+            "INT": 12,
+            "WIS": 16,
+            "CHA": 12
+          },
+          "skills": {
+            "Insight": 5,
+            "Perception": 5,
+            "Medicine": 4
+          },
+          "saving_throws": {
+            "WIS": 5,
+            "CON": 3
+          },
+          "passive_perception": 15,
+          "ac": 11,
+          "hp": {
+            "current": 12,
+            "max": 12
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; distinguishes people by voice, steps and how they hold the mug",
+          "languages": "General",
+          "persona": "The owner of the harbor teahouse: calm and observant, she knows people by voice, gait, and the way they hold a mug when they lie. She seems reserved, but treats the sailors' children as her own.",
+          "voice": "Quiet, level, and northern-dry; she rarely says too much. When angered, she addresses a person by their full name and patronymic.",
+          "goals": "Protect the people of the port, hide the surviving cabin boy, understand who is profiting from the disappearance of the ship, and prevent desperate families from committing lynching at the office.",
+          "knowledge": "Rumors from the port teahouse, who drank at night, who went to the lighthouse, who returned with wet boots. You know that Run came with frostbitten hands, Sana bought silence from the movers, and Veik in recent weeks has been borrowing money from people whom he previously avoided.",
+          "secret": "You are hiding El, the Northern Candle's cabin boy, who saw the false beacon and people carrying hooks on the ice. Feverish, El keeps repeating Sana's name, but you do not know whether he heard it himself or from the raiders. If the player appeals to your care for the harbor's children or promises El safety, you can reveal his hiding place."
+        },
+        {
+          "id": "run",
+          "name": "Run",
+          "role": "sailor",
+          "pronouns": "M",
+          "color": "#ebbcba",
+          "public_label": "exhausted sailor",
+          "age": "Actually 32 years old; looks 35-40, sea-worn.",
+          "physical_type": "a strong, salty man with a weathered face",
+          "distinctive_features": "frostbitten hands in cracks, hoarse, broken voice, hides palms in sleeves, twitches at loud sounds",
+          "life_status": "alive",
+          "condition": "exhausted, drunk, on edge, hands frostbitten and shaking",
+          "personality": "twitchy, hot-tempered, distrustful, crushed by guilt under a crust of rudeness",
+          "values": "dead comrades, team honor, own skin, quiet conscience",
+          "habits": "squeezes the mug with both hands, glances sideways at the window with the lighthouse, breaks off phrases and hides his hands, mutters curses",
+          "pressure_response": "at first he snaps and threatens, at the word “coward” he explodes, under pressure he gives out pieces of that night",
+          "boundaries": "does not admit that he abandoned the captain, and will not show the rope without trust or protection from robbers",
+          "abilities": {
+            "STR": 15,
+            "DEX": 11,
+            "CON": 15,
+            "INT": 9,
+            "WIS": 12,
+            "CHA": 8
+          },
+          "skills": {
+            "Athletics": 4,
+            "Perception": 3,
+            "Survival": 3
+          },
+          "saving_throws": {
+            "STR": 4,
+            "CON": 4
+          },
+          "passive_perception": 13,
+          "ac": 12,
+          "hp": {
+            "current": 20,
+            "max": 20
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; senses approaching people and reads ice and weather",
+          "languages": "General",
+          "persona": "An exhausted sailor with a broken voice; drinks to avoid remembering the night of the crash. He rushes to loud noises, hates the word \"storm\" and gets angry too quickly when someone says that the sea itself took the ship.",
+          "voice": "Hoarsely, in fragments, with nautical curses. He breaks off his guilty phrases mid-sentence and hides his hands in his sleeves.",
+          "goals": "Do not fall under the knife of those who robbed the ship, find missing comrades, prove that the crew was not drunk or cowardly, and do not admit to what you did on the ice.",
+          "knowledge": "I saw a green light at the lighthouse and heard a metallic grinding sound from the ice spit. You remember the impact of the hull, strange voices on the ice, the smell of tar from the torches, and the fact that one robber was limping on his left leg.",
+          "secret": "You survived the wreck because you abandoned the wounded captain on the ice when you heard people approaching. A piece of rope coated in unfamiliar resin is hidden in your sleeve. You fear it will expose your flight, but it is also real evidence against the raiders."
+        },
+        {
+          "id": "sana",
+          "name": "Sana Rey",
+          "role": "merchant house agent",
+          "pronouns": "F",
+          "color": "#9ccfd8",
+          "default_whereabouts": {
+            "location_id": "harbor_office",
+            "location_name": "port office",
+            "status": "likely",
+            "details": "sorts out papers on the missing cargo and tries not to meet with the sailors",
+            "source": "default public lore"
+          },
+          "public_label": "port agent",
+          "age": "Actually 38 years old; looks 35-40.",
+          "physical_type": "collected middle-aged woman in a strict warm raincoat",
+          "distinctive_features": "a neat folder beneath one arm, a signet ring, an even voice, gloves that are always dry",
+          "life_status": "alive",
+          "condition": "collected, polite, internally tense, externally calm",
+          "personality": "coldly polite, calculating, patient, translates everything into numbers and points",
+          "values": "contract of a merchant house, own reputation, control over papers, leverage over performers",
+          "habits": "makes notes in the folder, asks again about the wording, directs the conversation to insurance and deadlines",
+          "pressure_response": "remains polite, refers to papers and procedures, offers to “formulate” the question instead of answering",
+          "boundaries": "does not recognize the connection with the warehouse and the substitution of fire without direct evidence of the seal or keys",
+          "abilities": {
+            "STR": 9,
+            "DEX": 11,
+            "CON": 10,
+            "INT": 15,
+            "WIS": 13,
+            "CHA": 15
+          },
+          "skills": {
+            "Deception": 4,
+            "Persuasion": 4,
+            "Insight": 3,
+            "Investigation": 4
+          },
+          "saving_throws": {
+            "INT": 4,
+            "CHA": 4
+          },
+          "passive_perception": 11,
+          "ac": 11,
+          "hp": {
+            "current": 13,
+            "max": 13
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; tenaciously notices inconsistencies in papers and seals",
+          "languages": "General; trade secret record of a merchant house",
+          "persona": "An impeccably polite agent who writes everything down and promises nothing. She knows how to turn sympathy into a protocol, and a threat into a clause in a contract; sees someone else's misfortune as a risk to balance.",
+          "voice": "Soft, formal, and coldly precise. She never raises her voice, but repeats each phrase as though already recording an accusation.",
+          "goals": "Steer the investigation away from the secret store, protect the merchant house's contract, present the loss as an insured accident, and identify which accomplice is likely to betray her.",
+          "knowledge": "She knows the cargo's true route, who was meant to meet the schooner at the ice spit, which crates have already reached the store, and why several invoices vanished from the port office.",
+          "secret": "You are selling the Northern Candle's cargo through a secret store beneath the old warehouse. You control Veik through his brother's promissory note, but fear that he kept a fragment of an invoice bearing your seal. Your reputation is your weak point: you can weather a public accusation without evidence, but an inspection of the seals and warehouse keys could ruin you."
+        },
+        {
+          "id": "veik",
+          "name": "Veik",
+          "role": "lighthouse keeper",
+          "pronouns": "M",
+          "color": "#c4a7e7",
+          "default_whereabouts": {
+            "location_id": "old_lighthouse",
+            "location_name": "old lighthouse",
+            "status": "rumored",
+            "details": "he was seen at the closed lighthouse after midnight",
+            "source": "default public lore"
+          },
+          "public_label": "lighthouse keeper",
+          "age": "Actually 57 years old; looks 60-65.",
+          "physical_type": "a stooped, wiry old man with a weathered face",
+          "distinctive_features": "eyes red from lack of sleep, oil ingrained under fingernails, lens case on belt, speaks muffled and slowly",
+          "life_status": "alive",
+          "condition": "exhausted, sleeps in fits and starts, looks healthy, nervously guards the case",
+          "personality": "withdrawn, guilty, meticulous with mechanisms, hides fear behind technical words",
+          "values": "lighthouse, brother, silence of conscience, last payment so that families do not find out the truth",
+          "habits": "rubs his palms, turns the conversation to lenses and the weather, checks his belt and case, looks towards the lighthouse",
+          "pressure_response": "stalls, drowns in technical details, then breaks down and reveals the truth in parts",
+          "boundaries": "will not name Sana and will not give away the case with the invoice without protection or direct threat to his brother's family",
+          "abilities": {
+            "STR": 9,
+            "DEX": 13,
+            "CON": 11,
+            "INT": 14,
+            "WIS": 15,
+            "CHA": 9
+          },
+          "skills": {
+            "Perception": 4,
+            "Insight": 4,
+            "Sleight of Hand": 3
+          },
+          "saving_throws": {
+            "WIS": 4,
+            "INT": 4
+          },
+          "passive_perception": 14,
+          "ac": 11,
+          "hp": {
+            "current": 11,
+            "max": 11
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; reads the weather, sea and condition of machinery better than people",
+          "languages": "General",
+          "persona": "A stooped caretaker with a weathered face; speaks like a man who has been sleeping fitfully for a long time. He loves the lighthouse as a living being and therefore hates himself for using it to harm.",
+          "voice": "Muffled and slow, as if weighing every word. When asked about lenses or green fire, he retreats into technical detail to avoid speaking about people.",
+          "goals": "Hide the substituted mechanism, receive the last payment, get your brother out of the debt loop and convince yourself that the ship would not have arrived anyway because of the ice.",
+          "knowledge": "He knows how the false green signal was set up, who paid for the night of the crash, where the spare lens is hidden, and what traces of oil remain on the hands after replacing the mechanism.",
+          "secret": "You personally altered the lighthouse signal to lure the schooner onto the ice. Sana controls you through your brother's debts, but a fragment of an invoice bearing her seal is hidden in your lens case. You do not fear execution as much as the sailors' families learning that the lighthouse betrayed them through your hand."
+        }
+      ],
+      "scene": {
+        "id": "tea_house",
+        "location_id": "northholm_harbor",
+        "title": "Teahouse at the ice pier",
+        "description": "The cramped tea room trembles from the wind, as if the boards are held together by the stubbornness of Iva. There are white veins frozen on the windows, behind the glass you can see an icy pier, ropes in frost, the gray silhouette of an old lighthouse and a line of people at the port office. Snow melts from someone else's boots at the door; the far table smells of rum, salt and wet wool.",
+        "present_npcs": [
+          "iva",
+          "run"
+        ],
+        "npc_presence": {
+          "iva": {
+            "location": "at the samovar",
+            "activity": "pours strong tea and listens to conversations at the door",
+            "attitude": "warily protects visitors, especially those who are trembling in fear"
+          },
+          "run": {
+            "location": "at the far table",
+            "activity": "squeezes the mug with both hands and glances sideways at the window overlooking the lighthouse",
+            "attitude": "scared, angry and ready to lose his temper if called a coward"
+          }
+        },
+        "items": [
+          {
+            "id": "samovar",
+            "name": "copper samovar",
+            "location": "rack",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "harbor_map",
+            "name": "ice harbor map",
+            "location": "wall",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "wet_bootprints",
+            "name": "wet footprints at the door",
+            "location": "floor",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "salt_manifest_scrap",
+            "name": "a piece of a cargo manifest with a salt stain",
+            "location": "under the bench by the window",
+            "visible": true,
+            "portable": true
+          },
+          {
+            "id": "green_glass_shard",
+            "name": "green beacon lens fragment",
+            "location": "on the windowsill",
+            "visible": true,
+            "portable": true
+          },
+          {
+            "id": "crew_names_board",
+            "name": "board listing the missing crew",
+            "location": "by the stove",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "run_rope",
+            "name": "a tarred length of rope beside Run's boot",
+            "location": "under the far table",
+            "visible": true,
+            "portable": true,
+            "owner": "run"
+          }
+        ],
+        "exits": [
+          {
+            "id": "pier_door",
+            "name": "door to the pier",
+            "destination": "ice pier",
+            "visible": true
+          },
+          {
+            "id": "office_alley",
+            "name": "lane to the port office",
+            "destination": "port office",
+            "visible": true
+          },
+          {
+            "id": "back_room",
+            "name": "back room curtain",
+            "destination": "small tea room pantry",
+            "visible": true
+          },
+          {
+            "id": "shore_path",
+            "name": "narrow path along the shore",
+            "destination": "path to the old warehouse and salt warehouses",
+            "visible": true
+          }
+        ],
+        "constraints": [
+          "Outside the teahouse there is a strong wind: the cry is quickly lost, and the footprints in the snow are not visible for long.",
+          "The old lighthouse is visible from the window, but you can only get there through the open pier.",
+          "Relatives of the missing are sitting in the teahouse: a crude accusation against a sailor or a merchant's house will quickly stir up a crowd.",
+          "Iva will not let a stranger into the back room without trust, compelling reason or strong pressure.",
+          "There is little time left before the evening tide: the ice near the spit is changing, and the old tracks will soon become more difficult to read."
+        ],
+        "tension": "People speak in whispers: in the port they believe that the sea did not take everyone, and that someone is forcing those who returned to remain silent."
+      }
+    }
+  },
+  {
+    "id": "glass-garden",
+    "title": "The Glass Garden of Elyria",
+    "description": "A greenhouse, a strange blight, and a poison disguised as medicine.",
+    "seed": {
+      "id": "glass-garden",
+      "title": "The Glass Garden of Elyria",
+      "public_intro": "The royal greenhouse in Elyria's upper city has been sealed. Rare plants blacken overnight, gardeners fall ill, and the Council demands a discreet investigation. Medicines meant for the poorer districts wither behind glass walls, while behind gilded doors officials debate which is more dangerous: an unknown disease or the truth behind it.",
+      "story_brief": "You are Sel, an herbalist and inspector invited to Elyria's royal greenhouse without publicity. Plants are blackening, gardeners are falling ill, and the Council wants a quick, convenient answer before the evening report. Determine whether this is disease or deliberate harm, preserve the samples, and stop powerful people from burning the truth along with the infected leaves.",
+      "time": {
+        "current_date_label": "Day of the sealed quarantine",
+        "absolute_minutes": 780
+      },
+      "hidden_truth": "The blight is caused not by mold but by an alchemical reagent. The archivist Nemir mixed it into medicinal solutions to erase evidence of an old Council experiment. Twenty years ago, the Council tested the reagent on moon orchids to accelerate production of their medicinal sap. Several gardeners fell ill, and the records were hidden in the archive under another name. The old orchids are now revealing signs of that experiment, so Nemir is destroying the living evidence and passing the poisoning off as a natural disease. Ella found a pattern linking the outbreaks, batches of solution, and archive dates, but fears accusing the Council without samples: her mentor vanished after a similar dispute. Milo saw Nemir near the vial cabinet and stole an infected leaf that could confirm the reagent's presence. Serra Kane suspects Nemir and knows the archive records were seized by Council order, but her career and family depend on the same people she is meant to investigate.",
+      "player_character": {
+        "name": "Sel",
+        "pronouns": "F",
+        "class_role": "herbalist-inspector",
+        "level": 2,
+        "background": "a learned herbalist called when a disease or poison needs to be understood quietly and without scandal",
+        "age": "Actually 38 years old; behaves strictly and youthfully.",
+        "physical_type": "a thin woman in a strict doctor's dress with rolled up sleeves",
+        "distinctive_features": "gloves, sample bottles on the belt, ink stains on the fingers, the habit of sniffing the air before touching",
+        "condition": "composed and guarded; protecting her lungs from greenhouse fumes",
+        "personality": "reserved, methodical, meticulous, in no hurry to make accusations and does not like theatrical gestures",
+        "values": "the truth is in the evidence, the lives of patients in the lower city, accuracy is more important than politics, protecting those who are silenced",
+        "gm_notes": "Sel entered the Glass Garden as a neutral specialist. Either the Council wants her to close the case quietly, or someone inside summoned her without going through the archivist Nemir. She may move through the garden but has no authority to accuse anyone. One loud allegation against the Council could end the investigation and bring an order to burn the infected plants before the evening report.",
+        "abilities": {
+          "STR": 9,
+          "DEX": 12,
+          "CON": 11,
+          "INT": 15,
+          "WIS": 15,
+          "CHA": 12
+        },
+        "skills": {
+          "Medicine": 4,
+          "Nature": 4,
+          "Investigation": 4,
+          "Insight": 4,
+          "Perception": 4
+        },
+        "saving_throws": {
+          "INT": 4,
+          "WIS": 4
+        },
+        "passive_perception": 14,
+        "ac": 12,
+        "hp": {
+          "current": 14,
+          "max": 14
+        },
+        "speed": "30 ft",
+        "senses": "normal vision; distinguishes the smells of poisons and the subtlest changes in plants",
+        "languages": "General; the language of scientific treatises and alchemical notations",
+        "inventory": [
+          "strict doctor dress",
+          "thin knife",
+          "hidden lantern",
+          "notebook",
+          "thick gloves and sample bottles",
+          "handkerchief dampened with a protective aromatic wash",
+          "set of indicator reagents"
+        ],
+      "equipment": [
+        "herbalist belt with bottles"
+      ],
+        "features": [
+          "Herbalist's Eye: distinguish natural disease from poisoning",
+          "Stone Face: conceal what you have noticed when dealing with authority",
+          "Cool Head: resist poisons and fumes"
+        ]
+      },
+      "proper_nouns": [
+        "Elyria",
+        "the Glass Garden",
+        "Council",
+        "moon orchid",
+        "Ella Viren",
+        "Milo",
+        "Nemir",
+        "Serra Kane",
+        "the old White Root experiment"
+      ],
+      "public_facts": [
+        {
+          "id": "garden_public",
+          "text": "The Glass Garden is Elyria's royal greenhouse, where medicinal and rare plants are cultivated. Its glass galleries are normally open to ambassadors and healers, but its doors are now sealed.",
+          "keywords": [
+            "the Glass Garden",
+            "greenhouse",
+            "garden",
+            "greenhouse"
+          ]
+        },
+        {
+          "id": "blight_public",
+          "text": "Plants turn black overnight, and sick gardeners complain of a metallic taste, trembling fingers and a bitter almond smell near their tubs after watering.",
+          "keywords": [
+            "disease",
+            "plants",
+            "blight",
+            "metallic taste"
+          ]
+        },
+        {
+          "id": "council_public",
+          "text": "The Council of Elyria ordered a discreet investigation to avoid disrupting the medicine supply or causing panic in the lower city. Officially, this is a quarantine, not a crime scene.",
+          "keywords": [
+            "council",
+            "council",
+            "medicines",
+            "medicine"
+          ]
+        },
+        {
+          "id": "orchid_public",
+          "text": "Moon orchids are prized for their clear sap, an ingredient in costly fever remedies. If the mother bed dies, apothecaries will be left without the medicine for months.",
+          "keywords": [
+            "moon orchid",
+            "orchids",
+            "medicine",
+            "orchid"
+          ]
+        },
+        {
+          "id": "staff_public",
+          "text": "Gardeners say that the disease did not begin immediately throughout the garden: first the western tubs were affected, then the beds near the cabinet with solutions, and then the moon orchids.",
+          "keywords": [
+            "gardeners",
+            "tubs",
+            "solutions",
+            "watering",
+            "gardeners"
+          ]
+        },
+        {
+          "id": "archive_public",
+          "text": "The Council Archive holds old experiment and delivery journals. In recent days, only people carrying an inspector's seal have been admitted.",
+          "keywords": [
+            "archive",
+            "journals",
+            "experiments",
+            "archive",
+            "records"
+          ]
+        },
+        {
+          "id": "serra_public",
+          "text": "Serra Kane has been appointed official inspector. She has the right to close passages, question employees and seize samples, but must report to the Council.",
+          "keywords": [
+            "serra",
+            "Kane",
+            "inspector",
+            "inspector",
+            "serra"
+          ]
+        }
+      ],
+      "state_records": [
+        {
+          "id": "known_name_ella",
+          "kind": "fact",
+          "text": "The player knows from public knowledge that the main botanist of the Glass Garden is named Ella Viren.",
+          "scope": "public",
+          "entity_id": "ella",
+          "source": "story_public_setup",
+          "metadata": {
+            "known_name": "Ella Viren"
+          }
+        },
+        {
+          "id": "known_name_serra",
+          "kind": "fact",
+          "text": "The player knows from public information that the official inspection is carried out by Serra Kane.",
+          "scope": "public",
+          "entity_id": "serra",
+          "source": "story_public_setup",
+          "metadata": {
+            "known_name": "Serra Kane"
+          }
+        }
+      ],
+      "npcs": [
+        {
+          "id": "ella",
+          "name": "Ella Viren",
+          "role": "botanist",
+          "pronouns": "F",
+          "color": "#a6e3a1",
+          "public_label": "chief botanist of the garden",
+          "age": "Actually 41 years old; looks 40-45.",
+          "physical_type": "lean adult woman in a gardener's work apron",
+          "distinctive_features": "soil under the nails, a magnifying glass on a cord, a notebook with tub numbers, dark circles under the eyes",
+          "life_status": "alive",
+          "condition": "exhausted from insomnia, outwardly collected, coughing from fumes",
+          "personality": "disciplined, observant, stubborn about facts, careful with people",
+          "values": "garden, truth in evidence, Milo, memory of a mentor, independent sample",
+          "habits": "compares leaves under a magnifying glass, records tub numbers, lists facts point by point when she is nervous",
+          "pressure_response": "hides behind precise observations, delays drawing conclusions, opens up only to those who respect the evidence",
+          "boundaries": "will not name the Council out loud and will not show the envelope without protection or an independent sample",
+          "abilities": {
+            "STR": 9,
+            "DEX": 11,
+            "CON": 11,
+            "INT": 16,
+            "WIS": 15,
+            "CHA": 12
+          },
+          "skills": {
+            "Nature": 5,
+            "Medicine": 4,
+            "Investigation": 5,
+            "Perception": 4
+          },
+          "saving_throws": {
+            "INT": 5,
+            "WIS": 4
+          },
+          "passive_perception": 14,
+          "ac": 11,
+          "hp": {
+            "current": 13,
+            "max": 13
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; keen eye for leaf changes and vein shades",
+          "languages": "General",
+          "persona": "The chief botanist of the garden: tired, attentive, accustomed to speaking with precise observations. She maintains discipline, but at the sight of dying orchids she forgets diplomatic caution.",
+          "voice": "Calm and scientific, with anxiety barely concealed. When afraid, she lists facts point by point as though precision could substitute for courage.",
+          "goals": "Save the garden, prove that this is not a common plant disease, protect Milo from the Council and get an independent sample before Nemir or the inspectors clean everything up.",
+          "knowledge": "She knows the symptoms, the watering schedule, who had access to the solutions, and where the leaves first began to blacken. She has established that the damage follows batches of solution rather than wind or insects, and knows which tubs can serve as controls.",
+          "secret": "You found a match between the foci of the disease and the old Council experiment, but you are afraid of disappearing, like your mentor. In a secret envelope you have a copy of a page called White Root, but without a sample it looks like political libel."
+        },
+        {
+          "id": "milo",
+          "name": "Milo",
+          "role": "gardener's apprentice",
+          "pronouns": "M",
+          "color": "#f6c177",
+          "public_label": "gardener's apprentice",
+          "age": "Actually 17 years old; looks 15-18.",
+          "physical_type": "slight, quick-moving adolescent",
+          "distinctive_features": "dirt beneath his nails, a tattered workbook under one arm, flinches at sudden sounds",
+          "life_status": "alive",
+          "condition": "didn't get enough sleep, pale, nervously looking at the door",
+          "personality": "anxious, kind, loyal, desperate to be helpful",
+          "values": "Ella, his place in the garden, plants, the feeling that he is not to blame",
+          "habits": "sorts through the tags, clutches the notebook to his chest, chatters and interrupts himself",
+          "pressure_response": "gets scared, gets caught up in lies, gives out details in exchange for a promise to protect Ella",
+          "boundaries": "does not admit to a night outing without a promise not to punish; will not give the notebook to a stranger",
+          "abilities": {
+            "STR": 9,
+            "DEX": 15,
+            "CON": 10,
+            "INT": 11,
+            "WIS": 12,
+            "CHA": 9
+          },
+          "skills": {
+            "Stealth": 4,
+            "Sleight of Hand": 4,
+            "Perception": 3,
+            "Deception": 1
+          },
+          "saving_throws": {
+            "DEX": 4
+          },
+          "passive_perception": 13,
+          "ac": 12,
+          "hp": {
+            "current": 8,
+            "max": 8
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; keenly senses smells and notices little details in plants",
+          "languages": "General",
+          "persona": "A young assistant who has seen too much and still doesn’t know how to lie well. He wants to be useful, but he hears every remark from his elders as a sentence.",
+          "voice": "Quickly, confusedly, with attempts to seem braver. If he is caught in a contradiction, he begins to make excuses even before the question is asked.",
+          "goals": "To protect Ella, not to reveal that he sneaked into a closed section at night, and to prove that he is not to blame for damaging the plants.",
+          "knowledge": "He saw a figure near the solution cabinet and heard a glass vial clink. He remembers the smell of bitter almonds, a stain on the figure's glove, and that the western window remained ajar after the figure left.",
+          "secret": "You stole an infected leaf and hid it in your workbook. You also spent the night in the garden without permission because you feared for Ella. The threat of expulsion frightens you easily, but a gentle promise to protect Ella will persuade you to say more."
+        },
+        {
+          "id": "nemir",
+          "name": "Nemir",
+          "role": "Council Archivist",
+          "pronouns": "M",
+          "color": "#c4a7e7",
+          "default_whereabouts": {
+            "location_id": "council_archive",
+            "location_name": "Council archive",
+            "status": "known",
+            "details": "he can usually be found among the sealed journals of old experiments",
+            "source": "default public lore"
+          },
+          "public_label": "Council Archivist",
+          "age": "Actually 53 years old; looks 50-55.",
+          "physical_type": "a lean elderly man in a dark official dress",
+          "distinctive_features": "ink stains on the fingers, precise, unhurried movements, adjusting the cuff at the wrist",
+          "life_status": "alive",
+          "condition": "collected, pale, slightly coughing from the dampness of the greenhouse",
+          "personality": "cold, methodical, pedantic, hides anxiety behind procedure",
+          "values": "archive, order of the Council, own reputation, cleanliness of records",
+          "habits": "corrects other people's wording, refers to dates and journal numbers, keeps hands clasped",
+          "pressure_response": "goes into definitions and regulations, requires a warrant for admission, does not raise his voice",
+          "boundaries": "does not recognize the involvement of the Council and does not allow access to the cabinet with vials without direct evidence",
+          "abilities": {
+            "STR": 9,
+            "DEX": 11,
+            "CON": 10,
+            "INT": 16,
+            "WIS": 13,
+            "CHA": 12
+          },
+          "skills": {
+            "History": 5,
+            "Investigation": 5,
+            "Deception": 3,
+            "Medicine": 3
+          },
+          "saving_throws": {
+            "INT": 5,
+            "WIS": 3
+          },
+          "passive_perception": 11,
+          "ac": 11,
+          "hp": {
+            "current": 11,
+            "max": 11
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; tenaciously notices inconsistencies in papers and the order of things",
+          "languages": "Common, old dialect of archival journals",
+          "persona": "A dry archivist with an impeccable memory and an unpleasant habit of correcting other people's wording. He believes that order is more important than mercy, and despises people who call archival truth conscience.",
+          "voice": "Polite, cold, with long clarifications. Responds to direct accusations with definitions, dates and admission procedures.",
+          "goals": "Hide the old Council experiment, present the poisoning as a natural disease, recover or destroy the stolen leaf, and deny Serra grounds for an official search of the archive.",
+          "knowledge": "He knows the reagent's formula, the experiment's archive number, who ordered the evidence destroyed, and which solutions are already contaminated. He can quote the old journals almost verbatim when doing so helps him appear innocent.",
+          "secret": "You mixed the reagent into medicinal solutions to destroy living evidence of the old experiment. A faint smell of bitter almonds lingers on your cuff, and the key to the vial cabinet is hidden in the archive. You do not fear a trial as much as public recognition that your entire career served to conceal the Council's crimes."
+        },
+        {
+          "id": "serra",
+          "name": "Serra Kane",
+          "role": "Council inspector",
+          "pronouns": "F",
+          "color": "#9ccfd8",
+          "public_label": "Council inspector",
+          "age": "Actually 40 years; looks 38-42.",
+          "physical_type": "fit woman in a strict service uniform",
+          "distinctive_features": "service seal on a chain, straight posture, gloves against lime dust, tenacious, unblinking gaze",
+          "life_status": "alive",
+          "condition": "collected, lacks sleep, keeps face, combat-ready",
+          "personality": "official, disciplined, restrained, checks every word, under the armor - anxiety",
+          "values": "Council reputation, verifiable evidence, brother's safety, own immunity from accusations",
+          "habits": "speaks smoothly and orderly, notes inconsistencies, corrects the seal, transforms personal into official",
+          "pressure_response": "She first presses with regulations and rank, but lowers her voice and listens when met with discipline and solid evidence",
+          "boundaries": "will not name Nemir out loud without ironclad evidence and will not reveal personal interest in the garden without protection",
+          "abilities": {
+            "STR": 12,
+            "DEX": 12,
+            "CON": 13,
+            "INT": 14,
+            "WIS": 15,
+            "CHA": 13
+          },
+          "skills": {
+            "Insight": 4,
+            "Investigation": 4,
+            "Intimidation": 3,
+            "Perception": 4
+          },
+          "saving_throws": {
+            "WIS": 4,
+            "CON": 3
+          },
+          "passive_perception": 14,
+          "ac": 15,
+          "hp": {
+            "current": 28,
+            "max": 28
+          },
+          "speed": "30 ft",
+          "senses": "normal vision; senses lies and strained explanations during interrogation",
+          "languages": "General",
+          "persona": "Official inspector: keeps her face, asks direct questions, is afraid of a political scandal. She is not cruel, but she understands all too well how quickly compassion can turn into a mistake.",
+          "voice": "Clear, orderly, and without needless emotion. In private, she lowers her voice for someone who brings discipline, evidence, and no theatrical threats.",
+          "goals": "Close the investigation quickly, but do not become guilty of concealing a crime; keep the Council from forcefully clearing the garden; find evidence that cannot be attributed to panic.",
+          "knowledge": "Has access to Council orders and is aware that archival records have recently been seized. She knows which doors her seal opens, who is on duty at the Council corridor, and that Nemir too confidently explains the symptoms that have not yet been verified.",
+          "secret": "You already suspect Nemir, but the Council forbade you to pronounce his name without ironclad proof. Your little brother is being treated with moon orchid medicine, so you have a personal interest in saving the garden, but if this comes out, you'll be suspended for a conflict of interest."
+        }
+      ],
+      "scene": {
+        "id": "glasshouse_main_aisle",
+        "location_id": "glass_garden",
+        "title": "Main Aisle of the Glass Garden",
+        "description": "Beneath the glass roof, the air is humid, quiet, and too warm for a sealed quarantine. Black veins creep across the moon orchids; buckets of medicinal solution stand beside the tubs; lime dust from hastily moved pots marks the flagstones. The upper gallery is visible through frosted panes, and the footsteps of Council guards occasionally sound beyond the service door.",
+        "present_npcs": [
+          "ella",
+          "milo"
+        ],
+        "npc_presence": {
+          "ella": {
+            "location": "among the diseased orchids",
+            "activity": "compares spots on leaves and writes down tub numbers",
+            "attitude": "tired, but ready to talk to someone who respects evidence and plants"
+          },
+          "milo": {
+            "location": "near the tool cabinet",
+            "activity": "pretends to sort tags, although he glances at his notebook",
+            "attitude": "nervous and afraid that he will be accused of going out at night"
+          }
+        },
+        "items": [
+          {
+            "id": "moon_orchids",
+            "name": "moon orchids with black veins",
+            "location": "central bed",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "solution_buckets",
+            "name": "buckets with medicinal solution",
+            "location": "at the tubs",
+            "visible": true,
+            "portable": true
+          },
+          {
+            "id": "locked_cabinet",
+            "name": "locked cabinet with bottles",
+            "location": "at the eastern wall",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "watering_log",
+            "name": "watering log with a torn page",
+            "location": "on the desktop",
+            "visible": true,
+            "portable": true
+          },
+          {
+            "id": "chalk_marks",
+            "name": "chalk numbers on infested tubs",
+            "location": "along the edge of the beds",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "milo_notebook",
+            "name": "Milo's workbook",
+            "location": "on a box with tags",
+            "visible": true,
+            "portable": true,
+            "owner": "milo"
+          },
+          {
+            "id": "bitter_vial_smell",
+            "name": "strong smell near the cabinet lock",
+            "location": "east wall",
+            "visible": true,
+            "portable": false
+          },
+          {
+            "id": "council_seal_wax",
+            "name": "crumbs of blue wax from the Council seal",
+            "location": "at the service door",
+            "visible": true,
+            "portable": true
+          }
+        ],
+        "exits": [
+          {
+            "id": "archive_door",
+            "name": "service door to archives",
+            "destination": "Council corridor",
+            "visible": true
+          },
+          {
+            "id": "upper_gallery",
+            "name": "staircase to the upper gallery",
+            "destination": "upper garden gallery",
+            "visible": true
+          },
+          {
+            "id": "potting_room",
+            "name": "passage to the transfer room",
+            "destination": "transplant room and soil bags",
+            "visible": true
+          },
+          {
+            "id": "quarantine_gate",
+            "name": "sealed doors to the outside",
+            "destination": "courtyard of the upper city",
+            "visible": true
+          }
+        ],
+        "constraints": [
+          "Plants are fragile: rough handling can destroy evidence on leaves and in solutions.",
+          "The greenhouse is not open to the public; any loud conflict will quickly bring in the Council's guards.",
+          "Some samples are toxic: handling leaves, solution, or vials with bare hands is dangerous and can ruin the evidence.",
+          "The service door to the archive is controlled by a Council seal; passing without permission will attract Serra or the guards.",
+          "There are a few hours left before the evening report to the Council, after which infected plants may be ordered to be burned."
+        ],
+        "tension": "The air smells of damp earth, medicine, and something metallic. Every faint clink of glass sounds like an attempt to hide evidence."
+      }
+    }
+  }
+]

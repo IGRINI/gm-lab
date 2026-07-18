@@ -3,6 +3,7 @@ import Modal from "./Modal.jsx";
 import Tooltip, { TipContent } from "./Tooltip.jsx";
 import { api } from "../api.js";
 import { useTranslation } from "react-i18next";
+import { localizeServerMessage } from "../serverMessages.js";
 
 export default function TokenCounter({ models = [], currentModel = "", onClose }) {
   const { t } = useTranslation("game");
@@ -49,7 +50,15 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
         setKeySaved(!!d.saved);
         setKeyHint(d.hint || "");
         setKeyInput("");
+      } else {
+        setError(localizeServerMessage(d, t, {
+          fallbackText: t("tokenCounter.keySaveFailed"),
+        }));
       }
+    } catch (error) {
+      setError(localizeServerMessage(error, t, {
+        fallbackText: t("tokenCounter.keySaveFailed"),
+      }));
     } finally {
       setKeyBusy(false);
     }
@@ -62,7 +71,15 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
       if (d.ok) {
         setKeySaved(false);
         setKeyHint("");
+      } else {
+        setError(localizeServerMessage(d, t, {
+          fallbackText: t("tokenCounter.keyDeleteFailed"),
+        }));
       }
+    } catch (error) {
+      setError(localizeServerMessage(error, t, {
+        fallbackText: t("tokenCounter.keyDeleteFailed"),
+      }));
     } finally {
       setKeyBusy(false);
     }
@@ -73,10 +90,18 @@ export default function TokenCounter({ models = [], currentModel = "", onClose }
     setError("");
     try {
       const d = await api.tokenize(text, model);
-      if (!d.ok) throw new Error(d.error || t("tokenCounter.countFailed"));
+      if (!d.ok) {
+        setError(localizeServerMessage(d, t, {
+          fallbackText: t("tokenCounter.countFailed"),
+        }));
+        setResult(null);
+        return;
+      }
       setResult(d);
     } catch (e) {
-      setError(e.message || String(e));
+      setError(localizeServerMessage(e, t, {
+        fallbackText: t("tokenCounter.countFailed"),
+      }));
       setResult(null);
     } finally {
       setBusy(false);

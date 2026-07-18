@@ -28,6 +28,7 @@
     "characterName": "Новое имя персонажа"
   },
   "api": {
+    "requestFailed": "Запрос не выполнен (HTTP {{status}})",
     "importFailed": "Импорт не выполнен ({{status}})",
     "exportFailed": "Экспорт не выполнен ({{status}})",
     "transcriptionFailed": "Ошибка распознавания ({{status}})",

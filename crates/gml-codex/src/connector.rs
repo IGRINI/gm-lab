@@ -82,14 +82,18 @@ impl ModelConnector for CodexConnector {
         }
     }
 
-    async fn start_auth(&self, method_id: &str) -> Result<ConnectorAuthStart, ConnectorError> {
+    async fn start_auth(
+        &self,
+        method_id: &str,
+        ui_language: Option<&str>,
+    ) -> Result<ConnectorAuthStart, ConnectorError> {
         if method_id != "chatgpt" {
             return Err(ConnectorError::UnknownAuthMethod {
                 connector_id: Self::id(),
                 method_id: method_id.to_string(),
             });
         }
-        run_oauth(&self.http, &self.config)
+        run_oauth(&self.http, &self.config, ui_language)
             .await
             .map_err(|error| ConnectorError::operation(Self::id(), error))?;
         Ok(ConnectorAuthStart::Complete)

@@ -10,6 +10,9 @@
 // Message key: `${sid}:narration` (GM) or `${sid}:npc`.
 // Segment: { text, body } where body = { role:"gm" } or { voice:"male"|"female" }.
 import { useSyncExternalStore } from "react";
+import { uiFetch } from "./api.js";
+import { runtimeText } from "./i18n/runtime.js";
+import { localizeServerMessage } from "./serverMessages.js";
 
 const cache = new Map(); // key -> { status, buffers?: AudioBuffer[], priming?: bool, error? }
 const listeners = new Set();
@@ -104,20 +107,24 @@ export function stripMarkup(input) {
 }
 
 async function postTts(seg, { stream, signal }) {
-  const r = await fetch("/tts", {
+  const r = await uiFetch("/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text: stripMarkup(seg.text), ...seg.body, stream: !!stream }),
     signal,
   });
   if (!r.ok) {
-    let m = `TTS ${r.status}`;
+    let payload = { code: "tts_unavailable", status: r.status };
     try {
-      m = (await r.json()).error || m;
+      payload = await r.json();
     } catch {
       /* non-JSON error */
     }
-    throw new Error(m);
+    throw new Error(localizeServerMessage(
+      payload,
+      (key, options) => runtimeText(key, options),
+      { fallbackCode: "tts_unavailable" }
+    ));
   }
   return r;
 }

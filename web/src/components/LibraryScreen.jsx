@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import SearchField from "./SearchField.jsx";
 import SearchSkeleton from "./SearchSkeleton.jsx";
 import useAsyncSearch from "../useAsyncSearch.js";
+import { localizeServerMessage } from "../serverMessages.js";
 
 // Full-screen Библиотека view (§Библиотека in the TZ). Toolbar with filter pills
 // + a «+ Создать ▾» / Импорт / Открыть папку cluster, then a card grid for the
@@ -388,10 +389,14 @@ export default function LibraryScreen({
         try {
           await runImport(file, true);
         } catch (retryError) {
-          setImportError(retryError?.message || t("import.failed"));
+          setImportError(localizeServerMessage(retryError, t, {
+            fallbackText: t("import.failed"),
+          }));
         }
       } else {
-        setImportError(error?.message || t("import.failed"));
+        setImportError(localizeServerMessage(error, t, {
+          fallbackText: t("import.failed"),
+        }));
       }
     } finally {
       setImporting(false);

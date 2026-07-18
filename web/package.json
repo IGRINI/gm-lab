@@ -1,12 +1,16 @@
 {
-  "name": "gm-lab-web",
+  "name": "taleshift-web",
   "private": true,
   "version": "1.0.0",
+  "license": "Apache-2.0",
   "type": "module",
-  "description": "GM-Lab frontend — React 19 + react-virtuoso, builds to a single inlined index.html served by server.py",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "description": "TaleShift — a local-first AI game master for worlds that remember.",
+  "repository": "https://github.com/IGRINI/TaleShift",
   "scripts": {
     "dev": "vite",
-    "dev:phone": "powershell -NoProfile -ExecutionPolicy Bypass -File ./dev-phone.ps1",
     "test": "node --test tests/*.test.js",
     "build": "vite build",
     "preview": "vite preview"

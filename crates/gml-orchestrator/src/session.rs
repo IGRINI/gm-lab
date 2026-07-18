@@ -11,7 +11,7 @@ use std::sync::Arc;
 use serde_json::{json, Map, Value};
 
 use gml_llm::{Backend, ConnectorId, ModelBinding, SessionIdentity};
-use gml_types::NpcBeat;
+use gml_types::{ContentLocale, NpcBeat};
 use gml_world::{MemoryTier, MemoryTruthStatus, MemoryUnit, World, WorldEvent, WorldSpec};
 
 use crate::compact::{empty_usage, usage_from_payload};
@@ -884,7 +884,21 @@ impl Session {
         npc_client_factory: ClientFactory,
         model_binding: ModelBinding,
     ) -> Self {
-        let world = World::from_worldgen(&WorldSpec::default());
+        Self::new_bound_for_locale(
+            client,
+            npc_client_factory,
+            model_binding,
+            ContentLocale::Russian,
+        )
+    }
+
+    pub fn new_bound_for_locale(
+        client: Arc<dyn Backend>,
+        npc_client_factory: ClientFactory,
+        model_binding: ModelBinding,
+        content_locale: ContentLocale,
+    ) -> Self {
+        let world = World::from_worldgen_for_locale(&WorldSpec::default(), content_locale);
         Self::with_world_binding(client, world, npc_client_factory, model_binding)
     }
 

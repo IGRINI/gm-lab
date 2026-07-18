@@ -330,14 +330,14 @@ pub struct Config {
     pub codex_client_id: String,         // GM_CODEX_CLIENT_ID
     pub codex_client_version: String,    // GM_CODEX_CLIENT_VERSION
     pub codex_originator: String,        // GM_CODEX_ORIGINATOR
-    pub codex_user_agent: String,        // GM_CODEX_USER_AGENT, default codex_cli_rs/{ver} (GM-Lab)
-    pub codex_auth_port: i64,            // GM_CODEX_AUTH_PORT, 1455
-    pub codex_auto_open_browser: bool,   // GM_CODEX_AUTO_OPEN_BROWSER, true
-    pub codex_model: String,             // GM_CODEX_MODEL, gpt-5.4-mini
-    pub codex_compact_model: String,     // GM_CODEX_COMPACT_MODEL, default COMPACT_MODEL
-    pub codex_reasoning_effort: String,  // GM_CODEX_REASONING_EFFORT, "low"
+    pub codex_user_agent: String, // GM_CODEX_USER_AGENT, default codex_cli_rs/{ver} (TaleShift)
+    pub codex_auth_port: i64,     // GM_CODEX_AUTH_PORT, 1455
+    pub codex_auto_open_browser: bool, // GM_CODEX_AUTO_OPEN_BROWSER, true
+    pub codex_model: String,      // GM_CODEX_MODEL, gpt-5.4-mini
+    pub codex_compact_model: String, // GM_CODEX_COMPACT_MODEL, default COMPACT_MODEL
+    pub codex_reasoning_effort: String, // GM_CODEX_REASONING_EFFORT, "low"
     pub codex_reasoning_summary: String, // GM_CODEX_REASONING_SUMMARY, "auto"
-    pub codex_prompt_cache_key: String,  // GM_CODEX_PROMPT_CACHE_KEY, default PROMPT_CACHE_KEY
+    pub codex_prompt_cache_key: String, // GM_CODEX_PROMPT_CACHE_KEY, default PROMPT_CACHE_KEY
 
     // --- Reasoning toggles by role ---
     pub gm_think: bool,  // GM_THINK, true
@@ -357,10 +357,10 @@ impl Config {
         let prompt_cache_key = env_str("GM_PROMPT_CACHE_KEY", "");
 
         let codex_client_version = env_str("GM_CODEX_CLIENT_VERSION", "0.144.0");
-        // default: f"codex_cli_rs/{CODEX_CLIENT_VERSION} (GM-Lab)"
+        // default: f"codex_cli_rs/{CODEX_CLIENT_VERSION} (TaleShift)"
         let codex_user_agent = env_str(
             "GM_CODEX_USER_AGENT",
-            &format!("codex_cli_rs/{codex_client_version} (GM-Lab)"),
+            &format!("codex_cli_rs/{codex_client_version} (TaleShift)"),
         );
 
         // CODEX_REASONING_EFFORT = env.get(..., "low").strip() or "low"
@@ -728,7 +728,7 @@ EXPORTSPACED=export   spaced
             assert_eq!(c.codex_compact_model, "");
             assert_eq!(c.codex_reasoning_effort, "low");
             assert_eq!(c.codex_reasoning_summary, "auto");
-            assert_eq!(c.codex_user_agent, "codex_cli_rs/0.144.0 (GM-Lab)");
+            assert_eq!(c.codex_user_agent, "codex_cli_rs/0.144.0 (TaleShift)");
             assert!((c.rag_min_dense_score - 0.60).abs() < 1e-12);
             assert!((c.rag_status_boost - 1.04).abs() < 1e-12);
             assert!(c.npc_dedup_enabled);
